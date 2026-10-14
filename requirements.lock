@@ -26,10 +26,10 @@ starlette==1.6.0              # [verified]
 typing-extensions==4.16.0     # [verified]
 typing-inspection==0.4.4      # [verified]
 uvicorn==0.53.0               # [verified]
-psycopg==3.2.9                # [pinned]    PostgreSQL 驱动（测试用的是源码构建的 psycopg 3 + libpq 16）
-psycopg-binary==3.2.9         # [pinned]
-pyarrow==20.0.0               # [pinned]    Parquet K 线缓存（缺省时退回 JSON，功能等价）
+psycopg==3.2.10               # [pinned]    PostgreSQL 驱动（测试用的是源码构建的 psycopg 3 + libpq 16）
+psycopg-binary==3.2.10        # [pinned]
+pyarrow==22.0.0               # [pinned]    Parquet K 线缓存（缺省时退回 JSON，功能等价）
 websockets==15.0.1            # [pinned]    uvicorn[standard]：运行事件 WebSocket
-httptools==0.6.4 ; sys_platform != "win32"   # [pinned]
-uvloop==0.21.0 ; sys_platform != "win32"     # [pinned]
-watchfiles==1.0.5             # [pinned]
+httptools==0.7.1 ; sys_platform != "win32"   # [pinned]
+uvloop==0.22.1 ; sys_platform != "win32"     # [pinned]
+watchfiles==1.1.1             # [pinned]
