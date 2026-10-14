@@ -1,11 +1,9 @@
 import { useEffect, useState } from 'react'
 import { get } from '../http'
-import { ago, fmtNum, fmtPct, tone, v3, type BacktestRow, type LlmStatus, type PaperSessionView, type PostSummary, type StrategyFile } from '../api2'
-import { LineChart, Sparkline } from '../components/charts2'
+import { ago, fmtNum, fmtPct, tone, v3, type BacktestRow, type LlmStatus, type PaperSessionView, type StrategyFile } from '../api2'
+import { LineChart } from '../components/charts2'
 import { EmptyState, Panel, Tag } from '../components/ui'
 import { NewStrategyModal } from './MyStrategies'
-import { Composer } from '../components/chat/Composer'
-import { openInLab } from '../components/handoff'
 import { missions, type Mission } from '../apiLab'
 import { rd, when, type Pipeline } from '../apiRd'
 import { validation, type GradRow } from '../apiValidation'
@@ -18,10 +16,8 @@ export default function HomePage({ onNavigate, notify }: PageProps) {
   const [strategies, setStrategies] = useState<StrategyFile[]>([])
   const [backtests, setBacktests] = useState<BacktestRow[]>([])
   const [sessions, setSessions] = useState<PaperSessionView[]>([])
-  const [posts, setPosts] = useState<PostSummary[]>([])
   const [llm, setLlm] = useState<LlmStatus | null>(null)
   const [modal, setModal] = useState<'' | 'new'>('')
-  const [idea, setIdea] = useState('')
   const [recentMissions, setRecentMissions] = useState<Mission[]>([])
   const [market, setMarket] = useState<{ t: number[]; c: number[]; source: string } | null>(null)
   const [pipe, setPipe] = useState<Pipeline | null>(null)
@@ -31,7 +27,6 @@ export default function HomePage({ onNavigate, notify }: PageProps) {
     v3.strategies().then((r) => setStrategies(r.strategies)).catch(() => undefined)
     v3.backtests(undefined, 8).then((r) => setBacktests(r.backtests)).catch(() => undefined)
     v3.paperSessions().then((r) => setSessions(r.sessions)).catch(() => undefined)
-    v3.posts({ sort: 'recommend', size: 6 }).then((r) => setPosts(r.items)).catch(() => undefined)
     v3.llmStatus().then(setLlm).catch(() => undefined)
     missions.list().then((r) => setRecentMissions(r.missions)).catch(() => undefined)
     rd.pipeline().then(setPipe).catch(() => undefined)
@@ -56,13 +51,9 @@ export default function HomePage({ onNavigate, notify }: PageProps) {
         <div className="home-ask">
           <h1>今天研究什么策略？</h1>
           <Brief market={market} board={board?.rows ?? null} running={running.length} />
-          <Composer value={idea} onChange={setIdea} onSend={() => openInLab({ idea: idea.trim() })}
-            placeholder="描述一个交易想法，AI 研究室会写代码、回测并迭代" sendLabel="去研究室" />
-          <div className="button-row" style={{ marginTop: 12 }}>
-            <button className="button small" onClick={() => setModal('new')}>从模板新建策略</button>
-            <button className="button small" onClick={() => onNavigate('teams')}>团队讨论</button>
-            {!llm?.ready && <a className="button small ghost" href="#/models">配置模型</a>}
-          </div>
+          <button className="button primary home-cta" onClick={() => onNavigate('lab')}>
+            <span aria-hidden="true">✦</span> 与 AI 一起研究策略
+          </button>
         </div>
         <div className="hero-market">
           {market && market.c.length > 1 ? (
@@ -153,19 +144,6 @@ export default function HomePage({ onNavigate, notify }: PageProps) {
                 })}
               </ul>
             )}
-          </Panel>
-          <Panel title="广场推荐" actions={<button className="button small" onClick={() => onNavigate('square')}>进入</button>}>
-            <ul className="plain-list">
-              {posts.map((p) => (
-                <li key={p.id} className="clickable" onClick={() => onNavigate(`post/${p.id}`)}>
-                  <div className="row-between">
-                    <span><Tag>{p.type_label}</Tag> {p.title}</span>
-                    {p.backtest?.equity && <Sparkline values={p.backtest.equity} width={70} height={22} />}
-                  </div>
-                  <small>{p.author} · ▲ {p.like_count} · 💬 {p.comment_count}</small>
-                </li>
-              ))}
-            </ul>
           </Panel>
         </div>
       </div>
