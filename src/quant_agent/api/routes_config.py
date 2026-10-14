@@ -186,6 +186,56 @@ def upsert_provider(payload: ProviderIn) -> dict:
     return {"ok": True, "provider": {**record, "has_key": has_key, "key_source": source, "key_masked": masked}}
 
 
+class DiscoverIn(BaseModel):
+    name: str = Field("", max_length=40, description="已登记的 Provider；密钥留空时用它已保存的密钥")
+    type: Literal["openai_compatible", "anthropic", "local"] = "openai_compatible"
+    base_url: str = Field(..., max_length=400)
+    api_key: str = Field("", max_length=400)
+
+
+@router.post("/providers/discover", summary="向服务商查询可用模型列表（OpenAI 兼容 /models 或 Anthropic /v1/models）")
+def discover_models(payload: DiscoverIn) -> dict:
+    import httpx
+
+    from ..llm.providers import _resolve_env
+
+    _require_deploy_admin()
+    s = get_services()
+    base = payload.base_url.strip().rstrip("/")
+    if not base.startswith(("http://", "https://")):
+        raise HTTPException(400, "API 地址需要以 http:// 或 https:// 开头")
+    key = payload.api_key.strip()
+    name = payload.name.strip().lower()
+    if not key and name:
+        key = s.read_secrets().get(name, "")
+        if not key and name in s.config.providers:
+            key = _resolve_env(s.config.providers[name].api_key or "")
+    if key == "not-needed":
+        key = ""
+    if payload.type == "anthropic":
+        url = base + ("/models" if base.endswith("/v1") else "/v1/models")
+        headers = {"x-api-key": key, "anthropic-version": "2023-06-01"}
+    else:
+        url = base + "/models"
+        headers = {"Authorization": f"Bearer {key}"} if key else {}
+    try:
+        params = {"limit": 1000} if payload.type == "anthropic" else None
+        resp = httpx.get(url, headers=headers, params=params, timeout=10.0)
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"无法连接 {url}：{e.__class__.__name__}") from e
+    if resp.status_code in (401, 403):
+        raise HTTPException(400, "服务商拒绝了请求：API 密钥无效或没有权限")
+    if resp.status_code >= 400:
+        raise HTTPException(502, f"服务商返回 {resp.status_code}")
+    try:
+        data = resp.json()
+    except ValueError as e:
+        raise HTTPException(502, "服务商返回的不是 JSON") from e
+    items = data.get("data") if isinstance(data, dict) else data
+    ids = sorted({str(m.get("id")) for m in (items or []) if isinstance(m, dict) and m.get("id")})
+    return {"models": ids}
+
+
 @router.delete("/providers/{name}")
 def delete_provider(name: str) -> dict:
     """删除界面登记的 Provider 与其密钥。配置文件里的 Provider 只清除界面填写的密钥。"""

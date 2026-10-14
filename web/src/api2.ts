@@ -531,6 +531,8 @@ export const v3 = {
   saveProvider: (p: { name: string; type: string; base_url: string; api_key: string; models: string[] }) =>
     post<{ ok: boolean; provider: ProviderView }>('/api/config/providers', p),
   deleteProvider: (name: string) => del<{ ok: boolean }>(`/api/config/providers/${name}`),
+  discoverModels: (p: { name: string; type: string; base_url: string; api_key: string }) =>
+    post<{ models: string[] }>('/api/config/providers/discover', p),
   saveRouting: (p: { default: string; code_gen: string; reasoning: string; report: string; fallback: string[] }) =>
     put<{ ok: boolean }>('/api/config/routing', p),
 

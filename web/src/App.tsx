@@ -43,6 +43,7 @@ import { Loading } from './components/ui'
 import { PageHead } from './components/PageHead'
 import { PageSlot } from './components/pageSlot'
 import { SearchButton } from './components/SearchPalette'
+import { SettingsShell, settingsKeyOf } from './components/SettingsShell'
 
 type PageKey =
   | 'home'
@@ -77,6 +78,9 @@ type PageKey =
   | 'backtest'
   | 'optimize'
   | 'post'
+
+/** 这些页面在全屏「设置」里打开，不显示主侧栏。 */
+const SETTINGS_PAGES = new Set<PageKey>(['settings', 'models', 'roles', 'prompts', 'long-running', 'docs'])
 
 /** 对话类页面铺满主区域，不要页边距与页脚。 */
 const FULL_BLEED = new Set<PageKey>(['lab', 'teams'])
@@ -129,8 +133,6 @@ const NAV: { group: string; step?: number; items: { key: PageKey; label: string 
     group: '更多',
     items: [
       { key: 'square', label: '策略广场' },
-      { key: 'roles', label: 'AI 设置' },
-      { key: 'settings', label: '设置' },
     ],
   },
 ]
@@ -144,8 +146,6 @@ const HUBS: Partial<Record<PageKey, { key: PageKey; label: string }[]>> = {
   strategies: [{ key: 'strategies', label: '策略列表' }, { key: 'assemble', label: '积木搭建' }],
   portfolio: [{ key: 'portfolio', label: '组合与风控' }, { key: 'execution', label: '下单执行' }],
   live: [{ key: 'live', label: '实盘对照' }, { key: 'accounts', label: '只读账户' }],
-  roles: [{ key: 'roles', label: '角色与团队' }, { key: 'models', label: 'AI 模型' }, { key: 'prompts', label: '提示词' }, { key: 'long-running', label: '夜班' }],
-  settings: [{ key: 'settings', label: '工作区与账号' }, { key: 'docs', label: '策略 API 文档' }],
 }
 const HUB_OF: Partial<Record<PageKey, PageKey>> = Object.fromEntries(
   Object.entries(HUBS).flatMap(([hub, tabs]) => tabs!.map((t) => [t.key, hub])),
@@ -274,6 +274,11 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
     return () => window.removeEventListener('hashchange', onHash)
   }, [])
 
+  const lastMain = useRef('home')
+  useEffect(() => {
+    if (!SETTINGS_PAGES.has(page)) lastMain.current = window.location.hash.replace(/^#\/?/, '') || 'home'
+  }, [page, route.arg])
+
   const go = useCallback((key: string) => {
     window.location.hash = `/${key}`
   }, [])
@@ -382,6 +387,19 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
     }
   }
 
+  if (SETTINGS_PAGES.has(page)) {
+    return (
+      <>
+        <SettingsShell current={settingsKeyOf(page, route.arg)} onNavigate={go} onClose={() => go(lastMain.current)} badges={llmReady ? undefined : { models: '未配置' }}>
+          {render()}
+        </SettingsShell>
+        {busy && <BusyOverlay title={busy.title} note={busy.note} />}
+        <RoleDrawer notify={notify} />
+        {toast && <Toast message={toast.message} error={toast.error} onDone={() => setToast(null)} />}
+      </>
+    )
+  }
+
   return (
     <>
       <aside className="sidebar">
@@ -403,14 +421,13 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
                 >
                   <Icon name={item.key} />
                   {item.label}
-                  {item.key === 'roles' && !llmReady && <span className="nav-count alert">未配置</span>}
                 </button>
               ))}
             </div>
           ))}
         </nav>
 
-        <AccountMenu me={me} reachable={reachable} onNavigate={go} />
+        <AccountMenu me={me} reachable={reachable} llmReady={llmReady} onNavigate={go} />
       </aside>
 
       <div className="shell">
@@ -454,7 +471,7 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
 const ROLE_NAME: Record<string, string> = { admin: '管理员', member: '成员', reviewer: '审阅者' }
 
 /** 侧栏底部账号菜单：账号、工作区切换、成员与邀请、退出合在一处。 */
-function AccountMenu({ me, reachable, onNavigate }: { me: Me; reachable: string[]; onNavigate: (k: string) => void }) {
+function AccountMenu({ me, reachable, llmReady, onNavigate }: { me: Me; reachable: string[]; llmReady: boolean; onNavigate: (k: string) => void }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
   const ws = me.workspace
@@ -497,6 +514,9 @@ function AccountMenu({ me, reachable, onNavigate }: { me: Me; reachable: string[
           ))}
           <button role="menuitem" onClick={() => pick('settings/workspace')}>新建 / 加入工作区…</button>
           <button role="menuitem" onClick={() => pick('settings/members')}>成员与邀请…</button>
+          <hr />
+          <button role="menuitem" onClick={() => pick('settings/account')}><span>设置</span></button>
+          <button role="menuitem" onClick={() => pick('models')}><span>AI 模型</span>{!llmReady && <span className="role-chip warn">未配置</span>}</button>
           <hr />
           <button role="menuitem" className="acct-logout" onClick={async () => { await v4.logout().catch(() => undefined); setWorkspace(''); window.location.hash = '/home'; window.location.reload() }}>退出登录</button>
         </div>

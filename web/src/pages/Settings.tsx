@@ -26,21 +26,17 @@ export default function SettingsPage({ tab, me, onNavigate, notify, onMeChanged 
   const isAdmin = me.workspace?.role === 'admin'
   return (
     <>
-      <Heading title="设置" description={<>工作区「{me.workspace?.name}」· 你的角色：{ROLE_LABEL[me.workspace?.role ?? 'member']}。权限在服务端校验，客户端声明的工作区只表示目标。</>} />
-      <div className="tabs wide">
-        {TABS.map((t) => (
-          <button key={t.key} aria-pressed={t.key === current} onClick={() => onNavigate(`settings/${t.key}`)}>{t.label}</button>
-        ))}
-      </div>
-      <section className="panel"><div className="panel-body" style={{ paddingTop: 18 }}>
-        {current === 'workspace' && <WorkspaceTab me={me} isAdmin={isAdmin} notify={notify} onSaved={onMeChanged} />}
-        {current === 'members' && <MembersTab me={me} isAdmin={isAdmin} notify={notify} />}
-        {current === 'runs' && <RunsTab notify={notify} onNavigate={onNavigate} readonly={me.workspace?.role === 'reviewer'} />}
-        {current === 'node' && <NodeTab notify={notify} isAdmin={isAdmin} onNavigate={onNavigate} />}
-        {current === 'audit' && (isAdmin ? <AuditTab notify={notify} /> : <Callout tone="warn">只有工作区管理员可以查看审计日志。</Callout>)}
-        {current === 'system' && <SystemTab notify={notify} />}
-        {current === 'account' && <AccountTab me={me} notify={notify} />}
-      </div></section>
+      <Heading
+        title={TABS.find((t) => t.key === current)!.label}
+        description={current === 'account' ? undefined : <>工作区「{me.workspace?.name}」· 你的角色：{ROLE_LABEL[me.workspace?.role ?? 'member']}。权限在服务端校验。</>}
+      />
+      {current === 'workspace' && <WorkspaceTab me={me} isAdmin={isAdmin} notify={notify} onSaved={onMeChanged} />}
+      {current === 'members' && <MembersTab me={me} isAdmin={isAdmin} notify={notify} />}
+      {current === 'runs' && <RunsTab notify={notify} onNavigate={onNavigate} readonly={me.workspace?.role === 'reviewer'} />}
+      {current === 'node' && <NodeTab notify={notify} isAdmin={isAdmin} onNavigate={onNavigate} />}
+      {current === 'audit' && (isAdmin ? <AuditTab notify={notify} /> : <Callout tone="warn">只有工作区管理员可以查看审计日志。</Callout>)}
+      {current === 'system' && <SystemTab notify={notify} />}
+      {current === 'account' && <AccountTab me={me} notify={notify} />}
     </>
   )
 }
