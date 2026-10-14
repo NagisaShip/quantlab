@@ -1,0 +1,8 @@
+# 开发 / 测试依赖（在 requirements.lock 之上）
+-r requirements.lock
+iniconfig==2.3.0              # [verified]
+packaging==26.3               # [verified]
+pluggy==1.6.0                 # [verified]
+pygments==2.21.0              # [verified]
+pytest==9.1.1                 # [verified]
+ruff==0.16.8                  # [verified]

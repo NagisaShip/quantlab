@@ -1,0 +1,20 @@
+# 统一换行符：仓库内一律 LF，避免 Windows 检出后产生整文件 diff。
+# CI 在 Linux 上跑，代码里若混入 CRLF 会让差异噪音淹没真实改动。
+* text=auto eol=lf
+
+# Windows 专用的脚本保留 CRLF，否则 PowerShell 解析会出问题
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制文件不做换行转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.parquet binary
+*.db binary
+*.sqlite binary

@@ -1,0 +1,26 @@
+{
+  "//": [
+    "E2E 专用类型检查配置。web/tsconfig.json 只 include src（前端应用代码），",
+    "Playwright 的 spec 与 config 不在其内，所以单独配一份，用于 `tsc --noEmit` 静态验证。",
+    "",
+    "依赖布局：E2E 运行时（@playwright/test、@types/node、typescript）装在**仓库根**的",
+    "node_modules 里（见根 package.json），因为 spec 在 tests/e2e/ 下，Node 的模块解析",
+    "是从 spec 所在目录逐级向上找 node_modules 的。前端应用依赖仍在 web/node_modules。"
+  ],
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": ["playwright.config.ts", "web/playwright.config.ts", "tests/e2e/**/*.ts"]
+}

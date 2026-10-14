@@ -1,0 +1,173 @@
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  backend:
+    name: 后端（lint + 测试，SQLite）
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,server]"
+      - name: 静态检查
+        run: |
+          ruff check src tests scripts
+          ruff format --check src tests scripts
+      - name: 测试
+        run: pytest -q
+
+  backend-postgres:
+    name: 后端（PostgreSQL + Redis）
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: 安装依赖（锁定版本）
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.lock
+          pip install --no-deps -e .
+      - name: 测试（每个用例独立 schema）
+        env:
+          QAGENT_TEST_PG: postgresql://postgres:ci@localhost:5432/postgres
+        run: pytest -q
+
+  frontend:
+    name: 前端（类型检查 + 构建）
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: 安装依赖
+        run: npm ci --no-audit --no-fund
+      - name: 构建（含 tsc 类型检查）
+        run: npm run build
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+
+  e2e:
+    name: 端到端（Playwright · ${{ matrix.storage }}）
+    runs-on: ubuntu-latest
+    # 存储后端矩阵：同一套 E2E 在 SQLite 与 PostgreSQL(+Redis) 上各跑一遍。
+    # 这样"起 PostgreSQL + Redis 服务"不是摆设 —— 服务真的被 E2E 链路用上，
+    # 也顺带证明了业务链路在两个存储后端上行为一致。
+    strategy:
+      fail-fast: false
+      matrix:
+        storage: [sqlite, postgres]
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s --health-retries 20
+    env:
+      # E2E 后端与 worker 共用这个数据目录（JSON 侧：工作区 store / 结果对象）。
+      # 每次运行会再套一层带运行编号的子目录，见 tests/e2e/run-env.ts。
+      QAGENT_E2E_HOME: ${{ github.workspace }}/tests/e2e/.tmp/home-${{ matrix.storage }}
+      # 刻意避开 8000：本机与部分 runner 上 8000 常被占用。
+      QAGENT_E2E_PORT: "8199"
+      PYTHONUTF8: "1"
+      # postgres 腿把 SQL 侧切到 PG，并用 Redis 做 worker 唤醒；
+      # sqlite 腿两个变量都留空，走默认的 SQLite + 进程内唤醒。
+      QAGENT_DATABASE_URL: ${{ matrix.storage == 'postgres' && 'postgresql://postgres:ci@localhost:5432/postgres' || '' }}
+      QAGENT_REDIS_URL: ${{ matrix.storage == 'postgres' && 'redis://localhost:6379/0' || '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: 安装后端依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,server]"
+
+      - name: 安装前端依赖并构建（后端单端口交付 web/dist）
+        working-directory: web
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
+      - name: 安装 E2E 依赖（仓库根，spec 在 tests/e2e/ 下）
+        run: npm ci --no-audit --no-fund
+
+      - name: 安装 Playwright 浏览器
+        run: npx playwright install --with-deps chromium
+
+      - name: E2E 类型检查（spec 语法与类型）
+        run: npm run e2e:typecheck
+
+      - name: 列出用例（收集失败即视为配置错误）
+        run: npm run e2e:list
+
+      - name: 运行端到端测试
+        run: npm run e2e
+        env:
+          CI: "true"
+
+      - name: 上传 trace / 截图 / 报告（失败也上传）
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-artifacts-${{ matrix.storage }}
+          path: |
+            tests/e2e/.artifacts
+            tests/e2e/.tmp
+          retention-days: 14
+          if-no-files-found: ignore
+
+  compose:
+    name: 部署配置校验
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: docker compose config
+        run: |
+          mkdir -p secrets && echo placeholder > secrets/secret.key
+          cp .env.example .env
+          docker compose config -q
+          docker compose build

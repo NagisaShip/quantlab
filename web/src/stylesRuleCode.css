@@ -1,0 +1,14 @@
+/* 规则 ↔ 代码 切换（策略编辑器） */
+.rc-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; min-width: 0; }
+.rc-status { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.rc-status.warn { color: var(--amber); }
+.rc-rule {
+  border: 1px solid var(--line); border-radius: var(--r); background: var(--sheet);
+  padding: 4px 14px 10px; height: calc(100vh - 360px); min-height: 460px; overflow: auto;
+}
+.rc-rule .dsl-row { grid-template-columns: 100px minmax(140px, 1fr) 80px 100px 52px; }
+.rc-summary { margin: 12px 0 4px; padding-left: 18px; color: var(--muted); font-size: 12px; line-height: 1.7; }
+@media (max-width: 1100px) {
+  .rc-rule { height: auto; min-height: 0; }
+  .rc-rule .dsl-row { grid-template-columns: 1fr 1fr; }
+}

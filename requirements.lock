@@ -1,0 +1,35 @@
+# quant-agent 2.0 运行时依赖锁定（测试环境 Python 3.13；Linux x86_64 / Windows 通用，要求 Python ≥ 3.11）
+# 安装：pip install -r requirements.lock && pip install --no-deps -e .
+#
+# 带 [verified] 的版本是本次 406 项测试（SQLite 与 PostgreSQL 两套）实际运行的版本；
+# 带 [pinned] 的是 uvicorn[standard] / Parquet / PG 驱动的二进制组件，测试环境未安装同一版本，
+# 首次部署后请执行 `pip freeze > requirements.lock` 回写实际版本（见 docs/运维与恢复手册.md §1）。
+annotated-types==0.8.0        # [verified]
+anyio==4.15.1                 # [verified]
+certifi==2026.7.22            # [verified]
+cffi==2.1.1                   # [verified]
+click==8.5.0                  # [verified]
+cryptography==50.0.1          # [verified]  凭证加密（Fernet）
+fastapi==0.143.0              # [verified]
+h11==0.16.0                   # [verified]
+httpcore==1.0.9               # [verified]
+httpx==0.28.1                 # [verified]
+idna==3.20                    # [verified]
+numpy==2.3.4                  # [verified]  因子研究面板计算
+pycparser==3.0                # [verified]
+pydantic==2.13.5              # [verified]
+pydantic-core==2.46.5         # [verified]
+python-dotenv==1.2.3          # [verified]
+pyyaml==6.0.3                 # [verified]
+redis==8.0.0                  # [verified]  唤醒通道（缺省时退回本地轮询）
+starlette==1.6.0              # [verified]
+typing-extensions==4.16.0     # [verified]
+typing-inspection==0.4.4      # [verified]
+uvicorn==0.53.0               # [verified]
+psycopg==3.2.9                # [pinned]    PostgreSQL 驱动（测试用的是源码构建的 psycopg 3 + libpq 16）
+psycopg-binary==3.2.9         # [pinned]
+pyarrow==20.0.0               # [pinned]    Parquet K 线缓存（缺省时退回 JSON，功能等价）
+websockets==15.0.1            # [pinned]    uvicorn[standard]：运行事件 WebSocket
+httptools==0.6.4 ; sys_platform != "win32"   # [pinned]
+uvloop==0.21.0 ; sys_platform != "win32"     # [pinned]
+watchfiles==1.0.5             # [pinned]

@@ -1,0 +1,74 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# ---- 前端 ----
+node_modules/
+web/dist/
+
+# ---- 密钥与配置（绝不入库）----
+.env
+.env.*
+*.key
+*.pem
+agent.config.toml
+.quant_agent/
+
+# ---- 数据与运行产物 ----
+# 只忽略仓库根目录的数据目录；不要写成 data/，否则会把 src/quant_agent/data 源码包一起忽略
+/data/
+runs/
+outputs/
+*.parquet
+*.db
+*.sqlite
+logs/
+# 本地运行目录：含 SQLite 库、行情缓存与 account-secrets 加密凭证，绝不入库
+.run/
+.run-keys/
+# 本地临时验证脚本与输出
+verify[0-9]*.py
+bt_out.json
+*pytest_full.txt
+_sandbox_pytest_plugin.py
+.pt/
+.pt2/
+.ptbase/
+.nptmp/
+probe-*/
+
+# ---- 编辑器 ----
+.idea/
+.vscode/
+.DS_Store
+
+# ---- 测试 / 缓存 ----
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.pytest-tmp/
+pytest-of-*/
+
+# ---- Redis 本地快照 ----
+*.rdb
+
+# ---- 部署密钥 ----
+secrets/
+!.env.example
+
+# ---- E2E（Playwright）：运行期数据目录与产物，绝不入仓 ----
+tests/e2e/.tmp/
+tests/e2e/.artifacts/
+test-results/
+playwright-report/
+
+# ---- 本机整理出来的旧文件（不入库）----
+_archive/

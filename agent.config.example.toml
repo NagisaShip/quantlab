@@ -1,0 +1,56 @@
+# 平台配置文件示例 —— 复制为 agent.config.toml 或 ~/.quant_agent/config.toml
+# 密钥请使用 ${ENV_VAR} 形式，不要明文写入。
+
+[providers.deepseek]
+type      = "openai_compatible"
+base_url  = "https://api.deepseek.com/v1"
+api_key   = "${DEEPSEEK_API_KEY}"
+models    = ["deepseek-chat", "deepseek-reasoner"]
+
+[providers.openai]
+type      = "openai_compatible"
+base_url  = "https://api.openai.com/v1"
+api_key   = "${OPENAI_API_KEY}"
+models    = ["gpt-4o", "gpt-4o-mini"]
+
+[providers.anthropic]
+type      = "anthropic"
+base_url  = "https://api.anthropic.com"
+api_key   = "${ANTHROPIC_API_KEY}"
+models    = ["claude-sonnet-4-5"]
+
+[providers.local]
+type      = "openai_compatible"
+base_url  = "http://127.0.0.1:11434/v1"       # Ollama / vLLM
+api_key   = "not-needed"
+models    = ["qwen2.5-coder:14b"]
+
+[routing]
+default   = "deepseek/deepseek-chat"
+code_gen  = "deepseek/deepseek-chat"
+reasoning = "deepseek/deepseek-reasoner"
+report    = "openai/gpt-4o-mini"
+fallback  = ["openai/gpt-4o-mini", "local/qwen2.5-coder:14b"]
+
+[limits]
+max_tokens_per_run   = 200000
+max_cost_per_day_cny = 50
+allowed_for_code     = true
+
+[trace]
+store_prompts = true
+redact_keys   = true
+
+# ---- 通知通道 ----
+[notify]
+channel          = "console"                    # console | wecom | serverchan | pushplus
+wecom_webhook    = "${WECOM_WEBHOOK_URL}"        # 企业微信群机器人（推荐）
+serverchan_key   = "${SERVERCHAN_KEY}"           # Server 酱（可选）
+pushplus_token   = "${PUSHPLUS_TOKEN}"           # PushPlus（可选）
+
+# ---- 交易所 ----
+[exchange]
+primary          = "binance"                     # binance | okx
+simulated        = true                          # 一期默认模拟盘
+binance_public   = "https://data-api.binance.vision"
+binance_testnet  = "https://testnet.binance.vision"

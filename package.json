@@ -1,0 +1,18 @@
+{
+  "name": "quant-agent-e2e",
+  "private": true,
+  "version": "0.3.0",
+  "type": "module",
+  "description": "T12 端到端测试（Playwright）。前端应用依赖在 web/ 下；这里只装 E2E 运行时。",
+  "scripts": {
+    "e2e": "playwright test",
+    "e2e:list": "playwright test --list",
+    "e2e:typecheck": "tsc --noEmit -p tsconfig.e2e.json",
+    "e2e:report": "playwright show-report tests/e2e/.artifacts/html"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.64.0",
+    "@types/node": "^22.10.2",
+    "typescript": "^5.6.3"
+  }
+}

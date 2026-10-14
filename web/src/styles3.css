@@ -1,0 +1,122 @@
+/* ============================================================
+ * v2.0：登录、全局运行横幅、工作区切换、设置与审计、实盘对照、个人账户、DSL 双视图
+ * 沿用 styles.css 的令牌（--canvas / --sheet / --accent …），浅色与夜间自动适配
+ * ============================================================ */
+
+/* ---------- 登录 ---------- */
+.auth-screen {
+  min-height: 100vh; display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(360px, 460px);
+  background: var(--canvas);
+}
+.auth-aside {
+  background: var(--tape); color: var(--tape-ink); padding: 56px 64px; display: flex; flex-direction: column;
+  justify-content: space-between; position: relative; overflow: hidden;
+}
+.auth-aside::after {
+  content: ""; position: absolute; inset: auto -120px -160px auto; width: 520px; height: 520px; border-radius: 50%;
+  border: 1px solid rgba(201, 210, 230, .12); box-shadow: 0 0 0 60px rgba(201, 210, 230, .03), 0 0 0 140px rgba(201, 210, 230, .025);
+}
+.auth-brand { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 15px; color: #fff; }
+.auth-aside h1 { font-size: 34px; line-height: 1.25; font-weight: 600; color: #fff; letter-spacing: -.5px; max-width: 520px; }
+.auth-aside h1 em { font-style: normal; color: #9fb0ff; }
+.auth-aside ul { list-style: none; padding: 0; margin: 28px 0 0; display: grid; gap: 12px; max-width: 520px; }
+.auth-aside li { display: grid; grid-template-columns: 22px 1fr; gap: 8px; font-size: 13.5px; line-height: 1.6; color: var(--tape-ink); }
+.auth-aside li b { color: #fff; font-weight: 600; }
+.auth-aside li span { color: #9fb0ff; font-family: var(--mono); font-size: 12px; padding-top: 2px; }
+.auth-aside footer { font-size: 12px; color: var(--tape-muted); position: relative; z-index: 1; }
+.auth-panel { display: flex; align-items: center; justify-content: center; padding: 40px 36px; background: var(--sheet); border-left: 1px solid var(--line); }
+.auth-card { width: 100%; max-width: 360px; }
+.auth-card h2 { font-size: 20px; font-weight: 600; margin-bottom: 6px; }
+.auth-card > p { font-size: 13px; color: var(--muted); margin-bottom: 22px; line-height: 1.6; }
+.auth-card form { display: grid; gap: 14px; }
+.auth-card label { font-size: 12.5px; color: var(--ink-2); }
+.auth-card input { margin-top: 6px; width: 100%; }
+.auth-card .button.primary { height: 38px; width: 100%; justify-content: center; margin-top: 4px; }
+.auth-switch { margin-top: 18px; font-size: 12.5px; color: var(--muted); }
+.auth-switch button { border: 0; background: none; color: var(--accent); padding: 0; font-size: 12.5px; cursor: pointer; }
+.auth-error { font-size: 12.5px; color: var(--danger); background: var(--danger-soft); border: 1px solid var(--danger-line); padding: 8px 10px; border-radius: var(--r); }
+@media (max-width: 860px) {
+  .auth-screen { grid-template-columns: 1fr; }
+  .auth-aside { padding: 32px 24px; }
+  .auth-aside h1 { font-size: 24px; }
+}
+
+/* ---------- 全局运行横幅（模式 + 行情来源 + 最近有效事件时间） ---------- */
+
+.dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; background: var(--faint); flex: 0 0 auto; }
+.dot.ok { background: var(--down); box-shadow: 0 0 0 3px var(--down-soft); }
+.dot.warn { background: var(--amber); box-shadow: 0 0 0 3px var(--amber-soft); }
+.dot.bad { background: var(--danger); box-shadow: 0 0 0 3px var(--danger-soft); }
+
+/* ---------- 工作区切换 / 用户 ---------- */
+.ws-switch { position: relative; }
+.ws-switch > button { width: 100%; border: 0; background: transparent; text-align: left; padding: 0; color: inherit; cursor: pointer; display: flex; align-items: center; gap: 10px; }
+.ws-menu {
+  position: absolute; top: 44px; left: 0; right: 0; z-index: 40; background: var(--sheet); border: 1px solid var(--line);
+  border-radius: var(--r); box-shadow: 0 12px 32px rgba(14, 20, 36, .18); padding: 6px;
+}
+.ws-menu button { display: flex; justify-content: space-between; width: 100%; border: 0; background: transparent; padding: 7px 8px; border-radius: 4px; font-size: 12.5px; color: var(--ink-2); text-align: left; cursor: pointer; }
+.ws-menu button:hover { background: var(--hover); color: var(--ink); }
+.ws-menu button[aria-current="true"] { color: var(--accent); font-weight: 600; }
+.ws-menu hr { border: 0; border-top: 1px solid var(--line-2); margin: 6px 0; }
+.role-chip { font-size: 10.5px; padding: 0 6px; border-radius: 8px; background: var(--line); color: var(--ink-2); line-height: 16px; }
+.role-chip.admin { background: var(--accent-soft); color: var(--accent); }
+.role-chip.reviewer { background: var(--amber-soft); color: var(--amber); }
+.user-row { margin-top: auto; padding: 12px 8px 2px; border-top: 1px solid var(--line); display: flex; gap: 10px; align-items: center; font-size: 12px; }
+.user-row small { display: block; color: var(--muted); font-size: 11px; }
+.user-row .button { margin-left: auto; }
+
+/* ---------- 通用：键值列表、检查清单、步骤 ---------- */
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 18px; font-size: 12.5px; }
+.kv dt { color: var(--muted); }
+.kv dd { margin: 0; color: var(--ink); font-variant-numeric: tabular-nums; word-break: break-all; }
+.checklist { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+.checklist li { display: grid; grid-template-columns: 18px 1fr; gap: 8px; font-size: 12.5px; line-height: 1.6; color: var(--ink-2); }
+.checklist li::before { content: "✓"; color: var(--down); font-weight: 700; }
+.checklist li.no::before { content: "✕"; color: var(--danger); }
+.checklist li.warn::before { content: "!"; color: var(--amber); }
+.steps { counter-reset: step; list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
+.steps li { counter-increment: step; display: grid; grid-template-columns: 26px 1fr; gap: 10px; font-size: 13px; line-height: 1.65; color: var(--ink-2); }
+.steps li::before {
+  content: counter(step); width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--accent-soft); color: var(--accent); font-size: 11.5px; font-weight: 600; font-family: var(--mono);
+}
+.empty-live {
+  border: 1px dashed var(--line); border-radius: var(--r-lg); padding: 40px 28px; text-align: center; background:
+    repeating-linear-gradient(135deg, transparent 0 10px, var(--sunken) 10px 11px);
+}
+.empty-live strong { display: block; font-size: 17px; font-weight: 600; color: var(--ink); margin-bottom: 8px; }
+.empty-live p { font-size: 13px; color: var(--muted); max-width: 560px; margin: 0 auto; line-height: 1.7; }
+.secret-once { font-family: var(--mono); font-size: 15px; letter-spacing: 1px; background: var(--sunken); border: 1px solid var(--accent-line); border-radius: var(--r); padding: 10px 12px; color: var(--ink); user-select: all; }
+
+.conf-bar { position: relative; height: 6px; background: var(--line-2); border-radius: 3px; overflow: hidden; width: 70px; display: inline-block; vertical-align: middle; margin-right: 6px; }
+.conf-bar i { position: absolute; inset: 0 auto 0 0; background: var(--accent); border-radius: 3px; }
+
+/* ---------- DSL 双视图 ---------- */
+.dsl-layout { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(320px, .75fr); gap: 18px; align-items: start; }
+.dsl-section { border-top: 1px solid var(--line-2); padding: 14px 0; }
+.dsl-section:first-child { border-top: 0; padding-top: 4px; }
+.dsl-section > h3 { font-size: 13px; font-weight: 600; margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
+.dsl-section > h3 small { font-weight: 400; color: var(--muted); font-size: 12px; }
+.dsl-row { display: grid; grid-template-columns: 110px minmax(160px, 1fr) 90px 110px 56px; gap: 8px; align-items: center; margin-bottom: 8px; }
+.dsl-row input, .dsl-row select { width: 100%; }
+.cond-node { border: 1px solid var(--line); border-left: 3px solid var(--accent-line); border-radius: var(--r); padding: 8px 10px; margin: 6px 0; background: var(--sheet); }
+.cond-node.logic { background: var(--sunken); }
+.cond-head { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.cond-head select, .cond-head input { height: 28px; font-size: 12.5px; }
+.cond-children { margin-left: 14px; }
+.operand { display: inline-flex; gap: 4px; align-items: center; padding: 2px; border-radius: 4px; background: var(--sunken); border: 1px solid var(--line-2); }
+.operand input[type="number"] { width: 64px; }
+.operand .lag { width: 48px; }
+.json-view { width: 100%; min-height: 520px; font-family: var(--mono); font-size: 12.5px; line-height: 1.6; background: var(--code-bg); color: #d5deef; border: 0; border-radius: var(--r); padding: 12px 14px; resize: vertical; }
+.problem { display: grid; grid-template-columns: auto 1fr; gap: 10px; font-size: 12.5px; padding: 6px 0; border-bottom: 1px solid var(--line-2); }
+.problem code { font-family: var(--mono); font-size: 11.5px; color: var(--danger); background: var(--danger-soft); padding: 0 5px; border-radius: 3px; }
+.field-error { outline: 2px solid var(--danger-line); outline-offset: 1px; }
+.summary-lines { margin: 0; padding-left: 18px; font-size: 12.5px; line-height: 1.8; color: var(--ink-2); }
+@media (max-width: 1100px) { .dsl-layout { grid-template-columns: 1fr; } .dsl-row { grid-template-columns: 1fr 1fr; } }
+.section-title { font-size: 13px; font-weight: 600; color: var(--ink); margin: 0 0 10px; }
+
+.button-row select, .heading select { width: auto; min-width: 160px; }
+.ws-switch { padding: 8px 6px 14px; }
+.check-row { display: flex !important; align-items: center; gap: 8px; font-size: 12.5px; color: var(--ink-2); padding: 3px 0; }
+.check-row input[type="checkbox"], label input[type="checkbox"] { width: 15px; height: 15px; margin: 0; flex: 0 0 auto; accent-color: var(--accent); }

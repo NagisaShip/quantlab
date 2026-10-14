@@ -1,0 +1,1130 @@
+"""平台工具目录：把平台功能变成「问 AI」可以调用的工具，统一管理说明与提示词注入。
+
+每个工具写清楚：做什么、参数、什么时候可用、风险级别。
+- read：只读查询，直接执行；
+- run：会新建一条可撤销的记录（回测、报告、演练），直接执行；
+- confirm：有后果的操作（向交易所模拟盘下单的实验、一键停止、晋级、改成本假设）——模型调用时**不执行**，
+  只生成一张待确认卡片，用户在面板里点「确认」后才真正执行。实盘下单不在目录里，也不可能被调用。
+
+工具按场景分组（策略、研究数据、模拟交易、上线验证），按当前页面和用户在「更多」菜单里勾选的场景按需加载：
+只把相关工具的定义和一段统一生成的说明放进对话，避免把几十个工具一股脑塞给模型。
+"""
+
+from __future__ import annotations
+
+import json
+import time
+import uuid
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from typing import Any
+
+ACTIONS = "ai_actions"
+SCENES: dict[str, dict[str, str]] = {
+    "strategy": {"label": "策略与回测", "hint": "查策略、说明书、回测成绩、交易分解与保护规则；跑一次回测"},
+    "data": {"label": "研究数据", "hint": "信息源数据集、事件流（公告、新闻、宏观）"},
+    "trading": {"label": "模拟交易", "hint": "纸面模拟与交易所模拟盘：查看、启动、停止"},
+    "validation": {"label": "上线验证", "hint": "晋级关卡、真实度报告、压力演练、值守员"},
+    "checkup": {"label": "策略体检与调参", "hint": "未来函数、预热、成本翻倍、参数平台、红队意见；智能调参"},
+}
+# 页面 → 默认加载的场景
+PAGE_SCENES: dict[str, list[str]] = {
+    "strategies": ["strategy"],
+    "editor": ["strategy"],
+    "backtests": ["strategy"],
+    "backtest": ["strategy"],
+    "strategy": ["strategy"],
+    "optimize": ["strategy", "checkup"],
+    "data": ["data"],
+    "factors": ["data"],
+    "paper": ["trading"],
+    "demo": ["trading"],
+    "live": ["trading"],
+    "validation": ["validation", "trading"],
+    "checkup": ["checkup", "strategy"],
+    "home": ["strategy", "trading"],
+}
+RISK_LABEL = {"read": "只读", "run": "新建记录", "confirm": "需要你确认"}
+
+
+@dataclass
+class PlatformTool:
+    name: str
+    title: str
+    scene: str
+    description: str
+    when: str
+    risk: str  # read | run | confirm
+    params: dict[str, Any]
+    handler: Callable[..., Any]
+    summary: Callable[[dict[str, Any]], str] | None = None  # confirm 类：卡片上的一句话
+    required: list[str] = field(default_factory=list)
+
+    def schema(self) -> dict[str, Any]:
+        return {"type": "object", "properties": self.params, "required": self.required}
+
+    def view(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "title": self.title,
+            "scene": self.scene,
+            "description": self.description,
+            "when": self.when,
+            "risk": self.risk,
+            "risk_label": RISK_LABEL[self.risk],
+            "params": list(self.params),
+        }
+
+
+# ---------------------------------------------------------------------------
+# 工具实现：直接复用各页面的接口函数，口径和界面一致
+# ---------------------------------------------------------------------------
+def _svc() -> Any:
+    from ..api.deps import get_services
+
+    return get_services()
+
+
+def _repo() -> Any:
+    from ..strategies.repo import StrategyRepository
+
+    return StrategyRepository(_svc().store.root / "strategies")
+
+
+def _call(fn: Callable[[], Any]) -> Any:
+    from fastapi import HTTPException
+
+    from ..platform.errors import AppError
+
+    try:
+        return fn()
+    except HTTPException as exc:
+        return {"error": str(exc.detail)}
+    except AppError as exc:
+        return {"error": exc.message if hasattr(exc, "message") else str(exc)}
+    except ValueError as exc:
+        return {"error": str(exc)}
+
+
+def _metrics(m: dict[str, Any] | None) -> dict[str, Any]:
+    keys = ("total_return", "annualized_return", "sharpe", "max_drawdown", "trades", "win_rate")
+    return {k: (m or {}).get(k) for k in keys}
+
+
+def t_list_strategies(query: str = "") -> Any:
+    rows = []
+    for r in _repo().list():
+        m = r.meta
+        if query and query.lower() not in f"{m.name} {m.slug} {m.notes}".lower():
+            continue
+        rows.append(
+            {
+                "slug": m.slug,
+                "name": m.name,
+                "kind": m.kind,
+                "status": m.status,
+                "securities": m.securities,
+                "timeframe": m.timeframe,
+                "approved": m.human_approved,
+            }
+        )
+    return rows[:40]
+
+
+def t_get_strategy(slug: str) -> Any:
+    rec = _repo().get(slug)
+    if rec is None:
+        return {"error": "策略不存在"}
+    return {
+        "slug": slug,
+        "name": rec.meta.name,
+        "status": rec.meta.status,
+        "securities": rec.meta.securities,
+        "timeframe": rec.meta.timeframe,
+        "spec": (_repo().read_spec(slug) or "（没有说明书）")[:4000],
+        "source": rec.source[:6000],
+    }
+
+
+def t_list_backtests(slug: str = "") -> Any:
+    from ..store import Collections
+
+    rows = [r for r in _svc().store.list(Collections.BACKTESTS) if not slug or r.get("slug") == slug]
+    rows.sort(key=lambda r: -(r.get("created_at") or 0))
+    return [
+        {
+            "id": r["id"],
+            "strategy": r.get("strategy_name"),
+            "slug": r.get("slug"),
+            "timeframe": r.get("timeframe"),
+            "securities": r.get("securities"),
+            "status": r.get("status"),
+            "metrics": _metrics(r.get("metrics")),
+        }
+        for r in rows[:20]
+    ]
+
+
+def t_run_backtest(slug: str, symbol: str = "", timeframe: str = "", bars_limit: int = 1500) -> Any:
+    from ..api.routes_studio import studio_backtest
+    from ..api.schemas import StudioBacktestIn
+
+    rec = _repo().get(slug)
+    if rec is None:
+        return {"error": "策略不存在"}
+    secs = [symbol] if symbol else (rec.meta.securities or ["BTC/USDT"])
+    body = _call(
+        lambda: studio_backtest(
+            StudioBacktestIn(
+                slug=slug,
+                securities=secs,
+                symbol=secs[0],
+                timeframe=timeframe or rec.meta.timeframe or "1h",
+                bars_limit=max(102, min(int(bars_limit or 1500), 5000)),
+            )
+        )
+    )
+    if not isinstance(body, dict) or body.get("error"):
+        return body if isinstance(body, dict) else {"error": "回测还在排队，稍后在「回测」页查看"}
+    return {
+        "run_id": body.get("run_id"),
+        "metrics": _metrics(body.get("metrics")),
+        "warnings": (body.get("warnings") or [])[:5],
+        "errors": (body.get("errors") or [])[:3],
+        "data_sources": sorted({d.get("source") for d in body.get("datasets") or []}),
+    }
+
+
+def t_list_datasets(field_name: str = "") -> Any:
+    from ..research.datahub import DataHub
+
+    rows = DataHub(_svc().store).datasets()
+    if field_name:
+        rows = [r for r in rows if r.get("field") == field_name]
+    return [
+        {k: r.get(k) for k in ("key", "field", "symbol", "source", "rows", "start", "end", "lag_ms", "status")}
+        for r in rows[:60]
+    ]
+
+
+def t_list_events(kind: str = "", coin: str = "", limit: int = 30) -> Any:
+    from ..research.datahub import DataHub
+    from ..research.events import EventHub
+
+    s = _svc()
+    rows = EventHub(s.store, DataHub(s.store)).events(
+        kind=kind or None, coin=coin or None, limit=max(1, min(int(limit or 30), 100))
+    )
+    return [
+        {
+            k: r.get(k)
+            for k in (
+                "ts",
+                "available_at",
+                "kind",
+                "type",
+                "title",
+                "coins",
+                "direction",
+                "strength",
+                "source",
+                "hindsight_risk",
+            )
+        }
+        | {"tagger": (r.get("tagger") or {}).get("kind")}
+        for r in rows
+    ]
+
+
+def _sessions() -> list[dict[str, Any]]:
+    from ..store import Collections
+
+    return _svc().store.list(Collections.PAPER_SESSIONS)
+
+
+def t_list_sessions(status: str = "") -> Any:
+    out = []
+    for r in _sessions():
+        if status and r.get("status") != status:
+            continue
+        pts = r.get("equity_points") or []
+        ret = pts[-1]["v"] / pts[0]["v"] - 1 if len(pts) > 1 and pts[0].get("v") else None
+        out.append(
+            {
+                "id": r["id"],
+                "strategy": r.get("strategy_name"),
+                "slug": r.get("strategy_id"),
+                "execution": r.get("execution") or "paper",
+                "status": r.get("status"),
+                "source": r.get("source"),
+                "exchange": r.get("exchange"),
+                "securities": r.get("securities"),
+                "fills": len(r.get("fills") or []),
+                "return": ret,
+                "days": round(((r.get("last_update") or 0) - (r.get("started_at") or 0)) / 86_400_000, 2),
+                "halted": bool((r.get("demo") or {}).get("halted")),
+            }
+        )
+    return out[:30]
+
+
+def t_get_session(session_id: str) -> Any:
+    from ..store import Collections
+
+    r = _svc().store.get(Collections.PAPER_SESSIONS, session_id)
+    if r is None:
+        return {"error": "实验不存在"}
+    demo = r.get("demo") or {}
+    return {
+        "id": r["id"],
+        "strategy": r.get("strategy_name"),
+        "status": r.get("status"),
+        "execution": r.get("execution"),
+        "portfolio": r.get("portfolio"),
+        "recent_fills": (r.get("fills") or [])[-10:],
+        "recent_events": (r.get("events") or [])[-10:],
+        "demo": {k: demo.get(k) for k in ("halted", "halt_reason", "slippage", "reconcile")} if demo else None,
+    }
+
+
+def t_start_session(
+    slug: str,
+    execution: str = "paper",
+    demo_connection_id: str = "",
+    exchange: str = "binance",
+    initial_cash: float = 10_000,
+    symbol: str = "",
+) -> Any:
+    from ..api.routes_studio import start_paper
+    from ..api.schemas import PaperStartIn
+
+    body = _call(
+        lambda: start_paper(
+            PaperStartIn(
+                slug=slug,
+                execution=execution,
+                demo_connection_id=demo_connection_id or None,
+                exchange=exchange,
+                initial_cash=float(initial_cash or 10_000),
+                securities=[symbol] if symbol else [],
+                source="exchange",
+            )
+        )
+    )
+    if isinstance(body, dict) and body.get("session"):
+        s = body["session"]
+        return {"ok": True, "session_id": s["id"], "status": s.get("status"), "execution": s.get("execution")}
+    return body
+
+
+def t_stop_session(session_id: str, close_positions: bool = True) -> Any:
+    from ..api.routes_studio import liquidate_paper, stop_paper
+
+    body = _call(lambda: (liquidate_paper if close_positions else stop_paper)(session_id))
+    if isinstance(body, dict) and body.get("session"):
+        return {"ok": True, "status": body["session"].get("status")}
+    return body
+
+
+def t_graduation(slug: str = "") -> Any:
+    from ..api import routes_validation as V
+
+    return _call(lambda: V.graduation_detail(slug) if slug else V.graduation_board()["board"])
+
+
+def t_promote(slug: str, note: str = "") -> Any:
+    from ..api import routes_validation as V
+
+    return _call(lambda: V.graduation_promote(slug, V.PromoteIn(confirm=True, note=note or "经「问 AI」确认")))
+
+
+def t_fidelity(session_ids: list[str]) -> Any:
+    from ..api import routes_validation as V
+
+    out = _call(lambda: V.make_fidelity(V.FidelityIn(session_ids=list(session_ids)[:3])))
+    if isinstance(out, dict) and out.get("report"):
+        rep = out["report"]
+        return {
+            "report_id": rep["id"],
+            "parts": [
+                {
+                    "execution": p["execution"],
+                    "total": p["total"],
+                    "total_bps": p["total_bps"],
+                    "components": p["components"],
+                    "matched": p["matched"],
+                }
+                for p in rep["parts"]
+            ],
+            "calibration": rep["calibration"],
+            "notes": rep["notes"],
+        }
+    return out
+
+
+def t_apply_calibration(report_id: str) -> Any:
+    from ..api import routes_validation as V
+
+    return _call(lambda: V.apply_calibration(report_id, V.CalibIn(confirm=True)))
+
+
+def t_stress(slug: str, scenarios: list[str] | None = None) -> Any:
+    from ..api import routes_validation as V
+
+    out = _call(lambda: V.stress_start(V.StressIn(slug=slug, scenarios=scenarios or None)))
+    if isinstance(out, dict) and out.get("run"):
+        return {"ok": True, "run_id": out["run"]["id"], "note": "演练在后台进行，到「上线验证 → 压力演练」看结果"}
+    return out
+
+
+def t_stress_result(run_id: str = "") -> Any:
+    from ..api import routes_validation as V
+
+    if not run_id:
+        return V.stress_list()["runs"][:10]
+    run = _call(lambda: V.stress_get(run_id))
+    if isinstance(run, dict) and run.get("run"):
+        r = run["run"]
+        rep = r.get("report") or {}
+        return {
+            "status": r["status"],
+            "summary": rep.get("summary"),
+            "scenarios": [
+                {
+                    k: s.get(k)
+                    for k in (
+                        "name",
+                        "data_source",
+                        "return_pct",
+                        "max_drawdown",
+                        "liquidations",
+                        "rejections",
+                        "verdict",
+                    )
+                }
+                for s in rep.get("scenarios") or []
+            ],
+        }
+    return run
+
+
+def t_watch(session_id: str) -> Any:
+    from ..api import routes_validation as V
+
+    try:
+        rv = V.watch_session(session_id, use_llm=False)
+    except ValueError as exc:
+        return {"error": str(exc)}
+    return {"rules": rv["rules"], "flags": rv["flags"][-15:], "recent_trades": rv["trades"][-10:]}
+
+
+def t_brief() -> Any:
+    from ..research import brief as BR
+
+    b = BR.latest(_svc().store)
+    return {k: b.get(k) for k in ("title", "headline", "focus", "sections")} if b else {"error": "还没有晨报"}
+
+
+def t_checkup(slug: str, bars_limit: int = 1500) -> Any:
+    from ..api import routes_validation as V
+
+    out = _call(
+        lambda: V.checkup_start(V.CheckupIn(slug=slug, bars_limit=max(300, min(int(bars_limit or 1500), 5000))))
+    )
+    if isinstance(out, dict) and out.get("run"):
+        return {
+            "ok": True,
+            "run_id": out["run"]["id"],
+            "note": "体检在后台进行，几十秒到几分钟；用 checkup_result 查结果",
+        }
+    return out
+
+
+def t_checkup_result(run_id: str = "", slug: str = "") -> Any:
+    from ..api import routes_validation as V
+
+    if not run_id:
+        rows = V.checkup_list(slug or None)["runs"][:10]
+        return [
+            {k: r.get(k) for k in ("id", "strategy_id", "status", "overall", "progress", "created_at", "items")}
+            for r in rows
+        ]
+    got = _call(lambda: V.checkup_get(run_id))
+    if not isinstance(got, dict) or not got.get("run"):
+        return got
+    r = got["run"]
+    rep, red = r.get("report") or {}, r.get("redteam") or {}
+    return {
+        "status": r["status"],
+        "overall": r.get("overall"),
+        "stale": got.get("stale"),
+        "error": r.get("error"),
+        "items": [{k: i.get(k) for k in ("title", "verdict", "summary")} for i in rep.get("items") or []],
+        "redteam": {
+            "mode": red.get("mode"),
+            "points": (red.get("points") or [])[:8],
+            "content": (red.get("content") or "")[:2000],
+        },
+    }
+
+
+def t_start_tuning(
+    slug: str,
+    n_trials: int = 50,
+    objective: str = "sharpe",
+    multi_objective: bool = False,
+    space: dict[str, Any] | None = None,
+) -> Any:
+    from ..api import routes_research as R
+    from ..api.schemas import OptimizeIn
+
+    rec = _repo().get(slug)
+    if rec is None:
+        return {"error": "策略不存在"}
+    body = _call(
+        lambda: R.start_optimize(
+            OptimizeIn(
+                slug=slug,
+                method="bayes",
+                n_trials=max(5, min(int(n_trials or 50), 150)),
+                objective=objective,
+                multi_objective=bool(multi_objective),
+                space=space or {},
+                securities=rec.meta.securities or [],
+                timeframe=rec.meta.timeframe or "1h",
+            )
+        )
+    )
+    if isinstance(body, dict) and body.get("run_id"):
+        return {
+            "ok": True,
+            "run_id": body["run_id"],
+            "trials": body.get("combinations"),
+            "note": "调参在后台进行；完成后用 tuning_result 看结果，每一组试验都会记进试验台账",
+        }
+    return body
+
+
+def t_tuning_result(opt_id: str = "", slug: str = "") -> Any:
+    from ..api import routes_research as R
+
+    if not opt_id:
+        rows = sorted(R.list_optimizations(slug or None)["optimizations"], key=lambda r: -(r.get("created_at") or 0))
+        return [
+            {k: r.get(k) for k in ("id", "slug", "method", "objective", "combinations", "best_params", "created_at")}
+            for r in rows[:10]
+        ]
+    body = _call(lambda: R.get_optimization(opt_id))
+    if not isinstance(body, dict) or body.get("error"):
+        return body
+    best = body.get("best") or {}
+    return {
+        "method": body.get("method"),
+        "trials": body.get("n_trials") or len(body.get("rows") or []),
+        "best_params": best.get("params"),
+        "in_sample": best.get("in_sample"),
+        "out_sample": best.get("out_sample"),
+        "warnings": (body.get("diagnostics") or {}).get("warnings"),
+    }
+
+
+def t_trade_breakdown(backtest_id: str, by: str = "") -> Any:
+    """一次回测按入场标签、出场原因、标的、星期、小时的分解。"""
+    from ..store import Collections
+
+    rec = _svc().store.get(Collections.BACKTESTS, backtest_id)
+    if rec is None:
+        return {"error": "回测记录不存在"}
+    bd = (rec.get("metrics") or {}).get("breakdown")
+    if not bd:
+        return {"error": "这次回测没有交易分解（旧版本生成的，重新运行即可）"}
+    if by:
+        if by not in bd:
+            return {"error": f"by 只能是 {', '.join(bd)}"}
+        return {"backtest_id": backtest_id, "by": by, "rows": bd[by]}
+    return {"backtest_id": backtest_id, **{k: v[:12] for k, v in bd.items()}}
+
+
+def t_guards_report(backtest_id: str) -> Any:
+    """一次回测里保护规则的锁定记录、被拦开仓次数和标的池变化。"""
+    from ..store import Collections
+
+    rec = _svc().store.get(Collections.BACKTESTS, backtest_id)
+    if rec is None:
+        return {"error": "回测记录不存在"}
+    g = (rec.get("metrics") or {}).get("guards")
+    if not g:
+        return {"backtest_id": backtest_id, "note": "这个策略没有设置 PROTECTIONS 或 PAIRLIST"}
+    return {
+        "backtest_id": backtest_id,
+        "protections": g.get("protections"),
+        "blocked": g.get("blocked"),
+        "locks": (g.get("locks") or [])[:40],
+        "universe": g.get("universe"),
+        "universe_changes": [h for h in g.get("universe_history") or [] if h.get("dropped")][:30],
+        "delisted": g.get("delisted"),
+    }
+
+
+def t_node_health() -> Any:
+    """运行节点：worker 心跳、失联实验、交易所时钟偏差、限频状态。"""
+    from ..platform import watchdog
+
+    h = watchdog.health(_svc())
+    return {k: h[k] for k in ("workers_alive", "stale_runs", "clock", "rate_limits")}
+
+
+def t_freqtrade_check(source: str) -> Any:
+    """检查一个 Freqtrade 策略能不能导入：用到的写法、会被忽略的部分、跑不了的原因、试跑成交数。"""
+    from ..strategies import freqtrade_import as FI
+
+    if not FI.is_freqtrade(source):
+        return {"error": "没找到继承 IStrategy 的策略类"}
+    r = FI.convert(source).to_dict()
+    return {k: r[k] for k in ("ok", "class_name", "timeframe", "errors", "warnings", "features", "params", "smoke")}
+
+
+def t_decay_report() -> Any:
+    """运行中实验的衰减判定、模型重训情况、当前市场状态和建议权重。"""
+    from ..api.routes_lifecycle import overview
+
+    o = overview()
+    return {
+        "decay": [
+            {k: r.get(k) for k in ("id", "strategy_name", "label", "days", "reasons", "stage", "suggest_demote_to")}
+            for r in o["decay"]
+        ][:20],
+        "models": [{k: m.get(k) for k in ("name", "plan", "due", "last")} for m in o["models"]][:20],
+        "regime": o["regime"].get("label"),
+        "weights": o["weights"][:10],
+    }
+
+
+def t_microlive_status() -> Any:
+    """微实盘：能不能启动（卡在哪）、急停状态、各毕业策略的资金上限与升档条件、运行中的实验。"""
+    from ..api.routes_microlive import overview
+
+    o = overview()
+    st = o["status"]
+    return {
+        "ready": st["ready"],
+        "blockers": st["blockers"],
+        "killed": st["killed"],
+        "tiers": st["tiers"],
+        "strategies": [
+            {k: r.get(k) for k in ("name", "cap", "next_cap", "can_raise", "checks")} for r in o["strategies"]
+        ],
+        "sessions": [
+            {k: x.get(k) for k in ("id", "strategy_name", "run_state", "initial_cash")} for x in o["sessions"]
+        ],
+    }
+
+
+def t_microlive_kill() -> Any:
+    from ..api.routes_microlive import kill
+
+    out = _call(kill)
+    return {k: out.get(k) for k in ("stopped", "failed")} if isinstance(out, dict) else out
+
+
+def _S(t: str, d: str, **kw: Any) -> dict[str, Any]:
+    return {"type": t, "description": d, **kw}
+
+
+def build() -> dict[str, PlatformTool]:
+    tools = [
+        PlatformTool(
+            "list_strategies",
+            "列出策略",
+            "strategy",
+            "列出我的策略（名字、标的、周期、是否已批准）。",
+            "随时",
+            "read",
+            {"query": _S("string", "按名字过滤，可空")},
+            t_list_strategies,
+        ),
+        PlatformTool(
+            "get_strategy",
+            "读策略",
+            "strategy",
+            "读一个策略的说明书（SPEC.md）和源码。",
+            "知道策略 slug 时",
+            "read",
+            {"slug": _S("string", "策略 slug")},
+            t_get_strategy,
+            required=["slug"],
+        ),
+        PlatformTool(
+            "list_backtests",
+            "回测记录",
+            "strategy",
+            "最近的回测记录与主要成绩。",
+            "随时",
+            "read",
+            {"slug": _S("string", "只看这个策略，可空")},
+            t_list_backtests,
+        ),
+        PlatformTool(
+            "run_backtest",
+            "跑回测",
+            "strategy",
+            "用已保存的策略跑一次回测，返回主要成绩。",
+            "策略已保存",
+            "run",
+            {
+                "slug": _S("string", "策略 slug"),
+                "symbol": _S("string", "标的，如 BTC/USDT，可空"),
+                "timeframe": _S("string", "周期，如 1h，可空"),
+                "bars_limit": _S("integer", "K 线根数，102–5000"),
+            },
+            t_run_backtest,
+            required=["slug"],
+        ),
+        PlatformTool(
+            "trade_breakdown",
+            "交易分解",
+            "strategy",
+            "一次回测的已完成交易按入场标签、出场原因（止损 / 移动止损 / 分段止盈 / 自定义…）、标的、星期、小时分组："
+            "交易数、胜率、平均收益、盈亏、持仓时长。用来找哪类信号在赚钱、哪类在亏。",
+            "知道回测 id 时（list_backtests 可查）",
+            "read",
+            {
+                "backtest_id": _S("string", "回测 id"),
+                "by": _S(
+                    "string", "只看一个维度，可空", enum=["entry_tag", "exit_reason", "security", "weekday", "hour"]
+                ),
+            },
+            t_trade_breakdown,
+            required=["backtest_id"],
+        ),
+        PlatformTool(
+            "guards_report",
+            "保护与标的池",
+            "strategy",
+            "一次回测里组合保护（连续止损暂停、冷却、回撤暂停、低收益标的暂停）的每次锁定、被拦下的开仓次数，"
+            "以及动态标的池每次重选的结果和因下架公告移出的币。用来判断保护规则是在省钱还是在错过行情。",
+            "策略设置了 PROTECTIONS 或 PAIRLIST，且知道回测 id",
+            "read",
+            {"backtest_id": _S("string", "回测 id")},
+            t_guards_report,
+            required=["backtest_id"],
+        ),
+        PlatformTool(
+            "freqtrade_check",
+            "检查 Freqtrade 策略",
+            "strategy",
+            "检查一段 Freqtrade（IStrategy）策略代码能否导入平台：识别用到的功能（ROI、追踪止损、custom_stoploss、"
+            "大周期 informative、hyperopt 参数），列出会被忽略的部分和跑不了的原因（做空、杠杆、DCA、不支持的指标），"
+            "并在合成行情上试跑。导入本身在「我的策略 → 导入 Freqtrade」里做。",
+            "用户贴了 Freqtrade 策略，或问能不能把 Freqtrade 策略搬过来",
+            "read",
+            {"source": _S("string", "Freqtrade 策略的完整代码")},
+            t_freqtrade_check,
+            required=["source"],
+        ),
+        PlatformTool(
+            "list_datasets",
+            "研究数据集",
+            "data",
+            "行情与数据里已同步的数据集（字段、标的、覆盖区间、发布滞后）。",
+            "随时",
+            "read",
+            {"field_name": _S("string", "字段名，如 funding，可空")},
+            t_list_datasets,
+        ),
+        PlatformTool(
+            "list_events",
+            "事件流",
+            "data",
+            "交易所公告、新闻（含方向与强度标注）、宏观日程，按发布时间倒序。",
+            "同步过公告 / 新闻 / 经济日历后",
+            "read",
+            {
+                "kind": _S("string", "announcement / news / macro，可空"),
+                "coin": _S("string", "币种，如 SOL，可空"),
+                "limit": _S("integer", "条数，最多 100"),
+            },
+            t_list_events,
+        ),
+        PlatformTool(
+            "list_sessions",
+            "实验列表",
+            "trading",
+            "纸面模拟与交易所模拟盘实验：状态、成交数、收益、是否熔断。",
+            "随时",
+            "read",
+            {"status": _S("string", "running / stopped …，可空")},
+            t_list_sessions,
+        ),
+        PlatformTool(
+            "node_health",
+            "节点状态",
+            "trading",
+            "运行节点的健康状况：在线 worker、超过 2 分钟没心跳的实验、交易所时钟偏差、限频暂停情况。",
+            "实验不动了、告警说失联、怀疑服务器有问题时",
+            "read",
+            {},
+            t_node_health,
+        ),
+        PlatformTool(
+            "microlive_status",
+            "微实盘状态",
+            "trading",
+            "微实盘（真实资金、小额上限）能不能启动、卡在哪一步、是否急停，各毕业策略当前的资金上限和升档条件，运行中的微实盘实验。"
+            "启动和升档只能在微实盘页面由管理员输入确认码完成。",
+            "问能不能上实盘、实盘上限多少、为什么启动不了时",
+            "read",
+            {},
+            t_microlive_status,
+        ),
+        PlatformTool(
+            "microlive_kill",
+            "微实盘一键停止",
+            "trading",
+            "把所有微实盘实验平仓并停止（真实成交），之后拒绝新的启动，直到管理员解除。",
+            "用户明确要停掉全部实盘时",
+            "confirm",
+            {},
+            t_microlive_kill,
+            summary=lambda a: "一键停止全部微实盘：平掉所有真实持仓并停止",
+        ),
+        PlatformTool(
+            "get_session",
+            "实验详情",
+            "trading",
+            "一个实验的持仓、最近成交、事件和模拟盘状态。",
+            "知道实验 id 时",
+            "read",
+            {"session_id": _S("string", "实验 id")},
+            t_get_session,
+            required=["session_id"],
+        ),
+        PlatformTool(
+            "start_session",
+            "启动实验",
+            "trading",
+            "启动纸面模拟。execution=paper 用平台撮合；execution=demo 会向交易所模拟盘下单（模拟资金）。",
+            "策略已批准；demo 需要先接好模拟盘连接",
+            "confirm",
+            {
+                "slug": _S("string", "策略 slug"),
+                "execution": _S("string", "paper 或 demo", enum=["paper", "demo"]),
+                "demo_connection_id": _S("string", "模拟盘连接 id（demo 时必填）"),
+                "exchange": _S("string", "binance / okx / bybit"),
+                "initial_cash": _S("number", "初始资金"),
+                "symbol": _S("string", "标的，可空"),
+            },
+            t_start_session,
+            required=["slug"],
+            summary=lambda a: (
+                f"启动「{a.get('slug')}」的"
+                f"{'交易所模拟盘实验（会向模拟盘下单，模拟资金）' if a.get('execution') == 'demo' else '纸面模拟'}"
+            ),
+        ),
+        PlatformTool(
+            "stop_session",
+            "停止实验",
+            "trading",
+            "一键停止实验；close_positions=true 时先平掉全部持仓（模拟成交）。",
+            "实验在运行",
+            "confirm",
+            {"session_id": _S("string", "实验 id"), "close_positions": _S("boolean", "是否平仓，默认是")},
+            t_stop_session,
+            required=["session_id"],
+            summary=lambda a: (
+                f"停止实验 {a.get('session_id')}" + ("并平掉全部持仓" if a.get("close_positions", True) else "")
+            ),
+        ),
+        PlatformTool(
+            "decay_report",
+            "衰减与重训",
+            "validation",
+            "运行中的纸面模拟 / 模拟盘实验是否跑出了回测的正常区间（衰减判定、原因、降级建议），"
+            "模型定期重训的计划和上次结果，当前市场状态（趋势 / 震荡 / 高波动）和各实验的建议权重。",
+            "问策略是不是失效了、为什么最近一直亏、模型要不要重训、该给哪个策略多分资金时",
+            "read",
+            {},
+            t_decay_report,
+        ),
+        PlatformTool(
+            "graduation",
+            "晋级关卡",
+            "validation",
+            "策略所处阶段（回测 → 纸面 → 模拟盘 → 晋级）和晋级检查。",
+            "随时",
+            "read",
+            {"slug": _S("string", "策略 slug；空则列出全部")},
+            t_graduation,
+        ),
+        PlatformTool(
+            "promote_strategy",
+            "晋级策略",
+            "validation",
+            "把策略晋级到下一阶段（全部检查通过才可以）。",
+            "graduation 显示 passed=true",
+            "confirm",
+            {"slug": _S("string", "策略 slug"), "note": _S("string", "备注")},
+            t_promote,
+            required=["slug"],
+            summary=lambda a: f"把策略「{a.get('slug')}」晋级到下一阶段（记入审计；毕业后可以上微实盘，要人另外确认）",
+        ),
+        PlatformTool(
+            "fidelity_report",
+            "真实度报告",
+            "validation",
+            "对同一策略的纸面 / 模拟盘实验生成真实度报告：收益差拆成延迟、滑点、手续费、拒单、部分成交，"
+            "并给成本校准建议。",
+            "实验已有成交",
+            "run",
+            {"session_ids": _S("array", "1–3 个实验 id", items={"type": "string"})},
+            t_fidelity,
+            required=["session_ids"],
+        ),
+        PlatformTool(
+            "apply_calibration",
+            "应用成本校准",
+            "validation",
+            "把真实度报告里的建议滑点和手续费设为这家交易所的回测成本。",
+            "报告里有校准建议",
+            "confirm",
+            {"report_id": _S("string", "报告 id")},
+            t_apply_calibration,
+            required=["report_id"],
+            summary=lambda a: f"用报告 {a.get('report_id')} 的校准值替换回测成本假设",
+        ),
+        PlatformTool(
+            "start_stress_drill",
+            "压力演练",
+            "validation",
+            "在 4 个历史极端日（3·12、5·19、FTX、日元套息）上加速回放，注入断线、拒单、延迟。后台运行。",
+            "策略已保存",
+            "run",
+            {
+                "slug": _S("string", "策略 slug"),
+                "scenarios": _S("array", "场景 id，可空表示全部", items={"type": "string"}),
+            },
+            t_stress,
+            required=["slug"],
+        ),
+        PlatformTool(
+            "stress_result",
+            "演练结果",
+            "validation",
+            "压力演练的结果；不传 run_id 列出最近记录。",
+            "演练开始后",
+            "read",
+            {"run_id": _S("string", "演练 id，可空")},
+            t_stress_result,
+        ),
+        PlatformTool(
+            "watch_session",
+            "值守员检查",
+            "validation",
+            "逐笔解释成交，并标出和策略说明书矛盾的行为。",
+            "实验有成交",
+            "run",
+            {"session_id": _S("string", "实验 id")},
+            t_watch,
+            required=["session_id"],
+        ),
+        PlatformTool(
+            "run_checkup",
+            "策略体检",
+            "checkup",
+            "给策略做上线前体检：截断数据重算查未来函数、不同预热对比、成本翻倍、参数上下挪 10–20% 看是否孤峰，"
+            "最后由红队列出最可能亏钱的原因。后台运行。晋级关卡要求当前代码体检没有严重项。",
+            "策略已保存",
+            "run",
+            {"slug": _S("string", "策略 slug"), "bars_limit": _S("integer", "K 线根数，300–5000")},
+            t_checkup,
+            required=["slug"],
+        ),
+        PlatformTool(
+            "checkup_result",
+            "体检结果",
+            "checkup",
+            "体检单：四项检查的结论（ok / warn / bad）和红队意见；不传 run_id 列出最近记录。",
+            "体检开始后",
+            "read",
+            {"run_id": _S("string", "体检 id，可空"), "slug": _S("string", "只看这个策略，可空")},
+            t_checkup_result,
+        ),
+        PlatformTool(
+            "start_tuning",
+            "智能调参",
+            "checkup",
+            "用 optuna 贝叶斯搜索调参数（范围读策略里的 PARAM_SPACE，或传 space）；只用样本内选参，样本外验证。"
+            "multi_objective=true 同时压低最大回撤。每组试验都记进试验台账（DSR 会相应变严）。",
+            "策略声明了 PARAMS",
+            "run",
+            {
+                "slug": _S("string", "策略 slug"),
+                "n_trials": _S("integer", "试验次数 5–150"),
+                "objective": _S(
+                    "string", "优化目标", enum=["sharpe", "total_return", "calmar", "sortino", "excess_return"]
+                ),
+                "multi_objective": _S("boolean", "是否同时最小化回撤"),
+                "space": _S("object", "参数范围 {名字: {low, high, step?} | {choices: [...]}}，可空"),
+            },
+            t_start_tuning,
+            required=["slug"],
+        ),
+        PlatformTool(
+            "tuning_result",
+            "调参结果",
+            "checkup",
+            "参数优化 / 智能调参的结果：最优参数、样本内外成绩、过拟合提示。",
+            "调参完成后",
+            "read",
+            {"opt_id": _S("string", "优化记录 id，可空"), "slug": _S("string", "策略 slug，可空")},
+            t_tuning_result,
+        ),
+        PlatformTool(
+            "morning_brief",
+            "晨报",
+            "validation",
+            "最近一份 AI 晨报（市场、因子、实验、值守员结论、等你决定的事）。",
+            "生成过晨报后",
+            "read",
+            {},
+            t_brief,
+        ),
+    ]
+    return {t.name: t for t in tools}
+
+
+_REGISTRY: dict[str, PlatformTool] | None = None
+
+
+def registry() -> dict[str, PlatformTool]:
+    global _REGISTRY
+    if _REGISTRY is None:
+        _REGISTRY = build()
+    return _REGISTRY
+
+
+def scenes_for(page: str, chosen: list[str] | None) -> list[str]:
+    if chosen is not None:
+        return [s for s in chosen if s in SCENES]
+    return PAGE_SCENES.get(page, [])
+
+
+def tools_for(scenes: list[str]) -> list[PlatformTool]:
+    return [t for t in registry().values() if t.scene in scenes]
+
+
+def prompt_block(scenes: list[str]) -> str:
+    """统一生成的工具说明，追加到系统提示末尾。只列本轮加载的工具。"""
+    tools = tools_for(scenes)
+    if not tools:
+        return ""
+    lines = [
+        "【平台工具】本轮可以调用下列平台工具（场景：" + "、".join(SCENES[s]["label"] for s in scenes) + "）。",
+        "用工具拿真实数据再回答，不要编造数字；需要 id 时先用列表类工具查。",
+        "风险级别为「需要你确认」的工具不会立即执行：调用后会给用户一张确认卡片，你要在回答里说明要做什么、为什么，等用户确认。",
+        "平台没有实盘下单能力，也不要建议绕过模拟盘。",
+    ]
+    for t in tools:
+        lines.append(f"- {t.name}（{t.title}，{RISK_LABEL[t.risk]}）：{t.description} 可用时机：{t.when}。")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# 执行与确认
+# ---------------------------------------------------------------------------
+def invoke(name: str, args: dict[str, Any], *, user: str, conversation: str = "") -> dict[str, Any]:
+    """模型调用工具。confirm 类只登记待确认动作。返回 {result, record}，record 给前端显示。"""
+    tool = registry().get(name)
+    if tool is None:
+        return {"result": {"error": f"未知工具 {name}"}, "record": {"tool": name, "status": "error"}}
+    args = {k: v for k, v in (args or {}).items() if k in tool.params}
+    rec: dict[str, Any] = {"tool": name, "title": tool.title, "risk": tool.risk, "args": args}
+    if tool.risk == "confirm":
+        missing = [k for k in tool.required if not args.get(k)]
+        if missing:
+            return {"result": {"error": f"缺少参数：{'、'.join(missing)}"}, "record": {**rec, "status": "error"}}
+        action = {
+            "id": f"act_{uuid.uuid4().hex[:10]}",
+            "tool": name,
+            "title": tool.title,
+            "args": args,
+            "summary": tool.summary(args) if tool.summary else tool.title,
+            "status": "pending",
+            "created_by": user,
+            "created_at": int(time.time() * 1000),
+            "conversation": conversation,
+        }
+        _svc().store.upsert(ACTIONS, action)
+        rec.update(status="pending", action_id=action["id"], summary=action["summary"])
+        return {
+            "result": {
+                "status": "needs_confirmation",
+                "action_id": action["id"],
+                "summary": action["summary"],
+                "note": "已生成确认卡片，等用户确认后才执行",
+            },
+            "record": rec,
+        }
+    t0 = time.perf_counter()
+    try:
+        out = tool.handler(**args)
+    except TypeError as exc:
+        out = {"error": f"参数不对：{exc}"}
+    except Exception as exc:
+        out = {"error": f"{type(exc).__name__}: {exc}"[:300]}
+    ok = not (isinstance(out, dict) and out.get("error"))
+    rec.update(status="done" if ok else "error", ms=int((time.perf_counter() - t0) * 1000), preview=_preview(out))
+    return {"result": out, "record": rec}
+
+
+def _preview(out: Any) -> str:
+    if isinstance(out, dict) and out.get("error"):
+        return str(out["error"])[:160]
+    if isinstance(out, list):
+        return f"{len(out)} 条"
+    text = json.dumps(out, ensure_ascii=False, default=str)
+    return text[:160] + ("…" if len(text) > 160 else "")
+
+
+def confirm(action_id: str, *, user: str, approve: bool) -> dict[str, Any]:
+    store = _svc().store
+    act = store.get(ACTIONS, action_id)
+    if act is None:
+        raise ValueError("这个操作不存在")
+    if act["status"] != "pending":
+        raise ValueError(
+            f"这个操作已经{ {'done': '执行过', 'canceled': '取消了', 'error': '失败过'}.get(act['status'], '处理过') }"
+        )
+    if act.get("created_by") and act["created_by"] != user:
+        raise ValueError("只能由发起对话的人确认")
+    if not approve:
+        act.update(status="canceled", decided_at=int(time.time() * 1000))
+        store.upsert(ACTIONS, act)
+        return act
+    tool = registry()[act["tool"]]
+    try:
+        out = tool.handler(**act["args"])
+    except Exception as exc:
+        out = {"error": f"{type(exc).__name__}: {exc}"[:300]}
+    ok = not (isinstance(out, dict) and out.get("error"))
+    act.update(status="done" if ok else "error", result=out, decided_at=int(time.time() * 1000))
+    store.upsert(ACTIONS, act)
+    _svc().audit.record(
+        "ai.action",
+        object_type="ai_action",
+        object_id=action_id,
+        details={"tool": act["tool"], "args": act["args"], "ok": ok},
+    )
+    return act
+
+
+def catalog() -> dict[str, Any]:
+    return {
+        "scenes": [{"id": k, **v} for k, v in SCENES.items()],
+        "page_scenes": PAGE_SCENES,
+        "tools": [t.view() for t in registry().values()],
+        "risk_labels": RISK_LABEL,
+    }
+
+
+__all__ = ["ACTIONS", "SCENES", "catalog", "confirm", "invoke", "prompt_block", "registry", "scenes_for", "tools_for"]

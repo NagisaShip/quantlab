@@ -1,0 +1,59 @@
+/* 交易终端、交易所模拟盘、策略包 */
+
+.terminal { display: flex; flex-direction: column; gap: 14px; margin-bottom: 18px; }
+.terminal .panel { margin-bottom: 0; }
+.terminal-grid { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 14px; align-items: start; }
+.terminal-side { display: flex; flex-direction: column; gap: 14px; }
+.terminal-chart { padding: 0; overflow: hidden; }
+.terminal-chart-head { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--line-2); font-size: 13px; flex-wrap: wrap; }
+.terminal-chart-head select { width: auto; height: 28px; padding: 0 8px; }
+.terminal-price { font-variant-numeric: tabular-nums; font-size: 15px; }
+.terminal-legend { display: flex; gap: 14px; padding: 8px 14px; font-size: 11.5px; color: var(--muted); border-top: 1px solid var(--line-2); flex-wrap: wrap; }
+.terminal-legend .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; vertical-align: 0; }
+.terminal-legend .dot.up { background: var(--up); }
+.terminal-legend .dot.down { background: var(--down); }
+.kline { width: 100%; position: relative; }
+.kline-empty { display: grid; place-items: center; color: var(--muted); font-size: 13px; background: var(--sunken); }
+
+.terminal-account { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 10px; }
+.terminal-account small { display: block; color: var(--muted); font-size: 11.5px; margin-bottom: 2px; }
+.terminal-account b { font-size: 15px; font-variant-numeric: tabular-nums; }
+.terminal-exec p { margin: 0 0 8px; }
+.terminal-exec .kv { margin: 8px 0 0; font-size: 12.5px; }
+.terminal-exec .kv small { display: block; }
+.terminal-table { max-height: 380px; overflow: auto; }
+.terminal-table td small { display: block; color: var(--muted); }
+.terminal-halt { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0; }
+
+.mini-progress-row { display: flex; align-items: center; gap: 14px; font-size: 12.5px; color: var(--muted); margin-bottom: 10px; flex-wrap: wrap; }
+.mini-progress-row .mini-progress { min-width: 110px; flex: 1; }
+
+/* 模拟盘连接 */
+
+.demo-conn { border: 1px solid var(--line); border-radius: var(--r-lg); padding: 12px 14px; margin-bottom: 10px; display: grid; gap: 10px; }
+.demo-conn-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+.demo-conn-head small { display: block; margin-top: 3px; color: var(--muted); }
+.demo-bal { display: flex; flex-wrap: wrap; gap: 8px 18px; font-variant-numeric: tabular-nums; font-size: 13px; }
+.demo-bal small { display: block; color: var(--muted); font-size: 11px; }
+.demo-conn-foot { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+.demo-start { margin-top: 10px; padding: 12px; border: 1px solid var(--line); border-radius: var(--r); background: var(--sunken); }
+.demo-start .hint { margin: 8px 0 0; }
+
+/* 策略包 */
+.pkg-drop { border: 1.5px dashed var(--line); border-radius: var(--r-lg); padding: 22px; text-align: center; cursor: pointer; display: grid; gap: 4px; background: var(--sunken); }
+.pkg-drop:hover { border-color: var(--accent-line); }
+.pkg-drop small { color: var(--muted); }
+.pkg-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+.pkg-head small { display: block; color: var(--muted); margin-top: 3px; }
+.pkg-code { max-height: 320px; overflow: auto; background: var(--sunken); border: 1px solid var(--line-2); border-radius: var(--r); padding: 10px 12px; font-size: 12px; line-height: 1.55; white-space: pre; margin: 6px 0 0; }
+.spec-editor { width: 100%; min-height: 360px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; line-height: 1.6; resize: vertical; margin-top: 10px; }
+.checklist li.warn::before { content: "!"; color: var(--amber); }
+
+@media (max-width: 1100px) {
+  .terminal-grid { grid-template-columns: 1fr; }
+  .terminal-side { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+}
+@media (max-width: 720px) {
+  .terminal-side { grid-template-columns: 1fr; }
+  .terminal-halt { flex-direction: column; align-items: flex-start; }
+}

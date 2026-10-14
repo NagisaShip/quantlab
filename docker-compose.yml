@@ -1,0 +1,91 @@
+# quant-agent 2.0 —— PostgreSQL + Redis + API（控制面）+ Worker（执行面）
+#
+#   1) 生成凭证主密钥：  mkdir -p secrets && docker run --rm python:3.13-slim \
+#        sh -c "pip -q install cryptography && python -c 'from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())'" > secrets/secret.key
+#   2) cp .env.example .env  并修改 POSTGRES_PASSWORD
+#   3) docker compose up -d --build        打开 http://127.0.0.1:8000 ，第一个注册的账号成为管理员
+#
+# API 只受理请求、查询状态；回测 / 参数优化 / 实时模拟 / 账户同步全部由 worker 执行。
+# API 重启不影响运行中的任务；worker 崩溃后租约过期，任务进入 RECOVERING 并从检查点恢复。
+name: quant-agent
+
+x-app: &app
+  build: .
+  image: quant-agent:2.0.0
+  restart: unless-stopped
+  env_file: .env
+  environment:
+    QAGENT_DATABASE_URL: postgresql://${POSTGRES_USER:-qagent}:${POSTGRES_PASSWORD:?请在 .env 设置 POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-qagent}
+    QAGENT_REDIS_URL: redis://redis:6379/0
+    QAGENT_SECRET_KEY_FILE: /run/secrets/qagent_secret_key
+    QAGENT_HOME: /data/home
+    QAGENT_WORKER: external
+    # 微实盘（真实资金）总开关，默认关闭；打开前先读 docs/运维与恢复手册.md 第 8 节
+    QAGENT_MICROLIVE: "${QAGENT_MICROLIVE:-0}"
+  secrets: [qagent_secret_key]
+  depends_on:
+    postgres: { condition: service_healthy }
+    redis: { condition: service_healthy }
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-qagent}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?请在 .env 设置 POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-qagent}
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "no", "--save", ""]   # 只做唤醒通道，状态以数据库为准
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 20
+
+  migrate:
+    <<: *app
+    restart: "no"
+    command: ["qagent", "migrate"]
+    healthcheck: { disable: true }
+    volumes: [appdata:/data]
+
+  api:
+    <<: *app
+    command: ["qagent", "serve", "--host", "0.0.0.0", "--port", "8000"]
+    ports: ["${QAGENT_PORT:-8000}:8000"]
+    volumes: [appdata:/data]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    deploy:
+      resources:
+        limits: { cpus: "1.0", memory: 1g }
+
+  worker:
+    <<: *app
+    command: ["qagent", "worker", "--slots", "${QAGENT_WORKER_SLOTS:-2}"]
+    volumes: [appdata:/data]
+    # worker 是容器的 1 号进程，退出即由 restart 策略拉起；存活与心跳在“设置与审计 → 平台 → Worker”查看
+    healthcheck: { disable: true }
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    # 每个 Python 策略子进程另有 CPU 秒 / 内存 / 文件大小上限（QAGENT_SANDBOX_*），这里限制整个 worker 容器
+    deploy:
+      resources:
+        limits: { cpus: "${QAGENT_WORKER_CPUS:-2.0}", memory: "${QAGENT_WORKER_MEMORY:-4g}" }
+    # 需要“策略子进程断网”时，叠加 deploy/docker-compose.isolation.yml（授予 SYS_ADMIN 以创建网络命名空间）
+
+volumes:
+  pgdata:
+  appdata:
+
+secrets:
+  qagent_secret_key:
+    file: ./secrets/secret.key

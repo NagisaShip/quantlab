@@ -1,0 +1,9 @@
+# 可选：让 Python 策略子进程运行在独立网络命名空间（无网卡，彻底断网）。
+# 用法：docker compose -f docker-compose.yml -f deploy/docker-compose.isolation.yml up -d
+# 说明：unshare(CLONE_NEWNET) 需要 CAP_SYS_ADMIN。只授予 worker；API 不需要。
+# 未叠加本文件时，“设置与审计 → 平台”会显示 断网=否，其余隔离（独立进程、清空环境变量、
+# CPU/内存/文件上限、降权到 nobody）照常生效。DSL 规则策略不执行用户代码，不受影响。
+services:
+  worker:
+    cap_add: [SYS_ADMIN]
+    security_opt: ["apparmor=unconfined"]
