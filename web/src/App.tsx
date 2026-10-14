@@ -42,6 +42,7 @@ import { ApiError, currentWorkspace, setWorkspace } from './http'
 import { Loading } from './components/ui'
 import { PageHead } from './components/PageHead'
 import { PageSlot } from './components/pageSlot'
+import { SearchButton } from './components/SearchPalette'
 
 type PageKey =
   | 'home'
@@ -384,7 +385,10 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
   return (
     <>
       <aside className="sidebar">
-        <a className="side-brand" href="#/home"><LogoMark size={20} />QuantLab</a>
+        <div className="side-top">
+          <a className="side-brand" href="#/home"><LogoMark size={20} />QuantLab</a>
+          <SearchButton onNavigate={go} />
+        </div>
 
         <nav aria-label="主导航">
           {NAV.map((group) => (
