@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, type ConfigView, type Health } from './api'
 import { BusyOverlay, Toast } from './components/ui'
 import { RoleDrawer } from './components/roles'
@@ -385,7 +385,6 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
     <>
       <aside className="sidebar">
         <a className="side-brand" href="#/home"><LogoMark size={20} />QuantLab</a>
-        <WorkspaceSwitcher me={me} reachable={reachable} onNavigate={go} />
 
         <nav aria-label="主导航">
           {NAV.map((group) => (
@@ -407,14 +406,7 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
           ))}
         </nav>
 
-        <div className="user-row">
-          <span className="avatar">{(me.user.name || me.user.email).slice(0, 1).toUpperCase()}</span>
-          <div style={{ minWidth: 0 }}>
-            <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{me.user.name || me.user.email}</div>
-            <small>{me.user.is_admin ? '部署管理员' : me.user.email}</small>
-          </div>
-          <button className="button small ghost" onClick={async () => { await v4.logout().catch(() => undefined); setWorkspace(''); window.location.hash = '/home'; window.location.reload() }}>退出</button>
-        </div>
+        <AccountMenu me={me} reachable={reachable} onNavigate={go} />
       </aside>
 
       <div className="shell">
@@ -457,22 +449,41 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
 
 const ROLE_NAME: Record<string, string> = { admin: '管理员', member: '成员', reviewer: '审阅者' }
 
-function WorkspaceSwitcher({ me, reachable, onNavigate }: { me: Me; reachable: string[]; onNavigate: (k: string) => void }) {
+/** 侧栏底部账号菜单：账号、工作区切换、成员与邀请、退出合在一处。 */
+function AccountMenu({ me, reachable, onNavigate }: { me: Me; reachable: string[]; onNavigate: (k: string) => void }) {
   const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
   const ws = me.workspace
+  const name = me.user.name || me.user.email
+  useEffect(() => {
+    if (!open) return
+    const close = (e: MouseEvent) => { if (!ref.current?.contains(e.target as Node)) setOpen(false) }
+    const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('mousedown', close)
+    document.addEventListener('keydown', esc)
+    return () => { document.removeEventListener('mousedown', close); document.removeEventListener('keydown', esc) }
+  }, [open])
+  const pick = (k: string) => { setOpen(false); onNavigate(k) }
   return (
-    <div className="workspace ws-switch">
-      <button onClick={() => setOpen(!open)} aria-expanded={open} aria-haspopup="menu">
-        <span className="workspace-icon">{(ws?.name ?? '研').slice(0, 1)}</span>
-        <div style={{ minWidth: 0 }}>
-          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ws?.name ?? '未选择工作区'}</div>
-          <small>{ROLE_NAME[ws?.role ?? 'member']} · {reachable.length ? `${reachable.join(' / ')} 行情已连接` : '离线 · 合成行情'}</small>
+    <div className="user-row acct" ref={ref}>
+      <button className="acct-trigger" onClick={() => setOpen(!open)} aria-expanded={open} aria-haspopup="menu">
+        <span className="avatar">{name.slice(0, 1).toUpperCase()}</span>
+        <div className="acct-text">
+          <div>{name}</div>
+          <small>{ws?.name ?? '未选择工作区'} · {ROLE_NAME[ws?.role ?? 'member']}</small>
         </div>
+        <span className="acct-caret" aria-hidden="true">⌃</span>
       </button>
       {open && (
-        <div className="ws-menu" role="menu">
+        <div className="ws-menu acct-menu" role="menu">
+          <div className="acct-head">
+            <b>{me.user.email}</b>
+            <small>{me.user.is_admin ? '部署管理员 · ' : ''}{reachable.length ? `${reachable.join(' / ')} 行情已连接` : '离线 · 合成行情'}</small>
+          </div>
+          <hr />
+          <div className="acct-label">工作区</div>
           {me.workspaces.map((w) => (
-            <button key={w.id} aria-current={w.id === ws?.id} onClick={() => {
+            <button key={w.id} role="menuitem" aria-current={w.id === ws?.id} onClick={() => {
               setWorkspace(w.id)
               window.location.hash = '/home'
               window.location.reload()
@@ -480,9 +491,10 @@ function WorkspaceSwitcher({ me, reachable, onNavigate }: { me: Me; reachable: s
               <span>{w.name}</span><span className={`role-chip ${w.role}`}>{ROLE_NAME[w.role]}</span>
             </button>
           ))}
+          <button role="menuitem" onClick={() => pick('settings/workspace')}>新建 / 加入工作区…</button>
+          <button role="menuitem" onClick={() => pick('settings/members')}>成员与邀请…</button>
           <hr />
-          <button onClick={() => { setOpen(false); onNavigate('settings/workspace') }}>新建 / 加入工作区…</button>
-          <button onClick={() => { setOpen(false); onNavigate('settings/members') }}>成员与邀请…</button>
+          <button role="menuitem" className="acct-logout" onClick={async () => { await v4.logout().catch(() => undefined); setWorkspace(''); window.location.hash = '/home'; window.location.reload() }}>退出登录</button>
         </div>
       )}
     </div>
