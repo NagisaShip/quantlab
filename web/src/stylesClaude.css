@@ -423,3 +423,12 @@ main.full > .hub-tabs { margin: 0; padding: 0 24px; flex: 0 0 auto; background: 
 /* 页面底部留出「问 AI」悬浮按钮的位置，不盖住最后一行 */
 main:not(.full) { padding-bottom: 88px; }
 .home-brief { font-size: 13px; color: var(--muted); margin: 6px 0 16px; }
+
+/* ---------- 登录页：行情带改为透明后，左栏文字改用正文色 ---------- */
+.auth-aside { background: var(--canvas); }
+.auth-aside::after { border-color: var(--line); box-shadow: 0 0 0 60px rgba(0, 0, 0, .015), 0 0 0 140px rgba(0, 0, 0, .01); }
+.auth-brand, .auth-aside h1, .auth-aside li b { color: var(--ink); }
+.auth-aside h1 em { color: var(--accent); }
+.auth-aside li { color: var(--ink-2); }
+.auth-aside li span { color: var(--accent); }
+.auth-aside footer { color: var(--muted); }
