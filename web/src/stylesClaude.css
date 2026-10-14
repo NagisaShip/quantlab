@@ -432,3 +432,19 @@ main:not(.full) { padding-bottom: 88px; }
 .auth-aside li { color: var(--ink-2); }
 .auth-aside li span { color: var(--accent); }
 .auth-aside footer { color: var(--muted); }
+
+/* ---------- 登录页：手机端 ---------- */
+@media (max-width: 860px) {
+  .auth-screen { min-height: 100dvh; grid-template-columns: 1fr; grid-template-rows: auto 1fr; background: var(--canvas); }
+  .auth-aside { padding: 28px 24px 4px; gap: 22px; justify-content: flex-start; overflow: visible; }
+  .auth-aside::after, .auth-aside ul, .auth-aside footer { display: none; }
+  .auth-aside h1 { font-size: 24px; line-height: 1.35; letter-spacing: 0; }
+  .auth-panel { align-items: flex-start; padding: 24px 24px 40px; background: var(--canvas); border-left: 0; }
+  .auth-card {
+    max-width: 440px; background: var(--sheet); border: 1px solid var(--line); border-radius: var(--r-lg);
+    padding: 24px 20px; box-shadow: 0 1px 2px rgba(0, 0, 0, .03);
+  }
+  .auth-card input { height: 44px; font-size: 16px; } /* 16px 避免 iOS 聚焦时自动放大 */
+  .auth-card .button.primary { height: 44px; font-size: 15px; }
+  .auth-switch, .auth-switch button { font-size: 14px; }
+}
