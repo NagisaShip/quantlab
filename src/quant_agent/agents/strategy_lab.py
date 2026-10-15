@@ -397,6 +397,8 @@ class LabTools:
     team: Callable[..., dict[str, Any]] | None = None  # (topic, *, team_id, context) -> TeamRun dict
     save_strategy: Callable[[dict[str, Any]], dict[str, Any]] | None = None
     registry: Any = None  # 共享工具注册表（站内搜索、联网搜索、网页抓取）
+    discuss: Callable[[dict[str, Any], str], dict[str, Any]] | None = None  # (project, topic) -> {mission_id}
+    night: Callable[[dict[str, Any], str], dict[str, Any]] | None = None  # (project, idea) -> {task}
 
 
 class _PinnedRouter:
@@ -535,6 +537,59 @@ PLAN_HINT = (
 )
 
 
+#: 所有斜杠命令对应的能力都写给模型：它可以根据情况自行调用，不必等研究者输入命令
+TOOL_GUIDE = (
+    "【可以主动使用的平台功能】下面每一项都对应研究者的一个斜杠命令，你可以根据对话自行调用，不必等研究者输入命令：\n"
+    "- set_plan / update_plan_step（/plan）：任务需要多步才能完成"
+    "（例如“做出一个夏普 1.5 的策略”“系统比较三种出场”）时，"
+    "先用 set_plan 列出 3-8 个可验证的步骤和完成标准；之后每做完一步就用 update_plan_step 标记。"
+    "计划执行期间不要停下来等研究者确认，直到所有步骤完成且目标达标；只有确实需要研究者做决定时才用 ask_user\n"
+    "- set_goal / check_goals（/goal）：研究者给出达标要求时记下来；不达标时先看差距再改\n"
+    "- start_autopilot（/auto）：已有目标、研究者要求连续自动改进时\n"
+    "- 回测 / 评估工具（/backtest、/eval），带 2 倍成本做压力测试（/stress），"
+    "walk_forward 分段回测（/walkforward）：验证结果与稳健性\n"
+    "- convene_team（/team）：要一份快速的团队评审结论时；"
+    "start_discussion（/discuss）：需要多个角色充分辩论、相互质疑时（发言以气泡显示在对话里，讨论在后台进行）\n"
+    "- queue_night（/night）：耗时长、可以无人值守的研究，放进夜班队列，结果写进晨报\n"
+    "- pin_note（/pin）：研究者给的长期约束、重要结论，钉进上下文每轮都带着\n"
+    "- context_usage（/context）、compact_history（/compact）：对话很长时先看用量，吃紧再压缩\n"
+    "- set_market：研究者没指定或改了标的与周期时\n"
+    "- save_work（/save）：研究者认可成果后保存到策略库 / 因子库等\n"
+    "不要为了调用而调用；调用了什么、结果如何，在回答里简短说明。"
+)
+
+PLAN_MAX_TURNS = 12  # /plan 一次最多连续推进的模型回合数（防止无限循环）
+PLAN_STATUSES = ("pending", "doing", "done", "skipped", "failed")
+
+
+def _step_text(x: Any) -> str:
+    """模型有时把步骤写成对象（{"step": …, "done_when": …}）：取出步骤文字，把完成标准接在后面。"""
+    if isinstance(x, dict):
+        text = next((str(x[k]) for k in ("step", "text", "title", "name", "description") if x.get(k)), "")
+        check = next((str(x[k]) for k in ("done_when", "check", "verify") if x.get(k)), "")
+        if text and check:
+            return f"{text}（完成标准：{check}）"
+        return text or json.dumps(x, ensure_ascii=False)
+    return str(x)
+
+
+def plan_text(plan: dict[str, Any] | None) -> str:
+    """当前计划写成给模型看的上下文。"""
+    if not plan or not plan.get("steps"):
+        return ""
+    mark = {"pending": "[ ]", "doing": "[>]", "done": "[x]", "skipped": "[-]", "failed": "[!]"}
+    lines = [
+        f"【当前计划 · {'进行中' if plan.get('status') == 'active' else plan.get('status')}】{plan.get('task') or ''}"
+    ]
+    if plan.get("done_when"):
+        lines.append(f"完成标准：{plan['done_when']}")
+    for i, s in enumerate(plan["steps"], 1):
+        lines.append(
+            f"{mark.get(s.get('status'), '[ ]')} {i}. {s['text']}" + (f"（{s['note']}）" if s.get("note") else "")
+        )
+    return "\n".join(lines)
+
+
 SUGGEST_RULE = (
     "回答结束时，如果有自然的下一步，另起一行写 <suggestions>建议1|建议2|建议3</suggestions>："
     "2-3 条研究者可能接着发给你的话，用研究者的口吻，每条不超过 16 个字，可以是斜杠命令（如 /backtest）。"
@@ -577,6 +632,16 @@ TOOL_PHASE = {
     "walk_forward": "分段回测",
     "set_market": "设定标的",
     "ask_user": "提问",
+    "set_plan": "列计划",
+    "update_plan_step": "更新计划进度",
+    "start_discussion": "团队讨论",
+    "queue_night": "夜班队列",
+    "context_usage": "上下文用量",
+    "pin_note": "钉材料",
+    "compact_history": "压缩对话",
+    "save_work": "保存成果",
+    "start_autopilot": "自动迭代",
+    "list_versions": "版本列表",
     "write_factor": "写因子",
     "evaluate_factor": "因子评估",
     "write_model_spec": "写训练规格",
@@ -635,11 +700,15 @@ class StrategyLab:
             final = "idle"
             try:
                 fn()
+                if kind != "plan":
+                    self._continue_plan(pid)
                 cur = self.store.get(pid) or {}
                 final = "awaiting_user" if cur.get("status") == "awaiting_user" else "idle"
             except StopRequested:
+                self._pause_plan(pid)
                 self._post(pid, role="event", kind="text", content="已按你的要求停止。当前代码保留在最近一版。")
             except Exception as exc:  # 回合失败不影响项目本身
+                self._pause_plan(pid)
                 self._post(pid, role="event", kind="error", content=f"本轮执行出错：{type(exc).__name__}: {exc}")
             finally:
                 cur = self.store.get(pid) or {}
@@ -809,6 +878,9 @@ class StrategyLab:
                 "研究者没有指定标的与周期（当前只是占位的默认值）：根据对话判断合适的标的和 K 线周期，"
                 "用 set_market 设置后再写代码或回测；如果对话里看不出来，就直接问。"
             )
+        extra_rules.append(TOOL_GUIDE)
+        if plan_text(project.get("plan")):
+            extra_rules.append(plan_text(project.get("plan")))
         if project.get("suggest", True) is not False:
             extra_rules.append(SUGGEST_RULE)
         if extra_rules:
@@ -910,6 +982,9 @@ class StrategyLab:
                 return
             if asked:
                 return
+        plan = (self.store.get(pid) or {}).get("plan") or {}
+        if plan.get("status") == "active" and plan.get("autorun"):
+            return  # 计划执行中：下一轮会接着推进，不用提示「先停在这里」
         self._post(pid, role="event", kind="text", content="已达到单轮工具调用上限，先停在这里。你可以继续追问。")
 
     def _chat_tools(self, pid: str) -> dict[str, Tool]:
@@ -1491,7 +1566,106 @@ class StrategyLab:
             )
             return {"ok": True, "securities": p["securities"], "timeframe": p["timeframe"]}
 
+        def set_plan(steps: list[Any] | str = "", task: str = "", done_when: str = "", execute: bool = True) -> Any:
+            if isinstance(steps, str):
+                steps = [x for x in re.split(r"\n+", steps) if x.strip()]
+            items = [re.sub(r"^\s*(?:\d+[.、)]|[-*•])\s*", "", _step_text(x)).strip()[:200] for x in steps or []]
+            items = [x for x in items if x][:12]
+            if not items:
+                return {"ok": False, "error": "steps 不能为空：给出 3-8 个可验证的步骤"}
+            plan = self.set_plan(pid, items, task=task, done_when=done_when, execute=bool(execute))
+            return {"ok": True, "steps": len(plan["steps"]), "plan": plan_text(plan)}
+
+        def update_plan_step(
+            index: int = 0, status: str = "done", note: str = "", add_steps: list[str] | None = None
+        ) -> Any:
+            return self.update_plan_step(pid, int(index or 0), status=status, note=note, add_steps=add_steps or [])
+
+        def start_discussion(topic: str = "") -> Any:
+            if self.tools.discuss is None:
+                return {"ok": False, "error": "当前环境不能发起团队讨论"}
+            project = self.store.get(pid) or {}
+            topic = (
+                topic or f"评审「{project.get('title')}」：逻辑是否自洽、证据是否可信、最大风险在哪里、下一步怎么做"
+            )[:600]
+            out = self.tools.discuss(project, topic)
+            self._post(pid, role="event", kind="discussion", content=topic, data={"mission_id": out["mission_id"]})
+            return {"ok": True, "mission_id": out["mission_id"], "note": "讨论在后台进行，发言会显示在对话里"}
+
+        def queue_night(idea: str = "") -> Any:
+            if self.tools.night is None:
+                return {"ok": False, "error": "当前环境没有夜班队列"}
+            project = self.store.get(pid) or {}
+            text = (idea or project.get("idea") or project.get("title") or "").strip()
+            if len(text) < 2:
+                return {"ok": False, "error": "idea 不能为空"}
+            out = self.tools.night(project, text[:600])
+            self._post(pid, role="event", kind="text", content=f"已放进夜班队列：{text[:60]}（结果写进晨报）")
+            return {"ok": True, **out}
+
+        def context_usage() -> Any:
+            v = self.context_view(self.store.get(pid) or {})
+            return {
+                "used": v.get("total"),
+                "budget": v.get("budget"),
+                "percent": round(100 * (v.get("total") or 0) / max(1, v.get("budget") or 1), 1),
+                "pins": len(v.get("pins") or []),
+            }
+
+        plan_tools = {
+            "set_plan": Tool(
+                "set_plan",
+                "列出 / 重新列出分步计划（等同 /plan）：多步任务先列 3-8 个可验证的步骤；"
+                "execute=true 时列完就一步步执行，"
+                "直到全部完成且目标达标才停",
+                {
+                    **obj,
+                    "properties": {
+                        "task": {"type": "string", "description": "这个计划要完成的任务，一句话"},
+                        "steps": {"type": "array", "items": {"type": "string"}, "description": "按顺序的步骤"},
+                        "done_when": {"type": "string", "description": "完成标准，例如“夏普 ≥ 1.5 且回撤 ≤ 15%”"},
+                        "execute": {"type": "boolean", "description": "列完后是否立即连续执行（默认 true）"},
+                    },
+                    "required": ["steps"],
+                },
+                set_plan,
+            ),
+            "update_plan_step": Tool(
+                "update_plan_step",
+                "更新计划进度：index 从 1 开始；status 为 doing / done / skipped / failed；note 写结果要点；"
+                "add_steps 在末尾追加新步骤（例如步骤做完了但目标没达标）",
+                {
+                    **obj,
+                    "properties": {
+                        "index": {"type": "integer"},
+                        "status": {"type": "string", "enum": list(PLAN_STATUSES)},
+                        "note": {"type": "string"},
+                        "add_steps": {"type": "array", "items": {"type": "string"}},
+                    },
+                },
+                update_plan_step,
+            ),
+            "start_discussion": Tool(
+                "start_discussion",
+                "发起团队讨论（等同 /discuss）：多个角色依次发言、相互质疑、最后汇总；讨论在后台进行",
+                {**obj, "properties": {"topic": {"type": "string", "description": "讨论议题"}}},
+                start_discussion,
+            ),
+            "queue_night": Tool(
+                "queue_night",
+                "把一个研究想法放进夜班队列（等同 /night）：无人值守地自动研究，结果写进晨报",
+                {**obj, "properties": {"idea": {"type": "string"}}, "required": ["idea"]},
+                queue_night,
+            ),
+            "context_usage": Tool(
+                "context_usage",
+                "查看上下文用量（等同 /context）：已用 / 预算 token 与钉住的材料数",
+                {**obj, "properties": {}},
+                context_usage,
+            ),
+        }
         return {
+            **plan_tools,
             "start_autopilot": Tool(
                 "start_autopilot",
                 "按已设定的目标自动迭代若干轮（等同 /auto）。没有目标时不可用；研究者明确要求连续改进时再用",
@@ -1529,6 +1703,172 @@ class StrategyLab:
                 lambda: self.save_work(pid),
             ),
         }
+
+    # ---------------- 计划 /plan ----------------
+    def set_plan(
+        self, pid: str, steps: list[str], *, task: str = "", done_when: str = "", execute: bool = True
+    ) -> dict[str, Any]:
+        """列出 / 重列计划：卡片发进对话，之后进度更新都改这张卡片。"""
+        project = self.store.get(pid) or {}
+        old = project.get("plan") or {}
+        plan = {
+            "task": (task or old.get("task") or project.get("idea") or "")[:300],
+            "done_when": (done_when or old.get("done_when") or "")[:300],
+            "steps": [{"text": t, "status": "pending", "note": ""} for t in steps],
+            "status": "active",
+            "autorun": bool(execute),
+            "turns": 0,
+            "created_at": _now(),
+        }
+        card = self._post(pid, role="assistant", kind="plan", content=plan["task"], data={"plan": plan})
+        plan["seq"] = card["seq"]
+        self.store.patch(pid, plan=plan)
+        return plan
+
+    def _save_plan(self, pid: str, plan: dict[str, Any]) -> None:
+        self.store.patch(pid, plan=plan)
+        if plan.get("seq"):
+            self.store.update(pid, plan["seq"], data={"plan": plan})
+
+    def update_plan_step(
+        self, pid: str, index: int, *, status: str = "done", note: str = "", add_steps: list[str] | None = None
+    ) -> dict[str, Any]:
+        project = self.store.get(pid) or {}
+        plan = project.get("plan")
+        if not plan:
+            return {"ok": False, "error": "还没有计划，先用 set_plan 列计划"}
+        steps = plan["steps"]
+        if index:
+            if not 1 <= index <= len(steps):
+                return {"ok": False, "error": f"index 超出范围（1-{len(steps)}）"}
+            if status not in PLAN_STATUSES:
+                return {"ok": False, "error": f"status 只能是 {'/'.join(PLAN_STATUSES)}"}
+            steps[index - 1]["status"] = status
+            if note:
+                steps[index - 1]["note"] = note[:200]
+        for t in add_steps or []:
+            if str(t).strip() and len(steps) < 16:
+                steps.append({"text": str(t).strip()[:200], "status": "pending", "note": ""})
+        self._save_plan(pid, plan)
+        left = [i + 1 for i, s in enumerate(steps) if s["status"] not in ("done", "skipped")]
+        return {"ok": True, "remaining": left, "plan": plan_text(plan)}
+
+    def _plan_goal_ok(self, project: dict[str, Any]) -> bool | None:
+        """有目标时看当前版本是否达标；没有目标返回 None（按计划步骤是否完成判断）。"""
+        if not self.has_goal(project):
+            return None
+        cur = next((r for r in project.get("versions") or [] if r.get("v") == project.get("current_v")), None)
+        return bool(((cur or {}).get("evaluation") or {}).get("passed"))
+
+    def run_plan(self, pid: str, task: str = "") -> None:
+        """/plan：让 AI 列计划（或接着已有计划），然后一步步执行，直到全部完成且目标达标。"""
+        project = self.store.get(pid) or {}
+        plan = project.get("plan") or {}
+        if task or plan.get("status") != "active":
+            what = task or project.get("idea") or project.get("title") or "当前研究"
+            self._phase(pid, "列计划", what[:80])
+            self._plan_turn(
+                pid,
+                f"/plan {what}\n请先用 set_plan 列出完成这个任务的分步计划"
+                "（3-8 步，每步可验证，写清完成标准 done_when），"
+                "然后立即开始执行第 1 步。",
+            )
+        else:
+            plan["autorun"] = True
+            self.store.patch(pid, plan=plan)
+        self._plan_loop(pid)
+
+    def _continue_plan(self, pid: str) -> None:
+        """普通对话里 AI 用 set_plan(execute=true) 列了计划：这一回合结束后接着推进。"""
+        plan = (self.store.get(pid) or {}).get("plan") or {}
+        if plan.get("status") == "active" and plan.get("autorun"):
+            self._plan_loop(pid)
+
+    def _plan_turn(self, pid: str, text: str) -> None:
+        try:
+            self._chat_llm(pid, text)
+        except LLMError as exc:
+            self._post(pid, role="event", kind="error", content=f"计划执行中模型调用失败：{exc}")
+            plan = (self.store.get(pid) or {}).get("plan")
+            if plan:
+                plan["status"] = "stopped"
+                self._save_plan(pid, plan)
+
+    def _plan_loop(self, pid: str) -> None:
+        stalled = 0
+        for _ in range(PLAN_MAX_TURNS):
+            self._check_stop(pid)
+            project = self.store.get(pid) or {}
+            plan = project.get("plan")
+            if not plan or plan.get("status") != "active" or not plan.get("autorun"):
+                return
+            if project.get("status") == "awaiting_user":  # AI 提问或等审批：等研究者回答
+                return
+            steps = plan["steps"]
+            left = [i for i, s in enumerate(steps) if s["status"] not in ("done", "skipped")]
+            goal_ok = self._plan_goal_ok(project)
+            if not left and goal_ok is not False:
+                plan["status"] = "done"
+                self._save_plan(pid, plan)
+                self._post(
+                    pid,
+                    role="event",
+                    kind="text",
+                    content=f"计划完成：{len(steps)} 步全部做完" + ("，目标已达标" if goal_ok else ""),
+                )
+                return
+            if not left:
+                gap = self.goal_text(project)
+                prompt = (
+                    f"计划里的步骤都做完了，但目标还没达标（目标：{gap}）。先 check_goals 看差距，"
+                    "再用 update_plan_step 的 add_steps 补充新步骤并继续执行；"
+                    "如果目标确实不现实，说明原因并用 ask_user 问我是否放宽。"
+                )
+                self._phase(pid, "计划：步骤做完但未达标，补充步骤", gap[:120])
+            else:
+                i = left[0]
+                if steps[i]["status"] != "doing":
+                    steps[i]["status"] = "doing"
+                    self._save_plan(pid, plan)
+                prompt = (
+                    f"继续执行计划第 {i + 1} 步：{steps[i]['text']}。完成后用 update_plan_step 标记（写上结果要点），"
+                    "然后接着做下一步。不要停下来等我确认，除非确实需要我做决定。"
+                )
+                self._phase(pid, f"执行计划 · 第 {i + 1}/{len(steps)} 步", steps[i]["text"][:160])
+            before = (
+                [s["status"] for s in steps],
+                project.get("current_v"),
+                len(steps),
+            )
+            plan["turns"] = int(plan.get("turns") or 0) + 1
+            self.store.patch(pid, plan=plan)
+            self._plan_turn(pid, prompt)
+            after_p = self.store.get(pid) or {}
+            after_plan = after_p.get("plan") or {}
+            after = (
+                [s["status"] for s in after_plan.get("steps") or []],
+                after_p.get("current_v"),
+                len(after_plan.get("steps") or []),
+            )
+            stalled = stalled + 1 if after == before else 0
+            if stalled >= 2:
+                self._stop_plan(pid, "连续两轮没有进展，先停在这里。可以补充要求后输入 /plan 继续。")
+                return
+        self._stop_plan(pid, f"已连续推进 {PLAN_MAX_TURNS} 轮还没完成，先停在这里。输入 /plan 继续。")
+
+    def _pause_plan(self, pid: str) -> None:
+        """回合被停止或出错：计划暂停，之后的普通对话不会自动接着推进（/plan 或「继续执行」恢复）。"""
+        plan = (self.store.get(pid) or {}).get("plan")
+        if plan and plan.get("status") == "active" and plan.get("autorun"):
+            plan["autorun"] = False
+            self._save_plan(pid, plan)
+
+    def _stop_plan(self, pid: str, why: str) -> None:
+        plan = (self.store.get(pid) or {}).get("plan")
+        if plan:
+            plan["autorun"] = False
+            self._save_plan(pid, plan)
+        self._post(pid, role="event", kind="text", content=why)
 
     # ---------------- 权限：审批 ----------------
     def _ask_approval(self, pid: str, pending: list[dict[str, Any]]) -> None:

@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import {
   lab, mergeBySeq, missions,
   type ContextView, type Effort, type Executor, type FactorSummary, type GoalSpec, type LabKind, type LabMessage, type LabMeta,
-  type LabProject, type Metrics, type Permission,
+  type LabPlan, type LabProject, type Metrics, type Permission,
 } from '../apiLab'
 import { Avatar } from '../components/Avatar'
 import { store } from '../components/prefs'
@@ -58,7 +58,7 @@ const TOOL_ICON: Record<string, string> = {
   write_model_spec: '◇', train_model: '∿', search_model_library: '⌕', list_features: '☰', set_model_goal: '◎', save_model: '⇩',
 }
 
-type PanelTab = 'code' | 'versions' | 'context' | 'goals'
+type PanelTab = 'code' | 'versions' | 'context' | 'goals' | 'plan'
 
 const pct = (v: number | null | undefined, d = 1) => (v === null || v === undefined ? '—' : `${(v * 100).toFixed(d)}%`)
 const num = (v: number | null | undefined, d = 2) => (v === null || v === undefined ? '—' : v.toFixed(d))
@@ -109,6 +109,7 @@ interface PlusOpts {
   fileHint: string
   onFiles: () => void
   onSlash: () => void
+  onPlan: () => void
   executorTeam?: boolean
   onExecutor?: () => void
   onDiscuss: () => void
@@ -126,7 +127,8 @@ function labPlusItems(o: PlusOpts): ActionItem[] {
   const run = !!o.running
   return [
     { label: '添加文件或照片', icon: Icons.attach, hint: o.fileHint, onClick: o.onFiles },
-    { label: '斜杠命令', icon: Icons.slash, hint: '/backtest、/goal、/auto、/discuss…', onClick: o.onSlash },
+    { label: '斜杠命令', icon: Icons.slash, hint: '/backtest、/goal、/plan、/discuss…', onClick: o.onSlash },
+    { label: '分步计划', icon: Icons.loop, hint: '/plan：AI 列计划并一步步做完，达标前不停', onClick: o.onPlan, disabled: !!o.running },
     {
       label: '插件', icon: Icons.plugin, submenu: [
         ...(o.ui && o.onExecutor ? [{ label: '研究小组执行', icon: Icons.team, hint: o.ui.teamHint || '自动迭代时由小组讨论后再实现', checked: !!o.executorTeam, onClick: o.onExecutor, disabled: run }] : []),
@@ -155,6 +157,7 @@ interface CmdOpts {
   stress: Handler
   walkForward: ArgHandler
   auto: ArgHandler
+  plan: ArgHandler
   night: ArgHandler
   explain: Handler
   team: ArgHandler
@@ -183,6 +186,7 @@ function labCommands(o: CmdOpts): SlashCommand[] {
     c('/auto', '迭代', o.hasGoal ? `按目标自动迭代（现在 ${o.rounds} 轮）` : '需要先设定目标（/goal）；没有目标就直接对话', o.auto,
       { arg: '[轮数]', disabled: !o.auto || run || !o.hasGoal }),
     { cmd: '/goal', group: '迭代', arg: '[描述]', help: '设定目标：指标条件、回测范围、轮数（设了目标才能自动迭代）' },
+    c('/plan', '迭代', 'AI 列分步计划并一步步执行，全部完成且目标达标才停；不带内容时继续当前计划', o.plan, { arg: '[任务]', disabled: !o.plan || run }),
     c('/night', '迭代', '放进夜班队列：无人值守地自动研究，结果写进晨报', o.night, { arg: '[想法]', disabled: !o.night }),
     c('/explain', '协作', o.ui ? `解释当前${o.ui.noun}的逻辑与风险` : '逐段解释当前策略', o.explain),
     c('/team', '协作', o.ui ? '召集研究小组评审' : '召集团队评审', o.team, { arg: '[议题]' }),
@@ -295,13 +299,16 @@ function Welcome({ meta, notify, onCreated, folder }: {
       await queueNight(rest)
       return
     }
+    const planned = /^\/plan\b/.test(text)
+    const planTask = planned ? text.replace(/^\/plan\s*/, '').trim() : ''
+    if (planned && !planTask) { notify('用法：/plan 要完成的任务', true); return }
     const discuss = /^\/discuss\b/.test(text)
     const topic = discuss ? text.replace(/^\/discuss\s*/, '').trim() : ''
     if (discuss && !topic) { notify('用法：/discuss 讨论的议题', true); return }
     setBusy(true)
     try {
       const pins = [...(draft?.pins ?? []), ...files.map((f) => ({ kind: f.kind ?? 'file', title: f.title, text: f.text }))]
-      const ideaText = discuss ? topic : text.replace(/^\/team\s*/, '') || text
+      const ideaText = discuss ? topic : planned ? planTask : text.replace(/^\/team\s*/, '') || text
       const v = await lab.create({
         kind, idea: ideaText, securities: goal.symbols, timeframe: goal.timeframe, model, effort, max_rounds: goal.max_rounds,
         bars_limit: goal.bars_limit, data_source: source, permission, market_auto: marketAuto && !goalSet, suggest: suggestOn(),
@@ -312,6 +319,7 @@ function Welcome({ meta, notify, onCreated, folder }: {
       const id = v.project.id
       if (goalSet) await lab.setGoal(id, goal, { review: false, start: startAuto, research: isFactor ? 'none' : research })
       if (discuss) await startDiscussionIn(v.project, topic)
+      else if (planned) await lab.plan(id, planTask)
       else if (!startAuto) await lab.send(id, text, { suggest: suggestOn() })
       onCreated(id)
     } catch (e) {
@@ -329,16 +337,18 @@ function Welcome({ meta, notify, onCreated, folder }: {
     ui, kind, hasGoal: goalSet, rounds: spec.max_rounds, executorTeam: executor === 'team', saveLabel: ui ? `存入${ui.libraryName}` : '保存为平台策略',
     backtest: undefined, stress: undefined, walkForward: undefined, explain: undefined, compact: undefined, context: undefined, save: undefined,
     auto: (a) => { if (Number(a)) setSpec({ ...spec, max_rounds: Math.min(8, Math.max(1, Number(a))) }); setAuto(true) },
+    plan: undefined,
     night: (a) => { if (a) queueNight(a); else notify('用法：/night 你的研究想法', true) },
     team: (a) => setIdea(`/team ${a}`), discuss: (a) => setIdea(`/discuss ${a}`),
     crew: isFactor ? () => { const v = executor === 'team' ? 'solo' : 'team'; setExecutor(v); store.set('qa.lab.executor', v) } : undefined,
     pin: (a) => { addNote(a || undefined) },
     mode: (a) => (PERMISSION_ALIAS[a.toLowerCase()] ? setPermission(PERMISSION_ALIAS[a.toLowerCase()]) : notify('用法：/mode auto | manual | edits | plan | bypass', true)),
-  }).map((c) => (c.cmd === '/team' || c.cmd === '/discuss' ? { ...c, run: undefined } : c)) // 这两个随第一条消息一起发出
+  }).map((c) => (['/team', '/discuss', '/plan'].includes(c.cmd)
+    ? { ...c, run: undefined, disabled: false, help: c.help.replace(`（${LATER}）`, '') } : c)) // 这几个随第一条消息一起发出
   const plusItems = labPlusItems({
     ui,
     fileHint: '文本、CSV、JSON 会钉进新对话的上下文；图片在对话开始后发送',
-    onFiles: pickFiles, onSlash: () => setIdea('/'),
+    onFiles: pickFiles, onSlash: () => setIdea('/'), onPlan: () => setIdea(`/plan ${stripCmd(idea)}`),
     executorTeam: executor === 'team', onExecutor: isFactor ? () => { const v = executor === 'team' ? 'solo' : 'team'; setExecutor(v); store.set('qa.lab.executor', v) } : undefined,
     onDiscuss: () => setIdea(`/discuss ${stripCmd(idea)}`), onTeam: () => setIdea(`/team ${stripCmd(idea)}`), onNight: () => setIdea(`/night ${stripCmd(idea)}`),
     onPin: () => { addNote() }, onSave: undefined, saveLabel: ui ? `存入${ui.libraryName}` : '保存为平台策略', saveHint: '有代码后可用 · /save',
@@ -715,6 +725,7 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
     stress: noCode ? undefined : () => act(() => lab.backtest(id, 2)),
     walkForward: noCode ? undefined : (a) => act(() => lab.walkForward(id, Math.min(6, Math.max(2, Number(a) || 3)))),
     auto: (a) => startAuto(Math.min(8, Math.max(1, Number(a) || roundsNow))),
+    plan: (a) => { stick.current = true; act(() => lab.plan(id, a)) },
     night: (a) => queueNight(a),
     explain: noCode ? undefined : () => send('/explain'),
     team: (a) => send(a ? `/team ${a}` : '/team'),
@@ -729,7 +740,7 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
   const plusItems = labPlusItems({
     ui, running,
     fileHint: imageBlock ? '文本、CSV、JSON 会钉进上下文（当前模型不收图片）' : '文本钉进上下文，图片随下一条消息发给模型',
-    onFiles: pickFiles, onSlash: () => setInput('/'),
+    onFiles: pickFiles, onSlash: () => setInput('/'), onPlan: () => setInput('/plan '),
     executorTeam: project.executor === 'team', onExecutor: toggleCrew,
     onDiscuss: () => startDiscussion(''), onTeam: () => send('/team'), onNight: () => queueNight(''),
     onPin: () => openPanel('context'), onSave: noCode ? undefined : saveOut, saveLabel, saveHint: noCode ? '有代码后可用 · /save' : '/save',
@@ -861,6 +872,19 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
                 onUnpin={(pid) => act(() => lab.unpin(id, pid))}
                 onPin={(title, text) => act(() => lab.pin(id, { kind: 'note', title, text }))} />}
             </SideCard>
+            {project.plan && (
+              <SideCard id="plan" focus={panel} title="计划" meta={planMeta(project.plan)}>
+                <PlanSteps plan={project.plan} />
+                <div className="button-row" style={{ marginTop: 10 }}>
+                  {project.plan.status !== 'done' && (
+                    <button className="button small primary" disabled={running} onClick={() => { stick.current = true; act(() => lab.plan(id)) }}>
+                      {project.plan.autorun && project.plan.status === 'active' ? '继续执行' : '接着执行'}
+                    </button>
+                  )}
+                  <button className="button small" disabled={running} onClick={() => setInput('/plan ')}>重新列计划</button>
+                </div>
+              </SideCard>
+            )}
             <SideCard id="goals" focus={panel} title="目标" meta={hasGoal ? `${projectItems(project).length} 个条件` : '未设置'}>
               <GoalSummary project={project} metrics={metricsOf(dmeta)} hasGoal={hasGoal} running={running} rounds={roundsNow}
                 onEdit={() => setGoalOpen({ initial: projectSpec(project) })} onStart={() => startAuto(roundsNow)} />
@@ -1105,6 +1129,8 @@ function MessageView({ m, project, meta, active, actions, onDecide, onOpenBackte
       return <GoalEvent m={m} metrics={metricsOf(meta)} />
     case 'walkforward':
       return <WalkForwardCard m={m} />
+    case 'plan':
+      return <PlanCard plan={d.plan as LabPlan} live={project.plan?.seq === m.seq ? project.plan : null} />
     case 'discussion':
       return <DiscussionCard missionId={d.mission_id} topic={m.content} notify={actions.notify}
         onPin={(text) => actions.onPinText(`团队讨论结论 · ${m.content.slice(0, 16)}`, text)} />
@@ -1565,6 +1591,54 @@ function SideCard({ id, title, meta, focus, children }: { id: PanelTab; title: s
       </button>
       {open && <div className="side-card-body anim-expand">{children}</div>}
     </section>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/* /plan 计划卡片                                                     */
+/* ------------------------------------------------------------------ */
+const STEP_MARK: Record<string, string> = { pending: '', doing: '', done: '✓', skipped: '–', failed: '!' }
+
+function planMeta(plan: LabPlan) {
+  const done = plan.steps.filter((s) => s.status === 'done' || s.status === 'skipped').length
+  return plan.status === 'done' ? `已完成 ${done}/${plan.steps.length}` : `${done}/${plan.steps.length}${plan.status === 'stopped' || !plan.autorun ? ' · 已暂停' : ''}`
+}
+
+function PlanSteps({ plan }: { plan: LabPlan }) {
+  return (
+    <ol className="plan-steps stagger">
+      {plan.steps.map((s, i) => (
+        <li key={i} className={`plan-step ${s.status}`}>
+          <span className="plan-mark" aria-label={s.status}>{s.status === 'doing' ? <span className="cb-spin" /> : STEP_MARK[s.status] || i + 1}</span>
+          <span className="plan-text">
+            {s.text}
+            {s.note && <small>{s.note}</small>}
+          </span>
+        </li>
+      ))}
+    </ol>
+  )
+}
+
+/** 对话里的计划卡片：live 是项目上的最新计划（进度随时更新），没有时用消息里存的那份。 */
+function PlanCard({ plan, live }: { plan: LabPlan; live: LabPlan | null }) {
+  const p = live ?? plan
+  if (!p?.steps?.length) return null
+  const done = p.steps.filter((s) => s.status === 'done' || s.status === 'skipped').length
+  return (
+    <div className={`lab2-card plan-card ${p.status}`}>
+      <div className="lab2-card-head">
+        <b>计划</b>
+        <span className="plan-task">{p.task}</span>
+        <span className="lab2-card-gap" />
+        <span className={`cb-badge ${p.status === 'done' ? 'ok' : p.status === 'stopped' || !p.autorun ? 'warn' : ''}`}>
+          {p.status === 'done' ? '已完成' : p.status === 'stopped' || !p.autorun ? '已暂停' : '执行中'} · {done}/{p.steps.length}
+        </span>
+      </div>
+      <div className="plan-bar" aria-hidden><i style={{ width: `${(done / p.steps.length) * 100}%` }} /></div>
+      <PlanSteps plan={p} />
+      {p.done_when && <div className="lab2-faint">完成标准：{p.done_when}</div>}
+    </div>
   )
 }
 

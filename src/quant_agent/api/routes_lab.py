@@ -258,6 +258,44 @@ def _team(topic: str, *, team_id: str | None = None, context: str = "") -> dict:
     return s.teams.run(team, topic, context=context).to_dict()
 
 
+def _discuss(project: dict[str, Any], topic: str) -> dict:
+    """AI 发起 /discuss：建一场团队讨论（后台进行），发言挂在对话里。"""
+    from .routes_missions import MissionIn, _materials, _runner
+
+    s = get_services()
+    teams = s.teams.list_teams()
+    payload = MissionIn(
+        directive=topic,
+        mode="single",
+        team_id=project.get("team_id") or (teams[0].id if teams else None),
+        lab_project_id=project["id"],
+        symbol=(project.get("securities") or ["BTC/USDT"])[0],
+        timeframe=project.get("timeframe") or "1h",
+    )
+    r = _runner()
+    m = r.create(payload.model_dump(), _materials(payload))
+    r.start(m["id"], wait=False)
+    return {"mission_id": m["id"]}
+
+
+def _night(project: dict[str, Any], idea: str) -> dict:
+    """AI 发起 /night：放进夜班队列。"""
+    from .routes_rd import NS, _store, _user
+
+    task = NS.add_task(
+        _store(),
+        user=_user(),
+        kind=project.get("kind") or "strategy",
+        idea=idea,
+        executor=project.get("executor") or "solo",
+        symbols=project.get("securities") or [],
+        timeframe=project.get("timeframe"),
+        rounds=min(8, int(project.get("max_rounds") or 4)),
+        data_source=project.get("data_source") or "auto",
+    )
+    return {"task_id": task.get("id")}
+
+
 def _save_strategy(project: dict[str, Any]) -> dict:
     from ..strategies.repo import StrategyRepository
 
@@ -291,6 +329,8 @@ def _lab() -> StrategyLab:
         team=_team,
         save_strategy=_save_strategy,
         registry=s.teams.tools,
+        discuss=_discuss,
+        night=_night,
     )
     return StrategyLab(s.router, LabStore(s.store), tools)
 
@@ -924,6 +964,18 @@ def rewind_project(pid: str, payload: RewindIn) -> dict:
         urls = [b["url"] for b in (lab.store.get_image(pid, r["id"]) for r in refs) if b]
         return _start(lab, pid, "chat", lambda: lab.chat(pid, text, images=urls), payload.wait)
     return _start(lab, pid, "chat", lambda: lab.chat(pid, text), payload.wait)
+
+
+class PlanIn(BaseModel):
+    text: str = Field("", max_length=2000, description="要完成的任务；不填则继续执行当前计划")
+    wait: bool = False
+
+
+@router.post("/projects/{pid}/plan", summary="/plan：AI 列分步计划并一步步执行，直到全部完成且目标达标")
+def run_plan(pid: str, payload: PlanIn) -> dict:
+    lab = _lab_for(pid)
+    _project_or_404(lab, pid)
+    return _start(lab, pid, "plan", lambda: lab.run_plan(pid, payload.text.strip()), payload.wait)
 
 
 @router.post("/projects/{pid}/stop", summary="请求停止正在运行的回合（在下一个检查点停下）")

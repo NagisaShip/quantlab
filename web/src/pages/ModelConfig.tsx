@@ -123,6 +123,8 @@ export default function ModelConfigPage({ notify, onNavigate }: PageProps) {
 
   const refresh = useCallback(async () => {
     const [c, p, u] = await Promise.all([v3.config(), api.presets(), v3.modelUsage(30, 'me').catch(() => null)])
+    // 前端更新了、后端服务还是旧进程时 /api/config 没有 me / routing_layers：给出能看懂的提示而不是白屏报错
+    if (!c.me || !c.routing_layers) throw new Error('后端服务还是旧版本（/api/config 缺少成员权限与路由信息）。请重启 quant_agent 服务（serve 与 worker）后刷新页面。')
     setConfig(c)
     setPresets(p.presets)
     setUsage(u)

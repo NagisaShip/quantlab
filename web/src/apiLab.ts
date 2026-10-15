@@ -85,6 +85,8 @@ export interface LabProject {
   parent_id?: string | null
   fork_seq?: number | null
   goal_set?: boolean
+  /** /plan 的分步计划：AI 一步步执行，直到全部完成且目标达标 */
+  plan?: LabPlan | null
   auto_compact?: boolean
   market_auto?: boolean
   suggest?: boolean
@@ -113,11 +115,22 @@ export interface LabProjectBrief extends Omit<LabProject, 'versions' | 'code' | 
   passed: boolean | null
 }
 
+export type PlanStepStatus = 'pending' | 'doing' | 'done' | 'skipped' | 'failed'
+export interface LabPlan {
+  task: string
+  done_when: string
+  steps: { text: string; status: PlanStepStatus; note: string }[]
+  status: 'active' | 'done' | 'stopped'
+  autorun: boolean
+  turns: number
+  seq?: number
+}
+
 export interface LabMessage {
   seq: number
   role: 'user' | 'assistant' | 'tool' | 'event'
   kind: 'text' | 'tool' | 'code' | 'backtest' | 'round' | 'team' | 'ask' | 'error' | 'saved' | 'goal' | 'walkforward' |
-    'factor_code' | 'factor_report' | 'model_spec' | 'model_report' | 'portfolio_spec' | 'portfolio_report' | 'execution_spec' | 'execution_report' | 'discussion'
+    'factor_code' | 'factor_report' | 'model_spec' | 'model_report' | 'portfolio_spec' | 'portfolio_report' | 'execution_spec' | 'execution_report' | 'discussion' | 'plan'
   content: string
   data: Record<string, any>
   mode?: 'llm' | 'fallback'
@@ -194,6 +207,8 @@ export const lab = {
   compact: (id: string) => post<LabView>(`/api/lab/projects/${id}/compact`),
   fork: (id: string, seq?: number, title = '') => post<{ project: LabProjectBrief }>(`/api/lab/projects/${id}/fork`, { seq, title }),
   rewind: (id: string, seq: number, text?: string) => post<LabView>(`/api/lab/projects/${id}/rewind`, { seq, text }),
+  /** /plan：text 为空时继续执行当前计划 */
+  plan: (id: string, text = '') => post<LabView>(`/api/lab/projects/${id}/plan`, { text }),
   discussion: (id: string, mission_id: string, topic: string) => post<LabView>(`/api/lab/projects/${id}/discussion`, { mission_id, topic }),
   /** 实时推送：回合结束（或超时）后流自动关闭；返回 Promise 在关闭时 resolve。 */
   events: (id: string, after: number, since: number, onData: (v: Partial<LabView> & { project: LabProject; messages: LabMessage[]; server_time: number }) => void, signal?: AbortSignal) =>

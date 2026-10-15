@@ -692,3 +692,91 @@ def test_turn_progress_says_what_the_agent_is_doing(client, monkeypatch):
     client.post(f"/api/lab/projects/{p['id']}/messages", json={"text": "写个均线策略", "wait": True})
     assert "规划" in seen[0][0] and "fake-1" in seen[0][1]
     assert any("写代码" in ph and "已调用 1 个工具" in d for ph, d in seen), seen
+
+
+def _tc(i, name, **args):
+    return ChatResult(
+        content="", model="m", provider="fake", tool_calls=[ToolCall(id=str(i), name=name, arguments=args)]
+    )
+
+
+def test_plan_runs_step_by_step_until_done(client):
+    """/plan：AI 列计划，然后不停地一步步执行，全部完成才停；计划卡片随进度更新。"""
+    router = ScriptedRouter(
+        [
+            _tc(1, "set_plan", task="比较两种出场", steps=["写固定止损版", "写移动止损版"], done_when="两版都回测过"),
+            "计划列好了，开始第 1 步。",
+            _tc(2, "update_plan_step", index=1, status="done", note="固定止损夏普 0.8"),
+            "第 1 步完成。",
+            _tc(3, "update_plan_step", index=2, status="done", note="移动止损夏普 1.1"),
+            "第 2 步完成，移动止损更好。",
+        ]
+    )
+    get_services().router = router
+    p = _project(client, model="fake/fake-1")
+    view = client.post(f"/api/lab/projects/{p['id']}/plan", json={"text": "比较两种出场", "wait": True}).json()
+    plan = view["project"]["plan"]
+    assert plan["status"] == "done" and [s["status"] for s in plan["steps"]] == ["done", "done"]
+    card = next(m for m in view["messages"] if m["kind"] == "plan")
+    assert [s["status"] for s in card["data"]["plan"]["steps"]] == ["done", "done"]
+    assert any(m["kind"] == "text" and m["content"].startswith("计划完成") for m in view["messages"])
+    # 计划推进时的提示里带着当前步骤，并且模型看得到计划与功能说明
+    prompts = [m.content for c in router.calls for m in c["messages"] if m.role == "user"]
+    assert any("第 2 步" in t and "写移动止损版" in t for t in prompts)
+    systems = "\n".join(m.content for m in router.calls[-1]["messages"] if m.role == "system")
+    assert "【当前计划" in systems and "start_discussion" in systems and "queue_night" in systems
+    names = {t.name for t in router.calls[0]["tools"]}
+    assert {"set_plan", "update_plan_step", "start_discussion", "queue_night", "context_usage"} <= names
+    assert view["project"]["status"] == "idle"
+
+
+def test_plan_stops_when_no_progress(client):
+    router = ScriptedRouter(
+        [_tc(1, "set_plan", steps=["第一步", "第二步"]), "列好了。", "还在想。", "还是没做。", "不应该再被调用"]
+    )
+    get_services().router = router
+    p = _project(client, model="fake/fake-1")
+    view = client.post(f"/api/lab/projects/{p['id']}/plan", json={"text": "做点事", "wait": True}).json()
+    assert view["project"]["plan"]["autorun"] is False
+    assert "没有进展" in view["messages"][-1]["content"]
+    assert router.replies == ["不应该再被调用"]
+
+
+def test_ai_can_start_a_plan_in_normal_chat(client):
+    """普通对话里 AI 自己判断任务需要多步，用 set_plan 列计划后会接着执行，不等研究者输入 /plan。"""
+    router = ScriptedRouter(
+        [
+            # 模型有时把步骤写成对象：要取出文字，不能把 dict 原样显示
+            _tc(1, "set_plan", steps=[{"step": "只有一步", "done_when": "跑完"}], execute=True),
+            "我列了计划，马上开始。",
+            _tc(2, "update_plan_step", index=1, status="done"),
+            "做完了。",
+        ]
+    )
+    get_services().router = router
+    p = _project(client, model="fake/fake-1")
+    view = client.post(f"/api/lab/projects/{p['id']}/messages", json={"text": "帮我系统地做完", "wait": True}).json()
+    assert view["project"]["plan"]["status"] == "done"
+    assert view["project"]["plan"]["steps"][0]["text"] == "只有一步（完成标准：跑完）"
+    assert not router.replies
+
+
+def test_stopping_a_plan_pauses_it(client):
+    """停止后计划暂停：之后随便聊一句，不会又自动接着跑计划。"""
+    from quant_agent.agents.strategy_lab import StopRequested
+
+    class StopAfterPlan(ScriptedRouter):
+        def chat(self, messages, **kw):
+            if len(self.calls) == 2 and not getattr(self, "stopped", False):
+                self.stopped = True
+                raise StopRequested()
+            return super().chat(messages, **kw)
+
+    router = StopAfterPlan([_tc(1, "set_plan", steps=["一", "二"]), "列好了。", "随便聊聊的回答"])
+    get_services().router = router
+    p = _project(client, model="fake/fake-1")
+    view = client.post(f"/api/lab/projects/{p['id']}/plan", json={"text": "做事", "wait": True}).json()
+    assert view["project"]["plan"]["autorun"] is False and view["project"]["plan"]["status"] == "active"
+    view = client.post(f"/api/lab/projects/{p['id']}/messages", json={"text": "随便聊聊", "wait": True}).json()
+    assert view["messages"][-1]["content"] == "随便聊聊的回答"
+    assert view["project"]["plan"]["steps"][0]["status"] in ("pending", "doing")

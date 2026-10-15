@@ -703,3 +703,23 @@ button.goal-chips:hover .goal-chip { border-color: var(--line); }
 .cb-working-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .cb-working-detail { font-size: 12px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 560px; }
 .cb-working-time { margin-left: auto; font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; flex: none; }
+
+/* /plan 计划卡片 */
+.plan-card .plan-task { color: var(--muted); font-size: 12.5px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plan-bar { height: 3px; border-radius: 2px; background: var(--line-2); margin: 6px 0 8px; overflow: hidden; }
+.plan-bar i { display: block; height: 100%; background: var(--accent); transition: width var(--dur-3) var(--ease-out); }
+.plan-card.done .plan-bar i { background: var(--green, var(--accent)); }
+.plan-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.plan-step { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; color: var(--ink-2); }
+.plan-mark {
+  flex: none; width: 18px; height: 18px; border-radius: 50%; border: 1px solid var(--line); display: inline-grid; place-items: center;
+  font-size: 10.5px; color: var(--muted); margin-top: 1px; transition: background var(--dur-2) var(--ease-out), border-color var(--dur-2) var(--ease-out);
+}
+.plan-step.done .plan-mark { background: var(--accent); border-color: var(--accent); color: #fff; }
+.plan-step.doing .plan-mark { border-color: var(--accent); }
+.plan-step.failed .plan-mark { border-color: var(--amber, #c77d1a); color: var(--amber, #c77d1a); }
+.plan-step.done .plan-text, .plan-step.skipped .plan-text { color: var(--muted); }
+.plan-step.skipped .plan-text { text-decoration: line-through; }
+.plan-step.doing .plan-text { color: var(--ink); font-weight: 500; }
+.plan-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.plan-text small { color: var(--faint); font-size: 11.5px; font-weight: 400; }

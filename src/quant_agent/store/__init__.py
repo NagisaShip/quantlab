@@ -233,7 +233,16 @@ class JsonStore:
         path = self._blob_path(kind, item_id)
         tmp = path.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
         tmp.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":"), default=str), encoding="utf-8")
-        tmp.replace(path)
+        # 与 _flush 相同：Windows 上目标文件正被读（例如对话的实时推送每 0.25 秒读一次）时 replace 会拒绝访问，短暂重试
+        for attempt in range(_REPLACE_RETRIES):
+            try:
+                tmp.replace(path)
+                break
+            except PermissionError:
+                if attempt == _REPLACE_RETRIES - 1:
+                    tmp.unlink(missing_ok=True)
+                    raise
+                time.sleep(0.02 * (attempt + 1))
 
     def get_blob(self, kind: str, item_id: str) -> dict | None:
         """读一个 blob（**面向调用方的完整视图**）。
