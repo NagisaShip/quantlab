@@ -1,5 +1,5 @@
 /** AI 策略室 + 指挥台 的接口与类型。 */
-import { del, get, post, request } from './http'
+import { del, get, post, request, withWs } from './http'
 import { streamSSE } from './components/chat/sse'
 
 export type Effort = 'low' | 'medium' | 'high' | 'max'
@@ -172,8 +172,9 @@ export const lab = {
   view: (id: string, after = 0, since = 0) => get<LabView>(`/api/lab/projects/${id}?after=${after}&since=${since}`),
   update: (id: string, p: Partial<Omit<LabProject, 'goals'>> & { goals?: Partial<Goals> }) => patch<{ project: LabProject }>(`/api/lab/projects/${id}`, p),
   remove: (id: string) => del<{ ok: boolean }>(`/api/lab/projects/${id}`),
-  send: (id: string, text: string, opts: { model?: string; effort?: Effort } = {}) =>
+  send: (id: string, text: string, opts: { model?: string; effort?: Effort; images?: { data_url: string; name?: string }[] } = {}) =>
     post<LabView>(`/api/lab/projects/${id}/messages`, { text, ...opts }),
+  imageUrl: (id: string, imageId: string) => withWs(`/api/lab/projects/${id}/images/${encodeURIComponent(imageId)}`),
   goalParse: (text: string, project_id?: string, domain?: LabKind) =>
     post<{ spec: GoalSpec; parsed_fields: string[]; unparsed: string; check: GoalCheck }>('/api/lab/goal/parse', { text, project_id, domain }),
   goalCheck: (spec: Partial<GoalSpec>, project_id?: string, review = false, domain?: LabKind) =>

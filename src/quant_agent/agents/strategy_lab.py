@@ -37,6 +37,7 @@ from .copilot import StrategyCopilot, extract_code, smoke_test, static_explain
 
 COLLECTION = "lab_projects"
 THREADS = "lab_threads"
+IMAGES = "lab_images"  # 对话里附带的图片：每张单独一个 blob，消息里只留引用，免得线程 blob 越来越大
 
 DEFAULT_GOALS: dict[str, float | None] = {
     "min_sharpe": 1.0,  # 夏普下限
@@ -123,6 +124,9 @@ class LabStore:
             return self.save(cur)
 
     def delete(self, pid: str) -> bool:
+        for m in self.messages(pid):
+            for img in (m.get("data") or {}).get("images") or []:
+                self.store.delete_blob(IMAGES, img["id"])
         self.store.delete_blob(THREADS, pid)
         return self.store.delete(COLLECTION, pid)
 
@@ -131,6 +135,18 @@ class LabStore:
         """after：只要序号更大的新消息；since：同时带上此时刻之后被更新过的旧消息（工具卡片状态变化）。"""
         data = self.store.get_blob(THREADS, pid) or {}
         return [m for m in data.get("messages", []) if m["seq"] > after or (since and m.get("updated_at", 0) > since)]
+
+    # ---- 图片附件 ----
+    def put_image(self, pid: str, data_url: str, *, name: str = "") -> dict[str, Any]:
+        """存一张图片（data URL），返回消息里引用它的 {id, mime, name}。"""
+        mime = data_url[5 : data_url.index(";")]
+        iid = f"{pid}-{uuid.uuid4().hex[:12]}"
+        self.store.put_blob(IMAGES, iid, {"pid": pid, "mime": mime, "url": data_url})
+        return {"id": iid, "mime": mime, "name": name}
+
+    def get_image(self, pid: str, iid: str) -> dict[str, Any] | None:
+        blob = self.store.get_blob(IMAGES, iid)
+        return blob if blob and blob.get("pid") == pid else None
 
     def append(self, pid: str, msg: dict[str, Any]) -> dict[str, Any]:
         with _lock(f"t:{pid}"):
@@ -636,7 +652,8 @@ class StrategyLab:
     # =====================================================================
     # 对话
     # =====================================================================
-    def chat(self, pid: str, text: str) -> None:
+    def chat(self, pid: str, text: str, images: list[str] | None = None) -> None:
+        """images：本轮附带的图片（data URL），只随这一条用户消息发给模型。"""
         text = text.strip()
         cmd = text.split(maxsplit=1)
         head = cmd[0] if cmd else ""
@@ -654,17 +671,23 @@ class StrategyLab:
             self.autopilot(pid)
             return
         try:
-            self._chat_llm(pid, text)
+            self._chat_llm(pid, text, images=images)
         except LLMError as exc:
             self._chat_fallback(pid, text, str(exc))
 
     # ---------------- 带工具的模型回合 ----------------
-    def _chat_llm(self, pid: str, text: str, mode: str | None = None) -> None:
+    def _chat_llm(self, pid: str, text: str, mode: str | None = None, images: list[str] | None = None) -> None:
         project = self.store.get(pid) or {}
         mode = mode or project.get("permission") or "auto"
         router = self._router_for(project)
         messages = self.build_messages(project, exclude_last_user=True)
-        messages.append(Message(role="user", content=f"{PLAN_HINT}\n\n{text}" if mode == "plan" else text))
+        if images and not text:
+            text = "（见附图）"
+        messages.append(
+            Message(
+                role="user", content=f"{PLAN_HINT}\n\n{text}" if mode == "plan" else text, images=list(images or [])
+            )
+        )
         tools = self._chat_tools(pid)
         if mode == "plan":
             tools = {k: t for k, t in tools.items() if k not in EDIT_TOOLS and k not in RUN_TOOLS}
@@ -1298,7 +1321,10 @@ class StrategyLab:
             lines = [f"- {'研究者' if m['role'] == 'user' else '助手'}：{m['content'][:80]}" for m in reversed(older)]
             msgs.append(Message(role="system", content="[早前对话摘要]\n" + "\n".join(lines[-30:])))
         for m in reversed(kept):
-            msgs.append(Message(role=m["role"], content=m["content"][:6000]))
+            content = m["content"][:6000]
+            if n := len((m.get("data") or {}).get("images") or []):
+                content = f"{content}\n[附图 {n} 张，仅在当轮发送给模型]".strip()  # 历史图片不重发，省 token
+            msgs.append(Message(role=m["role"], content=content))
         return msgs
 
     def _history(self, project: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1308,7 +1334,7 @@ class StrategyLab:
             for m in self.store.messages(project["id"])
             if m["role"] in ("user", "assistant")
             and m["kind"] in ("text", "ask")
-            and m.get("content")
+            and (m.get("content") or (m.get("data") or {}).get("images"))
             and m["seq"] > cut
         ]
 

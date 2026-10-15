@@ -22,9 +22,15 @@ class Message:
     # 推理模型在工具回合里需要原样回传的内容：Anthropic 的 thinking 块、DeepSeek 的 reasoning_content
     provider_blocks: list[dict[str, Any]] = field(default_factory=list)
     reasoning: str = ""
+    # 用户回合附带的图片：data URL（data:image/png;base64,...），由各 provider 序列化成自己的图片块
+    images: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
-        d: dict[str, Any] = {"role": self.role, "content": self.content}
+        content: Any = self.content
+        if self.images and self.role == "user":
+            content = [{"type": "text", "text": self.content}] if self.content else []
+            content += [{"type": "image_url", "image_url": {"url": u}} for u in self.images]
+        d: dict[str, Any] = {"role": self.role, "content": content}
         if self.name:
             d["name"] = self.name
         if self.tool_call_id:
@@ -32,6 +38,14 @@ class Message:
         if self.tool_calls:
             d["tool_calls"] = [tc.to_dict() for tc in self.tool_calls]
         return d
+
+
+def split_data_url(url: str) -> tuple[str, str]:
+    """data:image/png;base64,xxxx -> ("image/png", "xxxx")；不是 base64 data URL 时抛 ValueError。"""
+    head, sep, data = url.partition(",")
+    if not sep or not head.startswith("data:") or not head.endswith(";base64"):
+        raise ValueError("图片需为 base64 data URL")
+    return head[5:-7], data
 
 
 @dataclass

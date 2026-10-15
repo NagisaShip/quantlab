@@ -402,3 +402,55 @@ def test_events_stream_pushes_updates_and_closes(client):
     data = [json.loads(ln[5:]) for ln in lines if ln.startswith("data:") and ln != "data: {}"]
     assert data[0]["project"]["id"] == p["id"] and data[0]["messages"], "首包带上已有消息"
     assert lines[-2:] == ["event: done", "data: {}"]
+
+
+# ---------------- 图片附件 ----------------
+PNG = (
+    "data:image/png;base64,"
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+)
+
+
+class VisionRouter(ScriptedRouter):
+    def __init__(self, replies, inputs):
+        super().__init__(replies)
+        self.inputs = inputs
+
+    def available_models(self):
+        return [{**super().available_models()[0], "inputs": self.inputs}]
+
+
+def test_message_images_sent_on_user_turn_and_stored(client):
+    router = VisionRouter(["看到了一张 K 线截图", "第二条回答"], ["text", "image"])
+    get_services().router = router
+    p = _project(client, model="fake/fake-1")
+    r = client.post(
+        f"/api/lab/projects/{p['id']}/messages",
+        json={"text": "", "images": [{"data_url": PNG, "name": "k.png"}], "wait": True},
+    )
+    assert r.status_code == 200, r.text
+    user = [m for m in r.json()["messages"] if m["role"] == "user"][-1]
+    ref = user["data"]["images"][0]
+    assert ref["mime"] == "image/png" and ref["name"] == "k.png" and "url" not in ref  # 线程里只留引用
+    last = router.calls[0]["messages"][-1]
+    assert last.role == "user" and last.images == [PNG]
+    img = client.get(f"/api/lab/projects/{p['id']}/images/{ref['id']}")
+    assert img.status_code == 200 and img.headers["content-type"] == "image/png" and img.content.startswith(b"\x89PNG")
+    assert client.get(f"/api/lab/projects/other/images/{ref['id']}").status_code == 404
+    # 下一轮：历史里的图片不重发，只留一句说明
+    client.post(f"/api/lab/projects/{p['id']}/messages", json={"text": "继续", "wait": True})
+    hist = router.calls[1]["messages"]
+    assert not any(m.images for m in hist) and any("附图 1 张" in m.content for m in hist if m.role == "user")
+
+
+def test_message_images_rejected_when_model_lacks_image_input(client):
+    get_services().router = VisionRouter(["不该被调用"], ["text"])
+    p = _project(client, model="fake/fake-1")
+    url = f"/api/lab/projects/{p['id']}/messages"
+    r = client.post(url, json={"text": "看图", "images": [{"data_url": PNG}], "wait": True})
+    assert r.status_code == 400 and "图片输入" in r.text
+    bad = client.post(url, json={"text": "看图", "images": [{"data_url": "data:text/plain;base64,aGk="}]})
+    assert bad.status_code == 422
+    assert client.post(url, json={"text": "  "}).status_code == 422
+    too_many = client.post(url, json={"text": "x", "images": [{"data_url": PNG}] * 5})
+    assert too_many.status_code == 422

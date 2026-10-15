@@ -95,3 +95,35 @@ def test_router_builds_responses_client_for_that_type():
     gw = ProviderConfig(name="gw", type="openai_responses", base_url="https://gw.example/v1", api_key="k", models=["m"])
     cfg = AgentConfig(providers={"gw": gw}, routing={"default": "gw/m"}, limits={}, trace={})
     assert isinstance(ModelRouter(cfg)._client("gw"), OpenAIResponsesProvider)
+
+
+def test_image_parts_serialized_per_provider():
+    from quant_agent.llm.providers import AnthropicProvider, OpenAICompatibleProvider, _to_anthropic
+
+    url = "data:image/png;base64,QUJD"
+    m = Message(role="user", content="看图", images=[url])
+    assert m.to_dict()["content"] == [
+        {"type": "text", "text": "看图"},
+        {"type": "image_url", "image_url": {"url": url}},
+    ]
+    assert Message(role="user", content="纯文本").to_dict()["content"] == "纯文本"
+    assert _to_anthropic(m)["content"] == [
+        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "QUJD"}},
+        {"type": "text", "text": "看图"},
+    ]
+    p = OpenAIResponsesProvider("gw", "https://gw.example/v1", "k")
+    payload = p.build_payload([m], model="gpt-5", temperature=0.2, tools=None, max_tokens=None, effort=None)
+    assert payload["input"] == [
+        {"role": "user", "content": [{"type": "input_text", "text": "看图"}, {"type": "input_image", "image_url": url}]}
+    ]
+
+    seen = {}
+
+    def handler(request):
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}], "model": "gpt-4o"})
+
+    oa = OpenAICompatibleProvider("openai", "https://api.openai.com/v1", "k", transport=httpx.MockTransport(handler))
+    oa.chat([m], model="gpt-4o")
+    assert seen["body"]["messages"][0]["content"][1]["image_url"]["url"] == url
+    assert AnthropicProvider  # 同一套 _to_anthropic 被 chat 使用

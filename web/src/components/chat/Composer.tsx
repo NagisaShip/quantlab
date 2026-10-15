@@ -195,6 +195,7 @@ export function PlusMenu({ items }: { items: PlusItem[] }) {
 /* ------------------------------------------------------------------ */
 export function Composer({
   value, onChange, onSend, onStop, running, disabled, placeholder, commands = [], above, left, right, autoFocus, sendLabel = '发送',
+  hasAttachments, onPasteFiles,
 }: {
   value: string
   onChange: (v: string) => void
@@ -209,6 +210,8 @@ export function Composer({
   right?: ReactNode     // 底栏右侧：模型、上下文
   autoFocus?: boolean
   sendLabel?: string
+  hasAttachments?: boolean                 // 带了附件时，没有文字也能发送
+  onPasteFiles?: (files: File[]) => void   // 粘贴图片等文件
 }) {
   const ta = useRef<HTMLTextAreaElement>(null)
   const [active, setActive] = useState(0)
@@ -222,7 +225,7 @@ export function Composer({
   }, [value])
   useEffect(() => { setActive(0) }, [value])
 
-  const canSend = !running && !disabled && value.trim().length > 0
+  const canSend = !running && !disabled && (value.trim().length > 0 || !!hasAttachments)
   const pick = (c: SlashCommand) => { onChange(c.cmd + ' '); ta.current?.focus() }
 
   return (
@@ -245,6 +248,10 @@ export function Composer({
         {above && <div className="cmp-above">{above}</div>}
         <textarea ref={ta} rows={1} value={value} autoFocus={autoFocus} disabled={disabled}
           placeholder={placeholder} onChange={(e) => onChange(e.target.value)}
+          onPaste={onPasteFiles && ((e) => {
+            const files = [...e.clipboardData.files]
+            if (files.length) { e.preventDefault(); onPasteFiles(files) }
+          })}
           onKeyDown={(e) => {
             if (slash.length) {
               if (e.key === 'ArrowDown') { e.preventDefault(); setActive((active + 1) % slash.length); return }
