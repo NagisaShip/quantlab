@@ -19,6 +19,7 @@ from .base import ChatResult, LLMError, Message, Tool
 from .providers import (
     AnthropicProvider,
     OpenAICompatibleProvider,
+    OpenAIResponsesProvider,
     anthropic_effort_mode,
     openai_effort_mode,
 )
@@ -170,6 +171,8 @@ class ModelRouter:
             raise LLMError(f"未知 provider: {provider_name}")
         if pc.type == "anthropic":
             client = AnthropicProvider(pc.name, pc.base_url, pc.api_key)
+        elif pc.type == "openai_responses":
+            client = OpenAIResponsesProvider(pc.name, pc.base_url, pc.api_key)
         else:
             client = OpenAICompatibleProvider(pc.name, pc.base_url, pc.api_key)
         self._clients[provider_name] = client

@@ -31,6 +31,23 @@ interface Draft {
 
 const presetLabel = (p: Preset) => p.label.replace('[OI]', 'OpenAI')
 
+const PROTOCOLS: [string, string][] = [
+  ['openai_compatible', 'OpenAI Chat Completions（DeepSeek / 通义 / vLLM / Ollama…）'],
+  ['openai_responses', 'OpenAI Responses'],
+  ['anthropic', 'Anthropic Messages'],
+]
+const protocolOf = (t: string) => (PROTOCOLS.some(([k]) => k === t) ? t : 'openai_compatible')
+
+function ProtocolSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  return (
+    <label className="prov-field">API 协议
+      <select value={protocolOf(value)} onChange={(e) => onChange(e.target.value)}>
+        {PROTOCOLS.map(([k, label]) => <option key={k} value={k}>{label}</option>)}
+      </select>
+    </label>
+  )
+}
+
 function draftFromPreset(p: Preset, prev?: Draft): Draft {
   return {
     mode: 'preset', editing: null, name: p.name, type: p.type === 'anthropic' ? 'anthropic' : 'openai_compatible',
@@ -66,7 +83,7 @@ export default function ModelConfigPage({ notify }: PageProps) {
     const pre = presetOf(p.name)
     setDraft({
       mode: pre ? 'preset' : 'custom', editing: p.name, name: p.name,
-      type: p.type === 'anthropic' ? 'anthropic' : 'openai_compatible',
+      type: protocolOf(p.type),
       base_url: pre && p.base_url === pre.base_url ? '' : p.base_url, api_key: '', models: p.models.filter(Boolean), has_key: p.has_key,
     })
   }
@@ -240,11 +257,12 @@ function ProviderEditor({ draft, setDraft, presets, existing, onCancel, onSaved,
           <label className="prov-field">API 密钥
             <input type="password" autoComplete="off" value={draft.api_key} onChange={(e) => set({ api_key: e.target.value })} placeholder={keyPlaceholder} />
           </label>
-          <details className="prov-more" open={!!draft.base_url}>
+          <details className="prov-more" open={!!draft.base_url || (!!pre && protocolOf(draft.type) !== protocolOf(pre.type))}>
             <summary>自定义设置</summary>
             <label className="prov-field">API 地址
               <input value={draft.base_url} onChange={(e) => set({ base_url: e.target.value })} placeholder={pre?.base_url || '服务商默认'} />
             </label>
+            <ProtocolSelect value={draft.type} onChange={(type) => set({ type })} />
           </details>
         </>
       ) : (
@@ -256,12 +274,7 @@ function ProviderEditor({ draft, setDraft, presets, existing, onCancel, onSaved,
           <label className="prov-field">API 地址
             <input value={draft.base_url} onChange={(e) => set({ base_url: e.target.value })} placeholder="https://gateway.example/v1" />
           </label>
-          <label className="prov-field">API 协议
-            <select value={draft.type} onChange={(e) => set({ type: e.target.value })}>
-              <option value="openai_compatible">OpenAI Chat Completions（DeepSeek / 通义 / vLLM / Ollama…）</option>
-              <option value="anthropic">Anthropic Messages</option>
-            </select>
-          </label>
+          <ProtocolSelect value={draft.type} onChange={(type) => set({ type })} />
           <label className="prov-field">API 密钥
             <input type="password" autoComplete="off" value={draft.api_key} onChange={(e) => set({ api_key: e.target.value })} placeholder={keyPlaceholder} />
           </label>

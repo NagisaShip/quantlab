@@ -1,4 +1,4 @@
-"""OpenAI 兼容与 Anthropic 两种 Provider 实现。
+"""OpenAI 兼容（Chat Completions / Responses）与 Anthropic 三种 Provider 实现。
 
 OpenAI 兼容层可对接 DeepSeek、通义、Kimi、vLLM、Ollama 等；
 依赖 http 客户端 httpx（在 config 中注入 transport，便于测试 mock）。
@@ -226,6 +226,169 @@ class OpenAICompatibleProvider:
         )
         resp.raise_for_status()
         return [row["embedding"] for row in resp.json()["data"]]
+
+
+# ---------------------------------------------------------------------------
+# OpenAI Responses API（/v1/responses）
+# ---------------------------------------------------------------------------
+class OpenAIResponsesProvider(OpenAICompatibleProvider):
+    """走 Responses 协议：system 进 instructions，工具回合用 function_call / function_call_output 条目。"""
+
+    type = "openai_responses"
+
+    def build_payload(
+        self,
+        messages: list[Message],
+        *,
+        model: str,
+        temperature: float,
+        tools: list[Tool] | None,
+        max_tokens: int | None,
+        effort: str | None,
+    ) -> dict[str, Any]:
+        instructions = "\n\n".join(m.content for m in messages if m.role == "system" and m.content)
+        items: list[dict[str, Any]] = []
+        for m in messages:
+            if m.role == "system":
+                continue
+            if m.role == "tool":
+                items.append({"type": "function_call_output", "call_id": m.tool_call_id, "output": m.content})
+                continue
+            if m.content:
+                items.append({"role": m.role, "content": m.content})
+            for tc in m.tool_calls:
+                items.append(
+                    {
+                        "type": "function_call",
+                        "call_id": tc.id,
+                        "name": tc.name,
+                        "arguments": json.dumps(tc.arguments, ensure_ascii=False),
+                    }
+                )
+        payload: dict[str, Any] = {"model": model, "input": items, "store": False}
+        if instructions:
+            payload["instructions"] = instructions
+        if effort and openai_effort_mode(model) == "native":
+            level = {"low": "low", "medium": "medium", "high": "high", "max": "high"}.get(effort, "medium")
+            payload["reasoning"] = {"effort": level, "summary": "auto"}
+        elif not _OPENAI_REASONING.match(model):
+            payload["temperature"] = temperature
+        if max_tokens:
+            payload["max_output_tokens"] = max_tokens
+        if tools:
+            payload["tools"] = [
+                {"type": "function", "name": t.name, "description": t.description, "parameters": t.parameters}
+                for t in tools
+            ]
+            payload["tool_choice"] = "auto"
+        return payload
+
+    def chat(
+        self,
+        messages: list[Message],
+        *,
+        model: str,
+        temperature: float = 0.2,
+        tools: list[Tool] | None = None,
+        max_tokens: int | None = None,
+        stream: bool = False,
+        effort: str | None = None,
+        on_delta: Callable[[str, str], None] | None = None,
+    ) -> ChatResult:
+        payload = self.build_payload(
+            messages, model=model, temperature=temperature, tools=tools, max_tokens=max_tokens, effort=effort
+        )
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        url = f"{self.base_url}/responses"
+        try:
+            if on_delta or stream:
+                payload["stream"] = True
+                with self._client.stream("POST", url, headers=headers, json=payload) as resp:
+                    if resp.status_code >= 400:
+                        resp.read()
+                        resp.raise_for_status()
+                    if _is_event_stream(resp):
+                        return self._collect_events(resp, model, on_delta)
+                    resp.read()
+                    return self._parse_response(resp.json(), model, on_delta)
+            resp = self._client.post(url, headers=headers, json=payload)
+            resp.raise_for_status()
+        except httpx.HTTPError as e:
+            raise LLMError(f"[{self.name}] request failed: {e}") from e
+        try:
+            data = resp.json()
+        except ValueError as e:
+            raise LLMError(f"[{self.name}] 返回格式无法解析：{resp.text[:200]}") from e
+        return self._parse_response(data, model, None)
+
+    def _parse_response(self, data: dict[str, Any], model: str, on_delta) -> ChatResult:
+        if not isinstance(data, dict) or not isinstance(data.get("output"), list):
+            raise LLMError(f"[{self.name}] 返回格式无法解析：{str(data)[:200]}")
+        if data.get("error"):
+            raise LLMError(f"[{self.name}] {data['error']}")
+        text: list[str] = []
+        thinking: list[str] = []
+        calls: list[ToolCall] = []
+        for item in data["output"]:
+            kind = item.get("type")
+            if kind == "message":
+                text.extend(c.get("text", "") for c in item.get("content") or [] if c.get("type") == "output_text")
+            elif kind == "reasoning":
+                thinking.extend(s.get("text", "") for s in item.get("summary") or [])
+            elif kind == "function_call":
+                calls.append(
+                    ToolCall(
+                        id=item.get("call_id") or item.get("id") or f"call_{len(calls)}",
+                        name=item.get("name", ""),
+                        arguments=_safe_json(item.get("arguments") or "{}"),
+                    )
+                )
+        content, reasoning = "".join(text), "\n".join(t for t in thinking if t)
+        if on_delta:
+            if reasoning:
+                on_delta("thinking", reasoning)
+            if content:
+                on_delta("text", content)
+        stop = data.get("status") or ""
+        if stop == "incomplete":
+            stop = (data.get("incomplete_details") or {}).get("reason") or stop
+        return ChatResult(
+            content=content,
+            model=data.get("model", model),
+            provider=self.name,
+            tool_calls=calls,
+            usage=data.get("usage") or {},
+            raw=data,
+            thinking=reasoning,
+            stop_reason=stop,
+        )
+
+    def _collect_events(self, resp: httpx.Response, model: str, on_delta) -> ChatResult:
+        """逐段回调正文与思考摘要；最终结果以 response.completed 里的完整 response 为准。"""
+        text: list[str] = []
+        final: dict[str, Any] | None = None
+        for data in _iter_sse(resp):
+            if data == "[DONE]":
+                break
+            try:
+                ev = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            kind = ev.get("type", "")
+            if kind == "response.output_text.delta":
+                text.append(ev.get("delta", ""))
+                if on_delta:
+                    on_delta("text", ev.get("delta", ""))
+            elif kind == "response.reasoning_summary_text.delta" and on_delta:
+                on_delta("thinking", ev.get("delta", ""))
+            elif kind in ("response.completed", "response.incomplete"):
+                final = ev.get("response")
+            elif kind in ("response.failed", "error"):
+                err = (ev.get("response") or {}).get("error") or ev.get("error") or ev.get("message") or ev
+                raise LLMError(f"[{self.name}] {err}")
+        if final is not None:
+            return self._parse_response(final, model, None)
+        return ChatResult(content="".join(text), model=model, provider=self.name)
 
 
 # ---------------------------------------------------------------------------

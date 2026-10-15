@@ -166,7 +166,7 @@ def upsert_provider(payload: ProviderIn) -> dict:
     record = {
         "id": name,
         "name": name,
-        "type": "anthropic" if payload.type == "anthropic" else "openai_compatible",
+        "type": payload.type if payload.type in ("anthropic", "openai_responses") else "openai_compatible",
         "base_url": payload.base_url.rstrip("/"),
         "models": models,
     }
@@ -188,7 +188,7 @@ def upsert_provider(payload: ProviderIn) -> dict:
 
 class DiscoverIn(BaseModel):
     name: str = Field("", max_length=40, description="已登记的 Provider；密钥留空时用它已保存的密钥")
-    type: Literal["openai_compatible", "anthropic", "local"] = "openai_compatible"
+    type: Literal["openai_compatible", "openai_responses", "anthropic", "local"] = "openai_compatible"
     base_url: str = Field(..., max_length=400)
     api_key: str = Field("", max_length=400)
 

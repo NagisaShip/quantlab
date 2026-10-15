@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 # ---------------- 模型配置 ----------------
 class ProviderIn(BaseModel):
     name: str
-    type: Literal["openai_compatible", "anthropic", "local"] = "openai_compatible"
+    type: Literal["openai_compatible", "openai_responses", "anthropic", "local"] = "openai_compatible"
     base_url: str = ""
     api_key: str = ""
     models: list[str] = Field(default_factory=list)
