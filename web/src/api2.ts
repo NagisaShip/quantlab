@@ -341,8 +341,18 @@ export interface LlmStatus {
   roles: { role: string; available: string[]; local: string[] }[]
 }
 
+export type ProviderScope = 'workspace' | 'personal'
+export type LimitMetric = 'tokens' | 'cost'
+export type LimitWindow = '1h' | '5h' | '1d' | '7d' | '30d'
+export interface LimitRule { metric: LimitMetric; window: LimitWindow; limit: string }
+export interface LimitStatus extends LimitRule { used: string; percent: number; exceeded: boolean; label: string }
+
 export interface ProviderView {
   name: string
+  label?: string
+  scope: ProviderScope
+  owner_id?: string
+  editable?: boolean
   type: string
   base_url: string
   has_key: boolean
@@ -350,16 +360,53 @@ export interface ProviderView {
   key_masked: string
   models: string[]
   model_settings?: Record<string, ModelSetting>
+  currency?: 'CNY' | 'USD'
+  fx_rate?: string
+  limits?: LimitRule[]
+  limit_status?: LimitStatus[]
   custom: boolean
 }
 
-/** 目录模型的可选设置；routing 里仍用目录 ID 引用，请求时换成 request_model。 */
+/** 目录模型的可选设置；routing 里仍用目录 ID 引用，请求时换成 request_model。价格按「每百万 token」、服务商币种。 */
 export interface ModelSetting {
   label?: string
   request_model?: string
   context_window?: number | null
   effort?: '' | 'low' | 'medium' | 'high' | 'max'
   inputs?: string[]
+  price_in?: string
+  price_out?: string
+}
+
+export interface ModelConfigView {
+  providers: ProviderView[]
+  routing: Record<string, string | string[]>
+  routing_layers: { workspace: Record<string, string | string[]>; personal: Record<string, string | string[]> }
+  me: { role: string; is_ws_admin: boolean; use_workspace_models: boolean; allow_personal_models: boolean }
+  config_path: string | null
+}
+
+export interface UsageRow { provider?: string; scope?: ProviderScope; model?: string; user_id?: string; name?: string; calls: number; tokens?: number; input_tokens?: number; output_tokens?: number; cost: string }
+export interface ModelUsage {
+  days: number
+  view: 'me' | 'workspace'
+  total: { calls: number; tokens: number; cost: string }
+  by_model: UsageRow[]
+  by_user: UsageRow[]
+  daily: { day: string; tokens: number; calls: number; cost: string }[]
+  my_limits: LimitStatus[]
+}
+
+export interface MemberModelPolicy {
+  user_id: string; name: string; email: string; role: string
+  use_workspace_models: boolean; allow_personal_models: boolean
+  limits: LimitRule[]; limit_status: LimitStatus[]
+  usage_30d: { calls: number; tokens: number; cost: string }
+}
+
+export interface QuotaRequest extends LimitRule {
+  id: string; user_id: string; user_name?: string; reason: string
+  status: 'pending' | 'approved' | 'denied'; note?: string; created_ms: number; decided_ms?: number
 }
 
 export interface PostSummary {
@@ -536,15 +583,23 @@ export const v3 = {
   llmStatus: () => get<LlmStatus>('/api/config/status'),
 
   /* AI 模型 */
-  config: () =>
-    get<{ providers: ProviderView[]; routing: Record<string, string | string[]>; config_path: string | null }>('/api/config'),
-  saveProvider: (p: { name: string; type: string; base_url: string; api_key: string; models: string[]; model_settings?: Record<string, ModelSetting> }) =>
-    post<{ ok: boolean; provider: ProviderView }>('/api/config/providers', p),
-  deleteProvider: (name: string) => del<{ ok: boolean }>(`/api/config/providers/${name}`),
+  config: () => get<ModelConfigView>('/api/config'),
+  saveProvider: (p: {
+    name: string; scope?: ProviderScope; label?: string; type: string; base_url: string; api_key: string; models: string[]
+    model_settings?: Record<string, ModelSetting>; currency?: 'CNY' | 'USD'; fx_rate?: string; limits?: LimitRule[]
+  }) => post<{ ok: boolean; provider: ProviderView }>('/api/config/providers', p),
+  deleteProvider: (name: string, scope?: ProviderScope) => del<{ ok: boolean }>(`/api/config/providers/${name}${scope ? `?scope=${scope}` : ''}`),
   discoverModels: (p: { name: string; type: string; base_url: string; api_key: string }) =>
     post<{ models: string[] }>('/api/config/providers/discover', p),
-  saveRouting: (p: { default: string; code_gen: string; reasoning: string; report: string; fallback: string[] }) =>
-    put<{ ok: boolean }>('/api/config/routing', p),
+  modelUsage: (days = 30, view: 'me' | 'workspace' = 'me') => get<ModelUsage>(`/api/config/usage?days=${days}&view=${view}`),
+  memberPolicies: () => get<{ members: MemberModelPolicy[] }>('/api/config/members'),
+  setMemberPolicy: (userId: string, p: { use_workspace_models?: boolean; allow_personal_models?: boolean; limits?: LimitRule[] }) =>
+    put<{ ok: boolean }>(`/api/config/members/${userId}`, p),
+  quotaRequests: () => get<{ requests: QuotaRequest[] }>('/api/config/quota-requests'),
+  requestQuota: (p: LimitRule & { reason: string }) => post<{ ok: boolean; request: QuotaRequest }>('/api/config/quota-requests', p),
+  decideQuota: (id: string, approve: boolean, note = '') => post<{ ok: boolean }>(`/api/config/quota-requests/${id}/decide`, { approve, note }),
+  saveRouting: (p: { default: string; code_gen: string; reasoning: string; report: string; fallback: string[] }, scope?: ProviderScope) =>
+    put<{ ok: boolean }>(`/api/config/routing${scope ? `?scope=${scope}` : ''}`, p),
 
   /* 纸面模拟 */
   paperSessions: () =>

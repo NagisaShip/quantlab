@@ -227,7 +227,7 @@ def overview() -> dict:
             for t in team_runs
         ],
         "models": s.router.available_models(),
-        "routing": s.config.routing,
+        "routing": s.router.config.routing,
         "disclaimer": "仅为研究结果，非投资建议。",
     }
 

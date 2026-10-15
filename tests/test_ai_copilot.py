@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from quant_agent.agents.copilot import StrategyCopilot, parse_intent, smoke_test
 from quant_agent.api.app import create_app
-from quant_agent.api.deps import AppServices, get_services, reset_services, set_services
+from quant_agent.api.deps import AppServices, reset_services, set_services
 from quant_agent.llm.base import ChatResult, LLMError
 
 GOOD = """```python
@@ -161,10 +161,11 @@ def test_generate_and_save_as_draft(client):
     assert client.get("/api/ai/history").json()["items"][0]["action"] == "generate"
 
 
-def test_placeholder_keys_are_not_counted_as_configured(client):
+def test_no_builtin_providers(client):
+    """平台不内置服务商：新工作区里一个都没有，AI 走模板降级。"""
     cfg = client.get("/api/config").json()
-    remote = [p for p in cfg["providers"] if p["name"] != "local"]
-    assert remote and not any(p["has_key"] for p in remote)
+    assert cfg["providers"] == []
+    assert client.get("/api/config/models").json()["models"] == []
     assert client.get("/api/config/status").json()["ready"] is False
 
 
@@ -182,19 +183,21 @@ def test_provider_key_from_ui_is_persisted_and_masked(client, tmp_path):
     assert r.status_code == 200, r.text
     masked = r.json()["provider"]["key_masked"]
     assert masked.startswith("sk-t") and "1234567890" not in masked
+    assert r.json()["provider"]["scope"] == "workspace"  # 管理员默认登记为工作区共享
     cfg = client.get("/api/config").json()
     mine = next(p for p in cfg["providers"] if p["name"] == "myllm")
-    assert mine["has_key"] and mine["key_source"] == "界面配置"
+    assert mine["has_key"] and "sk-test" not in str(cfg)
     # 路由改到新模型后，status 显示可用
-    assert client.put("/api/config/routing", json={"default": "myllm/m-1", "code_gen": "myllm/m-1"}).status_code == 200
+    r = client.put("/api/config/routing?scope=workspace", json={"default": "myllm/m-1", "code_gen": "myllm/m-1"})
+    assert r.status_code == 200, r.text
     assert client.get("/api/config/status").json()["ready"] is True
-    # 重新构建服务（模拟重启）：密钥仍在
+    # 重新构建服务（模拟重启）：密钥与路由仍在
     set_services(AppServices.build(store_root=str(tmp_path)))
-    assert get_services().config.providers["myllm"].api_key == "sk-test-1234567890"
-    assert get_services().config.routing["default"] == "myllm/m-1"
+    assert client.get("/api/config").json()["routing"]["default"] == "myllm/m-1"
+    assert any(m["target"] == "myllm/m-1" and m["ready"] for m in client.get("/api/config/models").json()["models"])
     # 删除
-    assert client.delete("/api/config/providers/myllm").json()["ok"]
-    assert "myllm" not in get_services().config.providers
+    assert client.delete("/api/config/providers/myllm?scope=workspace").json()["ok"]
+    assert client.get("/api/config").json()["providers"] == []
 
 
 def test_routing_rejects_unknown_model(client):

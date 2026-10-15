@@ -226,6 +226,44 @@ def test_llm_chat_uses_tools_and_asks_user(client):
     assert "【目标】" in router.calls[0]["messages"][1].content
 
 
+def test_manual_permission_waits_for_approval_before_edits_and_runs(client):
+    """手动模式：模型想写代码，先发审批卡片、不改项目；批准后才落地，再接着对话。"""
+    router = ScriptedRouter(
+        [
+            ChatResult(
+                content="我打算这样改。",
+                model="m",
+                provider="fake",
+                tool_calls=[ToolCall(id="1", name="write_strategy", arguments={"code": GOOD, "note": "均线"})],
+            ),
+            "代码已经提交，接下来可以回测。",
+        ]
+    )
+    get_services().router = router
+    p = _project(client, model="fake/fake-1")
+    patched = client.patch(f"/api/lab/projects/{p['id']}", json={"permission": "manual"}).json()
+    assert patched["project"]["permission"] == "manual"
+    view = client.post(f"/api/lab/projects/{p['id']}/messages", json={"text": "写个均线策略", "wait": True}).json()
+    ask = view["messages"][-1]
+    assert ask["kind"] == "ask" and ask["data"]["options"] == ["批准", "拒绝"]
+    assert ask["data"]["approval"][0]["tool"] == "write_strategy"
+    assert view["project"]["current_v"] == 0 and view["project"]["status"] == "awaiting_user"
+    view = client.post(f"/api/lab/projects/{p['id']}/decision", json={"choice": "批准", "wait": True}).json()
+    assert view["project"]["current_v"] == 1
+    assert view["messages"][-1]["content"].startswith("代码已经提交")
+
+
+def test_plan_permission_hides_edit_tools_and_asks_to_execute(client):
+    router = ScriptedRouter(["计划：1. 写均线策略 2. 回测 3. 看回撤"])
+    get_services().router = router
+    p = _project(client, model="fake/fake-1", permission="plan")
+    view = client.post(f"/api/lab/projects/{p['id']}/messages", json={"text": "做个均线策略", "wait": True}).json()
+    names = {t.name for t in router.calls[0]["tools"]}
+    assert "write_strategy" not in names and "run_backtest" not in names and "ask_user" in names
+    assert "【计划模式】" in router.calls[0]["messages"][-1].content
+    assert view["messages"][-1]["data"]["options"] == ["按计划执行", "修改计划"]
+
+
 def test_llm_autopilot_revises_with_backtest_feedback(client):
     revised = GOOD.replace('"weight": 0.6', '"weight": 0.4')
     router = ScriptedRouter([f"一句话\n```python\n{GOOD}```", f"降低仓位\n```python\n{revised}```"])

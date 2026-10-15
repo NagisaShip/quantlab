@@ -343,7 +343,7 @@ class DomainLab(StrategyLab):
         project = self.store.get(pid) or {}
         spec = self.project_spec(project)
         check = self.check_goal(project, spec)
-        if check["verdict"] == "unreasonable" and not force:
+        if check["verdict"] == "unreasonable" and not force and project.get("permission") != "bypass":
             self._post(
                 pid,
                 role="event",
@@ -543,6 +543,8 @@ class DomainLab(StrategyLab):
         self._post(pid, role="user", kind="text", content=choice + (f"：{note}" if note else ""))
 
     def decide(self, pid: str, choice: str, note: str = "") -> None:
+        if self._decide_permission(pid, choice, note):
+            return
         if choice in self.save_choices:
             self._answer_open(pid, choice, note)
             self.save_to_library(pid, status="active" if choice == self.save_choices[0] else "candidate")

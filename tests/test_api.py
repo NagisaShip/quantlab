@@ -34,7 +34,7 @@ def test_config_endpoints(client):
 
     r = client.get("/api/config/models")
     assert r.status_code == 200
-    assert any("target" in m for m in r.json()["models"])
+    assert r.json()["models"] == []  # 不内置服务商
 
     r = client.get("/api/config/presets")
     presets = r.json()["presets"]

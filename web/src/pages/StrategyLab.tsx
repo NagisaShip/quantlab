@@ -1,14 +1,15 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   isSpecKind, lab, mergeBySeq,
   type ContextView, type Effort, type Executor, type FactorSummary, type GoalSpec, type LabKind, type LabMessage, type LabMeta,
-  type LabProject, type LabProjectBrief, type Metrics,
+  type LabProject, type LabProjectBrief, type Metrics, type Permission,
 } from '../apiLab'
 import { Avatar } from '../components/Avatar'
 import { store } from '../components/prefs'
 import { clearLabDraft, peekLabDraft, type LabDraft } from '../components/handoff'
 import { AssistantText, EventLine, ToolLine, UserBubble, Working } from '../components/chat/Blocks'
-import { Composer, ContextRing, ModelMenu, PlusMenu, usePopover, type SlashCommand } from '../components/chat/Composer'
+import { Composer, ContextRing, ModelMenu, usePopover, type SlashCommand } from '../components/chat/Composer'
+import { ActionMenu, AutoIterateRow, ContextStats, Icons, PermissionMenu, useFilePicker, type ActionItem } from '../components/chat/LabControls'
 import { CodeEditor } from '../components/CodeEditor'
 import { DiffView } from '../components/Diff'
 import { Markdown } from '../components/markdown'
@@ -32,13 +33,13 @@ const EXAMPLES = [
   'BTC、ETH、SOL 每周动量轮动，只持有最强的一个',
 ]
 
+/** 新建项目页只有 /goal；项目里的完整命令见 buildCommands。 */
 const SLASH: SlashCommand[] = [
-  { cmd: '/goal', help: '设定目标：指标条件、回测范围、轮数' },
-  { cmd: '/回测', help: '用平台回测跑当前版本' },
-  { cmd: '/解释', help: '逐段解释当前策略' },
-  { cmd: '/团队', help: '召集团队评审，可接议题' },
-  { cmd: '/迭代', help: '按验收目标自动迭代' },
+  { cmd: '/goal', help: '设定目标：指标条件、回测范围、轮数', group: '迭代', arg: '[描述]' },
 ]
+const PERMISSION_ALIAS: Record<string, Permission> = {
+  auto: 'auto', manual: 'manual', edits: 'accept_edits', accept: 'accept_edits', accept_edits: 'accept_edits', plan: 'plan', bypass: 'bypass',
+}
 
 const LEGACY_METRIC: Record<string, string> = { min_sharpe: 'sharpe', max_drawdown: 'max_drawdown', min_trades: 'trades', min_excess: 'excess_return' }
 
@@ -242,7 +243,7 @@ function Welcome({ meta, notify, onCreated, railOpen, onToggleRail }: {
                 <button type="button" aria-label="移除附带内容" onClick={() => setDraft(null)}>×</button>
               </div>
             )}
-            <GoalChips items={spec.items} metrics={metrics} onOpen={() => setGoalOpen(goalOpen ? null : { initial: spec })} />
+            {spec.items.length > 0 && <GoalChips items={spec.items} metrics={metrics} onOpen={() => setGoalOpen(goalOpen ? null : { initial: spec })} />}
           </>}
           left={<>
             <div className="cmp-seg" role="group" aria-label="研究类型">
@@ -338,6 +339,8 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, railO
   const [compacting, setCompacting] = useState(false)
   const [goalOpen, setGoalOpen] = useState<{ initial: GoalSpec; unparsed?: string } | null>(null)
   const [goalBusy, setGoalBusy] = useState(false)
+  const [ctxAt, setCtxAt] = useState<number | undefined>()
+  const [rounds, setRounds] = useState<number | null>(null)
   const cursor = useRef({ after: 0, since: 0 })
   const scroller = useRef<HTMLDivElement>(null)
   const stick = useRef(true)
@@ -346,7 +349,7 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, railO
 
   const apply = useCallback((v: { project: LabProject; messages: LabMessage[]; server_time: number; context?: ContextView }, full = false) => {
     setProject(v.project)
-    if (v.context) setContext(v.context)
+    if (v.context) { setContext(v.context); setCtxAt(Date.now()) }
     setMessages((prev) => (full ? v.messages : mergeBySeq(prev, v.messages)))
     const maxSeq = v.messages.reduce((a, m) => Math.max(a, m.seq), full ? 0 : cursor.current.after)
     cursor.current = { after: maxSeq, since: v.server_time }
@@ -419,6 +422,14 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, railO
   const send = async (text?: string) => {
     const t = (text ?? input).trim()
     if (!t || !project) return
+    const [head, ...restParts] = t.split(/\s+/)
+    const local = text === undefined ? commands.find((c) => c.cmd === head && c.run) : undefined
+    if (local) {
+      setInput('')
+      if (local.disabled) { notify(`${local.cmd} 现在不可用`, true); return }
+      local.run!(restParts.join(' ').trim())
+      return
+    }
     if (/^\/goal\b/.test(t)) {
       setInput('')
       const rest = t.replace(/^\/goal\s*/, '')
@@ -452,6 +463,22 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, railO
     try { apply(await lab.compact(id)) } catch (e) { notify((e as Error).message, true) } finally { setCompacting(false) }
   }
 
+  const onFiles = useCallback(async (files: File[]) => {
+    const images = files.filter((f) => f.type.startsWith('image/'))
+    const texts = files.filter((f) => !f.type.startsWith('image/'))
+    for (const f of texts) {
+      if (f.size > 2_000_000) { notify(`${f.name} 太大（超过 2 MB），已跳过`, true); continue }
+      const text = await f.text()
+      try {
+        await lab.pin(id, { kind: 'file', title: f.name.slice(0, 60), text: text.slice(0, 4000) })
+        notify(text.length > 4000 ? `已钉住 ${f.name}（只保留前 4000 字）` : `已钉住 ${f.name}`)
+      } catch (e) { notify((e as Error).message, true) }
+    }
+    if (images.length) notify('图片还不能作为模型输入：当前对话只支持文本；可以把图片里的要点写下来再发送', true)
+    if (texts.length) pull().catch(() => undefined)
+  }, [id, notify, pull])
+  const pickFiles = useFilePicker(onFiles)
+
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const panelSpec = useMemo(() => (project ? projectSpec(project) : null), [project?.updated_at, project?.id])
 
@@ -470,6 +497,45 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, railO
       const r = await lab.saveStrategy(id); notify(`已保存为策略「${r.strategy.name}」`)
     }
   })
+  const roundsNow = rounds ?? project.max_rounds
+  const startAuto = (n: number) => act(async () => {
+    if (n !== project.max_rounds) await lab.update(id, { max_rounds: n })
+    await lab.autopilot(id, { rounds: n })
+  })
+  const setPermission = (p: Permission) => { patch({ permission: p }); notify(`权限模式：${({ auto: '自动', manual: '手动', accept_edits: '接受编辑', plan: '计划', bypass: '跳过权限确认' } as Record<Permission, string>)[p]}`) }
+  const noCode = !project.code
+  const evalLabel = ui ? `${ui.evaluate}当前${ui.noun}` : '回测当前版本'
+  const commands: SlashCommand[] = [
+    { cmd: ui ? '/eval' : '/backtest', group: '运行', help: evalLabel, run: () => act(() => lab.backtest(id)), disabled: running || noCode },
+    ...(!ui || project.kind === 'factor' ? [{ cmd: '/stress', group: '运行', help: ui ? '2× 成本评估（只看，不改成绩）' : '2× 成本压力测试', run: () => act(() => lab.backtest(id, 2)), disabled: running || noCode }] : []),
+    ...(!ui ? [{ cmd: '/walkforward', group: '运行', arg: '[段数]', help: '分段回测：检查是否只在某段有效', run: (a: string) => act(() => lab.walkForward(id, Math.min(6, Math.max(2, Number(a) || 3)))), disabled: running || noCode }] : []),
+    { cmd: '/auto', group: '迭代', arg: '[轮数]', help: `按目标自动迭代（现在 ${roundsNow} 轮）`, run: (a: string) => startAuto(Math.min(8, Math.max(1, Number(a) || roundsNow))), disabled: running },
+    { cmd: '/goal', group: '迭代', arg: '[描述]', help: '设定目标：指标条件、回测范围、轮数' },
+    { cmd: '/explain', group: '协作', help: ui ? `解释当前${ui.noun}的逻辑与风险` : '逐段解释当前策略', run: () => send('/explain'), disabled: running || noCode },
+    { cmd: '/team', group: '协作', arg: '[议题]', help: ui ? '召集研究小组评审' : '召集团队评审', run: (a: string) => send(a ? `/team ${a}` : '/team'), disabled: running },
+    ...(ui ? [{ cmd: '/crew', group: '协作', help: project.executor === 'team' ? '自动迭代改为单个 AI 执行' : '自动迭代改为研究小组执行', run: () => patch({ executor: project.executor === 'team' ? 'solo' : 'team' }), disabled: running }] : []),
+    { cmd: '/pin', group: '上下文', arg: '[内容]', help: '钉一段材料到上下文', run: (a: string) => (a ? act(() => lab.pin(id, { kind: 'note', title: a.slice(0, 24), text: a })) : openPanel('context')) },
+    { cmd: '/compact', group: '上下文', help: '把较早的对话压缩成摘要', run: () => compact(), disabled: running || compacting },
+    { cmd: '/context', group: '上下文', help: '查看上下文用量', run: () => openPanel('context') },
+    { cmd: '/save', group: '项目', help: ui ? `存入${ui.libraryName}` : (project.slug ? '更新平台策略' : '保存为平台策略'), run: () => saveOut(), disabled: running || noCode },
+    { cmd: '/mode', group: '项目', arg: '[auto|manual|edits|plan|bypass]', help: '切换权限模式', run: (a: string) => (PERMISSION_ALIAS[a.toLowerCase()] ? setPermission(PERMISSION_ALIAS[a.toLowerCase()]) : notify('用法：/mode auto | manual | edits | plan | bypass', true)) },
+  ]
+  const plusItems: ActionItem[] = [
+    { label: '添加文件或照片', icon: Icons.attach, hint: '文本、CSV、JSON 会钉进上下文', onClick: pickFiles },
+    { label: '斜杠命令', icon: Icons.slash, hint: '/backtest、/auto、/team…', onClick: () => setInput('/') },
+    {
+      label: '插件', icon: Icons.plugin, submenu: [
+        ...(ui ? [{ label: '研究小组执行', icon: Icons.team, hint: '自动迭代时由小组讨论后再实现', checked: project.executor === 'team', onClick: () => patch({ executor: project.executor === 'team' ? 'solo' : 'team' }), disabled: running }] : []),
+        { label: '团队评审', icon: Icons.team, hint: '/team', onClick: () => send('/team'), disabled: running },
+        { label: '钉一段材料', icon: Icons.pin, hint: '/pin', onClick: () => openPanel('context') },
+        { label: ui ? `存入${ui.libraryName}` : '保存为平台策略', icon: Icons.save, hint: '/save', onClick: saveOut, disabled: running || noCode },
+        { label: '联网搜索与模型…', icon: Icons.search, hint: '在设置里配置', onClick: () => onNavigate('models') },
+      ],
+    },
+    { label: '自动迭代', divider: true, render: () => (
+      <AutoIterateRow rounds={roundsNow} disabled={running} onRounds={(n) => { setRounds(n); lab.update(id, { max_rounds: n }).catch(() => undefined) }} onStart={startAuto} />
+    ) },
+  ]
   const lastAsk = [...messages].reverse().find((m) => m.kind === 'ask')
   const streamingNow = messages.some((m) => m.data?.streaming)
 
@@ -517,36 +583,22 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, railO
             </div>
           )}
           <Composer value={input} onChange={setInput} onSend={() => send()} running={running} onStop={() => act(() => lab.stop(id))}
-            commands={ui ? ui.slash : SLASH} placeholder={running ? '正在处理，可随时停止' : ui ? ui.replyPlaceholder : '回复…'}
-            above={<GoalChips items={projectItems(project)} metrics={metricsOf(dmeta)}
-              onOpen={() => setGoalOpen(goalOpen ? null : { initial: projectSpec(project) })} />}
-            left={<PlusMenu items={ui ? [
-              { label: '自动迭代', hint: `最多 ${project.max_rounds} 轮`, onClick: () => act(() => lab.autopilot(id, {})), disabled: running },
-              { label: `${ui?.evaluate}当前${ui?.noun}`, onClick: () => act(() => lab.backtest(id)), disabled: running || !project.code },
-              ...(project.kind === 'factor' ? [{ label: '2× 成本评估', hint: '只看，不改成绩', onClick: () => act(() => lab.backtest(id, 2)), disabled: running || !project.code }] : []),
-              { label: '设定目标', hint: '/goal', onClick: () => setGoalOpen({ initial: projectSpec(project) }) },
-              { label: `解释${ui?.noun}`, onClick: () => send('/解释'), disabled: running || !project.code },
-              { label: '召集研究小组', onClick: () => send('/团队'), disabled: running },
-              { label: project.executor === 'team' ? '改为单个 AI 执行' : '改为研究小组执行', hint: '自动迭代时', onClick: () => patch({ executor: project.executor === 'team' ? 'solo' : 'team' }), disabled: running },
-              { label: `存入${ui?.libraryName}`, onClick: saveOut, disabled: running || !project.code },
-              { label: '钉一段材料', hint: '加入上下文', onClick: () => openPanel('context') },
-            ] : [
-              { label: '自动迭代', hint: `最多 ${project.max_rounds} 轮`, onClick: () => act(() => lab.autopilot(id, {})), disabled: running },
-              { label: '回测当前版本', onClick: () => act(() => lab.backtest(id)), disabled: running || !project.code },
-              { label: '2× 成本压力测试', onClick: () => act(() => lab.backtest(id, 2)), disabled: running || !project.code },
-              { label: '分段回测', hint: '检查是否只在某段有效', onClick: () => act(() => lab.walkForward(id, 3)), disabled: running || !project.code },
-              { label: '设定目标', hint: '/goal', onClick: () => setGoalOpen({ initial: projectSpec(project) }) },
-              { label: '解释策略', onClick: () => send('/解释'), disabled: running || !project.code },
-              { label: '召集团队评审', onClick: () => send('/团队'), disabled: running },
-              { label: '钉一段材料', hint: '加入上下文', onClick: () => openPanel('context') },
-            ]} />}
+            commands={commands} placeholder={running ? '正在处理，可随时停止' : ui ? ui.replyPlaceholder : '回复…'}
+            above={(goalOpen || (running && project.job?.kind === 'autopilot')) ? (
+              <GoalChips items={projectItems(project)} metrics={metricsOf(dmeta)}
+                onOpen={() => setGoalOpen(goalOpen ? null : { initial: projectSpec(project) })} />
+            ) : undefined}
+            left={<>
+              <ActionMenu items={plusItems} />
+              <PermissionMenu value={project.permission} onChange={setPermission} disabled={running} />
+            </>}
             right={<>
               {meta && (
                 <ModelMenu models={meta.models} value={project.model} defaultModel={meta.default_model}
                   effort={project.effort || 'medium'} efforts={meta.efforts}
                   onModel={(m) => patch({ model: m })} onEffort={(e) => patch({ effort: e })} />
               )}
-              <ContextRing context={context} onCompact={compact} compacting={compacting} onManage={() => openPanel('context')} />
+              <ContextRing context={context} updatedAt={ctxAt} onCompact={compact} compacting={compacting} onManage={() => openPanel('context')} />
             </>} />
         </div>
       </section>
@@ -559,29 +611,38 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, railO
               <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden><path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>
             </button>
           </div>
-          <div className="lab2-panel-body">
-            {panel === 'code' && isModel && <ModelPanel project={project} running={running}
-              onSave={(code) => act(() => lab.saveCode(id, code, '手动修改训练规格'))} onSaveLibrary={saveOut}
-              onTrain={() => act(() => lab.backtest(id))} onOpenModel={(mid) => onNavigate(`modellib/${mid}`)} />}
-            {panel === 'code' && project.kind === 'portfolio' && <PortfolioPanel project={project} running={running}
-              onSave={(code) => act(() => lab.saveCode(id, code, '手动修改配置方案'))} onSaveLibrary={saveOut}
-              onRun={() => act(() => lab.backtest(id))} onOpenScheme={(sid) => onNavigate(`portfolio/${sid}`)} />}
-            {panel === 'code' && project.kind === 'execution' && <ExecutionPanel project={project} running={running}
-              onSave={(code) => act(() => lab.saveCode(id, code, '手动修改执行方案'))} onSaveLibrary={saveOut}
-              onRun={() => act(() => lab.backtest(id))} onOpenScheme={(sid) => onNavigate(`execution/${sid}`)} />}
-            {panel === 'code' && project.kind === 'factor' && <FactorPanel project={project} running={running}
-              onSave={(code) => act(() => lab.saveCode(id, code, '手动修改表达式'))} onSaveLibrary={saveOut}
-              onEvaluate={() => act(() => lab.backtest(id))} onOpenFactor={(fid) => onNavigate(`factors/${fid}`)} />}
-            {panel === 'code' && !isFactor && <CodeTab project={project} onSave={(code) => act(() => lab.saveCode(id, code))}
-              onSaveStrategy={saveOut}
-              onOpenEditor={(slug) => onNavigate(`editor/${slug}`)} />}
-            {panel === 'versions' && <VersionsTab project={project} metrics={metricsOf(dmeta)} onRestore={(v) => act(() => lab.restore(id, v))}
-              onOpenBacktest={(btId) => onNavigate(`backtest/${btId}`)} />}
-            {panel === 'context' && context && <ContextTab context={context} compacting={compacting} onCompact={compact}
-              onUnpin={(pid) => act(() => lab.unpin(id, pid))}
-              onPin={(title, text) => act(() => lab.pin(id, { kind: 'note', title, text }))} />}
-            {panel === 'goals' && <GoalForm meta={dmeta} domain={project.kind} initial={panelSpec} projectId={id} compact submitting={goalBusy || running}
-              onSubmit={saveGoal} />}
+          <div className="lab2-panel-body side-cards">
+            <SideCard id="code" focus={panel} title={ui ? ui.panelLabel : '代码'} meta={project.code ? `v${project.current_v}` : '还没有'}>
+              {isModel && <ModelPanel project={project} running={running}
+                onSave={(code) => act(() => lab.saveCode(id, code, '手动修改训练规格'))} onSaveLibrary={saveOut}
+                onTrain={() => act(() => lab.backtest(id))} onOpenModel={(mid) => onNavigate(`modellib/${mid}`)} />}
+              {project.kind === 'portfolio' && <PortfolioPanel project={project} running={running}
+                onSave={(code) => act(() => lab.saveCode(id, code, '手动修改配置方案'))} onSaveLibrary={saveOut}
+                onRun={() => act(() => lab.backtest(id))} onOpenScheme={(sid) => onNavigate(`portfolio/${sid}`)} />}
+              {project.kind === 'execution' && <ExecutionPanel project={project} running={running}
+                onSave={(code) => act(() => lab.saveCode(id, code, '手动修改执行方案'))} onSaveLibrary={saveOut}
+                onRun={() => act(() => lab.backtest(id))} onOpenScheme={(sid) => onNavigate(`execution/${sid}`)} />}
+              {project.kind === 'factor' && <FactorPanel project={project} running={running}
+                onSave={(code) => act(() => lab.saveCode(id, code, '手动修改表达式'))} onSaveLibrary={saveOut}
+                onEvaluate={() => act(() => lab.backtest(id))} onOpenFactor={(fid) => onNavigate(`factors/${fid}`)} />}
+              {!isFactor && <CodeTab project={project} onSave={(code) => act(() => lab.saveCode(id, code))}
+                onSaveStrategy={saveOut}
+                onOpenEditor={(slug) => onNavigate(`editor/${slug}`)} />}
+            </SideCard>
+            <SideCard id="versions" focus={panel} title="迭代" meta={project.versions.length ? `${project.versions.length} 个版本` : '还没有'}>
+              <VersionsTab project={project} metrics={metricsOf(dmeta)} onRestore={(v) => act(() => lab.restore(id, v))}
+                onOpenBacktest={(btId) => onNavigate(`backtest/${btId}`)} />
+            </SideCard>
+            <SideCard id="context" focus={panel} title="上下文"
+              meta={context ? `已使用 ${Math.round((context.total / Math.max(1, context.budget)) * 100)}%` : ''}>
+              {context && <ContextTab context={context} updatedAt={ctxAt} compacting={compacting} onCompact={compact}
+                onUnpin={(pid) => act(() => lab.unpin(id, pid))}
+                onPin={(title, text) => act(() => lab.pin(id, { kind: 'note', title, text }))} />}
+            </SideCard>
+            <SideCard id="goals" focus={panel} title="目标" meta={projectItems(project).length ? `${projectItems(project).length} 个条件` : '未设置'}>
+              <GoalForm meta={dmeta} domain={project.kind} initial={panelSpec} projectId={id} compact submitting={goalBusy || running}
+                onSubmit={saveGoal} />
+            </SideCard>
           </div>
         </aside>
       )}
@@ -866,6 +927,35 @@ function TeamCard({ m }: { m: LabMessage }) {
 function AskCard({ m, active, onDecide }: { m: LabMessage; active: boolean; onDecide: (choice: string, note: string) => void }) {
   const [note, setNote] = useState('')
   const answered = m.data.answered
+  const approval = m.data.approval as { tool: string; label: string; args: Record<string, unknown> }[] | undefined
+  if (approval) {
+    return (
+      <div className={`lab2-ask approval${active ? ' active' : ''}`}>
+        <div className="approval-head">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" aria-hidden><path d="M8 2 3 4v3.6c0 3 2.1 5.4 5 6.4 2.9-1 5-3.4 5-6.4V4Z" /></svg>
+          <b>需要你批准</b><span className="lab2-faint">权限模式要求先确认</span>
+        </div>
+        <ul className="approval-list">
+          {approval.map((a, i) => (
+            <li key={i}>
+              <span>{a.label}</span>
+              {typeof a.args.code === 'string' && a.args.code && (
+                <details><summary>查看代码</summary><pre className="approval-code">{a.args.code}</pre></details>
+              )}
+            </li>
+          ))}
+        </ul>
+        <div className="lab2-ask-options">
+          {(m.data.options || []).map((o: string) => (
+            <button key={o} className={`button small${answered === o || (active && o === '批准') ? ' primary' : ''}`} disabled={!active}
+              onClick={() => onDecide(o, note)}>{o}</button>
+          ))}
+        </div>
+        {active && <input className="lab2-ask-note" value={note} onChange={(e) => setNote(e.target.value)} placeholder="可选：补充说明，例如“先别回测，改一下止损”" />}
+        {answered && <div className="lab2-faint">已选择：{answered}</div>}
+      </div>
+    )
+  }
   return (
     <div className={`lab2-ask${active ? ' active' : ''}`}>
       <Markdown text={m.content} compact />
@@ -954,35 +1044,61 @@ function VersionsTab({ project, onRestore, onOpenBacktest, metrics }: { project:
   )
 }
 
-function ContextTab({ context, onUnpin, onPin, onCompact, compacting }: {
-  context: ContextView; onUnpin: (id: string) => void; onPin: (title: string, text: string) => void; onCompact: () => void; compacting: boolean
+function ContextTab({ context, updatedAt, onUnpin, onPin, onCompact, compacting }: {
+  context: ContextView; updatedAt?: number; onUnpin: (id: string) => void; onPin: (title: string, text: string) => void; onCompact: () => void; compacting: boolean
 }) {
   const [title, setTitle] = useState('')
   const [text, setText] = useState('')
-  const used = Math.min(100, (context.total / Math.max(1, context.budget)) * 100)
+  const pins = context.items.filter((it) => it.pin_id)
   return (
     <div className="lab2-ctx">
-      <div className="lab2-ctx-sum">
-        <span>{context.total.toLocaleString()} / {context.budget.toLocaleString()} tokens</span>
+      <ContextStats context={context} updatedAt={updatedAt} />
+      <div className="side-sub">
+        <div className="side-sub-head"><b>钉住的材料</b><span>{pins.length ? `${pins.length} 份` : '没有'}</span></div>
+        {pins.length > 0 && (
+          <ul className="lab2-ctx-list">
+            {pins.map((it) => (
+              <li key={it.key} className="anim-in">
+                <span>{it.title}</span>
+                <span className="lab2-faint">{it.tokens.toLocaleString()}</span>
+                <button className="link" onClick={() => onUnpin(it.pin_id!)}>移除</button>
+              </li>
+            ))}
+          </ul>
+        )}
+        <details className="lab2-ctx-add">
+          <summary>＋ 钉一段材料</summary>
+          <input placeholder="标题" value={title} onChange={(e) => setTitle(e.target.value)} />
+          <textarea rows={4} placeholder="调研结论、交易限制、观察到的现象" value={text} onChange={(e) => setText(e.target.value)} />
+          <button className="button small" disabled={!title.trim() || !text.trim()} onClick={() => { onPin(title, text); setTitle(''); setText('') }}>钉住</button>
+        </details>
+      </div>
+      <div className="button-row" style={{ justifyContent: 'flex-end' }}>
         <button className="button small" disabled={compacting} onClick={onCompact}>{compacting ? '正在压缩…' : '压缩历史'}</button>
       </div>
-      <div className="cmp-ctx-bar"><i style={{ width: `${Math.max(1, used)}%` }} /></div>
-      <ul className="lab2-ctx-list">
-        {context.items.map((it) => (
-          <li key={it.key}>
-            <span>{it.title}</span>
-            <span className="lab2-faint">{it.tokens.toLocaleString()}</span>
-            {!it.fixed && it.pin_id ? <button className="link" onClick={() => onUnpin(it.pin_id!)}>移除</button> : <span />}
-          </li>
-        ))}
-      </ul>
-      <div className="lab2-ctx-add">
-        <b>钉一段材料</b>
-        <input placeholder="标题" value={title} onChange={(e) => setTitle(e.target.value)} />
-        <textarea rows={4} placeholder="调研结论、交易限制、观察到的现象" value={text} onChange={(e) => setText(e.target.value)} />
-        <button className="button small" disabled={!title.trim() || !text.trim()} onClick={() => { onPin(title, text); setTitle(''); setText('') }}>钉住</button>
-      </div>
     </div>
+  )
+}
+
+/** 侧栏卡片：标题行可折叠（状态记在本机），被面板标签点名时自动展开并滚到可见处。 */
+function SideCard({ id, title, meta, focus, children }: { id: PanelTab; title: string; meta?: string; focus: PanelTab | null; children: ReactNode }) {
+  const [open, setOpen] = useState(() => store.get(`qa.lab.card.${id}`, id === 'code' || id === 'context' ? '1' : '0') === '1')
+  const ref = useRef<HTMLElement>(null)
+  useEffect(() => {
+    if (focus !== id) return
+    setOpen(true)
+    requestAnimationFrame(() => ref.current?.scrollIntoView({ block: 'start', behavior: 'smooth' }))
+  }, [focus, id])
+  const toggle = () => { setOpen(!open); store.set(`qa.lab.card.${id}`, open ? '0' : '1') }
+  return (
+    <section ref={ref} className={`side-card card-${id}${open ? ' open' : ''}${focus === id ? ' focus' : ''}`}>
+      <button type="button" className="side-card-head" aria-expanded={open} onClick={toggle}>
+        <span className="side-card-title">{title}</span>
+        <svg className="side-card-chev" width="12" height="12" viewBox="0 0 12 12" aria-hidden fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="m3 4.5 3 3 3-3" /></svg>
+        <span className="side-card-meta">{meta}</span>
+      </button>
+      {open && <div className="side-card-body anim-expand">{children}</div>}
+    </section>
   )
 }
 

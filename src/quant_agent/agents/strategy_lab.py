@@ -173,6 +173,9 @@ def new_project(payload: dict[str, Any]) -> dict[str, Any]:
         "start": payload.get("start"),
         "end": payload.get("end"),
         "max_rounds": int(payload.get("max_rounds") or 4),
+        # 权限模式：auto 自动 | manual 手动（改动与运行都先问）| accept_edits 自动接受代码改动、运行先问
+        # | plan 先出计划再动手 | bypass 跳过一切确认（含开始迭代前的目标检查）
+        "permission": payload.get("permission") or "auto",
         "bars_limit": int(payload.get("bars_limit") or 1500),
         "data_source": payload.get("data_source") or "auto",  # auto | exchange | synthetic
         "code": "",
@@ -425,6 +428,52 @@ class StopRequested(Exception):
 # ---------------------------------------------------------------------------
 # 引擎
 # ---------------------------------------------------------------------------
+#: 对话回合里会改动项目的工具（代码 / 规格 / 目标）与会运行计算或产生副作用的工具。
+#: 其余工具（查行情、搜模板、列版本、检查目标、提问）只读，任何权限模式下都可以直接用。
+EDIT_TOOLS = frozenset(
+    {
+        "write_strategy", "write_factor", "write_model_spec", "write_portfolio", "write_execution",
+        "set_goal", "set_factor_goal", "set_model_goal", "set_portfolio_goal", "set_execution_goal",
+    }
+)
+RUN_TOOLS = frozenset(
+    {
+        "run_backtest", "walk_forward", "evaluate_factor", "train_model", "evaluate_portfolio",
+        "evaluate_execution", "convene_team",
+    }
+)
+PERMISSIONS = ("auto", "manual", "accept_edits", "plan", "bypass")
+APPROVE, REJECT = "批准", "拒绝"
+PLAN_GO, PLAN_EDIT = "按计划执行", "修改计划"
+PLAN_HINT = (
+    "【计划模式】这一轮先不要修改代码 / 规格 / 目标，也不要运行回测或评估。"
+    "可以用只读工具调研，然后给出分步计划：要改什么、为什么、怎么验证、预期结果与风险。研究者确认后才会执行。"
+)
+
+
+def _gated(mode: str, name: str) -> bool:
+    """这个工具在当前权限模式下是否需要研究者先批准。"""
+    if mode == "manual":
+        return name in EDIT_TOOLS or name in RUN_TOOLS
+    if mode == "accept_edits":
+        return name in RUN_TOOLS
+    return False
+
+
+def _describe_call(name: str, args: dict[str, Any]) -> str:
+    note = str(args.get("note") or args.get("topic") or "").strip()
+    if name in EDIT_TOOLS:
+        what = "修改目标" if name.startswith("set_") else "提交一版新代码 / 规格"
+    elif name == "convene_team":
+        what = "召集团队讨论"
+    elif name == "walk_forward":
+        what = "做分段回测"
+    else:
+        scale = args.get("cost_scale")
+        what = "运行回测 / 评估" + (f"（{scale}× 成本）" if scale and float(scale) != 1 else "")
+    return what + (f"：{note[:80]}" if note else "")
+
+
 class StrategyLab:
     #: 研究类型；因子 / 模型等研究室继承本类，复用对话、工具卡片、上下文与后台回合
     kind = "strategy"
@@ -610,13 +659,17 @@ class StrategyLab:
             self._chat_fallback(pid, text, str(exc))
 
     # ---------------- 带工具的模型回合 ----------------
-    def _chat_llm(self, pid: str, text: str) -> None:
+    def _chat_llm(self, pid: str, text: str, mode: str | None = None) -> None:
         project = self.store.get(pid) or {}
+        mode = mode or project.get("permission") or "auto"
         router = self._router_for(project)
         messages = self.build_messages(project, exclude_last_user=True)
-        messages.append(Message(role="user", content=text))
+        messages.append(Message(role="user", content=f"{PLAN_HINT}\n\n{text}" if mode == "plan" else text))
         tools = self._chat_tools(pid)
+        if mode == "plan":
+            tools = {k: t for k, t in tools.items() if k not in EDIT_TOOLS and k not in RUN_TOOLS}
         asked = False
+        pending: list[dict[str, Any]] = []
         stream = _Streamer(self, pid)
         for step in range(10):
             self._check_stop(pid)
@@ -633,6 +686,9 @@ class StrategyLab:
                 content = re.sub(r"```(?:python|py)?\s*\n.*?```", "（代码已提交到编辑器）", content, flags=re.S)
             stream.finish(content, model=model, thinking=getattr(result, "thinking", "") or "")
             if not result.tool_calls:
+                if mode == "plan":
+                    self._ask(pid, "按这个计划执行吗？也可以写下要改的地方。", [PLAN_GO, PLAN_EDIT], decision=True)
+                    self.store.update(pid, self.store.messages(pid)[-1]["seq"], data={"plan": True})
                 return
             messages.append(
                 Message(
@@ -645,7 +701,14 @@ class StrategyLab:
             )
             for call in result.tool_calls:
                 tool = tools.get(call.name)
-                if tool is None:
+                if tool is not None and _gated(mode, call.name):
+                    args = dict(call.arguments or {})
+                    pending.append({"tool": call.name, "args": args, "label": _describe_call(call.name, args)})
+                    output = json.dumps(
+                        {"pending_approval": True, "message": "已提交给研究者审批，批准后才会执行；本轮先停在这里"},
+                        ensure_ascii=False,
+                    )
+                elif tool is None:
                     output = json.dumps({"error": f"未知工具 {call.name}"}, ensure_ascii=False)
                 else:
                     try:
@@ -658,6 +721,9 @@ class StrategyLab:
                 messages.append(Message(role="tool", content=output[:6000], tool_call_id=call.id, name=call.name))
                 if call.name == "ask_user":
                     asked = True
+            if pending:
+                self._ask_approval(pid, pending)
+                return
             if asked:
                 return
         self._post(pid, role="event", kind="text", content="已达到单轮工具调用上限，先停在这里。你可以继续追问。")
@@ -1107,6 +1173,81 @@ class StrategyLab:
             self.pin(pid, kind="team", title=f"团队结论 · {topic[:20]}", text=run["synthesis"][:3000])
         return {"ok": run.get("status") == "done", "synthesis": (run.get("synthesis") or "")[:3000]}
 
+    # ---------------- 权限：审批 ----------------
+    def _ask_approval(self, pid: str, pending: list[dict[str, Any]]) -> None:
+        """手动 / 接受编辑模式下，模型想做的改动或运行先发一张审批卡片，研究者批准后才执行。"""
+        lines = "\n".join(f"- {p['label']}" for p in pending)
+        self._post(
+            pid,
+            role="assistant",
+            kind="ask",
+            content=f"AI 想执行以下操作，需要你批准：\n{lines}",
+            data={
+                "options": [APPROVE, REJECT],
+                "decision": True,
+                "answered": None,
+                "approval": [{"tool": p["tool"], "label": p["label"], "args": p["args"]} for p in pending],
+            },
+        )
+        self.store.patch(pid, status="awaiting_user")
+
+    def _decide_permission(self, pid: str, choice: str, note: str) -> bool:
+        """审批卡片与计划卡片的回答。处理了返回 True，否则交给各实验室自己的 decide。"""
+        open_ask = next(
+            (m for m in reversed(self.store.messages(pid)) if m["kind"] == "ask" and m["data"].get("answered") is None),
+            None,
+        )
+        if open_ask is None:
+            return False
+        data = open_ask["data"]
+        if data.get("approval") and choice in (APPROVE, REJECT):
+            self.store.update(pid, open_ask["seq"], data={"answered": choice})
+            self.store.patch(pid, status="idle")
+            self._post(pid, role="user", kind="text", content=choice + (f"：{note}" if note else ""))
+            if choice == REJECT:
+                if note:
+                    labels = "；".join(a["label"] for a in data["approval"])
+                    self._chat_or_note_llm(pid, f"我没有批准刚才的操作（{labels}）。{note}")
+                return True
+            tools = self._chat_tools(pid)
+            done = []
+            for a in data["approval"]:
+                tool = tools.get(a["tool"])
+                if tool is None:
+                    continue
+                try:
+                    out = tool.handler(**(a.get("args") or {}))
+                    ok = not (isinstance(out, dict) and out.get("ok") is False)
+                except StopRequested:
+                    raise
+                except Exception as exc:
+                    out, ok = {"error": str(exc)}, False
+                done.append(f"{a['label']}（{'完成' if ok else '失败'}）")
+            # 让模型接着刚才的思路继续；仍按项目的权限模式，后续操作照样要审批
+            self._chat_or_note_llm(pid, "我批准了，已执行：" + "；".join(done) + "。请看结果后继续。" + (note or ""))
+            return True
+        if data.get("plan") and choice in (PLAN_GO, PLAN_EDIT):
+            self.store.update(pid, open_ask["seq"], data={"answered": choice})
+            self.store.patch(pid, status="idle")
+            self._post(pid, role="user", kind="text", content=choice + (f"：{note}" if note else ""))
+            if choice == PLAN_GO:
+                # 研究者确认了计划：这一回合按「接受编辑」执行（改动直接落地，运行仍可在手动模式下审批）
+                text = "按上面的计划执行。" + (note or "")
+                try:
+                    self._chat_llm(pid, text, mode="auto")
+                except LLMError as exc:
+                    self._chat_fallback(pid, text, str(exc))
+            elif note:
+                self._chat_or_note_llm(pid, f"计划需要调整：{note}")
+            return True
+        return False
+
+    def _chat_or_note_llm(self, pid: str, text: str) -> None:
+        try:
+            self._chat_llm(pid, text)
+        except LLMError as exc:
+            self._chat_fallback(pid, text, str(exc))
+
     # ---------------- 提问 ----------------
     def _ask(self, pid: str, question: str, options: list[str] | None = None, *, decision: bool = False) -> None:
         opts = [o for o in (options or []) if o][:4] or ["满意", "继续优化", "换个方向"]
@@ -1324,7 +1465,7 @@ class StrategyLab:
         spec = G.project_spec(project)
         # 开始前先看目标是否合理：明显不合理就停下来问，而不是带着不可能的目标空转几轮
         check = G.check_spec(spec, history=_history_metrics(project))
-        if check["verdict"] == "unreasonable" and not force:
+        if check["verdict"] == "unreasonable" and not force and project.get("permission") != "bypass":
             self._post(
                 pid,
                 role="event",
@@ -1589,6 +1730,8 @@ class StrategyLab:
 
     # ---------------- 用户决定 ----------------
     def decide(self, pid: str, choice: str, note: str = "") -> None:
+        if self._decide_permission(pid, choice, note):
+            return
         msgs = [m for m in self.store.messages(pid) if m["kind"] == "ask" and m["data"].get("answered") is None]
         for m in msgs:
             self.store.update(pid, m["seq"], data={"answered": choice})

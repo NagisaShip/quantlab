@@ -1,0 +1,657 @@
+"""工作区模型中心：服务商、成员模型权限与限额、用量计量与价格换算。
+
+## 服务商从哪来
+
+平台不再内置任何服务商。模型只有两个来源：
+
+- **工作区共享**（scope=workspace）：工作区管理员登记，密钥属于管理员；成员在被允许
+  「使用工作区模型」时，调用请求走管理员的 API。
+- **个人**（scope=personal）：成员自己登记，只有本人可见、可用，费用记在本人名下。
+
+同名时个人服务商优先（对本人而言）。配置文件里的 provider 只给命令行用，Web 平台不读。
+
+## 密钥
+
+和交易所凭证一样用 SecretBox 加密后存进工作区 store 的服务商记录里，接口只回显脱敏值。
+
+## 用量与费用
+
+每次成功调用记一条 `llm_usage` 明细：输入 / 输出 token，以及按服务商上填写的价格折算的
+费用（微元整数，1 元 = 1,000,000）。价格按「每百万 token」填写，币种与汇率也由管理员填写，
+统一折算成人民币；记录时按当时价格折算，事后改价不回溯。
+
+## 限额
+
+限额规则 `{"metric": "tokens" | "cost", "window": "1h" | "5h" | "1d" | "7d" | "30d", "limit": 数值}`，
+窗口是滚动时间段。两处可以设：
+
+- 服务商上：限制整个工作区（个人服务商则是本人）在该服务商上的用量；
+- 成员上（管理员设置）：限制该成员使用**工作区共享**模型的用量。
+
+调用前检查，超额的服务商当作不可用跳过（降级链里的下一个候选接着试），错误信息说明原因。
+"""
+
+from __future__ import annotations
+
+import hashlib
+import re
+import time
+from decimal import Decimal, InvalidOperation
+from typing import Any
+
+from ..platform import context
+from ..platform.db import Database, now_ms
+from ..platform.errors import AppError, ErrorCode
+from ..platform.secretbox import SecretError
+from ..store import Collections
+from .router import AgentConfig, ProviderConfig
+
+PROVIDERS = "llm_providers"
+POLICIES = "llm_member_policies"
+REQUESTS = "llm_quota_requests"
+ROUTING_KEYS = ("default", "code_gen", "reasoning", "report")
+
+WINDOWS: dict[str, int] = {"1h": 3600, "5h": 5 * 3600, "1d": 86400, "7d": 7 * 86400, "30d": 30 * 86400}
+WINDOW_LABEL = {"1h": "1 小时", "5h": "5 小时", "1d": "1 天", "7d": "7 天", "30d": "30 天"}
+METRIC_LABEL = {"tokens": "token", "cost": "费用（元）"}
+MICRO = Decimal(1_000_000)
+NAME_RE = re.compile(r"[a-z0-9][a-z0-9_\-]{0,30}")
+
+
+def mask(value: str) -> str:
+    if not value:
+        return ""
+    if len(value) <= 8:
+        return "*" * len(value)
+    return f"{value[:4]}{'*' * 6}{value[-4:]}"
+
+
+def dec(value: Any, default: str = "0") -> Decimal:
+    try:
+        d = Decimal(str(value).strip() or default)
+    except (InvalidOperation, ValueError):
+        d = Decimal(default)
+    return d if d.is_finite() and d >= 0 else Decimal(default)
+
+
+def plain(d: Decimal) -> str:
+    """十进制的普通写法：100000 而不是 1E+5。"""
+    return format(d.normalize(), "f")
+
+
+def clean_limits(rules: Any) -> list[dict[str, Any]]:
+    """限额规则去重（同一 metric + window 只留最后一条）并校验。"""
+    out: dict[tuple[str, str], dict[str, Any]] = {}
+    for r in rules or []:
+        if not isinstance(r, dict):
+            continue
+        metric, window = str(r.get("metric", "")), str(r.get("window", ""))
+        if metric not in METRIC_LABEL or window not in WINDOWS:
+            continue
+        limit = dec(r.get("limit"))
+        if limit <= 0:
+            continue
+        out[(metric, window)] = {"metric": metric, "window": window, "limit": plain(limit)}
+    return sorted(out.values(), key=lambda x: (x["metric"], WINDOWS[x["window"]]))
+
+
+def usage_tokens(usage: dict[str, Any] | None) -> tuple[int, int]:
+    """各家 usage 字段归一成 (输入, 输出) token。"""
+    u = usage or {}
+    inp = u.get("input_tokens", u.get("prompt_tokens", 0)) or 0
+    out = u.get("output_tokens", u.get("completion_tokens", 0)) or 0
+    try:
+        return max(0, int(inp)), max(0, int(out))
+    except (TypeError, ValueError):
+        return 0, 0
+
+
+def fmt_cost(micro: int | Decimal) -> str:
+    return str((Decimal(int(micro)) / MICRO).quantize(Decimal("0.0001")))
+
+
+class ModelHub:
+    def __init__(self, *, store: Any, secrets: Any, db: Database, auth: Any = None, audit: Any = None) -> None:
+        self.store = store  # WorkspaceStore
+        self.secrets = secrets
+        self.db = db
+        self.auth = auth
+        self.audit = audit
+
+    # ------------------------------------------------------------------ 存取
+    def _ws(self, workspace_id: str | None = None):
+        return self.store.for_workspace(workspace_id or context.current_workspace())
+
+    @staticmethod
+    def _id(scope: str, owner_id: str, name: str) -> str:
+        return f"ws:{name}" if scope == "workspace" else f"me:{owner_id}:{name}"
+
+    def _records(self, ws: str) -> list[dict[str, Any]]:
+        return self._ws(ws).list(PROVIDERS)
+
+    def api_key(self, rec: dict[str, Any]) -> str:
+        token = rec.get("key_enc") or ""
+        if not token:
+            return ""
+        try:
+            return self.secrets.decrypt(token)
+        except SecretError:
+            return ""
+
+    # ------------------------------------------------------------------ 成员策略
+    def policy(self, ws: str, user_id: str, role: str | None = None) -> dict[str, Any]:
+        rec = self._ws(ws).get(POLICIES, user_id) or {}
+        default_use = role != "reviewer"
+        return {
+            "user_id": user_id,
+            "use_workspace_models": bool(rec.get("use_workspace_models", default_use)),
+            "allow_personal_models": bool(rec.get("allow_personal_models", True)),
+            "limits": clean_limits(rec.get("limits")),
+        }
+
+    def set_policy(self, ws: str, user_id: str, patch: dict[str, Any]) -> dict[str, Any]:
+        cur = self._ws(ws).get(POLICIES, user_id) or {"id": user_id}
+        for k in ("use_workspace_models", "allow_personal_models"):
+            if k in patch and patch[k] is not None:
+                cur[k] = bool(patch[k])
+        if "limits" in patch and patch["limits"] is not None:
+            cur["limits"] = clean_limits(patch["limits"])
+        self._ws(ws).upsert(POLICIES, cur)
+        return self.policy(ws, user_id, self._role(ws, user_id))
+
+    def _role(self, ws: str, user_id: str) -> str | None:
+        if self.auth is None:
+            return None
+        row = self.db.fetchone(
+            "SELECT role FROM memberships WHERE workspace_id=? AND user_id=? AND status='active'", (ws, user_id)
+        )
+        return row["role"] if row else None
+
+    # ------------------------------------------------------------------ 服务商
+    def visible(self, ws: str, user_id: str | None, role: str | None) -> list[dict[str, Any]]:
+        """当前成员能看到的服务商记录：工作区共享（管理员总能看到）+ 本人的个人服务商。"""
+        pol = self.policy(ws, user_id or "", role) if user_id else {"use_workspace_models": True}
+        out = []
+        for rec in self._records(ws):
+            if rec.get("scope") == "personal":
+                if user_id and rec.get("owner_id") == user_id:
+                    out.append(rec)
+            elif role == "admin" or pol["use_workspace_models"]:
+                out.append(rec)
+        out.sort(key=lambda r: (r.get("scope") != "workspace", r.get("created_at", 0)))
+        return out
+
+    def find(self, ws: str, user_id: str | None, role: str | None, name: str) -> dict[str, Any] | None:
+        recs = [r for r in self.visible(ws, user_id, role) if r.get("name") == name]
+        recs.sort(key=lambda r: r.get("scope") != "personal")  # 个人优先
+        return recs[0] if recs else None
+
+    def upsert(self, payload: dict[str, Any], *, scope: str) -> dict[str, Any]:
+        ctx = context.current()
+        ws = context.current_workspace()
+        user_id = ctx.user_id or ""
+        if scope == "workspace" and ctx.role != "admin":
+            raise AppError(ErrorCode.PERMISSION_DENIED, "只有工作区管理员可以登记工作区共享的模型服务商")
+        if scope == "personal":
+            if ctx.role == "reviewer":
+                raise AppError(ErrorCode.PERMISSION_DENIED, "审阅者（只读）不能登记模型服务商")
+            if not self.policy(ws, user_id, ctx.role)["allow_personal_models"]:
+                raise AppError(ErrorCode.PERMISSION_DENIED, "管理员没有允许你添加个人模型服务商")
+        name = str(payload.get("name", "")).strip().lower()
+        if not NAME_RE.fullmatch(name):
+            raise AppError(ErrorCode.INVALID_PARAMETER, "服务商 ID 只能包含小写字母、数字、-、_，且以字母或数字开头")
+        base_url = str(payload.get("base_url", "")).strip().rstrip("/")
+        if not base_url.startswith(("http://", "https://")):
+            raise AppError(ErrorCode.INVALID_PARAMETER, "API 地址需要以 http:// 或 https:// 开头")
+        models = list(dict.fromkeys(m.strip() for m in payload.get("models") or [] if str(m).strip()))
+        if not models:
+            raise AppError(ErrorCode.INVALID_PARAMETER, "至少填写一个模型")
+        other_scope = "personal" if scope == "workspace" else "workspace"
+        clash = [
+            r
+            for r in self._records(ws)
+            if r.get("name") == name
+            and r.get("scope") == other_scope
+            and (other_scope == "workspace" or r.get("owner_id") == user_id)
+        ]
+        if clash:
+            where = "工作区共享服务商" if other_scope == "workspace" else "你的个人服务商"
+            raise AppError(ErrorCode.INVALID_PARAMETER, f"已有同名的{where}「{name}」，换一个 ID")
+        rid = self._id(scope, user_id, name)
+        cur = self._ws(ws).get(PROVIDERS, rid) or {}
+        settings = {}
+        for m in models:
+            st = (payload.get("model_settings") or {}).get(m)
+            if not isinstance(st, dict):
+                continue
+            inputs = [
+                i
+                for i in dict.fromkeys(st.get("inputs") or ["text"])
+                if i in ("text", "image", "audio", "video", "file")
+            ]
+            clean = {
+                "label": str(st.get("label") or "").strip()[:60],
+                "request_model": ""
+                if str(st.get("request_model") or "").strip() == m
+                else str(st.get("request_model") or "").strip()[:200],
+                "context_window": int(st["context_window"]) if str(st.get("context_window") or "").isdigit() else None,
+                "effort": st.get("effort") if st.get("effort") in ("low", "medium", "high", "max") else "",
+                "inputs": inputs if inputs and inputs != ["text"] else None,
+                "price_in": plain(dec(st.get("price_in"))) if dec(st.get("price_in")) > 0 else "",
+                "price_out": plain(dec(st.get("price_out"))) if dec(st.get("price_out")) > 0 else "",
+            }
+            clean = {k: v for k, v in clean.items() if v}
+            if clean:
+                settings[m] = clean
+        currency = (
+            payload.get("currency") if payload.get("currency") in ("CNY", "USD") else (cur.get("currency") or "CNY")
+        )
+        fx = dec(payload.get("fx_rate"), "0")
+        rec = {
+            "id": rid,
+            "name": name,
+            "scope": scope,
+            "owner_id": user_id if scope == "personal" else "",
+            "created_by": cur.get("created_by") or user_id,
+            "type": payload.get("type")
+            if payload.get("type") in ("anthropic", "openai_responses")
+            else "openai_compatible",
+            "base_url": base_url,
+            "models": models,
+            "model_settings": settings,
+            "label": str(payload.get("label") or "").strip()[:40],
+            "currency": currency,
+            "fx_rate": plain(fx) if fx > 0 else ("1" if currency == "CNY" else "7.2"),
+            "limits": clean_limits(payload.get("limits")),
+            "key_enc": cur.get("key_enc", ""),
+            "key_masked": cur.get("key_masked", ""),
+        }
+        new_key = str(payload.get("api_key") or "").strip()
+        if new_key:
+            rec["key_enc"] = self.secrets.encrypt(new_key)
+            rec["key_masked"] = mask(new_key)
+        if cur.get("created_at"):
+            rec["created_at"] = cur["created_at"]
+        saved = self._ws(ws).upsert(PROVIDERS, rec)
+        if self.audit is not None:
+            self.audit.record(
+                "config.provider_upsert",
+                object_type="llm_provider",
+                object_id=rid,
+                details={"scope": scope, "base_url": base_url, "models": models, "key_changed": bool(new_key)},
+            )
+        return saved
+
+    def delete(self, name: str, *, scope: str) -> bool:
+        ctx = context.current()
+        ws = context.current_workspace()
+        if scope == "workspace" and ctx.role != "admin":
+            raise AppError(ErrorCode.PERMISSION_DENIED, "只有工作区管理员可以删除工作区共享的模型服务商")
+        rid = self._id(scope, ctx.user_id or "", name)
+        ok = self._ws(ws).delete(PROVIDERS, rid)
+        if ok and self.audit is not None:
+            self.audit.record("config.provider_delete", object_type="llm_provider", object_id=rid)
+        return ok
+
+    def view(self, rec: dict[str, Any]) -> dict[str, Any]:
+        """对外视图：去掉密文，只给脱敏值。"""
+        has_key = bool(rec.get("key_enc")) or self._keyless(rec)
+        return {
+            "name": rec["name"],
+            "label": rec.get("label", ""),
+            "scope": rec.get("scope", "workspace"),
+            "owner_id": rec.get("owner_id", ""),
+            "type": rec.get("type", "openai_compatible"),
+            "base_url": rec.get("base_url", ""),
+            "models": rec.get("models", []),
+            "model_settings": rec.get("model_settings", {}),
+            "currency": rec.get("currency", "CNY"),
+            "fx_rate": rec.get("fx_rate", "1"),
+            "limits": rec.get("limits", []),
+            "has_key": has_key,
+            "key_masked": rec.get("key_masked", ""),
+            "key_source": "已加密保存" if rec.get("key_enc") else ("本地服务无需密钥" if has_key else "未配置密钥"),
+        }
+
+    @staticmethod
+    def _keyless(rec: dict[str, Any]) -> bool:
+        host = re.sub(r"^https?://", "", rec.get("base_url", "")).split("/")[0].split(":")[0]
+        return host in ("127.0.0.1", "localhost", "::1", "[::1]")
+
+    # ------------------------------------------------------------------ 路由
+    def routing(self, ws: str, user_id: str | None) -> dict[str, Any]:
+        store = self._ws(ws)
+        base = store.get(Collections.SETTINGS, "llm_routing") or {}
+        mine = (store.get(Collections.SETTINGS, f"llm_routing:{user_id}") or {}) if user_id else {}
+        out: dict[str, Any] = {}
+        for k in ROUTING_KEYS:
+            out[k] = mine.get(k) or base.get(k) or ""
+        out["fallback"] = (
+            mine.get("fallback")
+            if isinstance(mine.get("fallback"), list) and mine.get("fallback")
+            else (base.get("fallback") if isinstance(base.get("fallback"), list) else [])
+        )
+        return out
+
+    def routing_layers(self, ws: str, user_id: str | None) -> dict[str, dict[str, Any]]:
+        store = self._ws(ws)
+        strip = lambda d: {k: v for k, v in (d or {}).items() if k in (*ROUTING_KEYS, "fallback")}  # noqa: E731
+        return {
+            "workspace": strip(store.get(Collections.SETTINGS, "llm_routing")),
+            "personal": strip(store.get(Collections.SETTINGS, f"llm_routing:{user_id}")) if user_id else {},
+        }
+
+    def set_routing(self, payload: dict[str, Any], *, scope: str) -> None:
+        ctx = context.current()
+        ws = context.current_workspace()
+        if scope == "workspace" and ctx.role != "admin":
+            raise AppError(ErrorCode.PERMISSION_DENIED, "只有工作区管理员可以修改工作区默认路由")
+        rid = "llm_routing" if scope == "workspace" else f"llm_routing:{ctx.user_id}"
+        rec = {
+            "id": rid,
+            **{k: str(payload.get(k) or "") for k in ROUTING_KEYS},
+            "fallback": list(payload.get("fallback") or []),
+        }
+        self._ws(ws).upsert(Collections.SETTINGS, rec)
+
+    # ------------------------------------------------------------------ 给路由器的配置
+    def scoped_config(self, base: AgentConfig) -> AgentConfig:
+        ctx = context.current()
+        ws = ctx.workspace_id
+        if not ws:
+            return AgentConfig(
+                providers={},
+                routing={},
+                limits=base.limits,
+                trace=base.trace,
+                notify=base.notify,
+                exchange=base.exchange,
+            )
+        user_id = ctx.user_id if ctx.user_id and ctx.user_id != "system" else None
+        providers: dict[str, ProviderConfig] = {}
+        # 先放工作区共享，再放个人：同名时个人覆盖
+        for rec in sorted(self.visible(ws, user_id, ctx.role), key=lambda r: r.get("scope") == "personal"):
+            key = self.api_key(rec) or ("not-needed" if self._keyless(rec) else "")
+            providers[rec["name"]] = ProviderConfig(
+                name=rec["name"],
+                type=rec.get("type", "openai_compatible"),
+                base_url=rec.get("base_url", ""),
+                api_key=key,
+                models=list(rec.get("models") or []),
+                model_settings=dict(rec.get("model_settings") or {}),
+                scope=rec.get("scope", "workspace"),
+                owner_id=rec.get("owner_id", ""),
+                currency=rec.get("currency", "CNY"),
+                fx_rate=rec.get("fx_rate", "1"),
+                limits=list(rec.get("limits") or []),
+            )
+        return AgentConfig(
+            providers=providers,
+            routing=self.routing(ws, user_id),
+            limits=base.limits,
+            trace=base.trace,
+            notify=base.notify,
+            exchange=base.exchange,
+        )
+
+    # ------------------------------------------------------------------ 计量
+    @staticmethod
+    def cost_micro(pc: ProviderConfig, model: str, inp: int, out: int) -> int:
+        st = pc.setting(model)
+        rate = dec(pc.fx_rate, "1") if pc.currency != "CNY" else Decimal(1)
+        # 价格是「每百万 token」：tokens × 价格 / 1e6 元 = tokens × 价格 微元
+        micro = (Decimal(inp) * dec(st.get("price_in")) + Decimal(out) * dec(st.get("price_out"))) * rate
+        return int(micro.to_integral_value())
+
+    def record(self, pc: ProviderConfig, model: str, usage: dict[str, Any] | None) -> None:
+        ctx = context.current()
+        ws = ctx.workspace_id
+        if not ws:
+            return
+        inp, out = usage_tokens(usage)
+        self.db.execute(
+            "INSERT INTO llm_usage (workspace_id, user_id, scope, provider, model, input_tokens, output_tokens, "
+            "cost_micro, created_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                ws,
+                ctx.user_id or "system",
+                pc.scope,
+                pc.name,
+                model,
+                inp,
+                out,
+                self.cost_micro(pc, model, inp, out),
+                now_ms(),
+            ),
+        )
+
+    def _sum(
+        self,
+        ws: str,
+        since_ms: int,
+        *,
+        provider: str | None = None,
+        scope: str | None = None,
+        user_id: str | None = None,
+        owner_only: bool = False,
+    ) -> tuple[int, int]:
+        sql = (
+            "SELECT COALESCE(SUM(input_tokens + output_tokens), 0) AS t, COALESCE(SUM(cost_micro), 0) AS c "
+            "FROM llm_usage WHERE workspace_id=? AND created_at>=?"
+        )
+        args: list[Any] = [ws, since_ms]
+        if provider:
+            sql += " AND provider=?"
+            args.append(provider)
+        if scope:
+            sql += " AND scope=?"
+            args.append(scope)
+        if user_id:
+            sql += " AND user_id=?"
+            args.append(user_id)
+        row = self.db.fetchone(sql, tuple(args)) or {}
+        return int(row.get("t") or 0), int(row.get("c") or 0)
+
+    def rule_status(self, ws: str, rules: list[dict[str, Any]], **where: Any) -> list[dict[str, Any]]:
+        now = now_ms()
+        out = []
+        for r in clean_limits(rules):
+            tokens, cost = self._sum(ws, now - WINDOWS[r["window"]] * 1000, **where)
+            limit = dec(r["limit"])
+            used = Decimal(tokens) if r["metric"] == "tokens" else Decimal(cost) / MICRO
+            pct = int(min(Decimal(999), used * 100 / limit)) if limit > 0 else 0
+            out.append(
+                {
+                    **r,
+                    "used": str(used if r["metric"] == "tokens" else used.quantize(Decimal("0.0001"))),
+                    "percent": pct,
+                    "exceeded": used >= limit,
+                    "label": f"{WINDOW_LABEL[r['window']]}内 {METRIC_LABEL[r['metric']]} ≤ {r['limit']}",
+                }
+            )
+        return out
+
+    def guard(self, pc: ProviderConfig, model: str) -> str | None:
+        """超额返回原因（路由器据此跳过该服务商），否则 None。"""
+        ctx = context.current()
+        ws = ctx.workspace_id
+        if not ws:
+            return None
+        where: dict[str, Any] = {"provider": pc.name, "scope": pc.scope}
+        if pc.scope == "personal":
+            where["user_id"] = pc.owner_id
+        for st in self.rule_status(ws, pc.limits, **where):
+            if st["exceeded"]:
+                return f"已达服务商限额（{st['label']}）"
+        if pc.scope == "workspace" and ctx.user_id and ctx.user_id != "system":
+            pol = self.policy(ws, ctx.user_id, ctx.role)
+            for st in self.rule_status(ws, pol["limits"], scope="workspace", user_id=ctx.user_id):
+                if st["exceeded"]:
+                    return f"已达你的成员限额（{st['label']}），可以在「额度与用量」里申请提升"
+        return None
+
+    def stats(self, ws: str, *, days: int, user_id: str | None = None) -> dict[str, Any]:
+        """用量统计。user_id 为空时是整个工作区（管理员视角）。"""
+        since = now_ms() - days * 86400_000
+        where = "workspace_id=? AND created_at>=?"
+        args: list[Any] = [ws, since]
+        if user_id:
+            where += " AND user_id=?"
+            args.append(user_id)
+        by_model = self.db.fetchall(
+            "SELECT provider, scope, model, COUNT(*) AS calls, SUM(input_tokens) AS input_tokens, "
+            f"SUM(output_tokens) AS output_tokens, SUM(cost_micro) AS cost_micro FROM llm_usage WHERE {where} "
+            "GROUP BY provider, scope, model ORDER BY cost_micro DESC, calls DESC",
+            tuple(args),
+        )
+        by_user = self.db.fetchall(
+            "SELECT user_id, COUNT(*) AS calls, SUM(input_tokens + output_tokens) AS tokens, "
+            "SUM(cost_micro) AS cost_micro "
+            f"FROM llm_usage WHERE {where} GROUP BY user_id ORDER BY cost_micro DESC, tokens DESC",
+            tuple(args),
+        )
+        rows = self.db.fetchall(
+            f"SELECT created_at, input_tokens, output_tokens, cost_micro FROM llm_usage WHERE {where}", tuple(args)
+        )
+        daily: dict[str, dict[str, int]] = {}
+        for r in rows:
+            day = time.strftime("%Y-%m-%d", time.gmtime(int(r["created_at"]) / 1000))
+            d = daily.setdefault(day, {"tokens": 0, "cost_micro": 0, "calls": 0})
+            d["tokens"] += int(r["input_tokens"] or 0) + int(r["output_tokens"] or 0)
+            d["cost_micro"] += int(r["cost_micro"] or 0)
+            d["calls"] += 1
+        series = []
+        for i in range(days - 1, -1, -1):
+            day = time.strftime("%Y-%m-%d", time.gmtime(time.time() - i * 86400))
+            d = daily.get(day, {"tokens": 0, "cost_micro": 0, "calls": 0})
+            series.append({"day": day, "tokens": d["tokens"], "calls": d["calls"], "cost": fmt_cost(d["cost_micro"])})
+        norm = lambda r: {  # noqa: E731
+            **{k: v for k, v in r.items() if k != "cost_micro"},
+            "cost": fmt_cost(r.get("cost_micro") or 0),
+            **(
+                {"input_tokens": int(r["input_tokens"] or 0), "output_tokens": int(r["output_tokens"] or 0)}
+                if "input_tokens" in r
+                else {}
+            ),
+        }
+        total_tokens = sum(int(r["input_tokens"] or 0) + int(r["output_tokens"] or 0) for r in by_model)
+        total_cost = sum(int(r["cost_micro"] or 0) for r in by_model)
+        return {
+            "days": days,
+            "total": {
+                "calls": sum(int(r["calls"]) for r in by_model),
+                "tokens": total_tokens,
+                "cost": fmt_cost(total_cost),
+            },
+            "by_model": [norm(r) for r in by_model],
+            "by_user": [norm(r) for r in by_user],
+            "daily": series,
+        }
+
+    # ------------------------------------------------------------------ 额度申请
+    def requests(self, ws: str, user_id: str | None = None) -> list[dict[str, Any]]:
+        items = self._ws(ws).list(REQUESTS)
+        return [r for r in items if not user_id or r.get("user_id") == user_id]
+
+    def create_request(self, payload: dict[str, Any]) -> dict[str, Any]:
+        ctx = context.current()
+        ws = context.current_workspace()
+        rule = clean_limits([payload])
+        if not rule:
+            raise AppError(ErrorCode.INVALID_PARAMETER, "请选择计量方式、时间段并填写希望的额度")
+        pending = [r for r in self.requests(ws, ctx.user_id) if r.get("status") == "pending"]
+        if len(pending) >= 3:
+            raise AppError(ErrorCode.INVALID_PARAMETER, "你已有 3 个待处理的申请，等管理员处理后再提交")
+        return self._ws(ws).upsert(
+            REQUESTS,
+            {
+                **rule[0],
+                "user_id": ctx.user_id,
+                "user_name": ctx.user_name or ctx.user_email,
+                "reason": str(payload.get("reason") or "").strip()[:300],
+                "status": "pending",
+                "created_ms": now_ms(),
+            },
+        )
+
+    def decide_request(self, rid: str, approve: bool, note: str = "") -> dict[str, Any]:
+        ctx = context.current()
+        ws = context.current_workspace()
+        if ctx.role != "admin":
+            raise AppError(ErrorCode.PERMISSION_DENIED, "只有工作区管理员可以处理额度申请")
+        req = self._ws(ws).get(REQUESTS, rid)
+        if not req or req.get("status") != "pending":
+            raise AppError(ErrorCode.NOT_FOUND, "申请不存在或已处理")
+        if approve:
+            pol = self.policy(ws, req["user_id"], self._role(ws, req["user_id"]))
+            rules = [r for r in pol["limits"] if not (r["metric"] == req["metric"] and r["window"] == req["window"])]
+            rules.append({"metric": req["metric"], "window": req["window"], "limit": req["limit"]})
+            self.set_policy(ws, req["user_id"], {"limits": rules})
+        req.update(
+            {
+                "status": "approved" if approve else "denied",
+                "note": note[:200],
+                "decided_by": ctx.user_id,
+                "decided_ms": now_ms(),
+            }
+        )
+        return self._ws(ws).upsert(REQUESTS, req)
+
+    # ------------------------------------------------------------------ 旧版迁移
+    def migrate_legacy(self, global_store: Any, secrets: dict[str, str]) -> int:
+        """旧版本把服务商存在部署级 global store：迁到部署管理员拥有的工作区，作为工作区共享服务商。"""
+        if global_store is None or global_store.get(Collections.SETTINGS, "llm_hub_migrated"):
+            return 0
+        legacy = global_store.list(Collections.PROVIDERS)
+        routing = global_store.get(Collections.SETTINGS, "routing") or {}
+        moved = 0
+        if legacy or routing:
+            rows = self.db.fetchall(
+                "SELECT w.id FROM workspaces w JOIN users u ON u.id = w.owner_id "
+                "WHERE u.is_admin=1 AND w.status='active'"
+            )
+            for row in rows:
+                store = self.store.for_workspace(row["id"])
+                for p in legacy:
+                    name = p.get("name")
+                    if not name or store.get(PROVIDERS, f"ws:{name}"):
+                        continue
+                    key = secrets.get(name, "")
+                    store.upsert(
+                        PROVIDERS,
+                        {
+                            "id": f"ws:{name}",
+                            "name": name,
+                            "scope": "workspace",
+                            "owner_id": "",
+                            "type": p.get("type", "openai_compatible"),
+                            "base_url": p.get("base_url", ""),
+                            "models": p.get("models", []),
+                            "model_settings": p.get("model_settings", {}),
+                            "currency": "CNY",
+                            "fx_rate": "1",
+                            "limits": [],
+                            "key_enc": self.secrets.encrypt(key) if key else "",
+                            "key_masked": mask(key),
+                        },
+                    )
+                    moved += 1
+                if routing and not store.get(Collections.SETTINGS, "llm_routing"):
+                    # 旧路由可能指向已不再内置的服务商（openai、local 等）：只保留迁过来的
+                    known = {p.get("name") for p in legacy}
+                    keep = lambda t, known=known: isinstance(t, str) and t.partition("/")[0] in known  # noqa: E731
+                    store.upsert(
+                        Collections.SETTINGS,
+                        {
+                            "id": "llm_routing",
+                            **{k: routing.get(k, "") if keep(routing.get(k)) else "" for k in ROUTING_KEYS},
+                            "fallback": [t for t in routing.get("fallback") or [] if keep(t)],
+                        },
+                    )
+        global_store.upsert(Collections.SETTINGS, {"id": "llm_hub_migrated", "moved": moved})
+        return moved
+
+
+def key_fingerprint(api_key: str) -> str:
+    return hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:12]

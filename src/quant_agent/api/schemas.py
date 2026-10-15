@@ -14,17 +14,32 @@ class ModelSettingIn(BaseModel):
     context_window: int | None = Field(None, ge=1024, le=10_000_000)
     effort: Literal["", "low", "medium", "high", "max"] = ""
     inputs: list[Literal["text", "image", "audio", "video", "file"]] = Field(default_factory=lambda: ["text"])
+    price_in: str = Field("", max_length=20, description="输入价格：每百万 token，按服务商币种")
+    price_out: str = Field("", max_length=20, description="输出价格：每百万 token，按服务商币种")
+
+
+class LimitRuleIn(BaseModel):
+    metric: Literal["tokens", "cost"] = Field(description="按 token 或按费用（元）计算")
+    window: Literal["1h", "5h", "1d", "7d", "30d"] = Field(description="滚动时间段")
+    limit: str = Field(max_length=20, description="上限：token 数或人民币金额")
 
 
 class ProviderIn(BaseModel):
     name: str
+    scope: Literal["workspace", "personal"] | None = Field(
+        None, description="workspace：工作区共享（管理员）；personal：个人。缺省时管理员为 workspace，其他人为 personal"
+    )
+    label: str = Field("", max_length=40, description="显示名")
     type: Literal["openai_compatible", "openai_responses", "anthropic", "local"] = "openai_compatible"
     base_url: str = ""
     api_key: str = ""
     models: list[str] = Field(default_factory=list)
     model_settings: dict[str, ModelSettingIn] = Field(
-        default_factory=dict, description="按模型 ID 的显示名、实际请求模型、上下文窗口、默认思考等级与输入类型"
+        default_factory=dict, description="按模型 ID 的显示名、实际请求模型、上下文窗口、默认思考等级、输入类型与价格"
     )
+    currency: Literal["CNY", "USD"] = "CNY"
+    fx_rate: str = Field("", max_length=20, description="1 单位服务商币种折合多少人民币（CNY 时忽略）")
+    limits: list[LimitRuleIn] = Field(default_factory=list, description="该服务商的用量限额")
 
 
 class RoutingIn(BaseModel):

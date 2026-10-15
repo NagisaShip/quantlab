@@ -102,6 +102,7 @@ class ProjectIn(BaseModel):
     team_id: str | None = None
     cost_bps: float = Field(10.0, ge=0, le=200)
     hypothesis: dict[str, Any] | None = None
+    permission: Literal["auto", "manual", "accept_edits", "plan", "bypass"] = "auto"
 
 
 class ProjectPatch(BaseModel):
@@ -120,6 +121,9 @@ class ProjectPatch(BaseModel):
     executor: Literal["solo", "team"] | None = None
     team_id: str | None = None
     cost_bps: float | None = Field(None, ge=0, le=200)
+    permission: Literal["auto", "manual", "accept_edits", "plan", "bypass"] | None = Field(
+        None, description="权限模式：自动 / 手动（改动与运行先问）/ 接受编辑 / 计划 / 跳过一切确认"
+    )
 
 
 class MessageIn(BaseModel):
@@ -380,11 +384,12 @@ def _start(lab: StrategyLab, pid: str, kind: str, fn, wait: bool) -> dict:
 @router.get("/meta", summary="策略室元信息：可选模型、团队、默认验收目标、模型是否就绪")
 def lab_meta() -> dict:
     s = get_services()
-    ready = any(s.router._has_credentials(p) for p in s.config.providers if p != "local")
+    cfg = s.router.config
+    ready = any(s.router._has_credentials(p, cfg) for p in cfg.providers)
     current = getattr(s.router, "current_target", None)
     return {
         "models": s.router.available_models(),
-        "routing": s.config.routing,
+        "routing": cfg.routing,
         "default_model": current("code_gen") if callable(current) else "",
         "efforts": [
             {"id": "low", "label": "低", "hint": "快速回答，少想"},

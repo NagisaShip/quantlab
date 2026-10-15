@@ -237,14 +237,76 @@ def test_llm_secrets_are_encrypted_at_rest(app, tmp_path):
     assert not any("sk-plain-should-not-appear" in f.read_text(encoding="utf-8", errors="ignore") for f in files)
 
 
-def test_only_deployment_admin_changes_llm_config(app):
+def test_workspace_shared_models_permissions_limits_and_usage(app):
+    """管理员共享服务商 → 成员可用（调用走管理员的 API）；成员只能加个人服务商；
+    管理员可关闭成员的使用权限、设置限额；超额后路由器跳过；成员可申请提升额度。"""
+    from quant_agent.api.deps import get_services
+    from quant_agent.platform import context
+
+    shared = {
+        "name": "shared",
+        "type": "openai_compatible",
+        "base_url": "https://a.example/v1",
+        "api_key": "sk-admin-0001",
+        "models": ["m"],
+        "currency": "USD",
+        "fx_rate": "7",
+        "model_settings": {"m": {"price_in": "2", "price_out": "8"}},
+    }
     with _client(app) as admin:
         login(admin)
-        code = admin.post("/api/workspace/invites", json={"role": "admin"}).json()["invite"]["code"]
-    with _client(app) as ws_admin:
-        login(ws_admin, email="wa@example.com", password="WsAdmin1!", name="WA", invite_code=code)
-        r = ws_admin.post(
-            "/api/config/providers",
-            json={"name": "x", "type": "openai_compatible", "base_url": "https://a.example/v1", "models": ["m"]},
-        )
+        assert admin.post("/api/config/providers", json=shared).status_code == 200
+        code = admin.post("/api/workspace/invites", json={"role": "member"}).json()["invite"]["code"]
+        ws = admin.get("/api/auth/me").json()["workspace"]["id"]
+    with _client(app) as member:
+        login(member, email="m@example.com", password="Member01!", name="M", invite_code=code)
+        member_id = member.get("/api/auth/me").json()["user"]["id"]
+        cfg = member.get("/api/config").json()
+        assert [p["name"] for p in cfg["providers"]] == ["shared"] and not cfg["providers"][0]["editable"]
+        assert "sk-admin" not in str(cfg)
+        # 成员不能改工作区共享服务商，但可以加个人服务商
+        r = member.post("/api/config/providers", json={**shared, "scope": "workspace"})
         _assert_error(r, 403, "PERMISSION_DENIED")
+        r = member.post("/api/config/providers", json={**shared, "name": "mine", "api_key": "sk-mine-0001"})
+        assert r.status_code == 200 and r.json()["provider"]["scope"] == "personal"
+        _assert_error(member.get("/api/config/members"), 403, "PERMISSION_DENIED")
+
+    s = get_services()
+    with context.bind(ws, user_id=member_id, role="member"):
+        pc = s.router.config.providers["shared"]
+        assert pc.api_key == "sk-admin-0001"  # 成员的调用走管理员的密钥
+        s.model_hub.record(pc, "m", {"input_tokens": 8, "output_tokens": 4})
+        # (8×2 + 4×8) × 7 = 336 微元
+        assert s.model_hub.stats(ws, days=1, user_id=member_id)["total"] == {"calls": 1, "tokens": 12, "cost": "0.0003"}
+        assert s.model_hub.guard(pc, "m") is None
+
+    with _client(app) as admin:
+        login(admin)
+        r = admin.put(
+            f"/api/config/members/{member_id}", json={"limits": [{"metric": "tokens", "window": "1d", "limit": "10"}]}
+        )
+        assert r.status_code == 200, r.text
+        row = next(m for m in admin.get("/api/config/members").json()["members"] if m["user_id"] == member_id)
+        assert row["usage_30d"]["tokens"] == 12 and row["limit_status"][0]["exceeded"]
+    with context.bind(ws, user_id=member_id, role="member"):
+        assert "成员限额" in s.model_hub.guard(s.router.config.providers["shared"], "m")
+
+    with _client(app) as member:
+        login(member, email="m@example.com", password="Member01!")
+        rid = member.post(
+            "/api/config/quota-requests",
+            json={"metric": "tokens", "window": "1d", "limit": "100000", "reason": "回测研究"},
+        ).json()["request"]["id"]
+    with _client(app) as admin:
+        login(admin)
+        assert (
+            admin.post(f"/api/config/quota-requests/{rid}/decide", json={"approve": True}).json()["request"]["status"]
+            == "approved"
+        )
+        row = next(m for m in admin.get("/api/config/members").json()["members"] if m["user_id"] == member_id)
+        assert row["limits"] == [{"metric": "tokens", "window": "1d", "limit": "100000"}]
+        # 关闭成员使用工作区模型：成员就看不到共享服务商了
+        admin.put(f"/api/config/members/{member_id}", json={"use_workspace_models": False})
+    with _client(app) as member:
+        login(member, email="m@example.com", password="Member01!")
+        assert [p["name"] for p in member.get("/api/config").json()["providers"]] == ["mine"]

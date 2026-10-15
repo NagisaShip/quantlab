@@ -12,6 +12,7 @@ import './stylesAskAI.css'
 import './stylesRuleCode.css'
 import './stylesFactor.css'
 import './stylesTerminal.css'
+import './stylesMotion.css'
 
 applyPrefs()
 watchSystemTheme()

@@ -65,6 +65,7 @@ class AppServices:
     demo: Any = None  # DemoConnectionService：交易所模拟盘连接（模拟盘 Key，加密）
     quota: Any = None  # QuotaService：按工作区计量用量并判定配额（T07）
     websearch: Any = None  # WebSearch：联网搜索与网页抓取（密钥在模型配置页登记）
+    model_hub: Any = None  # ModelHub：工作区 / 个人模型服务商、成员模型权限与限额、用量计量
 
     @classmethod
     def build(
@@ -174,37 +175,34 @@ class AppServices:
         tmp.replace(path)
 
     def apply_runtime_config(self) -> None:
-        """把界面里登记的 Provider、密钥与路由叠加到配置文件之上，并刷新模型客户端。
+        """接上工作区模型中心：服务商与路由按请求上下文（工作区 + 成员）解析，调用前查限额、调用后记账。
 
-        优先级：界面登记 > 用户级 config.toml > 项目级 agent.config.toml > 内置默认。
-        密钥加密后存放在数据目录 global/llm_secrets.enc.json（主密钥另存，接口只返回脱敏值）。
+        Web 平台不读配置文件里的 provider（那只给命令行用）：模型只来自用户自己添加的
+        个人服务商，或工作区管理员共享的服务商。旧版存在部署级 global store 的服务商
+        在第一次启动时迁到部署管理员的工作区。
         """
-        from ..llm.router import ProviderConfig
+        from ..llm.hub import ModelHub
 
-        secrets = self.read_secrets()
-        for row in self.global_store.list(Collections.PROVIDERS):
-            name = row.get("name")
-            if not name:
-                continue
-            existing = self.config.providers.get(name)
-            self.config.providers[name] = ProviderConfig(
-                name=name,
-                type=row.get("type") or (existing.type if existing else "openai_compatible"),
-                base_url=row.get("base_url") or (existing.base_url if existing else ""),
-                api_key=secrets.get(name) or (existing.api_key if existing else ""),
-                models=row.get("models") or (existing.models if existing else []),
-                model_settings=row.get("model_settings") or (existing.model_settings if existing else {}),
+        if self.model_hub is None:
+            self.model_hub = ModelHub(
+                store=self.store, secrets=self.secrets, db=self.db, auth=self.auth, audit=self.audit
             )
-        for name, key in secrets.items():
-            if name in self.config.providers and key:
-                self.config.providers[name].api_key = key
-        routing = self.global_store.get(Collections.SETTINGS, "routing")
-        if routing:
-            for k in ("default", "code_gen", "reasoning", "report"):
-                if routing.get(k):
-                    self.config.routing[k] = routing[k]
-            if isinstance(routing.get("fallback"), list):
-                self.config.routing["fallback"] = routing["fallback"]
+            self.model_hub.migrate_legacy(self.global_store, self.read_secrets())
+        hub = self.model_hub
+        self.router.resolver = hub.scoped_config
+        self.router.guard = hub.guard
+
+        def on_usage(pc, model, usage):
+            hub.record(pc, model, usage)
+            if self.quota is not None:
+                from ..llm.hub import usage_tokens
+
+                inp, out = usage_tokens(usage)
+                self.quota.add("llm_calls", 1)
+                if inp + out:
+                    self.quota.add("llm_tokens", inp + out)
+
+        self.router.on_usage = on_usage
         self.router._clients.clear()
 
     @staticmethod

@@ -13,8 +13,9 @@ export const SETTINGS_GROUPS: { group: string; items: SettingsItem[] }[] = [
     group: '设置',
     items: [
       { key: 'settings/account', label: '我的账号', icon: 'accounts', keywords: '密码 双因素 两步验证 TOTP' },
-      { key: 'settings/workspace', label: '工作区与额度', icon: 'overview', keywords: '用量 配额 名称' },
-      { key: 'settings/members', label: '成员与邀请', icon: 'teams', keywords: '邀请码 角色 权限' },
+      { key: 'settings/workspace', label: '工作区', icon: 'overview', keywords: '名称 时区 新建 加入 切换' },
+      { key: 'settings/quota', label: '额度与升级', icon: 'validation', keywords: '用量 配额 额度 申请 升级 费用 token 限额 审批' },
+      { key: 'settings/members', label: '成员与邀请', icon: 'teams', keywords: '邀请码 角色 权限 共享模型 限额 用量' },
       { key: 'settings/runs', label: '任务与运行', icon: 'paper', keywords: 'worker 队列' },
       { key: 'settings/node', label: '运行节点与机器人', icon: 'demo', keywords: '节点 机器人 telegram' },
       { key: 'settings/audit', label: '审计日志', icon: 'validation', keywords: '日志 记录' },
@@ -24,7 +25,7 @@ export const SETTINGS_GROUPS: { group: string; items: SettingsItem[] }[] = [
   {
     group: 'AI',
     items: [
-      { key: 'models', label: '模型', icon: 'models', keywords: '密钥 API key 服务商 provider deepseek openai anthropic 路由 联网搜索 tavily' },
+      { key: 'models', label: '模型', icon: 'models', keywords: 'AI 模型 密钥 API key 服务商 provider 共享 个人 价格 限额 用量 路由 联网搜索 tavily' },
       { key: 'roles', label: '角色与团队', icon: 'roles', keywords: '角色 团队 agent' },
       { key: 'prompts', label: '提示词', icon: 'prompts', keywords: 'prompt' },
       { key: 'long-running', label: '夜班', icon: 'long-running', keywords: '晨报 队列 自动研究' },
@@ -89,7 +90,7 @@ export function SettingsShell({ current, onNavigate, onClose, badges, children }
       </aside>
       <section className="set-body" aria-label={label}>
         <button className="set-close desktop-only" onClick={onClose} aria-label="关闭设置">×</button>
-        <div className="set-content">{children}</div>
+        <div className="set-content page-enter" key={current}>{children}</div>
       </section>
     </div>
   )

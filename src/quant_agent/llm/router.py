@@ -35,6 +35,13 @@ class ProviderConfig:
     # 按目录模型 ID 的可选设置：label 菜单显示名、request_model 实际请求的模型、
     # context_window 上下文窗口、effort 默认思考等级、inputs 支持的输入类型
     model_settings: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # Web 平台的服务商来自工作区（见 llm/hub.py）：scope 为 workspace / personal，
+    # 价格币种与汇率、限额规则用于计量与超额判定；配置文件里的 provider 保持默认值。
+    scope: str = "file"
+    owner_id: str = ""
+    currency: str = "CNY"
+    fx_rate: str = "1"
+    limits: list[dict[str, Any]] = field(default_factory=list)
 
     def setting(self, model: str) -> dict[str, Any]:
         return self.model_settings.get(model) or {}
@@ -99,39 +106,9 @@ def default_config_dict() -> dict[str, Any]:
     这样交付时不会因为"还没配 key"就一片红。
     """
     return {
-        "providers": {
-            "deepseek": {
-                "type": "openai_compatible",
-                "base_url": "https://api.deepseek.com/v1",
-                "api_key": "${DEEPSEEK_API_KEY}",
-                "models": ["deepseek-chat", "deepseek-reasoner"],
-            },
-            "openai": {
-                "type": "openai_compatible",
-                "base_url": "https://api.openai.com/v1",
-                "api_key": "${OPENAI_API_KEY}",
-                "models": ["gpt-4o", "gpt-4o-mini"],
-            },
-            "anthropic": {
-                "type": "anthropic",
-                "base_url": "https://api.anthropic.com",
-                "api_key": "${ANTHROPIC_API_KEY}",
-                "models": ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"],
-            },
-            "local": {
-                "type": "openai_compatible",
-                "base_url": "http://127.0.0.1:11434/v1",
-                "api_key": "not-needed",
-                "models": ["qwen2.5-coder:14b"],
-            },
-        },
-        "routing": {
-            "default": "deepseek/deepseek-chat",
-            "code_gen": "deepseek/deepseek-chat",
-            "reasoning": "deepseek/deepseek-reasoner",
-            "report": "deepseek/deepseek-chat",
-            "fallback": ["openai/gpt-4o-mini", "local/qwen2.5-coder:14b"],
-        },
+        # 不内置任何服务商：模型由用户自行添加，或由工作区管理员共享（见 llm/hub.py）
+        "providers": {},
+        "routing": {"fallback": []},
         "limits": {"max_tokens_per_run": 200000, "max_cost_per_day_cny": 50, "allowed_for_code": True},
         "trace": {"store_prompts": True, "redact_keys": True},
         "notify": {"channel": "console"},
@@ -170,39 +147,62 @@ class ModelRouter:
     """按角色选模型；失败按 fallback 链降级。参考 codex/cc 的 provider 抽象。"""
 
     def __init__(self, config: AgentConfig) -> None:
-        self.config = config
+        self._config = config
         self._clients: dict[str, Any] = {}
+        # Web 平台注入：按请求上下文（工作区 + 成员）解析出可用的服务商与路由
+        self.resolver: Any = None
+        # 调用前的限额检查（返回原因则跳过该服务商）与调用后的用量记账
+        self.guard: Any = None
+        self.on_usage: Any = None
 
-    def _client(self, provider_name: str):
-        if provider_name in self._clients:
-            return self._clients[provider_name]
-        pc = self.config.providers.get(provider_name)
+    @property
+    def config(self) -> AgentConfig:
+        return self.resolver(self._config) if self.resolver else self._config
+
+    @config.setter
+    def config(self, value: AgentConfig) -> None:
+        self._config = value
+
+    def _client(self, provider_name: str, pc: ProviderConfig | None = None):
+        pc = pc or self.config.providers.get(provider_name)
         if pc is None:
             raise LLMError(f"未知 provider: {provider_name}")
+        # 不同工作区可能有同名服务商：按连接信息区分缓存
+        cache_key = provider_name
+        if self.resolver is not None:
+            import hashlib
+
+            fp = hashlib.sha256(f"{pc.type}|{pc.base_url}|{pc.api_key}".encode()).hexdigest()[:16]
+            cache_key = f"{provider_name}|{fp}"
+        if cache_key in self._clients:
+            return self._clients[cache_key]
         if pc.type == "anthropic":
             client = AnthropicProvider(pc.name, pc.base_url, pc.api_key)
         elif pc.type == "openai_responses":
             client = OpenAIResponsesProvider(pc.name, pc.base_url, pc.api_key)
         else:
             client = OpenAICompatibleProvider(pc.name, pc.base_url, pc.api_key)
-        self._clients[provider_name] = client
+        self._clients[cache_key] = client
         return client
 
-    def _targets_for(self, role: str, override: str | None = None) -> list[tuple[str, str]]:
-        primary = override or self.config.routing.get(role) or self.config.routing.get("default")
+    def _targets_for(
+        self, role: str, override: str | None = None, cfg: AgentConfig | None = None
+    ) -> list[tuple[str, str]]:
+        cfg = cfg or self.config
+        primary = override or cfg.routing.get(role) or cfg.routing.get("default")
         targets: list[tuple[str, str]] = []
         if primary:
             provider, _, model = primary.partition("/")
             targets.append((provider, model))
-        for fb in self.config.routing.get("fallback", []):
+        for fb in cfg.routing.get("fallback", []):
             provider, _, model = fb.partition("/")
             if (provider, model) not in targets:
                 targets.append((provider, model))
         return targets
 
-    def _has_credentials(self, provider_name: str) -> bool:
+    def _has_credentials(self, provider_name: str, cfg: AgentConfig | None = None) -> bool:
         """未配置密钥的 provider 直接跳过，让降级链立刻失败而不是逐个等超时。"""
-        pc = self.config.providers.get(provider_name)
+        pc = (cfg or self.config).providers.get(provider_name)
         if pc is None:
             return False
         from .providers import _resolve_env
@@ -234,39 +234,55 @@ class ModelRouter:
             emitted["any"] = True
             on_delta(kind, text)
 
-        for provider_name, model_name in self._targets_for(role, override=model or None):
-            if not self._has_credentials(provider_name):
+        cfg = self.config
+        for provider_name, model_name in self._targets_for(role, override=model or None, cfg=cfg):
+            pc = cfg.providers.get(provider_name)
+            if pc is None:
+                errors.append(f"[{provider_name}] 没有这个模型服务商（或你没有使用权限），已跳过")
+                continue
+            if not self._has_credentials(provider_name, cfg):
                 errors.append(f"[{provider_name}] 未配置 API Key，已跳过")
                 continue
-            pc = self.config.providers.get(provider_name)
+            blocked = self.guard(pc, model_name) if self.guard else None
+            if blocked:
+                errors.append(f"[{provider_name}] {blocked}，已跳过")
+                continue
             target_effort = effort or (pc.setting(model_name).get("effort") if pc else None) or None
-            for candidate in self._effort_variants(provider_name, model_name, target_effort):
+            for candidate in self._effort_variants(provider_name, model_name, target_effort, pc):
                 if emitted["any"] and on_delta:
                     on_delta("reset", "")
                     emitted["any"] = False
                 try:
-                    client = self._client(provider_name)
+                    client = self._client(provider_name, pc)
                     extra: dict[str, Any] = {}
                     if target_effort:
                         extra["effort"] = target_effort
                     if on_delta:
                         extra["on_delta"] = relay
-                    return client.chat(
+                    result = client.chat(
                         messages,
-                        model=pc.request_model(candidate) if pc else candidate,
+                        model=pc.request_model(candidate),
                         temperature=temperature,
                         tools=tools,
                         max_tokens=max_tokens,
                         **extra,
                     )
+                    if self.on_usage:
+                        try:
+                            self.on_usage(pc, candidate, result.usage)
+                        except Exception:
+                            pass
+                    return result
                 except LLMError as e:
                     errors.append(str(e))
                     continue
         raise LLMError("所有模型均失败:\n" + "\n".join(errors))
 
-    def _effort_variants(self, provider_name: str, model_name: str, effort: str | None) -> list[str]:
+    def _effort_variants(
+        self, provider_name: str, model_name: str, effort: str | None, pc: ProviderConfig | None = None
+    ) -> list[str]:
         """DeepSeek 这类靠换模型调思考深度的 provider：高努力先试 reasoner，失败再回到原模型。"""
-        pc = self.config.providers.get(provider_name)
+        pc = pc or self.config.providers.get(provider_name)
         if not effort or pc is None or pc.type == "anthropic":
             return [model_name]
         if openai_effort_mode(model_name, pc.base_url) != "switch":
@@ -308,7 +324,8 @@ class ModelRouter:
     def available_models(self) -> list[dict[str, Any]]:
         """给前端模型下拉框用的清单。"""
         out: list[dict[str, Any]] = []
-        for name, pc in self.config.providers.items():
+        cfg = self.config
+        for name, pc in cfg.providers.items():
             for m in pc.models:
                 if m:
                     target = f"{name}/{m}"
@@ -319,7 +336,8 @@ class ModelRouter:
                             "model": m,
                             "target": target,
                             "type": pc.type,
-                            "ready": self._has_credentials(name),
+                            "ready": self._has_credentials(name, cfg),
+                            "scope": pc.scope,
                             "effort": self.effort_mode(target),
                             "context_window": self.context_window_for(target),
                             "label": st.get("label") or "",

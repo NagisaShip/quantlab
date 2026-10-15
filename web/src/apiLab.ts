@@ -53,6 +53,8 @@ export type LabKind = 'strategy' | 'factor' | 'model' | 'portfolio' | 'execution
 /** 规格类研究（模型、组合、执行）：代码是一份 JSON 规格，提交后由平台训练 / 评估。 */
 export const isSpecKind = (k?: LabKind) => k === 'model' || k === 'portfolio' || k === 'execution'
 export type Executor = 'solo' | 'team'
+/** 权限模式：自动 / 手动（改动与运行先问）/ 接受编辑 / 计划 / 跳过一切确认 */
+export type Permission = 'auto' | 'manual' | 'accept_edits' | 'plan' | 'bypass'
 
 /** 因子假设卡 */
 export interface Hypothesis { category?: string; rationale?: string; direction?: string; falsify?: string }
@@ -63,6 +65,7 @@ export interface LabProject {
   universe?: string
   horizon?: number
   executor?: Executor
+  permission?: Permission
   team_id?: string
   cost_bps?: number
   hypothesis?: Hypothesis

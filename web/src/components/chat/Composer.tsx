@@ -4,6 +4,8 @@
  */
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import type { ContextView, Effort, EffortOption, ModelOption } from '../../apiLab'
+import { StepSlider } from '../StepSlider'
+import { ContextStats } from './LabControls'
 
 const DEFAULT_EFFORTS: EffortOption[] = [
   { id: 'low', label: '低', hint: '快速回答，少想' },
@@ -12,7 +14,11 @@ const DEFAULT_EFFORTS: EffortOption[] = [
   { id: 'max', label: '极高', hint: '最深入，最慢' },
 ]
 
-export interface SlashCommand { cmd: string; help: string }
+/**
+ * 斜杠命令。group 用于在弹出列表里分类；arg 是参数提示；
+ * run 存在时由前端直接执行（发送时拦截），否则把整句发给服务端。
+ */
+export interface SlashCommand { cmd: string; help: string; group?: string; arg?: string; run?: (arg: string) => void; disabled?: boolean }
 
 /** 点外面或按 Esc 关闭的弹出层。 */
 export function usePopover() {
@@ -68,12 +74,7 @@ export function ModelMenu({ models, value, defaultModel, effort, efforts, onMode
         <div className="cmp-menu cmp-menu-model" role="menu">
           <div className="cmp-menu-section">
             <div className="cmp-menu-label">思考努力程度</div>
-            <div className="cmp-seg" role="radiogroup" aria-label="思考努力程度">
-              {list.map((e) => (
-                <button key={e.id} type="button" role="radio" aria-checked={effort === e.id} disabled={!effortSupported}
-                  className={effort === e.id ? 'on' : ''} title={e.hint} onClick={() => onEffort(e.id)}>{e.label}</button>
-              ))}
-            </div>
+            <StepSlider options={list} value={effort} onChange={onEffort} disabled={!effortSupported} label="思考努力程度" compact />
             <div className="cmp-menu-hint">
               {effortSupported ? list.find((e) => e.id === effort)?.hint : '这个模型不支持调节思考程度'}
             </div>
@@ -119,8 +120,8 @@ export function ModelMenu({ models, value, defaultModel, effort, efforts, onMode
 /* ------------------------------------------------------------------ */
 /* 上下文用量                                                          */
 /* ------------------------------------------------------------------ */
-export function ContextRing({ context, onCompact, onManage, compacting }: {
-  context: ContextView | null; onCompact?: () => void; onManage?: () => void; compacting?: boolean
+export function ContextRing({ context, onCompact, onManage, compacting, updatedAt }: {
+  context: ContextView | null; onCompact?: () => void; onManage?: () => void; compacting?: boolean; updatedAt?: number
 }) {
   const pop = usePopover()
   if (!context) return null
@@ -139,19 +140,8 @@ export function ContextRing({ context, onCompact, onManage, compacting }: {
       </button>
       {pop.open && (
         <div className="cmp-menu cmp-menu-ctx" role="dialog" aria-label="上下文">
-          <div className="cmp-ctx-head">
-            <b>上下文</b>
-            <span>{fmtTokens(context.total)} / {fmtTokens(context.budget)} tokens · {Math.round(ratio * 100)}%</span>
-          </div>
-          <div className="cmp-ctx-bar"><i style={{ width: `${Math.max(1, ratio * 100)}%` }} /></div>
-          <ul className="cmp-ctx-list">
-            {context.items.map((it) => (
-              <li key={it.key}><span>{it.title}</span><span>{fmtTokens(it.tokens)}</span></li>
-            ))}
-          </ul>
-          {context.history_budget !== undefined && (
-            <div className="cmp-menu-hint">对话原文最多保留约 {fmtTokens(context.history_budget)} tokens，更早的部分自动压缩成摘要。</div>
-          )}
+          <div className="ctx-title">上下文</div>
+          <ContextStats context={context} updatedAt={updatedAt} />
           <div className="cmp-ctx-actions">
             {onManage && <button type="button" className="button small ghost" onClick={() => { onManage(); pop.setOpen(false) }}>管理材料</button>}
             {onCompact && (
@@ -240,10 +230,14 @@ export function Composer({
       {slash.length > 0 && (
         <div className="cmp-slash" role="listbox">
           {slash.map((c, i) => (
-            <button key={c.cmd} type="button" role="option" aria-selected={i === active} className={i === active ? 'on' : ''}
-              onMouseEnter={() => setActive(i)} onClick={() => pick(c)}>
-              <b>{c.cmd}</b><span>{c.help}</span>
-            </button>
+            <Fragment key={c.cmd}>
+              {c.group && c.group !== slash[i - 1]?.group && <div className="cmp-slash-group">{c.group}</div>}
+              <button type="button" role="option" aria-selected={i === active} aria-disabled={c.disabled || undefined}
+                className={`${i === active ? 'on' : ''}${c.disabled ? ' off' : ''}`}
+                onMouseEnter={() => setActive(i)} onClick={() => pick(c)}>
+                <b>{c.cmd}{c.arg && <i> {c.arg}</i>}</b><span>{c.help}</span>
+              </button>
+            </Fragment>
           ))}
         </div>
       )}

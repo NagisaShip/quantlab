@@ -1,94 +1,90 @@
-"""配置与模型 Provider 路由。"""
+"""模型配置：工作区 / 个人模型服务商、用途路由、连通性测试、用量统计、成员模型权限与额度申请。
+
+服务商、路由与用量都按工作区隔离（见 llm/hub.py）：
+- 工作区管理员维护「工作区共享」服务商与工作区默认路由，并给成员设置模型权限与限额；
+- 成员可以添加「个人」服务商（管理员可关闭），设置自己的路由覆盖，查看自己的用量并申请提升额度。
+联网搜索密钥仍是部署级配置，只有部署管理员可以修改。
+"""
 
 from __future__ import annotations
 
-import re
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException
+import httpx
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from ..llm.base import LLMError, Message
 from ..llm.router import default_config_dict
 from ..platform import context
 from ..platform.errors import AppError, ErrorCode
-from ..store import Collections
 from .deps import get_services
-from .schemas import ProviderIn, ProviderTestIn, RoutingIn
-
-
-def _require_deploy_admin() -> None:
-    """模型服务与密钥是部署级配置，只有部署管理员（首个注册用户）可以修改。"""
-    if not context.current().is_admin:
-        raise AppError(ErrorCode.PERMISSION_DENIED, "只有部署管理员可以修改模型服务与密钥")
-
+from .schemas import LimitRuleIn, ProviderIn, ProviderTestIn, RoutingIn
 
 router = APIRouter(prefix="/api/config", tags=["配置"])
 
 
-def _key_state(name: str, raw: str, ui_secrets: dict[str, str]) -> tuple[bool, str, str]:
-    """(是否真的有密钥, 来源, 脱敏值)。`${ENV}` 占位符只有在环境变量存在时才算有。"""
-    from ..llm.providers import _resolve_env
-
-    if ui_secrets.get(name):
-        return True, "界面配置", _mask(ui_secrets[name])
-    resolved = _resolve_env(raw or "")
-    if raw.startswith("${"):
-        return bool(resolved), (f"环境变量 {raw[2:-1]}" if resolved else f"未设置环境变量 {raw[2:-1]}"), _mask(resolved)
-    if raw == "not-needed":
-        return True, "本地模型无需密钥", ""
-    return bool(resolved), "配置文件" if resolved else "", _mask(resolved)
+def _require_deploy_admin() -> None:
+    """联网搜索密钥是部署级配置，只有部署管理员（首个注册用户）可以修改。"""
+    if not context.current().is_admin:
+        raise AppError(ErrorCode.PERMISSION_DENIED, "只有部署管理员可以修改联网搜索密钥")
 
 
-@router.get("")
+def _require_ws_admin() -> str:
+    ctx = context.current()
+    if ctx.role != "admin":
+        raise AppError(ErrorCode.PERMISSION_DENIED, "只有工作区管理员可以执行该操作")
+    return context.current_workspace()
+
+
+def _ctx():
+    ctx = context.current()
+    return ctx, context.current_workspace()
+
+
+@router.get("", summary="当前成员可见的模型服务商、路由与自己的模型权限（密钥脱敏）")
 def read_config() -> dict:
     s = get_services()
-    secrets = s.read_secrets()
-    ui_names = {r.get("name") for r in s.global_store.list(Collections.PROVIDERS)}
+    ctx, ws = _ctx()
+    pol = s.model_hub.policy(ws, ctx.user_id or "", ctx.role)
     providers = []
-    for p in s.config.providers.values():
-        has_key, source, masked = _key_state(p.name, p.api_key, secrets)
-        providers.append(
-            {
-                "name": p.name,
-                "type": p.type,
-                "base_url": p.base_url,
-                "has_key": has_key,
-                "key_source": source,
-                "key_masked": masked,
-                "models": p.models,
-                "model_settings": p.model_settings,
-                "custom": p.name in ui_names,
-            }
-        )
+    for rec in s.model_hub.visible(ws, ctx.user_id, ctx.role):
+        v = s.model_hub.view(rec)
+        v["custom"] = True  # 兼容旧前端：界面登记的都可以删除
+        v["editable"] = v["scope"] == "personal" or ctx.role == "admin"
+        where = {"provider": v["name"], "scope": v["scope"]}
+        if v["scope"] == "personal":
+            where["user_id"] = v["owner_id"]
+        v["limit_status"] = s.model_hub.rule_status(ws, v["limits"], **where)
+        providers.append(v)
     return {
         "providers": providers,
-        "routing": s.config.routing,
+        "routing": s.model_hub.routing(ws, ctx.user_id),
+        "routing_layers": s.model_hub.routing_layers(ws, ctx.user_id),
+        "me": {
+            "role": ctx.role,
+            "is_ws_admin": ctx.role == "admin",
+            "use_workspace_models": pol["use_workspace_models"] or ctx.role == "admin",
+            "allow_personal_models": pol["allow_personal_models"] and ctx.role != "reviewer",
+        },
         "limits": s.config.limits,
-        "trace": s.config.trace,
-        "notify": {k: (v if k == "channel" else _mask(str(v))) for k, v in s.config.notify.items()},
-        "exchange": s.config.exchange,
         "config_path": s.config_path,
     }
 
 
-@router.get("/defaults")
+@router.get("/defaults", summary="默认配置模板（不含任何服务商）")
 def read_defaults() -> dict:
-    """无配置文件时的默认模板，前端"一键恢复默认"用。"""
     return default_config_dict()
 
 
-@router.get("/models")
+@router.get("/models", summary="当前成员可用的 provider/model 组合")
 def list_models() -> dict:
-    """所有可用 provider/model 组合，供角色配置下拉框使用。"""
     s = get_services()
-    models = s.router.available_models()
-    return {"models": models, "routing": s.config.routing}
+    return {"models": s.router.available_models(), "routing": s.router.config.routing}
 
 
-@router.get("/presets")
+@router.get("/presets", summary="常见模型服务商模板（添加服务商时一键填充，不会自动启用）")
 def list_presets() -> dict:
-    """常见模型服务商预设，前端"添加 Provider"时一键填充。"""
     return {
         "presets": [
             {
@@ -97,7 +93,7 @@ def list_presets() -> dict:
                 "type": "openai_compatible",
                 "base_url": "https://api.deepseek.com/v1",
                 "models": ["deepseek-chat", "deepseek-reasoner"],
-                "key_env": "DEEPSEEK_API_KEY",
+                "key_env": "",
             },
             {
                 "name": "openai",
@@ -105,15 +101,15 @@ def list_presets() -> dict:
                 "type": "openai_compatible",
                 "base_url": "https://api.openai.com/v1",
                 "models": ["gpt-4o", "gpt-4o-mini"],
-                "key_env": "OPENAI_API_KEY",
+                "key_env": "",
             },
             {
                 "name": "anthropic",
                 "label": "Anthropic",
                 "type": "anthropic",
                 "base_url": "https://api.anthropic.com",
-                "models": [""],
-                "key_env": "ANTHROPIC_API_KEY",
+                "models": ["claude-sonnet-5-5"],
+                "key_env": "",
             },
             {
                 "name": "dashscope",
@@ -121,7 +117,7 @@ def list_presets() -> dict:
                 "type": "openai_compatible",
                 "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
                 "models": ["qwen-max", "qwen-plus"],
-                "key_env": "DASHSCOPE_API_KEY",
+                "key_env": "",
             },
             {
                 "name": "moonshot",
@@ -129,7 +125,7 @@ def list_presets() -> dict:
                 "type": "openai_compatible",
                 "base_url": "https://api.moonshot.cn/v1",
                 "models": ["moonshot-v1-8k", "moonshot-v1-32k"],
-                "key_env": "MOONSHOT_API_KEY",
+                "key_env": "",
             },
             {
                 "name": "zhipu",
@@ -137,7 +133,7 @@ def list_presets() -> dict:
                 "type": "openai_compatible",
                 "base_url": "https://open.bigmodel.cn/api/paas/v4",
                 "models": ["glm-4-plus", "glm-4-flash"],
-                "key_env": "ZHIPU_API_KEY",
+                "key_env": "",
             },
             {
                 "name": "local",
@@ -151,61 +147,23 @@ def list_presets() -> dict:
     }
 
 
-@router.post("/providers")
+def _scope(requested: str | None) -> str:
+    if requested:
+        return requested
+    return "workspace" if context.current().role == "admin" else "personal"
+
+
+@router.post("/providers", summary="登记或更新一个模型服务商（工作区共享 / 个人）")
 def upsert_provider(payload: ProviderIn) -> dict:
-    """登记或更新一个 Provider。密钥写入本机 secrets.json（接口只回显脱敏值）；留空表示不修改密钥。"""
-    _require_deploy_admin()
     s = get_services()
-    name = payload.name.strip().lower()
-    if not re.fullmatch(r"[a-z0-9][a-z0-9_\-]{0,30}", name):
-        raise HTTPException(400, "Provider 名称只能包含小写字母、数字、-、_")
-    if not payload.base_url.startswith(("http://", "https://")):
-        raise HTTPException(400, "base_url 需要以 http:// 或 https:// 开头")
-    models = [m.strip() for m in payload.models if m.strip()]
-    if not models:
-        raise HTTPException(400, "至少填写一个模型名")
-    settings: dict[str, dict] = {}
-    for m in models:
-        st = payload.model_settings.get(m)
-        if st is None:
-            continue
-        inputs = list(dict.fromkeys(st.inputs)) or ["text"]
-        clean = {
-            "label": st.label.strip(),
-            "request_model": "" if st.request_model.strip() == m else st.request_model.strip(),
-            "context_window": st.context_window,
-            "effort": st.effort,
-            "inputs": inputs if inputs != ["text"] else None,
-        }
-        clean = {k: v for k, v in clean.items() if v}
-        if clean:
-            settings[m] = clean
-    record = {
-        "id": name,
-        "name": name,
-        "type": payload.type if payload.type in ("anthropic", "openai_responses") else "openai_compatible",
-        "base_url": payload.base_url.rstrip("/"),
-        "models": models,
-        "model_settings": settings,
-    }
-    s.global_store.upsert(Collections.PROVIDERS, record)
-    if payload.api_key.strip():
-        secrets = s.read_secrets()
-        secrets[name] = payload.api_key.strip()
-        s.write_secrets(secrets)
-    s.apply_runtime_config()
-    s.audit.record(
-        "config.provider_upsert",
-        object_type="llm_provider",
-        object_id=name,
-        details={"base_url": record["base_url"], "models": models, "key_changed": bool(payload.api_key.strip())},
-    )
-    has_key, source, masked = _key_state(name, s.config.providers[name].api_key, s.read_secrets())
-    return {"ok": True, "provider": {**record, "has_key": has_key, "key_source": source, "key_masked": masked}}
+    data = payload.model_dump()
+    data["model_settings"] = {k: v.model_dump() for k, v in payload.model_settings.items()}
+    rec = s.model_hub.upsert(data, scope=_scope(payload.scope))
+    return {"ok": True, "provider": s.model_hub.view(rec)}
 
 
 class DiscoverIn(BaseModel):
-    name: str = Field("", max_length=40, description="已登记的 Provider；密钥留空时用它已保存的密钥")
+    name: str = Field("", max_length=40, description="已登记的服务商；密钥留空时用它已保存的密钥")
     type: Literal["openai_compatible", "openai_responses", "anthropic", "local"] = "openai_compatible"
     base_url: str = Field(..., max_length=400)
     api_key: str = Field("", max_length=400)
@@ -213,23 +171,19 @@ class DiscoverIn(BaseModel):
 
 @router.post("/providers/discover", summary="向服务商查询可用模型列表（OpenAI 兼容 /models 或 Anthropic /v1/models）")
 def discover_models(payload: DiscoverIn) -> dict:
-    import httpx
-
-    from ..llm.providers import _resolve_env
-
-    _require_deploy_admin()
     s = get_services()
+    ctx, ws = _ctx()
+    if ctx.role == "reviewer":
+        raise AppError(ErrorCode.PERMISSION_DENIED, "审阅者（只读）不能查询服务商")
     base = payload.base_url.strip().rstrip("/")
     if not base.startswith(("http://", "https://")):
         raise HTTPException(400, "API 地址需要以 http:// 或 https:// 开头")
     key = payload.api_key.strip()
-    name = payload.name.strip().lower()
-    if not key and name:
-        key = s.read_secrets().get(name, "")
-        if not key and name in s.config.providers:
-            key = _resolve_env(s.config.providers[name].api_key or "")
-    if key == "not-needed":
-        key = ""
+    if not key and payload.name:
+        rec = s.model_hub.find(ws, ctx.user_id, ctx.role, payload.name.strip().lower())
+        # 成员不能借管理员的密钥去探测任意地址：只有地址一致时才使用已保存的密钥
+        if rec and rec.get("base_url", "").rstrip("/") == base:
+            key = s.model_hub.api_key(rec)
     if payload.type == "anthropic":
         url = base + ("/models" if base.endswith("/v1") else "/v1/models")
         headers = {"x-api-key": key, "anthropic-version": "2023-06-01"}
@@ -254,47 +208,182 @@ def discover_models(payload: DiscoverIn) -> dict:
     return {"models": ids}
 
 
-@router.delete("/providers/{name}")
-def delete_provider(name: str) -> dict:
-    """删除界面登记的 Provider 与其密钥。配置文件里的 Provider 只清除界面填写的密钥。"""
-    _require_deploy_admin()
+@router.delete("/providers/{name}", summary="删除一个模型服务商与其密钥")
+def delete_provider(name: str, scope: Literal["workspace", "personal"] | None = None) -> dict:
     s = get_services()
-    s.audit.record("config.provider_delete", object_type="llm_provider", object_id=name)
-    removed = s.global_store.delete(Collections.PROVIDERS, name)
-    secrets = s.read_secrets()
-    had_secret = secrets.pop(name, None) is not None
-    s.write_secrets(secrets)
-    if not removed and not had_secret:
-        raise HTTPException(404, "没有界面登记的该 Provider")
-    # 重新从文件加载，去掉被删除的运行时覆盖
-    from ..llm.router import AgentConfig
-
-    fresh = AgentConfig.load(s.config_path)
-    s.config.providers = fresh.providers
-    s.config.routing = fresh.routing
-    s.apply_runtime_config()
+    if not s.model_hub.delete(name, scope=_scope(scope)):
+        raise HTTPException(404, "没有这个服务商")
     return {"ok": True}
 
 
-@router.put("/routing")
-def update_routing(payload: RoutingIn) -> dict:
-    """按用途指定模型（代码生成 / 推理 / 报告）与降级链。"""
-    _require_deploy_admin()
+@router.put("/routing", summary="按用途设置模型路由与降级链（工作区默认 / 我的覆盖）")
+def update_routing(payload: RoutingIn, scope: Literal["workspace", "personal"] | None = None) -> dict:
     s = get_services()
     known = {m["target"] for m in s.router.available_models()}
     targets = [payload.default, payload.code_gen, payload.reasoning, payload.report, *payload.fallback]
     unknown = [t for t in targets if t and t not in known]
     if unknown:
         raise HTTPException(400, f"未登记的模型：{', '.join(unknown)}")
-    s.global_store.upsert(Collections.SETTINGS, {"id": "routing", **payload.model_dump()})
-    s.apply_runtime_config()
-    s.audit.record("config.routing", object_type="llm_routing", object_id="routing", details=payload.model_dump())
-    return {"ok": True, "routing": s.config.routing}
+    s.model_hub.set_routing(payload.model_dump(), scope=_scope(scope))
+    s.audit.record("config.routing", object_type="llm_routing", object_id=_scope(scope), details=payload.model_dump())
+    return {"ok": True, "routing": s.router.config.routing}
 
 
-NO_MODEL_HINT = "未检测到可用的云端模型密钥；本地模型需自行启动 Ollama / vLLM。AI 功能将使用模板降级。"
+NO_MODEL_HINT = "还没有可用的模型：在「设置 → 模型」里添加一个服务商，或请工作区管理员共享。AI 功能将使用模板降级。"
 
 
+@router.get("/status", summary="各用途是否有可用模型（决定 AI 功能是否降级）")
+def llm_status() -> dict:
+    s = get_services()
+    cfg = s.router.config
+    usable = []
+    for role in ("default", "code_gen", "reasoning", "report"):
+        targets = s.router._targets_for(role, cfg=cfg)
+        ok = [f"{p}/{m}" for p, m in targets if s.router._has_credentials(p, cfg)]
+        usable.append({"role": role, "available": ok, "local": []})
+    any_ready = any(u["available"] for u in usable) or any(s.router._has_credentials(p, cfg) for p in cfg.providers)
+    return {"roles": usable, "ready": any_ready, "hint": "" if any_ready else NO_MODEL_HINT}
+
+
+@router.post("/test", summary="真实调用一次模型，验证密钥与连通性")
+def test_provider(payload: ProviderTestIn) -> dict:
+    s = get_services()
+    try:
+        result = s.router.chat(
+            [Message(role="user", content=payload.prompt)],
+            model=payload.target,
+            temperature=0.0,
+            max_tokens=1024,  # 推理模型会先花掉一部分输出额度在思考上，太小会只剩空回复
+            effort="low",
+        )
+    except LLMError as e:
+        return {"ok": False, "error": str(e), "target": payload.target}
+    return {
+        "ok": True,
+        "target": payload.target,
+        "model": result.model,
+        "provider": result.provider,
+        "reply": result.content[:300],
+        "usage": result.usage,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 用量统计
+# ---------------------------------------------------------------------------
+@router.get("/usage", summary="模型用量与费用统计（我的 / 整个工作区），以及当前限额状态")
+def usage(
+    days: int = Query(30, ge=1, le=90),
+    view: Literal["me", "workspace"] = "me",
+) -> dict:
+    s = get_services()
+    ctx, ws = _ctx()
+    if view == "workspace" and ctx.role != "admin":
+        raise AppError(ErrorCode.PERMISSION_DENIED, "只有工作区管理员可以查看整个工作区的用量")
+    stats = s.model_hub.stats(ws, days=days, user_id=None if view == "workspace" else ctx.user_id)
+    if view == "workspace" and s.auth is not None:
+        names = {m["user_id"]: m.get("name") or m.get("email") for m in s.auth.members(ws)}
+        for row in stats["by_user"]:
+            row["name"] = names.get(row["user_id"], row["user_id"])
+    pol = s.model_hub.policy(ws, ctx.user_id or "", ctx.role)
+    stats["my_limits"] = s.model_hub.rule_status(ws, pol["limits"], scope="workspace", user_id=ctx.user_id)
+    stats["view"] = view
+    return stats
+
+
+# ---------------------------------------------------------------------------
+# 成员模型权限与限额（管理员）
+# ---------------------------------------------------------------------------
+class MemberPolicyIn(BaseModel):
+    use_workspace_models: bool | None = Field(None, description="可以使用工作区共享的模型（调用走管理员的 API）")
+    allow_personal_models: bool | None = Field(None, description="可以添加自己的个人模型服务商")
+    limits: list[LimitRuleIn] | None = Field(None, description="使用工作区共享模型的限额")
+
+
+@router.get("/members", summary="成员的模型权限、限额与近 30 天用量（管理员）")
+def member_policies() -> dict:
+    s = get_services()
+    ws = _require_ws_admin()
+    stats = {r["user_id"]: r for r in s.model_hub.stats(ws, days=30)["by_user"]}
+    out = []
+    for m in s.auth.members(ws):
+        pol = s.model_hub.policy(ws, m["user_id"], m["role"])
+        u = stats.get(m["user_id"], {})
+        out.append(
+            {
+                "user_id": m["user_id"],
+                "name": m.get("name") or "",
+                "email": m.get("email") or "",
+                "role": m["role"],
+                **pol,
+                "limit_status": s.model_hub.rule_status(ws, pol["limits"], scope="workspace", user_id=m["user_id"]),
+                "usage_30d": {
+                    "calls": int(u.get("calls") or 0),
+                    "tokens": int(u.get("tokens") or 0),
+                    "cost": u.get("cost", "0.0000"),
+                },
+            }
+        )
+    return {"members": out}
+
+
+@router.put("/members/{user_id}", summary="设置成员的模型权限与限额（管理员）")
+def set_member_policy(user_id: str, payload: MemberPolicyIn) -> dict:
+    s = get_services()
+    ws = _require_ws_admin()
+    if not any(m["user_id"] == user_id for m in s.auth.members(ws)):
+        raise HTTPException(404, "不是本工作区成员")
+    patch = payload.model_dump()
+    if payload.limits is not None:
+        patch["limits"] = [r.model_dump() for r in payload.limits]
+    pol = s.model_hub.set_policy(ws, user_id, patch)
+    s.audit.record("member.model_policy", object_type="member", object_id=user_id, details=pol)
+    return {"ok": True, "policy": pol}
+
+
+# ---------------------------------------------------------------------------
+# 额度申请
+# ---------------------------------------------------------------------------
+class QuotaRequestIn(LimitRuleIn):
+    reason: str = Field("", max_length=300)
+
+
+class DecideIn(BaseModel):
+    approve: bool
+    note: str = Field("", max_length=200)
+
+
+@router.get("/quota-requests", summary="额度申请：成员看自己的，管理员看全部")
+def list_quota_requests() -> dict:
+    s = get_services()
+    ctx, ws = _ctx()
+    return {"requests": s.model_hub.requests(ws, None if ctx.role == "admin" else ctx.user_id)}
+
+
+@router.post("/quota-requests", summary="申请提升使用工作区模型的额度")
+def create_quota_request(payload: QuotaRequestIn) -> dict:
+    s = get_services()
+    req = s.model_hub.create_request(payload.model_dump())
+    s.audit.record(
+        "member.quota_request",
+        object_type="quota_request",
+        object_id=req["id"],
+        details={k: req[k] for k in ("metric", "window", "limit")},
+    )
+    return {"ok": True, "request": req}
+
+
+@router.post("/quota-requests/{rid}/decide", summary="批准或拒绝额度申请（管理员）；批准后自动更新该成员的限额")
+def decide_quota_request(rid: str, payload: DecideIn) -> dict:
+    s = get_services()
+    req = s.model_hub.decide_request(rid, payload.approve, payload.note)
+    s.audit.record("member.quota_decide", object_type="quota_request", object_id=rid, details={"status": req["status"]})
+    return {"ok": True, "request": req}
+
+
+# ---------------------------------------------------------------------------
+# 联网搜索（部署级）
+# ---------------------------------------------------------------------------
 class SearchKeyIn(BaseModel):
     provider: Literal["tavily"] = "tavily"
     api_key: str = Field("", max_length=400, description="留空表示删除")
@@ -326,49 +415,3 @@ def update_search(payload: SearchKeyIn) -> dict:
         details={"configured": bool(payload.api_key.strip())},
     )
     return s.websearch.status()
-
-
-@router.get("/status")
-def llm_status() -> dict:
-    """当前哪些用途有可用模型。前端用它决定显示"AI"还是"模板降级"。"""
-    s = get_services()
-    usable = []
-    for role in ("default", "code_gen", "reasoning", "report"):
-        targets = s.router._targets_for(role)
-        ok = [f"{p}/{m}" for p, m in targets if s.router._has_credentials(p) and p != "local"]
-        local = [f"{p}/{m}" for p, m in targets if p == "local"]
-        usable.append({"role": role, "available": ok, "local": local})
-    any_remote = any(u["available"] for u in usable)
-    return {"roles": usable, "ready": any_remote, "hint": "" if any_remote else NO_MODEL_HINT}
-
-
-@router.post("/test")
-def test_provider(payload: ProviderTestIn) -> dict:
-    """真实调用一次模型，验证密钥与连通性。"""
-    s = get_services()
-    try:
-        result = s.router.chat(
-            [Message(role="user", content=payload.prompt)],
-            model=payload.target,
-            temperature=0.0,
-            max_tokens=1024,  # 推理模型会先花掉一部分输出额度在思考上，太小会只剩空回复
-            effort="low",
-        )
-    except LLMError as e:
-        return {"ok": False, "error": str(e), "target": payload.target}
-    return {
-        "ok": True,
-        "target": payload.target,
-        "model": result.model,
-        "provider": result.provider,
-        "reply": result.content[:300],
-        "usage": result.usage,
-    }
-
-
-def _mask(value: str) -> str:
-    if not value:
-        return ""
-    if len(value) <= 8:
-        return "*" * len(value)
-    return f"{value[:4]}{'*' * 6}{value[-4:]}"

@@ -195,7 +195,7 @@ def ask_meta() -> dict:
             {"id": "high", "label": "高", "hint": "复杂策略与排错"},
             {"id": "max", "label": "极高", "hint": "最深入，最慢"},
         ],
-        "llm_ready": any(m.get("ready") and m.get("provider") != "local" for m in models),
+        "llm_ready": any(m.get("ready") for m in models),
     }
 
 

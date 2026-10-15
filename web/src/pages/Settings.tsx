@@ -1,17 +1,19 @@
 import { useCallback, useEffect, useState } from 'react'
-import { fmtTime } from '../api2'
+import { fmtTime, v3, type LimitMetric, type LimitRule, type LimitWindow, type MemberModelPolicy, type ModelUsage, type QuotaRequest } from '../api2'
 import {
   KIND_LABEL, MODE_LABEL, RUN_STATE, v4,
   type AuditItem, type Invite, type Me, type Member, type NetworkStatus, type Role, type Run, type RunEvent,
   type TotpStatus, type UsagePanel as UsagePanelData,
 } from '../api3'
+import { LimitBars, LimitEditor, METRICS, UsageSummary, WINDOWS, fmtCost, fmtTokens } from '../components/modelUsage'
 import { Callout, EmptyState, Field, Heading, Loading, Modal, Panel, Tag } from '../components/ui'
 import NodeTab from './NodeTab'
 import type { PageProps } from './types'
 
-type Tab = 'workspace' | 'members' | 'runs' | 'node' | 'audit' | 'system' | 'account'
+type Tab = 'workspace' | 'quota' | 'members' | 'runs' | 'node' | 'audit' | 'system' | 'account'
 const TABS: { key: Tab; label: string }[] = [
-  { key: 'workspace', label: '工作区与额度' },
+  { key: 'workspace', label: '工作区' },
+  { key: 'quota', label: '额度与升级' },
   { key: 'members', label: '成员与邀请' },
   { key: 'runs', label: '任务与运行' },
   { key: 'node', label: '运行节点与机器人' },
@@ -31,6 +33,7 @@ export default function SettingsPage({ tab, me, onNavigate, notify, onMeChanged 
         description={current === 'account' ? undefined : <>工作区「{me.workspace?.name}」· 你的角色：{ROLE_LABEL[me.workspace?.role ?? 'member']}。权限在服务端校验。</>}
       />
       {current === 'workspace' && <WorkspaceTab me={me} isAdmin={isAdmin} notify={notify} onSaved={onMeChanged} />}
+      {current === 'quota' && <QuotaTab me={me} isAdmin={isAdmin} notify={notify} onSaved={onMeChanged} onNavigate={onNavigate} />}
       {current === 'members' && <MembersTab me={me} isAdmin={isAdmin} notify={notify} />}
       {current === 'runs' && <RunsTab notify={notify} onNavigate={onNavigate} readonly={me.workspace?.role === 'reviewer'} />}
       {current === 'node' && <NodeTab notify={notify} isAdmin={isAdmin} onNavigate={onNavigate} />}
@@ -45,21 +48,17 @@ function WorkspaceTab({ me, isAdmin, notify, onSaved }: { me: Me; isAdmin: boole
   const ws = me.workspace!
   const [name, setName] = useState(ws.name)
   const [tz, setTz] = useState(ws.settings.timezone ?? 'UTC')
-  const [q, setQ] = useState(ws.settings.quotas)
   const [newWs, setNewWs] = useState('')
   const [code, setCode] = useState('')
   const save = async () => {
     try {
-      await v4.updateSettings({ name, timezone: tz, quotas: q })
+      await v4.updateSettings({ name, timezone: tz })
       notify('已保存')
       onSaved()
     } catch (e) { notify((e as Error).message, true) }
   }
-  const num = (k: keyof typeof q) => (
-    <input type="number" min={0} value={Number(q[k])} disabled={!isAdmin} onChange={(e) => setQ({ ...q, [k]: Number(e.target.value) })} />
-  )
   return (
-    <div className="two-columns">
+    <div className="two-columns anim-fade">
       <div>
         <h3 className="section-title">基本信息</h3>
         <div className="form-grid">
@@ -70,24 +69,12 @@ function WorkspaceTab({ me, isAdmin, notify, onSaved }: { me: Me; isAdmin: boole
             </select>
           </Field>
         </div>
-        <h3 className="section-title" style={{ marginTop: 22 }}>运行额度</h3>
-        <div className="form-grid">
-          <Field label="同时进行的任务" hint="回测、优化等排队 + 运行中的上限">{num('max_concurrent_runs')}</Field>
-          <Field label="每日运行次数">{num('max_runs_per_day')}</Field>
-          <Field label="单次运行最多 bar 数">{num('max_bars_per_run')}</Field>
-          <Field label="同时运行的纸面模拟">{num('max_paper_runs')}</Field>
-        </div>
-        <label className="checkbox" style={{ display: 'flex', gap: 8, marginTop: 14, fontSize: 13 }}>
-          <input type="checkbox" checked={q.allow_python_strategies} disabled={!isAdmin}
-            onChange={(e) => setQ({ ...q, allow_python_strategies: e.target.checked })} />
-          允许 Python 策略（在隔离子进程中运行：清空环境变量、资源上限、降权、断网）。关闭后只能使用规则 DSL。
-        </label>
         {isAdmin ? <div className="button-row" style={{ marginTop: 16 }}><button className="button primary" onClick={save}>保存</button></div>
           : <Callout tone="warn">只有工作区管理员可以修改设置。</Callout>}
       </div>
       <div>
         <h3 className="section-title">我的工作区</h3>
-        <ul className="checklist">
+        <ul className="checklist stagger">
           {me.workspaces.map((w) => <li key={w.id}>{w.name} <span className={`role-chip ${w.role}`}>{ROLE_LABEL[w.role]}</span></li>)}
         </ul>
         <div className="form-grid" style={{ marginTop: 16 }}>
@@ -103,6 +90,144 @@ function WorkspaceTab({ me, isAdmin, notify, onSaved }: { me: Me; isAdmin: boole
           }}>加入</button>
         </div>
       </div>
+    </div>
+  )
+}
+
+const STATUS_LABEL: Record<QuotaRequest['status'], [string, string]> = { pending: ['待处理', 'warn'], approved: ['已批准', 'pass'], denied: ['已拒绝', 'fail'] }
+const ruleText = (r: LimitRule) =>
+  `每 ${WINDOWS.find(([k]) => k === r.window)?.[1]} ${r.metric === 'cost' ? `¥${r.limit}` : `${fmtTokens(Number(r.limit))} token`}`
+
+/**
+ * 额度与升级：AI 模型额度——成员看自己的限额并申请提升，管理员审批（批准后自动更新该成员的限额）
+ * 并查看整个工作区的模型用量与费用；下面是运行额度（管理员设置）与平台用量。
+ */
+function QuotaTab({ me, isAdmin, notify, onSaved, onNavigate }: {
+  me: Me; isAdmin: boolean; notify: PageProps['notify']; onSaved: () => void; onNavigate: (k: string) => void
+}) {
+  const [q, setQ] = useState(me.workspace!.settings.quotas)
+  const [mine, setMine] = useState<ModelUsage | null>(null)
+  const [wsUsage, setWsUsage] = useState<ModelUsage | null>(null)
+  const [requests, setRequests] = useState<QuotaRequest[]>([])
+  const [ask, setAsk] = useState<{ metric: LimitMetric; window: LimitWindow; limit: string; reason: string }>({ metric: 'tokens', window: '1d', limit: '', reason: '' })
+  const load = useCallback(() => {
+    v3.modelUsage(30, 'me').then(setMine).catch(() => undefined)
+    v3.quotaRequests().then((r) => setRequests(r.requests)).catch(() => undefined)
+    if (isAdmin) v3.modelUsage(30, 'workspace').then(setWsUsage).catch(() => undefined)
+  }, [isAdmin])
+  useEffect(load, [load])
+  const num = (k: keyof typeof q) => (
+    <input type="number" min={0} value={Number(q[k])} disabled={!isAdmin} onChange={(e) => setQ({ ...q, [k]: Number(e.target.value) })} />
+  )
+  const saveQuotas = async () => {
+    try { await v4.updateSettings({ quotas: q }); notify('运行额度已保存'); onSaved() } catch (e) { notify((e as Error).message, true) }
+  }
+  const submit = async () => {
+    try {
+      await v3.requestQuota(ask)
+      setAsk({ ...ask, limit: '', reason: '' })
+      notify('已提交，等待管理员审批')
+      load()
+    } catch (e) { notify((e as Error).message, true) }
+  }
+  const decide = async (r: QuotaRequest, approve: boolean) => {
+    try {
+      await v3.decideQuota(r.id, approve)
+      notify(approve ? `已批准，${r.user_name || '该成员'}的限额已更新` : '已拒绝')
+      load()
+    } catch (e) { notify((e as Error).message, true) }
+  }
+
+  return (
+    <div className="quota-page anim-fade">
+      <section className="set-section">
+        <div className="set-section-head">
+          <h3>AI 模型额度</h3>
+          <button className="button small ghost" onClick={() => onNavigate('models')}>模型设置 →</button>
+        </div>
+        <p className="set-section-note">
+          {isAdmin
+            ? '你是管理员：使用工作区共享模型不受成员限额约束（服务商自身的限额仍生效）。成员的模型权限与限额在「成员与邀请」里设置，成员提交的提升申请在下面审批。'
+            : '这是你使用工作区共享模型的限额；用自己的服务商不受这里约束。额度不够时可以申请提升，管理员批准后立即生效。'}
+        </p>
+        {mine && (mine.my_limits.length ? <LimitBars items={mine.my_limits} /> : <div className="lim-empty">{isAdmin ? '管理员不受成员限额约束。' : '目前不限额。'}</div>)}
+        {!isAdmin && me.workspace?.role !== 'reviewer' && (
+          <div className="quota-ask anim-rise">
+            <b>申请提升额度</b>
+            <div className="quota-ask-row">
+              <select value={ask.metric} onChange={(e) => setAsk({ ...ask, metric: e.target.value as LimitMetric })} aria-label="计量方式">
+                {METRICS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+              </select>
+              <select value={ask.window} onChange={(e) => setAsk({ ...ask, window: e.target.value as LimitWindow })} aria-label="时间段">
+                {WINDOWS.map(([k, l]) => <option key={k} value={k}>每 {l}</option>)}
+              </select>
+              <input type="number" min={0} value={ask.limit} onChange={(e) => setAsk({ ...ask, limit: e.target.value })}
+                placeholder={ask.metric === 'cost' ? '希望的上限（元）' : '希望的上限（token）'} aria-label="希望的上限" />
+            </div>
+            <textarea rows={2} value={ask.reason} maxLength={300} onChange={(e) => setAsk({ ...ask, reason: e.target.value })} placeholder="用途说明（可选），例如：本周要跑多轮策略调研" />
+            <div className="button-row"><button className="button primary small" disabled={!(Number(ask.limit) > 0)} onClick={submit}>提交申请</button></div>
+          </div>
+        )}
+        {requests.length > 0 ? (
+          <div className="table-wrap" style={{ marginTop: 14 }}>
+            <table>
+              <thead><tr>{isAdmin && <th>成员</th>}<th>申请</th><th>说明</th><th>时间</th><th>状态</th>{isAdmin && <th />}</tr></thead>
+              <tbody>
+                {requests.map((r) => (
+                  <tr key={r.id} className="anim-in">
+                    {isAdmin && <td>{r.user_name || r.user_id}</td>}
+                    <td className="mono">{ruleText(r)}</td>
+                    <td className="muted">{r.reason || '—'}</td>
+                    <td>{fmtTime(r.created_ms)}</td>
+                    <td><Tag tone={STATUS_LABEL[r.status][1]}>{STATUS_LABEL[r.status][0]}</Tag></td>
+                    {isAdmin && (
+                      <td className="right">{r.status === 'pending' && (
+                        <span className="button-row tight">
+                          <button className="button small primary" onClick={() => decide(r, true)}>批准</button>
+                          <button className="button small ghost" onClick={() => decide(r, false)}>拒绝</button>
+                        </span>
+                      )}</td>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : isAdmin && <p className="hint">没有额度申请。</p>}
+      </section>
+
+      {isAdmin && wsUsage && (
+        <section className="set-section">
+          <div className="set-section-head"><h3>工作区模型用量</h3></div>
+          <p className="set-section-note">所有成员近 30 天的调用，按各服务商上填写的价格折算成人民币。</p>
+          <UsageSummary data={wsUsage} showUsers />
+        </section>
+      )}
+      {!isAdmin && mine && (
+        <section className="set-section">
+          <div className="set-section-head"><h3>我的模型用量</h3></div>
+          <UsageSummary data={mine} />
+        </section>
+      )}
+
+      <section className="set-section">
+        <div className="set-section-head">
+          <h3>运行额度</h3>
+          {isAdmin && <button className="button small primary" onClick={saveQuotas}>保存</button>}
+        </div>
+        <div className="form-grid">
+          <Field label="同时进行的任务" hint="回测、优化等排队 + 运行中的上限">{num('max_concurrent_runs')}</Field>
+          <Field label="每日运行次数">{num('max_runs_per_day')}</Field>
+          <Field label="单次运行最多 bar 数">{num('max_bars_per_run')}</Field>
+          <Field label="同时运行的纸面模拟">{num('max_paper_runs')}</Field>
+        </div>
+        <label className="checkbox" style={{ display: 'flex', gap: 8, marginTop: 14, fontSize: 13 }}>
+          <input type="checkbox" checked={q.allow_python_strategies} disabled={!isAdmin}
+            onChange={(e) => setQ({ ...q, allow_python_strategies: e.target.checked })} />
+          允许 Python 策略（在隔离子进程中运行：清空环境变量、资源上限、降权、断网）。关闭后只能使用规则 DSL。
+        </label>
+        {!isAdmin && <Callout tone="warn">只有工作区管理员可以修改运行额度。</Callout>}
+      </section>
       <UsagePanel />
     </div>
   )
@@ -177,22 +302,44 @@ function MembersTab({ me, isAdmin, notify }: { me: Me; isAdmin: boolean; notify:
   const [role, setRole] = useState<Role>('member')
   const [email, setEmail] = useState('')
   const [created, setCreated] = useState<Invite | null>(null)
-  const load = useCallback(() => { v4.members().then(setData).catch((e) => notify(e.message, true)) }, [notify])
+  const [policies, setPolicies] = useState<Record<string, MemberModelPolicy>>({})
+  const [editing, setEditing] = useState<{ m: MemberModelPolicy; limits: LimitRule[] } | null>(null)
+  const load = useCallback(() => {
+    v4.members().then(setData).catch((e) => notify(e.message, true))
+    if (isAdmin) v3.memberPolicies().then((r) => setPolicies(Object.fromEntries(r.members.map((m) => [m.user_id, m])))).catch(() => undefined)
+  }, [notify, isAdmin])
   useEffect(load, [load])
   if (!data) return <Loading />
   const act = async (fn: () => Promise<unknown>, ok: string) => {
     try { await fn(); notify(ok); load() } catch (e) { notify((e as Error).message, true) }
   }
+  const toggle = (pol: MemberModelPolicy, key: 'use_workspace_models' | 'allow_personal_models') =>
+    act(() => v3.setMemberPolicy(pol.user_id, { [key]: !pol[key] }), '模型权限已更新')
   return (
-    <>
+    <div className="anim-fade">
+      {isAdmin && (
+        <p className="hint" style={{ marginTop: 0 }}>
+          「用共享模型」打开时，成员的 AI 调用走你在「模型」里共享的服务商（使用你的 API 密钥）；限额按滚动时间段计算，超额后该成员暂时不能用共享模型，可在「额度与升级」里申请提升。
+        </p>
+      )}
       <div className="table-wrap">
         <table>
-          <thead><tr><th>成员</th><th>邮箱</th><th>角色</th><th>加入时间</th><th>最近登录</th>{isAdmin && <th />}</tr></thead>
-          <tbody>
-            {data.members.map((m) => (
+          <thead>
+            <tr>
+              <th>成员</th><th>角色</th>
+              {isAdmin && <><th>用共享模型</th><th>个人服务商</th><th>模型限额</th><th className="right">近 30 天</th></>}
+              <th>最近登录</th>{isAdmin && <th />}
+            </tr>
+          </thead>
+          <tbody className="stagger">
+            {data.members.map((m) => {
+              const pol = policies[m.user_id]
+              return (
               <tr key={m.user_id}>
-                <td>{m.name || '—'}{m.user_id === me.user.id && <small> （我）</small>}</td>
-                <td className="mono">{m.email}</td>
+                <td className="member-cell" title={`加入于 ${fmtTime(m.created_at)}`}>
+                  <b>{m.name || '—'}{m.user_id === me.user.id && <small> （我）</small>}</b>
+                  <small className="mono">{m.email}</small>
+                </td>
                 <td>
                   {isAdmin ? (
                     <select value={m.role} onChange={(e) => act(() => v4.setRole(m.user_id, e.target.value as Role), '角色已更新')}>
@@ -200,13 +347,34 @@ function MembersTab({ me, isAdmin, notify }: { me: Me; isAdmin: boolean; notify:
                     </select>
                   ) : <span className={`role-chip ${m.role}`}>{ROLE_LABEL[m.role]}</span>}
                 </td>
-                <td>{fmtTime(m.created_at)}</td>
+                {isAdmin && (pol ? (
+                  <>
+                    <td>
+                      {m.role === 'admin' ? <span className="muted">管理员</span> : (
+                        <button type="button" role="switch" aria-checked={pol.use_workspace_models} aria-label="使用工作区共享模型"
+                          className={`switch${pol.use_workspace_models ? ' on' : ''}`} onClick={() => toggle(pol, 'use_workspace_models')}><i /></button>
+                      )}
+                    </td>
+                    <td>
+                      <button type="button" role="switch" aria-checked={pol.allow_personal_models} aria-label="允许添加个人服务商"
+                        className={`switch${pol.allow_personal_models ? ' on' : ''}`} onClick={() => toggle(pol, 'allow_personal_models')}><i /></button>
+                    </td>
+                    <td>
+                      <button type="button" className="link-btn" onClick={() => setEditing({ m: pol, limits: pol.limits })}>
+                        {pol.limits.length ? pol.limits.map(ruleText).join('；') : '不限额'}
+                      </button>
+                      {pol.limit_status.some((s) => s.exceeded) && <> <Tag tone="fail">已超额</Tag></>}
+                    </td>
+                    <td className="right mono" title={`${pol.usage_30d.calls} 次调用 · ${fmtTokens(pol.usage_30d.tokens)} token`}>{fmtCost(pol.usage_30d.cost)}</td>
+                  </>
+                ) : <><td /><td /><td /><td /></>)}
                 <td>{m.last_login_at ? fmtTime(m.last_login_at) : '—'}</td>
                 {isAdmin && <td className="right">{m.user_id !== me.user.id && (
                   <button className="button small danger" onClick={() => window.confirm(`移出 ${m.email}？`) && act(() => v4.removeMember(m.user_id), '已移出')}>移出</button>
                 )}</td>}
               </tr>
-            ))}
+              )
+            })}
           </tbody>
         </table>
       </div>
@@ -249,7 +417,21 @@ function MembersTab({ me, isAdmin, notify }: { me: Me; isAdmin: boolean; notify:
           <p className="hint">对方在登录页选择“凭邀请码注册”，或已有账号的在“设置 → 工作区”里加入。</p>
         </Modal>
       )}
-    </>
+      {editing && (
+        <Modal title={`${editing.m.name || editing.m.email} 的模型限额`} onClose={() => setEditing(null)} width={560}>
+          <p className="hint" style={{ marginTop: 0 }}>只约束该成员使用工作区共享模型的用量；滚动时间段，按 token 或按费用（按服务商上填写的价格折算）。</p>
+          <LimitBars items={editing.m.limit_status} />
+          <LimitEditor rules={editing.limits} onChange={(limits) => setEditing({ ...editing, limits })} />
+          <div className="button-row" style={{ marginTop: 14, justifyContent: 'flex-end' }}>
+            <button className="button" onClick={() => setEditing(null)}>取消</button>
+            <button className="button primary" onClick={async () => {
+              await act(() => v3.setMemberPolicy(editing.m.user_id, { limits: editing.limits.filter((r) => Number(r.limit) > 0) }), '限额已更新')
+              setEditing(null)
+            }}>保存</button>
+          </div>
+        </Modal>
+      )}
+    </div>
   )
 }
 

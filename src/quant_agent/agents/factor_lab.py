@@ -803,7 +803,7 @@ class FactorLab(StrategyLab):
         project = self.store.get(pid) or {}
         spec = project_spec(project)
         check = self.check_goal(project, spec)
-        if check["verdict"] == "unreasonable" and not force:
+        if check["verdict"] == "unreasonable" and not force and project.get("permission") != "bypass":
             self._post(
                 pid,
                 role="event",
@@ -1090,6 +1090,8 @@ class FactorLab(StrategyLab):
 
     # ---------------- 用户决定 ----------------
     def decide(self, pid: str, choice: str, note: str = "") -> None:
+        if self._decide_permission(pid, choice, note):
+            return
         if choice in ("入库", "存为候选"):
             for m in self.store.messages(pid):
                 if m["kind"] == "ask" and m["data"].get("answered") is None:

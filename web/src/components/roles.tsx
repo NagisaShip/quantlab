@@ -7,6 +7,7 @@ import { api, type Role, type ToolInfo } from '../api'
 import type { ModelOption } from '../apiLab'
 import { AvatarFace } from './Avatar'
 import { modelLabel } from './chat/Composer'
+import { StepSlider } from './StepSlider'
 
 interface Book {
   roles: Role[]
@@ -167,12 +168,7 @@ export function RoleDrawer({ notify }: { notify: (msg: string, error?: boolean) 
               </label>
 
               <div className="rd-field"><span>思考努力程度</span>
-                <div className="cmp-seg" role="radiogroup">
-                  {EFFORTS.map((e) => (
-                    <button key={e.id} type="button" role="radio" aria-checked={(draft.effort || '') === e.id}
-                      className={(draft.effort || '') === e.id ? 'on' : ''} onClick={() => set('effort', e.id)}>{e.label}</button>
-                  ))}
-                </div>
+                <StepSlider options={EFFORTS} value={draft.effort || ''} onChange={(v) => set('effort', v)} label="思考努力程度" />
               </div>
 
               <label className="rd-field"><span>温度 <em>{draft.temperature.toFixed(1)}</em></span>

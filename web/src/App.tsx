@@ -177,7 +177,7 @@ const PAGE_TITLES: Record<PageKey, string> = {
   roles: '角色与团队',
   'long-running': '夜班',
   prompts: '提示词',
-  models: 'AI 模型',
+  models: '模型',
   docs: '策略 API 文档',
   editor: '策略编辑器',
   backtest: '回测详情',
@@ -454,7 +454,7 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
           {showHead && <PageHead key={nav} title={NAV_LABEL[nav] ?? PAGE_TITLES[page]} purpose={PURPOSE[page]} page={page} onSlot={setSlot} onNavigate={go} />}
           {hub && <HubTabs tabs={hub} page={page} />}
           <PageSlot.Provider value={showHead ? slot : null}>
-            {render()}
+            <div className="page-enter" key={page}>{render()}</div>
           </PageSlot.Provider>
         </main>
       </div>
@@ -515,8 +515,9 @@ function AccountMenu({ me, reachable, llmReady, onNavigate }: { me: Me; reachabl
           <button role="menuitem" onClick={() => pick('settings/workspace')}>新建 / 加入工作区…</button>
           <button role="menuitem" onClick={() => pick('settings/members')}>成员与邀请…</button>
           <hr />
-          <button role="menuitem" onClick={() => pick('settings/account')}><span>设置</span></button>
-          <button role="menuitem" onClick={() => pick('models')}><span>AI 模型</span>{!llmReady && <span className="role-chip warn">未配置</span>}</button>
+          <button role="menuitem" onClick={() => pick(llmReady ? 'settings/account' : 'models')}>
+            <span>设置</span>{!llmReady && <span className="role-chip warn">模型未配置</span>}
+          </button>
           <hr />
           <button role="menuitem" className="acct-logout" onClick={async () => { await v4.logout().catch(() => undefined); setWorkspace(''); window.location.hash = '/home'; window.location.reload() }}>退出登录</button>
         </div>
