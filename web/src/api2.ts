@@ -376,6 +376,10 @@ export interface ModelSetting {
   inputs?: string[]
   price_in?: string
   price_out?: string
+  /** 缓存命中的输入价格；留空按普通输入价 */
+  price_cache?: string
+  /** 缓存写入价格（Anthropic 等单独计费）；留空按普通输入价 */
+  price_cache_write?: string
 }
 
 export interface ModelConfigView {
@@ -386,11 +390,11 @@ export interface ModelConfigView {
   config_path: string | null
 }
 
-export interface UsageRow { provider?: string; scope?: ProviderScope; model?: string; user_id?: string; name?: string; calls: number; tokens?: number; input_tokens?: number; output_tokens?: number; cost: string }
+export interface UsageRow { provider?: string; scope?: ProviderScope; model?: string; user_id?: string; name?: string; calls: number; tokens?: number; input_tokens?: number; output_tokens?: number; cache_read_tokens?: number; cache_write_tokens?: number; cost: string }
 export interface ModelUsage {
   days: number
   view: 'me' | 'workspace'
-  total: { calls: number; tokens: number; cost: string }
+  total: { calls: number; tokens: number; cost: string; cache_read_tokens?: number; cache_hit_rate?: number | null }
   by_model: UsageRow[]
   by_user: UsageRow[]
   daily: { day: string; tokens: number; calls: number; cost: string }[]

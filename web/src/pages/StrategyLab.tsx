@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import {
   lab, mergeBySeq, missions,
   type ContextView, type Effort, type Executor, type FactorSummary, type GoalSpec, type LabKind, type LabMessage, type LabMeta,
-  type LabProject, type LabProjectBrief, type Metrics, type Permission,
+  type LabProject, type Metrics, type Permission,
 } from '../apiLab'
 import { Avatar } from '../components/Avatar'
 import { store } from '../components/prefs'
@@ -25,11 +25,12 @@ import { PortfolioPanel, PortfolioReportCard, PortfolioSpecCard, PortfolioVersio
 import { ExecutionPanel, ExecutionReportCard, ExecutionSpecCard, ExecutionVersionMetrics } from './lab/execution'
 import { ExecStats } from '../components/executionReport'
 import { domainUI, libraryIdOf } from './lab/domains'
-import { Conversations } from './lab/Conversations'
+import { labChanged, onNewChat, takeNewChat } from './lab/bus'
 import { QuantBot } from '../components/QuantBot'
 import { DiscussionCard } from '../components/chat/Discussion'
 import { rd } from '../apiRd'
 import type { PageProps } from './types'
+import { appConfirm, appPrompt } from '../components/dialog'
 
 const EXAMPLES = [
   'BTC 1 小时，20 和 60 均线金叉做多，止损 5%',
@@ -64,47 +65,147 @@ const num = (v: number | null | undefined, d = 2) => (v === null || v === undefi
 
 export default function StrategyLabPage({ onNavigate, notify, arg }: PageProps & { arg?: string }) {
   const [meta, setMeta] = useState<LabMeta | null>(null)
-  const [projects, setProjects] = useState<LabProjectBrief[]>([])
-  const [activeId, setActiveId] = useState<string>(arg || '')
-  const [newFolder, setNewFolder] = useState('')
+  // 当前对话跟着网址 #/lab/<id> 走；左侧栏的对话列表在 App 里常驻（SidebarConversations）
+  const activeId = arg || ''
+  const [newFolder, setNewFolder] = useState(() => takeNewChat() ?? '')
+  const [newKey, setNewKey] = useState(0)
   const [slot, setSlot] = useState<HTMLElement | null>(null)
   useEffect(() => { setSlot(document.getElementById('sidebar-slot')) }, [])
-
-  const refreshList = useCallback(async () => {
-    const r = await lab.projects()
-    setProjects(r.projects)
-  }, [])
+  const refreshList = useCallback(() => labChanged(), [])
 
   useEffect(() => {
     lab.meta().then(setMeta).catch((e: Error) => notify(e.message, true))
-    refreshList().catch(() => undefined)
-  }, [refreshList, notify])
+  }, [notify])
+  // 已经在研究室里时，侧栏「新对话」也要清空欢迎页（换文件夹、清掉草稿）
+  useEffect(() => onNewChat(() => { setNewFolder(takeNewChat() ?? ''); setNewKey((k) => k + 1) }), [])
 
-  useEffect(() => { if (arg) setActiveId(arg) }, [arg])
-
-  const open = (id: string) => {
-    setActiveId(id)
-    window.history.replaceState(null, '', id ? `#/lab/${id}` : '#/lab')
-  }
+  const open = (id: string) => { window.location.hash = id ? `/lab/${id}` : '/lab' }
 
   return (
     <div className="lab2 rail-closed">
-      {slot && createPortal(
-        <Conversations projects={projects} activeId={activeId} notify={notify} onChanged={refreshList}
-          onOpen={open} onNew={(folder) => { setNewFolder(folder ?? ''); open('') }} />,
-        slot,
-      )}
       {meta && !meta.llm_ready && slot && createPortal(<a href="#/models" className="conv-foot">未配置模型，当前为规则降级 · 去配置</a>, slot)}
 
       {activeId ? (
         <ProjectView key={activeId} id={activeId} meta={meta} notify={notify} onNavigate={onNavigate}
           onChanged={refreshList} onDeleted={() => { open(''); refreshList() }} onOpenProject={(pid) => { refreshList(); open(pid) }} />
       ) : (
-        <Welcome key={newFolder} meta={meta} notify={notify} folder={newFolder}
+        <Welcome key={`${newFolder}-${newKey}`} meta={meta} notify={notify} folder={newFolder}
           onCreated={(id) => { setNewFolder(''); refreshList(); open(id) }} />
       )}
     </div>
   )
+}
+
+/* ------------------------------------------------------------------ */
+/* 输入框的「+」菜单与斜杠命令：新对话和对话中共用同一套                   */
+/* ------------------------------------------------------------------ */
+const LATER = '开始对话后可用'
+type Handler = (() => void) | undefined
+type ArgHandler = ((arg: string) => void) | undefined
+
+interface PlusOpts {
+  ui: ReturnType<typeof domainUI>
+  running?: boolean
+  fileHint: string
+  onFiles: () => void
+  onSlash: () => void
+  executorTeam?: boolean
+  onExecutor?: () => void
+  onDiscuss: () => void
+  onTeam: () => void
+  onNight: () => void
+  onPin: () => void
+  onSave: Handler
+  saveLabel: string
+  saveHint?: string
+  onModels: () => void
+  auto: ReactNode
+}
+
+function labPlusItems(o: PlusOpts): ActionItem[] {
+  const run = !!o.running
+  return [
+    { label: '添加文件或照片', icon: Icons.attach, hint: o.fileHint, onClick: o.onFiles },
+    { label: '斜杠命令', icon: Icons.slash, hint: '/backtest、/goal、/auto、/discuss…', onClick: o.onSlash },
+    {
+      label: '插件', icon: Icons.plugin, submenu: [
+        ...(o.ui && o.onExecutor ? [{ label: '研究小组执行', icon: Icons.team, hint: o.ui.teamHint || '自动迭代时由小组讨论后再实现', checked: !!o.executorTeam, onClick: o.onExecutor, disabled: run }] : []),
+        { label: '团队讨论', icon: Icons.team, hint: '/discuss：多个角色发言、质疑、汇总', onClick: o.onDiscuss, disabled: run },
+        { label: '快速评审', icon: Icons.team, hint: '/team：召集团队给一份评审结论', onClick: o.onTeam, disabled: run },
+        { label: '夜班', icon: Icons.loop, hint: '/night：放进夜班队列，结果写进晨报', onClick: o.onNight },
+        { label: '钉一段材料', icon: Icons.pin, hint: '/pin：钉进上下文，每轮都带给模型', onClick: o.onPin },
+        { label: o.saveLabel, icon: Icons.save, hint: o.saveHint ?? '/save', onClick: o.onSave, disabled: run || !o.onSave },
+        { label: '联网搜索与模型…', icon: Icons.search, hint: '在设置里配置', onClick: o.onModels },
+      ],
+    },
+    { label: '自动迭代', divider: true, render: () => o.auto },
+  ]
+}
+
+interface CmdOpts {
+  ui: ReturnType<typeof domainUI>
+  kind?: LabKind
+  running?: boolean
+  hasGoal: boolean
+  rounds: number
+  executorTeam?: boolean
+  saveLabel: string
+  compacting?: boolean
+  backtest: Handler
+  stress: Handler
+  walkForward: ArgHandler
+  auto: ArgHandler
+  night: ArgHandler
+  explain: Handler
+  team: ArgHandler
+  discuss: ArgHandler
+  crew: Handler
+  pin: ArgHandler
+  compact: Handler
+  context: Handler
+  save: Handler
+  mode: ArgHandler
+}
+
+/** 没有处理函数的命令（新对话里还用不了）置灰，并注明「开始对话后可用」。 */
+function labCommands(o: CmdOpts): SlashCommand[] {
+  const run = !!o.running
+  const c = (cmd: string, group: string, help: string, fn: Handler | ArgHandler, extra: Partial<SlashCommand> = {}): SlashCommand => ({
+    cmd, group, help: fn ? help : `${help}（${LATER}）`,
+    run: fn ? (a: string) => (fn as (x: string) => void)(a) : undefined,
+    disabled: !fn || run, ...extra,
+  })
+  const evalLabel = o.ui ? `${o.ui.evaluate}当前${o.ui.noun}` : '回测当前版本'
+  return [
+    c(o.ui ? '/eval' : '/backtest', '运行', evalLabel, o.backtest),
+    ...(!o.ui || o.kind === 'factor' ? [c('/stress', '运行', o.ui ? '2× 成本评估（只看，不改成绩）' : '2× 成本压力测试', o.stress)] : []),
+    ...(!o.ui ? [c('/walkforward', '运行', '分段回测：检查是否只在某段有效', o.walkForward, { arg: '[段数]' })] : []),
+    c('/auto', '迭代', o.hasGoal ? `按目标自动迭代（现在 ${o.rounds} 轮）` : '需要先设定目标（/goal）；没有目标就直接对话', o.auto,
+      { arg: '[轮数]', disabled: !o.auto || run || !o.hasGoal }),
+    { cmd: '/goal', group: '迭代', arg: '[描述]', help: '设定目标：指标条件、回测范围、轮数（设了目标才能自动迭代）' },
+    c('/night', '迭代', '放进夜班队列：无人值守地自动研究，结果写进晨报', o.night, { arg: '[想法]', disabled: !o.night }),
+    c('/explain', '协作', o.ui ? `解释当前${o.ui.noun}的逻辑与风险` : '逐段解释当前策略', o.explain),
+    c('/team', '协作', o.ui ? '召集研究小组评审' : '召集团队评审', o.team, { arg: '[议题]' }),
+    c('/discuss', '协作', '团队讨论：多个角色依次发言、相互质疑，最后汇总（发言以气泡显示在对话里）', o.discuss, { arg: '[议题]' }),
+    ...(o.ui ? [c('/crew', '协作', o.executorTeam ? '自动迭代改为单个 AI 执行' : '自动迭代改为研究小组执行', o.crew)] : []),
+    c('/pin', '上下文', '钉一段材料到上下文', o.pin, { arg: '[内容]', disabled: !o.pin }),
+    c('/compact', '上下文', '把较早的对话压缩成摘要', o.compact, { disabled: !o.compact || run || !!o.compacting }),
+    c('/context', '上下文', '查看上下文用量', o.context, { disabled: !o.context }),
+    c('/save', '项目', o.saveLabel, o.save),
+    c('/mode', '项目', '切换权限模式', o.mode, { arg: '[auto|manual|edits|plan|bypass]', disabled: !o.mode }),
+  ]
+}
+
+/** /discuss：建一场团队讨论并挂进对话（发言以气泡显示）。 */
+async function startDiscussionIn(project: Pick<LabProject, 'id' | 'title' | 'idea' | 'team_id' | 'securities' | 'timeframe'>, topic: string) {
+  const directive = (topic || `评审「${project.title}」：${project.idea || '当前研究'}；逻辑是否自洽、证据是否可信、最大风险在哪里、下一步怎么做`).slice(0, 600)
+  const presets = await missions.presets()
+  const teamId = project.team_id || presets.teams[0]?.id || null
+  const v = await missions.create({
+    directive, mode: 'single', team_id: teamId, lab_project_id: project.id,
+    symbol: project.securities[0], timeframe: project.timeframe, include_market_data: true,
+  })
+  await lab.discussion(project.id, v.mission.id, directive)
 }
 
 /* ------------------------------------------------------------------ */
@@ -132,7 +233,7 @@ function Welcome({ meta, notify, onCreated, folder }: {
   const setPermission = (p: Permission) => { setPermissionState(p); store.set('qa.lab.permission', p) }
   // 标的：默认交给 AI 根据对话决定（带了标的过来、或手动选过时用手动）
   const [marketAuto, setMarketAuto] = useState(() => !draft?.securities?.length)
-  const [files, setFiles] = useState<{ title: string; text: string }[]>([])
+  const [files, setFiles] = useState<{ title: string; text: string; kind?: 'file' | 'note' }[]>([])
   const [auto, setAuto] = useState(false)
   const [busy, setBusy] = useState(false)
   const [goalOpen, setGoalOpen] = useState<{ initial: GoalSpec; unparsed?: string } | null>(null)
@@ -169,6 +270,14 @@ function Welcome({ meta, notify, onCreated, folder }: {
     const startAuto = auto && goalSet
     const text = idea.trim()
     if (busy || !text) return
+    const [head, ...restParts] = text.split(/\s+/)
+    const local = welcomeCommands.find((c) => c.cmd === head)
+    if (local && (local.run || local.disabled)) {
+      if (local.disabled) { notify(local.help.includes(LATER) ? `${local.cmd}：${LATER}` : `${local.cmd} 现在不可用`, true); return }
+      setIdea('')
+      local.run!(restParts.join(' ').trim())
+      return
+    }
     if (text.startsWith('/goal')) {
       const rest = text.replace(/^\/goal\s*/, '')
       setIdea('')
@@ -186,11 +295,15 @@ function Welcome({ meta, notify, onCreated, folder }: {
       await queueNight(rest)
       return
     }
+    const discuss = /^\/discuss\b/.test(text)
+    const topic = discuss ? text.replace(/^\/discuss\s*/, '').trim() : ''
+    if (discuss && !topic) { notify('用法：/discuss 讨论的议题', true); return }
     setBusy(true)
     try {
-      const pins = [...(draft?.pins ?? []), ...files.map((f) => ({ kind: 'file', ...f }))]
+      const pins = [...(draft?.pins ?? []), ...files.map((f) => ({ kind: f.kind ?? 'file', title: f.title, text: f.text }))]
+      const ideaText = discuss ? topic : text.replace(/^\/team\s*/, '') || text
       const v = await lab.create({
-        kind, idea: text, securities: goal.symbols, timeframe: goal.timeframe, model, effort, max_rounds: goal.max_rounds,
+        kind, idea: ideaText, securities: goal.symbols, timeframe: goal.timeframe, model, effort, max_rounds: goal.max_rounds,
         bars_limit: goal.bars_limit, data_source: source, permission, market_auto: marketAuto && !goalSet, suggest: suggestOn(),
         ...(isFactor ? { horizon: goal.horizon ?? 1, executor, universe } : {}),
         ...(draft?.title ? { title: draft.title } : {}), ...(draft?.code ? { code: draft.code } : {}), ...(pins.length ? { pins } : {}),
@@ -198,7 +311,8 @@ function Welcome({ meta, notify, onCreated, folder }: {
       })
       const id = v.project.id
       if (goalSet) await lab.setGoal(id, goal, { review: false, start: startAuto, research: isFactor ? 'none' : research })
-      if (!startAuto) await lab.send(id, text, { suggest: suggestOn() })
+      if (discuss) await startDiscussionIn(v.project, topic)
+      else if (!startAuto) await lab.send(id, text, { suggest: suggestOn() })
       onCreated(id)
     } catch (e) {
       notify((e as Error).message, true)
@@ -206,34 +320,49 @@ function Welcome({ meta, notify, onCreated, folder }: {
     }
   }
 
-  const welcomeCommands: SlashCommand[] = [
-    { cmd: '/goal', group: '迭代', arg: '[描述]', help: '设定目标：指标条件、回测范围、轮数（设了目标才能自动迭代）' },
-    { cmd: '/night', group: '迭代', arg: '[想法]', help: '放进夜班队列：无人值守地自动研究，结果写进晨报' },
-  ]
-  const plusItems: ActionItem[] = [
-    { label: '添加文件或照片', icon: Icons.attach, hint: '文本、CSV、JSON 会钉进新对话的上下文', onClick: pickFiles },
-    { label: '斜杠命令', icon: Icons.slash, hint: '/goal、/night', onClick: () => setIdea('/') },
-    {
-      label: '插件', icon: Icons.plugin, submenu: [
-        ...(isFactor ? [{ label: '研究小组执行', icon: Icons.team, hint: ui?.teamHint ?? '', checked: executor === 'team', onClick: () => { const v = executor === 'team' ? 'solo' : 'team'; setExecutor(v); store.set('qa.lab.executor', v) } }] : []),
-        { label: '夜班', icon: Icons.loop, hint: '/night：把这个想法放进夜班队列', onClick: () => setIdea(`/night ${idea.replace(/^\/\S*\s*/, '')}`) },
-        { label: '联网搜索与模型…', icon: Icons.search, hint: '在设置里配置', onClick: () => { window.location.hash = '#/models' } },
-      ],
-    },
-    { label: '自动迭代', divider: true, render: () => (
-      <AutoIterateRow rounds={spec.max_rounds} needsGoal={!goalSet} onSetGoal={() => setGoalOpen({ initial: spec })}
-        onRounds={(n) => setSpec({ ...spec, max_rounds: n })} onStart={(n) => { setSpec({ ...spec, max_rounds: n }); setAuto(true) }} />
-    ) },
-  ]
+  const stripCmd = (t: string) => t.replace(/^\/\S*\s*/, '')
+  const addNote = async (text?: string) => {
+    const t = (text ?? (await appPrompt('钉一段材料到新对话的上下文（每轮都会带给模型）', '', { title: '钉一段材料', placeholder: '例如：只做多、单笔风险不超过 1%' })) ?? '').trim()
+    if (t) { setFiles((prev) => [...prev, { title: t.replace(/\s+/g, ' ').slice(0, 24), text: t.slice(0, 4000), kind: 'note' }]); notify('已钉住，会带进新对话的上下文') }
+  }
+  const welcomeCommands = labCommands({
+    ui, kind, hasGoal: goalSet, rounds: spec.max_rounds, executorTeam: executor === 'team', saveLabel: ui ? `存入${ui.libraryName}` : '保存为平台策略',
+    backtest: undefined, stress: undefined, walkForward: undefined, explain: undefined, compact: undefined, context: undefined, save: undefined,
+    auto: (a) => { if (Number(a)) setSpec({ ...spec, max_rounds: Math.min(8, Math.max(1, Number(a))) }); setAuto(true) },
+    night: (a) => { if (a) queueNight(a); else notify('用法：/night 你的研究想法', true) },
+    team: (a) => setIdea(`/team ${a}`), discuss: (a) => setIdea(`/discuss ${a}`),
+    crew: isFactor ? () => { const v = executor === 'team' ? 'solo' : 'team'; setExecutor(v); store.set('qa.lab.executor', v) } : undefined,
+    pin: (a) => { addNote(a || undefined) },
+    mode: (a) => (PERMISSION_ALIAS[a.toLowerCase()] ? setPermission(PERMISSION_ALIAS[a.toLowerCase()]) : notify('用法：/mode auto | manual | edits | plan | bypass', true)),
+  }).map((c) => (c.cmd === '/team' || c.cmd === '/discuss' ? { ...c, run: undefined } : c)) // 这两个随第一条消息一起发出
+  const plusItems = labPlusItems({
+    ui,
+    fileHint: '文本、CSV、JSON 会钉进新对话的上下文；图片在对话开始后发送',
+    onFiles: pickFiles, onSlash: () => setIdea('/'),
+    executorTeam: executor === 'team', onExecutor: isFactor ? () => { const v = executor === 'team' ? 'solo' : 'team'; setExecutor(v); store.set('qa.lab.executor', v) } : undefined,
+    onDiscuss: () => setIdea(`/discuss ${stripCmd(idea)}`), onTeam: () => setIdea(`/team ${stripCmd(idea)}`), onNight: () => setIdea(`/night ${stripCmd(idea)}`),
+    onPin: () => { addNote() }, onSave: undefined, saveLabel: ui ? `存入${ui.libraryName}` : '保存为平台策略', saveHint: '有代码后可用 · /save',
+    onModels: () => { window.location.hash = '#/models' },
+    auto: <AutoIterateRow rounds={spec.max_rounds} needsGoal={!goalSet} onSetGoal={() => setGoalOpen({ initial: spec })}
+      onRounds={(n) => setSpec({ ...spec, max_rounds: n })} onStart={(n) => { setSpec({ ...spec, max_rounds: n }); setAuto(true) }} />,
+  })
   const kinds = meta?.kinds ?? [{ id: 'strategy' as LabKind, label: '策略', hint: '' }, { id: 'factor' as LabKind, label: '因子', hint: '' }]
   const marketLabel = marketAuto ? '标的：自动' : `${isFactor ? `${spec.symbols.length} 个标的` : spec.symbols[0] || '标的'} · ${spec.timeframe}${isFactor ? ` · 持有 ${spec.horizon ?? 1} 期` : ''}`
 
   return (
     <section className="lab2-main">
       <header className="lab2-head">{folder && <span className="lab2-sub">新对话将放进项目「{folder}」</span>}</header>
-      <div className="lab2-welcome">
-        <QuantBot size={52} state={busy ? 'thinking' : 'idle'} className="lab2-welcome-bot" />
-        <h1>{ui ? ui.welcome : '有什么交易想法？'}</h1>
+      {/* 和对话中同一个布局：上面是内容区，输入框停靠在底部，「+」菜单、斜杠命令都向上展开 */}
+      <div className="lab2-scroll lab2-welcome-scroll">
+        <div className="lab2-welcome">
+          <QuantBot size={52} state={busy ? 'thinking' : 'idle'} className="lab2-welcome-bot" />
+          <h1>{ui ? ui.welcome : '有什么交易想法？'}</h1>
+          <div className="lab2-examples">
+            {(ui ? ui.examples : EXAMPLES).map((x) => <button key={x} className="lab2-example" onClick={() => setIdea(x)}>{x}</button>)}
+          </div>
+        </div>
+      </div>
+      <div className="lab2-dock">
         {goalOpen && (
           <div className="lab2-goal-pop">
             <GoalForm meta={dmeta} domain={kind} initial={goalOpen.initial} unparsed={goalOpen.unparsed} onCancel={() => setGoalOpen(null)}
@@ -253,7 +382,7 @@ function Welcome({ meta, notify, onCreated, folder }: {
             )}
             {files.map((f, i) => (
               <div key={i} className="cmp-attached">
-                <span>📎 {f.title}</span>
+                <span>{f.kind === 'note' ? '📌' : '📎'} {f.title}</span>
                 <button type="button" aria-label="移除文件" onClick={() => setFiles(files.filter((_, j) => j !== i))}>×</button>
               </div>
             ))}
@@ -338,9 +467,6 @@ function Welcome({ meta, notify, onCreated, folder }: {
                 onEffort={(e) => { setEffort(e); store.set('qa.lab.effort', e) }} />
             )}
           </>} />
-        <div className="lab2-examples">
-          {(ui ? ui.examples : EXAMPLES).map((x) => <button key={x} className="lab2-example" onClick={() => setIdea(x)}>{x}</button>)}
-        </div>
       </div>
     </section>
   )
@@ -442,10 +568,11 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
   const openPanel = (t: PanelTab | null) => { setPanel(t); store.set('qa.lab.panel', t ?? 'none') }
   const openEditor = () => setEditorOpen(true)
 
-  const act = async (fn: () => Promise<unknown>) => {
+  /** full：编辑 / 重试会删掉后面的消息，要整段重新拉，不能只合并增量 */
+  const act = async (fn: () => Promise<unknown>, full = false) => {
     try {
       await fn()
-      await pull()
+      await pull(full)
       follow()
     } catch (e) {
       notify((e as Error).message, true)
@@ -569,14 +696,7 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
   const setPermission = (p: Permission) => { patch({ permission: p }); notify(`权限模式：${({ auto: '自动', manual: '手动', accept_edits: '接受编辑', plan: '计划', bypass: '跳过权限确认' } as Record<Permission, string>)[p]}`) }
   const noCode = !project.code
   const startDiscussion = (topic: string) => act(async () => {
-    const directive = (topic || `评审「${project.title}」：${project.idea || '当前研究'}；逻辑是否自洽、证据是否可信、最大风险在哪里、下一步怎么做`).slice(0, 600)
-    const presets = await missions.presets()
-    const teamId = project.team_id || presets.teams[0]?.id || null
-    const v = await missions.create({
-      directive, mode: 'single', team_id: teamId, lab_project_id: id,
-      symbol: project.securities[0], timeframe: project.timeframe, include_market_data: true,
-    })
-    await lab.discussion(id, v.mission.id, directive)
+    await startDiscussionIn(project, topic)
     stick.current = true
   })
   const queueNight = (idea: string) => act(async () => {
@@ -587,42 +707,36 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
     })
     notify('已加入夜班队列：开班后无人值守地研究，结果写进晨报')
   })
-  const evalLabel = ui ? `${ui.evaluate}当前${ui.noun}` : '回测当前版本'
-  const commands: SlashCommand[] = [
-    { cmd: ui ? '/eval' : '/backtest', group: '运行', help: evalLabel, run: () => act(() => lab.backtest(id)), disabled: running || noCode },
-    ...(!ui || project.kind === 'factor' ? [{ cmd: '/stress', group: '运行', help: ui ? '2× 成本评估（只看，不改成绩）' : '2× 成本压力测试', run: () => act(() => lab.backtest(id, 2)), disabled: running || noCode }] : []),
-    ...(!ui ? [{ cmd: '/walkforward', group: '运行', arg: '[段数]', help: '分段回测：检查是否只在某段有效', run: (a: string) => act(() => lab.walkForward(id, Math.min(6, Math.max(2, Number(a) || 3)))), disabled: running || noCode }] : []),
-    { cmd: '/auto', group: '迭代', arg: '[轮数]', help: hasGoal ? `按目标自动迭代（现在 ${roundsNow} 轮）` : '需要先设定目标（/goal）；没有目标就直接对话', run: (a: string) => startAuto(Math.min(8, Math.max(1, Number(a) || roundsNow))), disabled: running || !hasGoal },
-    { cmd: '/goal', group: '迭代', arg: '[描述]', help: '设定目标：指标条件、回测范围、轮数' },
-    { cmd: '/night', group: '迭代', arg: '[想法]', help: '放进夜班队列：无人值守地自动研究，结果写进晨报', run: (a: string) => queueNight(a) },
-    { cmd: '/explain', group: '协作', help: ui ? `解释当前${ui.noun}的逻辑与风险` : '逐段解释当前策略', run: () => send('/explain'), disabled: running || noCode },
-    { cmd: '/team', group: '协作', arg: '[议题]', help: ui ? '召集研究小组评审' : '召集团队评审', run: (a: string) => send(a ? `/team ${a}` : '/team'), disabled: running },
-    { cmd: '/discuss', group: '协作', arg: '[议题]', help: '团队讨论：多个角色依次发言、相互质疑，最后汇总（发言以气泡显示在对话里）', run: (a: string) => startDiscussion(a), disabled: running },
-    ...(ui ? [{ cmd: '/crew', group: '协作', help: project.executor === 'team' ? '自动迭代改为单个 AI 执行' : '自动迭代改为研究小组执行', run: () => patch({ executor: project.executor === 'team' ? 'solo' : 'team' }), disabled: running }] : []),
-    { cmd: '/pin', group: '上下文', arg: '[内容]', help: '钉一段材料到上下文', run: (a: string) => (a ? act(() => lab.pin(id, { kind: 'note', title: a.slice(0, 24), text: a })) : openPanel('context')) },
-    { cmd: '/compact', group: '上下文', help: '把较早的对话压缩成摘要', run: () => compact(), disabled: running || compacting },
-    { cmd: '/context', group: '上下文', help: '查看上下文用量', run: () => openPanel('context') },
-    { cmd: '/save', group: '项目', help: ui ? `存入${ui.libraryName}` : (project.slug ? '更新平台策略' : '保存为平台策略'), run: () => saveOut(), disabled: running || noCode },
-    { cmd: '/mode', group: '项目', arg: '[auto|manual|edits|plan|bypass]', help: '切换权限模式', run: (a: string) => (PERMISSION_ALIAS[a.toLowerCase()] ? setPermission(PERMISSION_ALIAS[a.toLowerCase()]) : notify('用法：/mode auto | manual | edits | plan | bypass', true)) },
-  ]
-  const plusItems: ActionItem[] = [
-    { label: '添加文件或照片', icon: Icons.attach, hint: imageBlock ? '文本、CSV、JSON 会钉进上下文（当前模型不收图片）' : '文本钉进上下文，图片随下一条消息发给模型', onClick: pickFiles },
-    { label: '斜杠命令', icon: Icons.slash, hint: '/backtest、/auto、/team…', onClick: () => setInput('/') },
-    {
-      label: '插件', icon: Icons.plugin, submenu: [
-        ...(ui ? [{ label: '研究小组执行', icon: Icons.team, hint: '自动迭代时由小组讨论后再实现', checked: project.executor === 'team', onClick: () => patch({ executor: project.executor === 'team' ? 'solo' : 'team' }), disabled: running }] : []),
-        { label: '团队讨论', icon: Icons.team, hint: '/discuss：多个角色发言、质疑、汇总', onClick: () => startDiscussion(''), disabled: running },
-        { label: '快速评审', icon: Icons.team, hint: '/team：召集团队给一份评审结论', onClick: () => send('/team'), disabled: running },
-        { label: '夜班', icon: Icons.loop, hint: '/night：放进夜班队列，结果写进晨报', onClick: () => queueNight('') },
-        { label: '钉一段材料', icon: Icons.pin, hint: '/pin', onClick: () => openPanel('context') },
-        { label: ui ? `存入${ui.libraryName}` : '保存为平台策略', icon: Icons.save, hint: '/save', onClick: saveOut, disabled: running || noCode },
-        { label: '联网搜索与模型…', icon: Icons.search, hint: '在设置里配置', onClick: () => onNavigate('models') },
-      ],
-    },
-    { label: '自动迭代', divider: true, render: () => (
-      <AutoIterateRow rounds={roundsNow} disabled={running} needsGoal={!hasGoal} onSetGoal={() => setGoalOpen({ initial: projectSpec(project) })} onRounds={(n) => { setRounds(n); lab.update(id, { max_rounds: n }).catch(() => undefined) }} onStart={startAuto} />
-    ) },
-  ]
+  const saveLabel = ui ? `${libId ? '更新' : '存入'}${ui.libraryName}` : (project.slug ? '更新平台策略' : '保存为平台策略')
+  const toggleCrew = () => patch({ executor: project.executor === 'team' ? 'solo' : 'team' })
+  const commands = labCommands({
+    ui, kind: project.kind, running, hasGoal, rounds: roundsNow, executorTeam: project.executor === 'team', saveLabel, compacting,
+    backtest: noCode ? undefined : () => act(() => lab.backtest(id)),
+    stress: noCode ? undefined : () => act(() => lab.backtest(id, 2)),
+    walkForward: noCode ? undefined : (a) => act(() => lab.walkForward(id, Math.min(6, Math.max(2, Number(a) || 3)))),
+    auto: (a) => startAuto(Math.min(8, Math.max(1, Number(a) || roundsNow))),
+    night: (a) => queueNight(a),
+    explain: noCode ? undefined : () => send('/explain'),
+    team: (a) => send(a ? `/team ${a}` : '/team'),
+    discuss: (a) => startDiscussion(a),
+    crew: toggleCrew,
+    pin: (a) => (a ? act(() => lab.pin(id, { kind: 'note', title: a.slice(0, 24), text: a })) : openPanel('context')),
+    compact: () => compact(),
+    context: () => openPanel('context'),
+    save: noCode ? undefined : () => saveOut(),
+    mode: (a) => (PERMISSION_ALIAS[a.toLowerCase()] ? setPermission(PERMISSION_ALIAS[a.toLowerCase()]) : notify('用法：/mode auto | manual | edits | plan | bypass', true)),
+  })
+  const plusItems = labPlusItems({
+    ui, running,
+    fileHint: imageBlock ? '文本、CSV、JSON 会钉进上下文（当前模型不收图片）' : '文本钉进上下文，图片随下一条消息发给模型',
+    onFiles: pickFiles, onSlash: () => setInput('/'),
+    executorTeam: project.executor === 'team', onExecutor: toggleCrew,
+    onDiscuss: () => startDiscussion(''), onTeam: () => send('/team'), onNight: () => queueNight(''),
+    onPin: () => openPanel('context'), onSave: noCode ? undefined : saveOut, saveLabel, saveHint: noCode ? '有代码后可用 · /save' : '/save',
+    onModels: () => onNavigate('models'),
+    auto: <AutoIterateRow rounds={roundsNow} disabled={running} needsGoal={!hasGoal} onSetGoal={() => setGoalOpen({ initial: projectSpec(project) })}
+      onRounds={(n) => { setRounds(n); lab.update(id, { max_rounds: n }).catch(() => undefined) }} onStart={startAuto} />,
+  })
   const forkAt = async (m: LabMessage) => {
     try {
       // 用户消息：分叉到它之前，并把它预填进新对话的输入框；AI 消息：分叉到它为止
@@ -639,8 +753,8 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
     lastSeq: lastAssistant,
     onSuggest: (text) => { if (text.startsWith('/')) setInput(text + ' '); else send(text) },
     onPinText: (title, text) => act(async () => { await lab.pin(id, { kind: 'team', title, text: text.slice(0, 4000) }); notify('已钉进上下文') }),
-    onEdit: (m, text) => { stick.current = true; act(() => lab.rewind(id, m.seq, text)) },
-    onRetry: (m) => { stick.current = true; act(() => lab.rewind(id, m.seq)) },
+    onEdit: (m, text) => { stick.current = true; act(() => lab.rewind(id, m.seq, text), true) },
+    onRetry: (m) => { stick.current = true; act(() => lab.rewind(id, m.seq), true) },
     onFork: forkAt,
     onPin: (m) => act(async () => { await lab.pin(id, { kind: 'note', title: m.content.replace(/\s+/g, ' ').slice(0, 24), text: m.content.slice(0, 4000) }); notify('已钉进上下文') }),
     onCopy: (m) => { navigator.clipboard?.writeText(m.content).then(() => notify('已复制'), () => notify('复制失败', true)) },
@@ -669,7 +783,7 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
             <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" aria-hidden><rect x="2" y="2.5" width="12" height="11" rx="2" /><path d="M10 2.5v11" /></svg>
             {changes.add + changes.del > 0 && <span className="lab2-sessbtn-diff"><b className="add">+{changes.add}</b><b className="del">−{changes.del}</b></span>}
           </button>
-          <ProjectMenu onDelete={() => window.confirm(ui ? `删除这个${ui.noun}研究？已存入${ui.libraryName}的内容不受影响。` : '删除这个策略项目？已保存的平台策略不受影响。') && lab.remove(id).then(onDeleted)}
+          <ProjectMenu onDelete={async () => await appConfirm(ui ? `删除这个${ui.noun}研究？已存入${ui.libraryName}的内容不受影响。` : '删除这个策略项目？已保存的平台策略不受影响。') && lab.remove(id).then(onDeleted)}
             onSave={saveOut} hasCode={!!project.code} saved={!!(project.slug || libId)}
             saveLabel={ui ? `${libId ? '更新' : '存入'}${ui.libraryName}` : undefined} />
         </header>
@@ -683,7 +797,7 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
                 onOpenBacktest={(btId) => onNavigate(`backtest/${btId}`)} onOpenEditor={(slug) => onNavigate(`editor/${slug}`)}
                 onOpenCode={openEditor} onOpenLibrary={(route) => onNavigate(route)} />
             ))}
-            {running && !streamingNow && <Working phase={project.job?.phase} />}
+            {running && !streamingNow && <Working phase={project.job?.phase} detail={project.job?.detail} startedAt={project.job?.started_at} />}
             {!messages.length && !running && <div className="lab2-empty">输入 / 查看快捷指令</div>}
           </div>
         </div>
@@ -913,6 +1027,7 @@ function UserMessage({ m, actions, projectId }: { m: LabMessage; actions: Messag
       )}
       {(m.content || m.data?.edited) && <UserBubble>{m.content}{m.data?.edited && <span className="msg-edited">已编辑</span>}</UserBubble>}
       <MsgBar m={m} align="right" items={[
+        ['copy', '复制', () => actions.onCopy(m)],
         ['edit', '编辑', () => { setText(m.content); setEditing(true) }, actions.running],
         ['retry', '重试', () => actions.onRetry(m), actions.running],
         ['fork', '从此处分叉', () => actions.onFork(m)],
@@ -924,7 +1039,7 @@ function UserMessage({ m, actions, projectId }: { m: LabMessage; actions: Messag
 function MessageView({ m, project, meta, active, actions, onDecide, onOpenBacktest, onOpenEditor, onOpenCode, onOpenLibrary }: {
   m: LabMessage; project: LabProject; meta: LabMeta | null; active: boolean; actions: MessageActions
   onOpenLibrary: (route: string) => void
-  onDecide: (choice: string, note: string) => void
+  onDecide: (choice: string, note: string) => Promise<unknown> | void
   onOpenBacktest: (id: string) => void
   onOpenEditor: (slug: string) => void
   onOpenCode: () => void
@@ -935,6 +1050,8 @@ function MessageView({ m, project, meta, active, actions, onDecide, onOpenBackte
   switch (m.kind) {
     case 'text':
       if (m.role === 'event') return <EventLine>{m.content}</EventLine>
+      // 只调用了工具、没有正文也没有思考的那一步：不占一块空白
+      if (!d.streaming && !m.content && !d.thinking) return null
       return (
         <div className="msg-wrap ai">
           <AssistantText content={m.content} thinking={d.thinking} thinkingMs={d.thinking_ms} streaming={!!d.streaming}
@@ -1178,8 +1295,23 @@ function TeamCard({ m }: { m: LabMessage }) {
   )
 }
 
-function AskCard({ m, active, onDecide }: { m: LabMessage; active: boolean; onDecide: (choice: string, note: string) => void }) {
+function AskCard({ m, active, onDecide }: { m: LabMessage; active: boolean; onDecide: (choice: string, note: string) => Promise<unknown> | void }) {
   const [note, setNote] = useState('')
+  const [sent, setSent] = useState(false)
+  const decide = (choice: string, extra: string) => {
+    if (sent) return
+    setSent(true)
+    Promise.resolve(onDecide(choice, extra)).finally(() => setSent(false))
+  }
+  // 只写了自己的回答、没点选项：把这段话作为回答发出去（AI 接着做）
+  const custom = () => { const t = note.trim(); if (t) decide(t, '') }
+  const noteBox = (placeholder: string) => (
+    <div className="lab2-ask-custom">
+      <input className="lab2-ask-note" value={note} onChange={(e) => setNote(e.target.value)} placeholder={placeholder} disabled={sent}
+        onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) { e.preventDefault(); custom() } }} />
+      <button type="button" className="button small primary" disabled={!note.trim() || sent} onClick={custom} title="按你写的发送（不选上面的选项）">发送</button>
+    </div>
+  )
   const answered = m.data.answered
   const approval = m.data.approval as { tool: string; label: string; args: Record<string, unknown> }[] | undefined
   if (approval) {
@@ -1201,11 +1333,11 @@ function AskCard({ m, active, onDecide }: { m: LabMessage; active: boolean; onDe
         </ul>
         <div className="lab2-ask-options">
           {(m.data.options || []).map((o: string) => (
-            <button key={o} className={`button small${answered === o || (active && o === '批准') ? ' primary' : ''}`} disabled={!active}
-              onClick={() => onDecide(o, note)}>{o}</button>
+            <button key={o} className={`button small${answered === o || (active && o === '批准') ? ' primary' : ''}`} disabled={!active || sent}
+              onClick={() => decide(o, note.trim())}>{o}</button>
           ))}
         </div>
-        {active && <input className="lab2-ask-note" value={note} onChange={(e) => setNote(e.target.value)} placeholder="可选：补充说明，例如“先别回测，改一下止损”" />}
+        {active && noteBox('或者写下你的要求后直接发送，例如“先别回测，改一下止损”')}
         {answered && <div className="lab2-faint">已选择：{answered}</div>}
       </div>
     )
@@ -1215,14 +1347,11 @@ function AskCard({ m, active, onDecide }: { m: LabMessage; active: boolean; onDe
       <Markdown text={m.content} compact />
       <div className="lab2-ask-options">
         {(m.data.options || []).map((o: string) => (
-          <button key={o} className={`button small${answered === o ? ' primary' : ''}`} disabled={!active}
-            onClick={() => onDecide(o, note)}>{o}</button>
+          <button key={o} className={`button small${answered === o ? ' primary' : ''}`} disabled={!active || sent}
+            onClick={() => decide(o, note.trim())}>{o}</button>
         ))}
       </div>
-      {active && (
-        <input className="lab2-ask-note" value={note} onChange={(e) => setNote(e.target.value)}
-          placeholder="可选：补充要求，例如“回撤再压低一些”" />
-      )}
+      {active && noteBox('都不合适？写下你自己的方向后发送；点选项时这里的内容会作为补充一起发出')}
       {answered && <div className="lab2-faint">已选择：{answered}</div>}
     </div>
   )

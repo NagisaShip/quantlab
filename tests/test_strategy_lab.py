@@ -595,3 +595,100 @@ def test_images_survive_retry_and_fork(client):
     assert cid != iid and client.get(f"/api/lab/projects/{child['id']}/images/{cid}").status_code == 200
     client.delete(f"/api/lab/projects/{child['id']}")
     assert client.get(f"/api/lab/projects/{pid}/images/{iid}").status_code == 200
+
+
+def _ask_direction(client, router_tail):
+    router = ScriptedRouter(
+        [
+            ChatResult(
+                content="有两个方向可以试。",
+                model="m",
+                provider="fake",
+                tool_calls=[
+                    ToolCall(
+                        id="1", name="ask_user", arguments={"question": "选哪个方向？", "options": ["均值回归", "突破"]}
+                    )
+                ],
+            ),
+            *router_tail,
+        ]
+    )
+    get_services().router = router
+    p = _project(client, model="fake/fake-1")
+    client.post(f"/api/lab/projects/{p['id']}/messages", json={"text": "帮我想想方向", "wait": True})
+    return router, p["id"]
+
+
+def test_picking_an_ask_option_hands_the_turn_back_to_the_model(client, monkeypatch):
+    """点选 AI 提的方向后，AI 要接着做，而不是只记一条用户消息就停下。
+    回合进行中状态必须保持 running：前端看到 idle 就停止跟随，AI 的回答不会出现在页面上。"""
+    from quant_agent.agents.strategy_lab import StrategyLab
+
+    router, pid = _ask_direction(client, ["好的，按均值回归来写。"])
+    statuses = []
+    orig = StrategyLab._phase
+
+    def spy(self, p, phase, detail=None):
+        statuses.append((self.store.get(p) or {}).get("status"))
+        return orig(self, p, phase, detail)
+
+    monkeypatch.setattr(StrategyLab, "_phase", spy)
+    view = client.post(f"/api/lab/projects/{pid}/decision", json={"choice": "均值回归", "wait": True}).json()
+    assert view["messages"][-1]["role"] == "assistant" and "均值回归" in view["messages"][-1]["content"]
+    assert router.calls[-1]["messages"][-1].content.startswith("均值回归")
+    assert statuses and set(statuses) == {"running"}, statuses
+    assert view["project"]["status"] == "idle"
+
+
+def test_custom_long_answer_to_ask_is_accepted(client):
+    """不选选项、自己写一段较长的方向，也能发出去并由 AI 接着做。"""
+    _, pid = _ask_direction(client, ["收到，按你的方向来。"])
+    mine = "换成 4 小时级别的资金费率反转：费率连续三期为正且价格创新高时做空，止损 3%，只在波动率不高时开仓"
+    assert len(mine) > 40
+    view = client.post(f"/api/lab/projects/{pid}/decision", json={"choice": mine, "wait": True}).json()
+    assert any(m["role"] == "user" and m["content"] == mine for m in view["messages"])
+    assert view["messages"][-1]["content"] == "收到，按你的方向来。"
+    ask = next(m for m in view["messages"] if m["kind"] == "ask")
+    assert ask["data"]["answered"] == mine
+
+
+def test_rewind_never_reuses_message_numbers(client):
+    """编辑后新消息的序号必须比删掉的都大：前端按「序号更大」增量拉取，复用序号会漏掉 AI 的回答。"""
+    get_services().router = ScriptedRouter(["第一版回答", "编辑后的回答"])
+    p = _project(client, model="fake/fake-1")
+    pid = p["id"]
+    view = client.post(f"/api/lab/projects/{pid}/messages", json={"text": "你好", "wait": True}).json()
+    top = max(m["seq"] for m in view["messages"])
+    user = next(m for m in view["messages"] if m["role"] == "user" and m["content"] == "你好")
+    client.post(f"/api/lab/projects/{pid}/rewind", json={"seq": user["seq"], "text": "改一下", "wait": True})
+    fresh = client.get(f"/api/lab/projects/{pid}", params={"after": top}).json()["messages"]
+    assert [m["content"] for m in fresh] == ["改一下", "编辑后的回答"]
+
+
+def test_turn_progress_says_what_the_agent_is_doing(client, monkeypatch):
+    """回合进度要说清在做什么：第一步写模型与上下文，调用工具后写「根据 X 的结果继续推理」。"""
+    from quant_agent.agents.strategy_lab import StrategyLab
+
+    seen = []
+    orig = StrategyLab._phase
+
+    def spy(self, pid, phase, detail=None):
+        seen.append((phase, detail or ""))
+        return orig(self, pid, phase, detail)
+
+    monkeypatch.setattr(StrategyLab, "_phase", spy)
+    get_services().router = ScriptedRouter(
+        [
+            ChatResult(
+                content="",
+                model="m",
+                provider="fake",
+                tool_calls=[ToolCall(id="1", name="write_strategy", arguments={"code": GOOD, "note": "均线"})],
+            ),
+            "写好了。",
+        ]
+    )
+    p = _project(client, model="fake/fake-1")
+    client.post(f"/api/lab/projects/{p['id']}/messages", json={"text": "写个均线策略", "wait": True})
+    assert "规划" in seen[0][0] and "fake-1" in seen[0][1]
+    assert any("写代码" in ph and "已调用 1 个工具" in d for ph, d in seen), seen

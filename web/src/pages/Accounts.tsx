@@ -4,6 +4,7 @@ import { v4, type Connection, type Guide } from '../api3'
 import { ApiError } from '../http'
 import { Callout, EmptyState, Field, Fold, Heading, Loading, Modal, Panel, Rich, Segments, Tag } from '../components/ui'
 import type { PageProps } from './types'
+import { appConfirm } from '../components/dialog'
 
 const STATUS: Record<Connection['status'], [string, string]> = {
   active: ['有效', ''], rejected: ['已拒绝（权限过大）', 'fail'], expired: ['已过期 / 被交易所拒绝', 'pending'], revoked: ['已撤销', 'pending'],
@@ -99,8 +100,8 @@ function ConnectionCard({ c, notify, onChange, onNavigate, readonly }: { c: Conn
                 <button className="button small ghost" onClick={() => onNavigate('live')}>去对照</button>
               </>
             )}
-            <button className="button small danger" disabled={!!busy} onClick={() => {
-              if (!window.confirm('撤销连接？平台会删除保存的加密凭证。注意：交易所侧的 API Key 仍然有效，请到交易所后台删除或禁用。')) return
+            <button className="button small danger" disabled={!!busy} onClick={async () => {
+              if (!await appConfirm('撤销连接？平台会删除保存的加密凭证。注意：交易所侧的 API Key 仍然有效，请到交易所后台删除或禁用。')) return
               act('revoke', () => v4.revokeConnection(c.id), '已撤销：请到交易所后台删除该 Key')
             }}>撤销连接</button>
           </div>

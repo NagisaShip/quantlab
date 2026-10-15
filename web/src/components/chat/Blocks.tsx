@@ -1,5 +1,5 @@
 /** 对话里的基础块：用户气泡、AI 正文（含可折叠思考）、一行工具调用、事件分隔。 */
-import { useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { Markdown } from '../markdown'
 import { modelLabel } from './Composer'
 import { QuantEyes, type BotState } from '../QuantBot'
@@ -81,12 +81,23 @@ export function botStateOf(phase?: string): BotState {
   return 'thinking'
 }
 
-/** 等待模型时的占位：一行轻微闪动的阶段文字。 */
-export function Working({ phase, onStop }: { phase?: string; onStop?: () => void }) {
+/** 等待模型时的占位：一行轻微闪动的「正在做什么」，下面一行补充说明（参数、步数），右侧是已用时间。 */
+export function Working({ phase, detail, startedAt, onStop }: { phase?: string; detail?: string; startedAt?: number; onStop?: () => void }) {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!startedAt) return
+    const t = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(t)
+  }, [startedAt])
+  const secs = startedAt ? Math.max(0, Math.round((now - (startedAt < 1e12 ? startedAt * 1000 : startedAt)) / 1000)) : null
   return (
     <div className="cb-working">
       <QuantEyes size={20} state={botStateOf(phase)} title={phase || '处理中'} className="cb-working-eyes" />
-      <span className="cb-shimmer">{phase || '处理中'}…</span>
+      <div className="cb-working-text">
+        <span className="cb-shimmer" key={phase}>{phase || '处理中'}…</span>
+        {detail && <small className="cb-working-detail anim-fade" key={detail}>{detail}</small>}
+      </div>
+      {secs !== null && <span className="cb-working-time">{secs >= 60 ? `${Math.floor(secs / 60)} 分 ${secs % 60} 秒` : `${secs} 秒`}</span>}
       {onStop && <button type="button" className="link" onClick={onStop}>停止</button>}
     </div>
   )

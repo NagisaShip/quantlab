@@ -141,7 +141,7 @@ input, select, textarea { transition: border-color var(--dur-2) var(--ease-out),
 .lim-bar.over .lim-bar-head b { color: #d64545; }
 
 .usage-sum { display: grid; gap: 12px; }
-.usage-kpis { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.usage-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
 .usage-kpi { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; background: var(--sheet); display: grid; gap: 4px; }
 .usage-kpi small { font-size: 12px; color: var(--muted); }
 .usage-kpi b { font-size: 20px; font-weight: 600; font-family: var(--mono); letter-spacing: -.01em; }
@@ -190,3 +190,17 @@ td select { min-width: 96px; }
 /* 页面切换包裹层不能打断整页布局（AI 研究室等 full-bleed 页面靠 flex 撑满高度） */
 main.full > .page-enter { flex: 1 1 0%; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 main.full > .page-enter > * { flex: 1 1 0%; min-height: 0; }
+
+/* 应用内确认 / 输入对话框（替代 window.confirm / prompt） */
+.app-dialog-backdrop { z-index: 2000; }
+.app-dialog { width: min(440px, calc(100vw - 32px)); padding: 0; overflow: hidden; }
+.app-dialog-body { display: grid; grid-template-columns: auto 1fr; gap: 14px; padding: 20px 20px 8px; }
+.app-dialog-text { display: grid; gap: 6px; min-width: 0; }
+.app-dialog-text b { font-size: 15px; }
+.app-dialog-text p { margin: 0; font-size: 13.5px; line-height: 1.65; color: var(--ink-2); overflow-wrap: anywhere; }
+.app-dialog-text p.lead { font-size: 14.5px; color: var(--ink); font-weight: 500; }
+.app-dialog-text .gap { height: 4px; }
+.app-dialog-text input { width: 100%; margin-top: 6px; }
+.app-dialog-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 20px 16px; }
+.button.danger-solid { background: var(--danger, #d64545); border-color: var(--danger, #d64545); color: #fff; }
+.button.danger-solid:hover:not(:disabled) { filter: brightness(1.06); }

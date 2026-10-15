@@ -6,6 +6,7 @@ import { EmptyState, Loading, Panel } from '../../components/ui'
 import type { PageProps } from '../types'
 import { CompareView } from './CompareView'
 import { DEFAULT_DRAFT, SettingsForm, toSpec, type SpecDraft } from './SettingsForm'
+import { appConfirm } from '../../components/dialog'
 
 export function CompareTab({ notify, onNavigate }: Pick<PageProps, 'notify' | 'onNavigate'>) {
   const [batches, setBatches] = useState<CompareBatch[] | null>(null)
@@ -56,7 +57,7 @@ export function CompareTab({ notify, onNavigate }: Pick<PageProps, 'notify' | 'o
     }
   }
   const remove = async (id: string) => {
-    if (!window.confirm('删除这个对比批次？回测记录会保留。')) return
+    if (!await appConfirm('删除这个对比批次？回测记录会保留。')) return
     await compareApi.remove(id)
     const b = await load()
     setActiveId(b[0]?.id ?? '')

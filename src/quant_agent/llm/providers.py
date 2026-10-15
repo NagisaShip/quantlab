@@ -111,6 +111,8 @@ class OpenAICompatibleProvider:
         streaming = bool(on_delta) or stream
         if streaming:
             payload["stream"] = True
+            # 流式默认不返回用量：要了才能按 token 与缓存命中计费、记配额
+            payload["stream_options"] = {"include_usage": True}
 
         try:
             if streaming:

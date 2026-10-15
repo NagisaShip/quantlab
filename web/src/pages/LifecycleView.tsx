@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { get, post } from '../http'
 import { Callout, EmptyState, Loading, Panel, Tag } from '../components/ui'
 import type { PageProps } from './types'
+import { appConfirm } from '../components/dialog'
 
 interface DecayMetric { key: string; label: string; value: number | null; badness: number; band: (number | null)[]; bad: boolean }
 interface DecayReport {
@@ -76,8 +77,8 @@ export default function LifecycleView({ notify }: Pick<PageProps, 'notify'>) {
                 {r.suggest_demote_to && (
                   <div className="filter-row">
                     <Callout tone="warn">建议从「{STAGE[r.stage]}」退回「{STAGE[r.suggest_demote_to]}」。平台不会自动停策略或降级。</Callout>
-                    <button className="button small danger" disabled={!!busy} onClick={() => {
-                      if (window.confirm(`把「${r.strategy_name || r.strategy_id}」退回「${STAGE[r.suggest_demote_to!]}」？`)) act(r.id, () => post(`/api/lifecycle/${r.id}/demote`), '已退回上一阶段')
+                    <button className="button small danger" disabled={!!busy} onClick={async () => {
+                      if (await appConfirm(`把「${r.strategy_name || r.strategy_id}」退回「${STAGE[r.suggest_demote_to!]}」？`)) act(r.id, () => post(`/api/lifecycle/${r.id}/demote`), '已退回上一阶段')
                     }}>确认降级</button>
                   </div>
                 )}

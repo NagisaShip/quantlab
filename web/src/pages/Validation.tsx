@@ -15,6 +15,7 @@ import {
 } from '../apiValidation'
 import type { PageProps } from './types'
 import LifecycleView from './LifecycleView'
+import { appConfirm } from '../components/dialog'
 
 type Tab = 'gate' | 'checkup' | 'fidelity' | 'stress' | 'watcher' | 'decay'
 const TABS: { value: Tab; label: string }[] = [
@@ -107,13 +108,13 @@ function GateModal({ d, name, onClose, onChanged, notify, onNavigate }: {
 } & Pick<PageProps, 'notify' | 'onNavigate'>) {
   const [busy, setBusy] = useState(false)
   const promote = async () => {
-    if (!window.confirm(`确认把这个策略从「${d.stage_label}」晋级到「${d.next_label}」？\n晋级会记入审计。毕业不会自动下实盘单。`)) return
+    if (!await appConfirm(`确认把这个策略从「${d.stage_label}」晋级到「${d.next_label}」？\n晋级会记入审计。毕业不会自动下实盘单。`)) return
     setBusy(true)
     try { onChanged(await validation.promote(d.strategy)); notify(`已晋级到 ${d.next_label}`) } catch (e) { notify((e as Error).message, true) } finally { setBusy(false) }
   }
   const demote = async () => {
     const prev = STAGES[Math.max(0, STAGES.indexOf(d.stage) - 1)]
-    if (!window.confirm(`退回到「${STAGE_SHORT[prev]}」？`)) return
+    if (!await appConfirm(`退回到「${STAGE_SHORT[prev]}」？`)) return
     try { onChanged(await validation.demote(d.strategy, prev)) } catch (e) { notify((e as Error).message, true) }
   }
   const hint = d.next === 'paper' ? '去「回测」再跑一次，或到「试验台账」看试验次数' : d.next === 'demo' ? '去「纸面模拟」开一个纸面模拟，跑满后在「仿真真实度」生成报告' : d.next === 'graduated' ? '去「纸面模拟」用交易所模拟盘跑满后生成真实度报告' : ''
@@ -240,7 +241,7 @@ function FidelityReportView({ rep, notify }: { rep: FidelityReport } & Pick<Page
             </tbody></table>
           <div className="dh-actions">
             <button className="button small primary" onClick={async () => {
-              if (!window.confirm(`把这家交易所的回测成本设为：滑点 ${cal.suggested!.slippage_bps} bp、手续费 ${(cal.suggested!.taker_fee * 100).toFixed(3)}%？\n回测表单里可以一键套用。`)) return
+              if (!await appConfirm(`把这家交易所的回测成本设为：滑点 ${cal.suggested!.slippage_bps} bp、手续费 ${(cal.suggested!.taker_fee * 100).toFixed(3)}%？\n回测表单里可以一键套用。`)) return
               try { await validation.applyCalibration(rep.id); notify('已保存校准值') } catch (e) { notify((e as Error).message, true) }
             }}>用作回测成本</button>
             <span className="muted">{cal.note} · 可信度 {({ low: '低', medium: '中', high: '高', none: '—' } as const)[cal.confidence]}</span>

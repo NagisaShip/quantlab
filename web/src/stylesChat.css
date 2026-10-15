@@ -245,7 +245,8 @@ main.full { padding: 0; max-width: none; flex: 1; min-height: 0; display: flex; 
 .lab2-dock .cmp { max-width: 760px; margin: 0 auto; }
 
 /* 新对话 */
-.lab2-welcome { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; justify-content: safe center; align-items: center; padding: 16px 24px 10vh; }
+.lab2-welcome-scroll { display: flex; flex-direction: column; }
+.lab2-welcome { flex: 1; display: flex; flex-direction: column; justify-content: safe center; align-items: center; padding: 16px 24px 4vh; }
 .lab2-welcome h1 { font-size: 28px; font-weight: 500; letter-spacing: -.01em; margin: 0 0 22px; color: var(--ink); }
 .lab2-welcome .cmp { max-width: 680px; }
 .lab2-welcome .cmp .cmp-box textarea { min-height: 52px; }
@@ -697,3 +698,8 @@ button.goal-chips:hover .goal-chip { border-color: var(--line); }
 }
 .side-card { flex: none; }
 .side-card.card-code .side-card-body { max-height: min(640px, 62vh); overflow: auto; }
+.lab2-ask-custom { display: flex; gap: 6px; align-items: center; margin-top: 8px; }
+.lab2-ask-custom .lab2-ask-note { margin-top: 0; flex: 1; min-width: 0; }
+.cb-working-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.cb-working-detail { font-size: 12px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 560px; }
+.cb-working-time { margin-left: auto; font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; flex: none; }

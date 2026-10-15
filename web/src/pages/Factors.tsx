@@ -10,6 +10,7 @@ import { Sparkline } from '../components/charts2'
 import { EmptyState, Field, Heading, Loading, Panel, Segments, Tag } from '../components/ui'
 import { HypothesisCard } from './lab/factor'
 import type { PageProps } from './types'
+import { appConfirm } from '../components/dialog'
 
 type Tab = 'list' | 'new' | 'trials' | 'syntax'
 const TABS: { value: Tab; label: string }[] = [
@@ -131,7 +132,7 @@ function FactorDetail({ id, meta, notify, onDeleted }: { id: string; meta: Facto
           kind: 'factor', idea: `改进因子「${f.name}」`, code: f.expression, title: `改进：${f.name}`, securities: f.universe, timeframe: f.timeframe,
           attached: `因子 ${f.expression}`, pins: f.hypothesis?.rationale ? [{ kind: 'note', title: '原假设', text: `${f.hypothesis.rationale}\n预期：${f.hypothesis.direction ?? ''}\n证伪：${f.hypothesis.falsify ?? ''}` }] : [],
         })}>在 AI 研究室中改进</button>
-        <button className="button small danger" onClick={async () => { if (window.confirm(`删除因子「${f.name}」？试验台账会保留。`)) { await factors.remove(id); onDeleted() } }}>删除</button>
+        <button className="button small danger" onClick={async () => { if (await appConfirm(`删除因子「${f.name}」？试验台账会保留。`)) { await factors.remove(id); onDeleted() } }}>删除</button>
       </>}>
         <code className="fr-expr big">{f.expression}</code>
         <div className="fx-meta">

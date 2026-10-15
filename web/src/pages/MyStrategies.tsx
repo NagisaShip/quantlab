@@ -20,6 +20,7 @@ import { ImportPackageModal } from '../components/StrategyPackage'
 import { FreqtradeImportModal } from '../components/FreqtradeImport'
 import { get, post } from '../http'
 import type { PageProps } from './types'
+import { appConfirm } from '../components/dialog'
 
 const TIMEFRAMES = ['5m', '15m', '1h', '4h', '1d']
 const EXAMPLES = [
@@ -89,7 +90,7 @@ export default function MyStrategiesPage({ onNavigate, notify, setBusy }: PagePr
   })
 
   const remove = async (s: StrategyFile) => {
-    if (!window.confirm(`删除策略「${s.name}」？代码目录与历史版本会一起删除，回测记录保留。`)) return
+    if (!await appConfirm(`删除策略「${s.name}」？代码目录与历史版本会一起删除，回测记录保留。`)) return
     try {
       await v3.deleteStrategy(s.slug)
       notify('已删除')

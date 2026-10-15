@@ -7,6 +7,7 @@ import { datahub, type Connector, type Dataset } from '../../apiFactors'
 import { LineChart } from '../../components/charts2'
 import { Callout, EmptyState, Field, Loading, Panel, Tag } from '../../components/ui'
 import type { PageProps } from '../types'
+import { appConfirm } from '../../components/dialog'
 
 const day = (ms?: number | null) => (ms ? new Date(ms).toISOString().slice(0, 10) : '—')
 const ago = (ms?: number | null) => {
@@ -78,7 +79,7 @@ export default function DatahubSection({ notify }: Pick<PageProps, 'notify'>) {
                     <td className="right">
                       <button className="button small danger" onClick={async (e) => {
                         e.stopPropagation()
-                        if (!window.confirm(`删除数据集 ${d.key}？`)) return
+                        if (!await appConfirm(`删除数据集 ${d.key}？`)) return
                         await datahub.remove(d.key); if (preview?.ds.key === d.key) setPreview(null); load()
                       }}>删除</button>
                     </td>

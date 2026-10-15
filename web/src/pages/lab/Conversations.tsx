@@ -4,10 +4,12 @@
  * - 分叉出来的对话以树状嵌套在原对话下面，可折叠；
  * - 每行最右侧「更多」，点击或在行上右键：重命名、置顶、分叉、移动到项目、删除。
  */
-import { Fragment, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import { lab, type LabProjectBrief } from '../../apiLab'
 import { store } from '../../components/prefs'
 import { domainUI } from './domains'
+import { appConfirm, appPrompt } from '../../components/dialog'
+import { labChanged, onLabChanged, requestNewChat } from './bus'
 
 type Notify = (msg: string, error?: boolean) => void
 
@@ -86,8 +88,8 @@ export function Conversations({ projects, activeId, onOpen, onNew, onChanged, no
     const right = e.type === 'contextmenu'
     setMenu({ id, x: right ? e.clientX : r.right - 4, y: right ? e.clientY : r.bottom + 4 })
   }
-  const newFolder = () => {
-    const name = window.prompt('新项目名称（用来归类对话）')?.trim().slice(0, 40)
+  const newFolder = async () => {
+    const name = (await appPrompt('新项目名称（用来归类对话）', '', { placeholder: '例如：BTC 趋势研究' }))?.trim().slice(0, 40)
     if (!name) return
     const next = [...folders, name]
     setFolders(next)
@@ -95,14 +97,14 @@ export function Conversations({ projects, activeId, onOpen, onNew, onChanged, no
     return name
   }
   const renameFolder = async (old: string) => {
-    const name = window.prompt('项目名称', old)?.trim().slice(0, 40)
+    const name = (await appPrompt('项目名称', old))?.trim().slice(0, 40)
     if (!name || name === old) return
     await Promise.all(projects.filter((p) => p.folder === old).map((p) => lab.update(p.id, { folder: name })))
     const next = [...folders.filter((f) => f !== old), name]
     setFolders(next); writeList(FOLDERS_KEY, next); onChanged()
   }
   const dissolveFolder = async (name: string) => {
-    if (!window.confirm(`解散项目「${name}」？里面的对话会移到「对话」下，不会删除。`)) return
+    if (!await appConfirm(`解散项目「${name}」？里面的对话会移到「对话」下，不会删除。`)) return
     await Promise.all(projects.filter((p) => p.folder === name).map((p) => lab.update(p.id, { folder: '' })))
     const next = folders.filter((f) => f !== name)
     setFolders(next); writeList(FOLDERS_KEY, next); onChanged()
@@ -185,7 +187,7 @@ export function Conversations({ projects, activeId, onOpen, onNew, onChanged, no
                   <svg width="13" height="13" viewBox="0 0 16 16" aria-hidden><path d="M8 3v10M3 8h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>
                 </button>
                 <button type="button" className="conv-more" title="重命名 / 解散项目" aria-label="项目操作"
-                  onClick={() => { const v = window.prompt(`项目「${f}」：输入新名称；清空后确定 = 解散项目`, f); if (v === null) return; if (!v.trim()) dissolveFolder(f); else renameFolder(f) }}>
+                  onClick={async () => { const v = await appPrompt(`项目「${f}」：输入新名称；清空后确定 = 解散项目`, f); if (v === null) return; if (!v.trim()) dissolveFolder(f); else renameFolder(f) }}>
                   <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden><circle cx="3.5" cy="8" r="1.2" fill="currentColor" /><circle cx="8" cy="8" r="1.2" fill="currentColor" /><circle cx="12.5" cy="8" r="1.2" fill="currentColor" /></svg>
                 </button>
               </div>
@@ -224,7 +226,7 @@ export function Conversations({ projects, activeId, onOpen, onNew, onChanged, no
                   <span className="act-text"><span className="act-label">{f}</span></span>
                 </button>
               ))}
-              <button type="button" role="menuitem" className="act-item" onClick={() => { const f = newFolder(); if (f) act(() => lab.update(target.id, { folder: f }), `已移到「${f}」`) }}>
+              <button type="button" role="menuitem" className="act-item" onClick={async () => { const f = await newFolder(); if (f) act(() => lab.update(target.id, { folder: f }), `已移到「${f}」`) }}>
                 <span className="act-text"><span className="act-label">＋ 新建项目…</span></span>
               </button>
               {target.folder && (
@@ -236,11 +238,33 @@ export function Conversations({ projects, activeId, onOpen, onNew, onChanged, no
           )}
           <div className="cmp-menu-sep" />
           <button type="button" role="menuitem" className="act-item danger"
-            onClick={() => { setMenu(null); if (window.confirm(`删除对话「${target.title}」？已保存到策略库 / 因子库的内容不受影响。${children.get(target.id)?.length ? '\n它的分叉会保留，变成独立对话。' : ''}`)) act(async () => { await lab.remove(target.id); if (target.id === activeId) onOpen('') }, '已删除') }}>
+            onClick={async () => { setMenu(null); if (await appConfirm(`删除对话「${target.title}」？已保存到策略库 / 因子库的内容不受影响。${children.get(target.id)?.length ? '\n它的分叉会保留，变成独立对话。' : ''}`)) act(async () => { await lab.remove(target.id); if (target.id === activeId) onOpen('') }, '已删除') }}>
             <span className="act-text"><span className="act-label">删除</span></span>
           </button>
         </div>
       )}
     </div>
+  )
+}
+
+/**
+ * 全局左侧栏里常驻的对话列表：每个页面都在，进出 AI 研究室时侧栏不变形。
+ * 当前对话按网址 #/lab/<id> 高亮；研究室里有变化时通过 bus 通知刷新。
+ */
+export function SidebarConversations({ activeId, notify }: { activeId: string; notify: Notify }) {
+  const [projects, setProjects] = useState<LabProjectBrief[]>([])
+  const refresh = useCallback(() => { lab.projects().then((r) => setProjects(r.projects)).catch(() => undefined) }, [])
+  useEffect(() => { refresh(); return onLabChanged(refresh) }, [refresh])
+  // 有对话在跑时轮询，标题、状态点跟着变
+  const running = projects.some((p) => p.status === 'running')
+  useEffect(() => {
+    if (!running) return
+    const t = window.setInterval(refresh, 4000)
+    return () => window.clearInterval(t)
+  }, [running, refresh])
+  return (
+    <Conversations projects={projects} activeId={activeId} notify={notify} onChanged={labChanged}
+      onOpen={(id) => { window.location.hash = id ? `/lab/${id}` : '/lab' }}
+      onNew={(folder) => { requestNewChat(folder ?? ''); window.location.hash = '/lab' }} />
   )
 }

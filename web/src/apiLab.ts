@@ -100,7 +100,7 @@ export interface LabProject {
   versions: LabVersion[]
   pins: Pin[]
   status: 'idle' | 'running' | 'awaiting_user'
-  job: { kind: string; started_at: number; phase: string } | null
+  job: { kind: string; started_at: number; phase: string; detail?: string } | null
   slug: string | null
   archived: boolean
   created_at: number

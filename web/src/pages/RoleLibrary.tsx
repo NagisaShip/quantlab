@@ -10,6 +10,7 @@ import { Heading } from '../components/ui'
 import { modelLabel } from '../components/chat/Composer'
 import { loadRoles, openRoleEditor, putRole, useRoleBook } from '../components/roles'
 import type { PageProps } from './types'
+import { appConfirm } from '../components/dialog'
 
 const MODE_LABEL: Record<string, string> = { sequential: '接力', parallel: '并行', debate: '对抗' }
 const MODE_HELP: Record<string, string> = {
@@ -62,7 +63,7 @@ export default function RoleLibraryPage({ notify, onNavigate }: PageProps) {
     }
   }
   const removeRole = async (id: string) => {
-    if (!window.confirm(`删除角色「${byId[id]?.name}」？`)) return
+    if (!await appConfirm(`删除角色「${byId[id]?.name}」？`)) return
     try {
       await api.deleteRole(id)
       await loadRoles(true)
@@ -84,7 +85,7 @@ export default function RoleLibraryPage({ notify, onNavigate }: PageProps) {
     }
   }
   const removeTeam = async (t: Team) => {
-    if (!window.confirm(`删除团队「${t.name}」？`)) return
+    if (!await appConfirm(`删除团队「${t.name}」？`)) return
     try {
       await api.deleteTeam(t.id)
       setEditingTeam(null)

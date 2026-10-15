@@ -3,6 +3,7 @@ import { fmtTime } from '../api2'
 import { demo, type DemoConnection, type DemoEnv } from '../apiDemo'
 import { Callout, EmptyState, Field, Fold, Heading, Loading, Modal, Panel, Tag } from '../components/ui'
 import type { PageProps } from './types'
+import { appConfirm } from '../components/dialog'
 
 /** 交易所显示名（后端返回小写代号） */
 const EXCHANGE_LABEL: Record<string, string> = { binance: 'Binance', okx: 'OKX', bybit: 'Bybit' }
@@ -107,8 +108,8 @@ function ConnCard({ c, notify, onChange, readonly }: { c: DemoConnection; notify
         {!readonly && (
           <div className="button-row">
             <button className="button small" disabled={!!busy} onClick={() => act('test', () => demo.test(c.id), '检测完成')}>{busy === 'test' ? '检测中…' : '重新检测'}</button>
-            <button className="button small danger" disabled={!!busy} onClick={() => {
-              if (!window.confirm('撤销这个模拟盘连接？平台会擦除保存的密钥。正在用它的纸面模拟会在下次下单时报错。')) return
+            <button className="button small danger" disabled={!!busy} onClick={async () => {
+              if (!await appConfirm('撤销这个模拟盘连接？平台会擦除保存的密钥。正在用它的纸面模拟会在下次下单时报错。')) return
               act('revoke', () => demo.revoke(c.id), '已撤销。交易所那边的 Key 请到交易所后台删除')
             }}>撤销</button>
           </div>

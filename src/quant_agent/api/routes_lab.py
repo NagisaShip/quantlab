@@ -187,7 +187,7 @@ class AutopilotIn(BaseModel):
 
 
 class DecisionIn(BaseModel):
-    choice: str = Field(..., min_length=1, max_length=40)
+    choice: str = Field(..., min_length=1, max_length=4000, description="点选的选项，或研究者自己写的回答")
     note: str = Field("", max_length=4000)
     wait: bool = False
 

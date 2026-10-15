@@ -33,6 +33,7 @@ import { v4, type DslProblem } from '../api3'
 import { ruleCode, type RuleFromCode } from '../apiRuleCode'
 import { makeErrAt, RuleForm, type RuleSpec } from './rulecode/RuleForm'
 import type { PageProps } from './types'
+import { appConfirm } from '../components/dialog'
 
 type Tab = 'result' | 'logs' | 'ai' | 'params' | 'versions' | 'history'
 const DAY = 86_400_000
@@ -337,7 +338,7 @@ export default function EditorPage({ slug, onNavigate, notify, setBusy }: PagePr
       notify('请先保存，批准针对的是已保存的版本', true)
       return
     }
-    if (!window.confirm(`批准版本 ${strategy.version}？\n批准后此版本可以进入模拟交易；之后任何代码或参数改动都会让批准失效。`)) return
+    if (!await appConfirm(`批准版本 ${strategy.version}？\n批准后此版本可以进入模拟交易；之后任何代码或参数改动都会让批准失效。`)) return
     try {
       const r = await v3.approveStrategy(strategy.slug)
       setStrategy({ ...strategy, ...r.strategy })
@@ -689,10 +690,10 @@ function AiTab({ code, setCode, strategy, settings, errors, logs, ready, notify 
     ask(mode, t)
   }
 
-  const apply = (i: number) => {
+  const apply = async (i: number) => {
     const m = msgs[i]
     if (!m.result?.code) return
-    if (m.base !== undefined && m.base !== code && !window.confirm('编辑器里的代码在这条回复之后又改过，应用会覆盖这些改动。继续？')) return
+    if (m.base !== undefined && m.base !== code && !await appConfirm('编辑器里的代码在这条回复之后又改过，应用会覆盖这些改动。继续？')) return
     setCode(m.result.code)
     setMsgs((all) => all.map((x, k) => (k === i ? { ...x, applied: true } : x)))
     notify('已应用到编辑器（尚未保存）')

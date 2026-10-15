@@ -14,6 +14,7 @@ import { UseInStrategy } from '../components/modelReport'
 import { PortfolioFullReport, SCHEME_STATUS_TONE, StressTable } from '../components/portfolioReport'
 import { EmptyState, Field, Heading, Loading, Panel, Segments, Tag } from '../components/ui'
 import type { PageProps } from './types'
+import { appConfirm } from '../components/dialog'
 
 type Tab = 'list' | 'design' | 'risk' | 'runs'
 const TABS: { value: Tab; label: string }[] = [
@@ -111,7 +112,7 @@ function SchemeDetail({ id, meta, optLabel, notify, onDeleted }: { id: string; m
         </select>
         <button className="button small" onClick={() => toLab(`改进组合方案「${s.name}」：在不增加回撤的前提下提高夏普`)}>交给 AI 改进</button>
         <button className="button small" onClick={() => toLab(`召集组合小组评审「${s.name}」：风险估计、约束、压力情景`)}>召集团队评审</button>
-        <button className="button small danger" onClick={async () => { if (window.confirm(`删除方案「${s.name}」？试验记录会保留。`)) { await portfolio.remove(id); onDeleted() } }}>删除</button>
+        <button className="button small danger" onClick={async () => { if (await appConfirm(`删除方案「${s.name}」？试验记录会保留。`)) { await portfolio.remove(id); onDeleted() } }}>删除</button>
       </>}>
         <div className="fx-meta">
           <span>{optLabel(s.config.optimizer)} · {meta?.risk_models.find((r) => r.id === s.config.risk_model)?.label ?? s.config.risk_model} · {s.symbols.length} 个标的 · {s.timeframe}</span>

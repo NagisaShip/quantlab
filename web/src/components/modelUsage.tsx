@@ -73,6 +73,10 @@ export function UsageSummary({ data, showUsers }: { data: ModelUsage; showUsers?
         <div className="usage-kpi anim-rise"><small>调用次数</small><b>{data.total.calls.toLocaleString()}</b></div>
         <div className="usage-kpi anim-rise" style={{ animationDelay: '40ms' }}><small>token</small><b>{fmtTokens(data.total.tokens)}</b></div>
         <div className="usage-kpi anim-rise" style={{ animationDelay: '80ms' }}><small>费用（折合人民币）</small><b>{fmtCost(data.total.cost)}</b></div>
+        <div className="usage-kpi anim-rise" style={{ animationDelay: '120ms' }} title="命中提示缓存的输入 / 全部输入">
+          <small>输入缓存命中</small>
+          <b>{data.total.cache_hit_rate === null || data.total.cache_hit_rate === undefined ? '—' : `${(data.total.cache_hit_rate * 100).toFixed(1)}%`}</b>
+        </div>
       </div>
       <div className="usage-chart-head">
         <small>近 {data.days} 天（UTC 日）</small>
@@ -91,13 +95,17 @@ export function UsageSummary({ data, showUsers }: { data: ModelUsage; showUsers?
       {data.by_model.length > 0 ? (
         <div className="table-wrap">
           <table>
-            <thead><tr><th>服务商 / 模型</th><th className="right">调用</th><th className="right">输入</th><th className="right">输出</th><th className="right">费用</th></tr></thead>
+            <thead><tr><th>服务商 / 模型</th><th className="right">调用</th><th className="right">输入</th><th className="right" title="命中缓存的输入（含在「输入」里）">其中缓存</th><th className="right">输出</th><th className="right">费用</th></tr></thead>
             <tbody>
               {data.by_model.map((r) => (
                 <tr key={`${r.scope}-${r.provider}-${r.model}`} className="anim-in">
                   <td><span className="mono">{r.provider}/{r.model}</span> <span className={`scope-tag ${r.scope}`}>{r.scope === 'workspace' ? '工作区' : '个人'}</span></td>
                   <td className="right mono">{r.calls}</td>
                   <td className="right mono">{fmtTokens(r.input_tokens ?? 0)}</td>
+                  <td className="right mono" title={r.cache_write_tokens ? `写入缓存 ${fmtTokens(r.cache_write_tokens)}` : undefined}>
+                    {r.cache_read_tokens ? fmtTokens(r.cache_read_tokens) : '—'}
+                    {r.input_tokens && r.cache_read_tokens ? <small className="muted"> {((r.cache_read_tokens / r.input_tokens) * 100).toFixed(0)}%</small> : null}
+                  </td>
                   <td className="right mono">{fmtTokens(r.output_tokens ?? 0)}</td>
                   <td className="right mono">{fmtCost(r.cost)}</td>
                 </tr>

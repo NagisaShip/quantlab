@@ -15,6 +15,7 @@ import { LineChart, Sparkline } from '../components/charts2'
 import { EmptyState, Field, Heading, Loading, Panel, Segments, Tag } from '../components/ui'
 import { QuantBot, QuantEyes, viewFromSignal } from '../components/QuantBot'
 import type { PageProps } from './types'
+import { appConfirm } from '../components/dialog'
 
 type Tab = 'list' | 'train' | 'runs'
 const TABS: { value: Tab; label: string }[] = [
@@ -138,7 +139,7 @@ function ModelDetail({ id, meta, notify, onDeleted }: { id: string; meta: ModelM
         <button className="button small" disabled={busy} onClick={refresh}>{busy ? <><span className="spinner" /> 检查中</> : '检查健康度'}</button>
         <button className="button small" onClick={() => toLab(`改进模型「${m.name}」：针对已知弱点调整特征或结构，必须跑赢基线`)}>交给 AI 改进</button>
         <button className="button small" onClick={() => toLab(`召集模型小组评审「${m.name}」：检查泄漏、过拟合和上线风险`)}>召集团队评审</button>
-        <button className="button small danger" onClick={async () => { if (window.confirm(`删除模型「${m.name}」？实验记录会保留。`)) { await models.remove(id); onDeleted() } }}>删除</button>
+        <button className="button small danger" onClick={async () => { if (await appConfirm(`删除模型「${m.name}」？实验记录会保留。`)) { await models.remove(id); onDeleted() } }}>删除</button>
       </>}>
         <div className="fx-meta">
           <span>{m.spec.symbols.length} 个标的 · {m.spec.timeframe} · 预测 {m.spec.horizon} 期 · 训练至 {day(m.train_end)}</span>

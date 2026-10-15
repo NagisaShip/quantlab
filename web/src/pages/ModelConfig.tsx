@@ -6,6 +6,7 @@ import { Callout, Heading, Loading } from '../components/ui'
 import { get, request } from '../http'
 import { store } from '../components/prefs'
 import type { PageProps } from './types'
+import { appConfirm } from '../components/dialog'
 
 /**
  * 设置 · 模型。平台不内置服务商，模型只有两个来源：
@@ -49,6 +50,8 @@ interface ModelRow {
   inputs: string[]
   price_in: string
   price_out: string
+  price_cache: string
+  price_cache_write: string
 }
 
 const EFFORTS: [string, string][] = [['', '跟随对话'], ['low', '低'], ['medium', '中'], ['high', '高'], ['max', '极高']]
@@ -58,12 +61,14 @@ const rowOf = (id: string, st?: ModelSetting): ModelRow => ({
   id, label: st?.label ?? '', request_model: st?.request_model ?? '',
   context_window: st?.context_window ? String(st.context_window) : '', effort: st?.effort ?? '', inputs: st?.inputs?.length ? st.inputs : ['text'],
   price_in: st?.price_in ?? '', price_out: st?.price_out ?? '',
+  price_cache: st?.price_cache ?? '', price_cache_write: st?.price_cache_write ?? '',
 })
 
 const settingOf = (r: ModelRow): ModelSetting => ({
   label: r.label.trim(), request_model: r.request_model.trim(),
   context_window: Number(r.context_window) > 0 ? Math.round(Number(r.context_window)) : null,
   effort: r.effort as ModelSetting['effort'], inputs: r.inputs, price_in: r.price_in.trim(), price_out: r.price_out.trim(),
+  price_cache: r.price_cache.trim(), price_cache_write: r.price_cache_write.trim(),
 })
 
 const presetLabel = (p: Preset) => p.label.replace('[OI]', 'OpenAI')
@@ -159,7 +164,7 @@ export default function ModelConfigPage({ notify, onNavigate }: PageProps) {
 
   const remove = async (p: ProviderView) => {
     const who = p.scope === 'workspace' ? '工作区共享服务商（所有成员都将不能再用它）' : '你的个人服务商'
-    if (!window.confirm(`删除${who}「${p.label || p.name}」与它的密钥？`)) return
+    if (!await appConfirm(`删除${who}「${p.label || p.name}」与它的密钥？`)) return
     try {
       await v3.deleteProvider(p.name, p.scope)
       await refresh()
@@ -448,7 +453,11 @@ function ProviderEditor({ draft, setDraft, presets, existing, isAdmin, onCancel,
           <div key={i} className={`prov-model-card${open === i ? ' open' : ''}`}>
             <div className="prov-model">
               <input value={r.id} onChange={(e) => setRow(i, { id: e.target.value })} placeholder="模型 ID，例如 deepseek-chat" aria-label="模型 ID" />
-              {(r.price_in || r.price_out) && open !== i && <span className="prov-model-label" title="每百万 token 输入 / 输出价格">{unit}{r.price_in || 0} / {unit}{r.price_out || 0}</span>}
+              {(r.price_in || r.price_out) && open !== i && (
+                <span className="prov-model-label" title="每百万 token：输入 / 缓存命中 / 输出">
+                  {unit}{r.price_in || 0}{r.price_cache ? ` · 缓存 ${unit}${r.price_cache}` : ''} / {unit}{r.price_out || 0}
+                </span>
+              )}
               {r.label.trim() && open !== i && <span className="prov-model-label" title="菜单显示名">{r.label}</span>}
               <button className={`icon-btn${open === i ? ' on' : ''}`} aria-label="模型设置" aria-expanded={open === i}
                 title="显示名、实际请求模型、上下文窗口、默认思考等级、输入类型、价格" onClick={() => setOpen(open === i ? null : i)}>
@@ -482,6 +491,16 @@ function ProviderEditor({ draft, setDraft, presets, existing, isAdmin, onCancel,
                 </label>
                 <label className="prov-field">输出价格（{unit} / 百万 token）
                   <input type="number" min={0} step="0.01" inputMode="decimal" value={r.price_out} onChange={(e) => setRow(i, { price_out: e.target.value })} placeholder="例如 8" />
+                </label>
+                <label className="prov-field">缓存命中输入（{unit} / 百万 token）
+                  <input type="number" min={0} step="0.001" inputMode="decimal" value={r.price_cache} onChange={(e) => setRow(i, { price_cache: e.target.value })}
+                    placeholder={r.price_in ? `留空按输入价 ${r.price_in}` : '例如 0.5'} />
+                  <small>命中提示缓存的那部分输入；多数服务商是输入价的 10%–50%</small>
+                </label>
+                <label className="prov-field">缓存写入（{unit} / 百万 token）
+                  <input type="number" min={0} step="0.001" inputMode="decimal" value={r.price_cache_write} onChange={(e) => setRow(i, { price_cache_write: e.target.value })}
+                    placeholder={r.price_in ? `留空按输入价 ${r.price_in}` : '例如 2.5'} />
+                  <small>Anthropic 等对写入缓存单独计价；没有就留空</small>
                 </label>
                 <div className="prov-field prov-wide">输入类型
                   <div className="prov-checks">

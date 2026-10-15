@@ -1097,7 +1097,7 @@ class FactorLab(StrategyLab):
             for m in self.store.messages(pid):
                 if m["kind"] == "ask" and m["data"].get("answered") is None:
                     self.store.update(pid, m["seq"], data={"answered": choice})
-            self.store.patch(pid, status="idle")
+            self._answered(pid)
             self._post(pid, role="user", kind="text", content=choice + (f"：{note}" if note else ""))
             self.save_to_library(pid, status="active" if choice == "入库" else "candidate")
             return
@@ -1105,7 +1105,7 @@ class FactorLab(StrategyLab):
             for m in self.store.messages(pid):
                 if m["kind"] == "ask" and m["data"].get("answered") is None:
                     self.store.update(pid, m["seq"], data={"answered": choice})
-            self.store.patch(pid, status="idle")
+            self._answered(pid)
             self._post(pid, role="user", kind="text", content=choice)
             if choice != "仍然开始":
                 project = self.store.get(pid) or {}

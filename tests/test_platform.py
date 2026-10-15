@@ -277,7 +277,8 @@ def test_workspace_shared_models_permissions_limits_and_usage(app):
         assert pc.api_key == "sk-admin-0001"  # 成员的调用走管理员的密钥
         s.model_hub.record(pc, "m", {"input_tokens": 8, "output_tokens": 4})
         # (8×2 + 4×8) × 7 = 336 微元
-        assert s.model_hub.stats(ws, days=1, user_id=member_id)["total"] == {"calls": 1, "tokens": 12, "cost": "0.0003"}
+        total = s.model_hub.stats(ws, days=1, user_id=member_id)["total"]
+        assert (total["calls"], total["tokens"], total["cost"], total["cache_read_tokens"]) == (1, 12, "0.0003", 0)
         assert s.model_hub.guard(pc, "m") is None
 
     with _client(app) as admin:
@@ -310,3 +311,49 @@ def test_workspace_shared_models_permissions_limits_and_usage(app):
     with _client(app) as member:
         login(member, email="m@example.com", password="Member01!")
         assert [p["name"] for p in member.get("/api/config").json()["providers"]] == ["mine"]
+
+
+def test_usage_breakdown_and_cache_pricing():
+    """各家 usage 的缓存字段归一；缓存命中 / 写入按各自单价计费，没填按普通输入价。"""
+    from quant_agent.llm.hub import ModelHub, usage_breakdown
+    from quant_agent.llm.router import ProviderConfig
+
+    # OpenAI Chat Completions：prompt_tokens 含缓存
+    assert usage_breakdown(
+        {"prompt_tokens": 1000, "completion_tokens": 50, "prompt_tokens_details": {"cached_tokens": 800}}
+    ) == {
+        "input": 1000,
+        "cache_read": 800,
+        "cache_write": 0,
+        "output": 50,
+    }
+    # DeepSeek
+    assert (
+        usage_breakdown({"prompt_tokens": 1000, "completion_tokens": 50, "prompt_cache_hit_tokens": 600})["cache_read"]
+        == 600
+    )
+    # OpenAI Responses
+    assert (
+        usage_breakdown({"input_tokens": 500, "output_tokens": 9, "input_tokens_details": {"cached_tokens": 100}})[
+            "cache_read"
+        ]
+        == 100
+    )
+    # Anthropic：input_tokens 不含缓存
+    assert usage_breakdown(
+        {"input_tokens": 100, "output_tokens": 20, "cache_read_input_tokens": 700, "cache_creation_input_tokens": 200}
+    ) == {"input": 1000, "cache_read": 700, "cache_write": 200, "output": 20}
+
+    pc = ProviderConfig(
+        "p",
+        "openai_compatible",
+        "http://x",
+        "k",
+        ["m"],
+        {"m": {"price_in": "4", "price_out": "16", "price_cache": "1", "price_cache_write": "5"}},
+    )
+    # 普通输入 100×4 + 命中 700×1 + 写入 200×5 + 输出 20×16 = 400 + 700 + 1000 + 320 = 2420 微元
+    assert ModelHub.cost_micro(pc, "m", 1000, 20, cache_read=700, cache_write=200) == 2420
+    # 没填缓存价：按普通输入价
+    pc.model_settings = {"m": {"price_in": "4", "price_out": "16"}}
+    assert ModelHub.cost_micro(pc, "m", 1000, 20, cache_read=700, cache_write=200) == 1000 * 4 + 20 * 16

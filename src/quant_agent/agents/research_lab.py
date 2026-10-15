@@ -540,7 +540,7 @@ class DomainLab(StrategyLab):
         for m in self.store.messages(pid):
             if m["kind"] == "ask" and m["data"].get("answered") is None:
                 self.store.update(pid, m["seq"], data={"answered": choice})
-        self.store.patch(pid, status="idle")
+        self._answered(pid)
         self._post(pid, role="user", kind="text", content=choice + (f"：{note}" if note else ""))
 
     def decide(self, pid: str, choice: str, note: str = "") -> None:

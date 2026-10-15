@@ -4,6 +4,7 @@ import { get, post, request } from '../http'
 import { Markdown } from '../components/markdown'
 import { Callout, EmptyState, Field, Heading, Loading, Modal, Panel, Tag } from '../components/ui'
 import type { PageProps } from './types'
+import { appConfirm } from '../components/dialog'
 
 interface Status {
   enabled: boolean; killed: boolean; ready: boolean; blockers: string[]; tiers: number[]; tier_days: number
@@ -88,7 +89,7 @@ export default function MicroLivePage({ notify, onNavigate, isAdmin }: PageProps
                   <span className="spacer" />
                   {isAdmin && c.status !== 'revoked' && <>
                     <button className="button small" disabled={!!busy} onClick={() => act(c.id, () => post(`/api/microlive/connections/${c.id}/test`), '已重新自检')}>重新自检</button>
-                    <button className="button small" disabled={!!busy} onClick={() => window.confirm('删除这个实盘 Key？平台保存的密文会被擦除。') && act(c.id, () => request(`/api/microlive/connections/${c.id}`, { method: 'DELETE' }), '已删除')}>删除</button>
+                    <button className="button small" disabled={!!busy} onClick={async () => await appConfirm('删除这个实盘 Key？平台保存的密文会被擦除。') && act(c.id, () => request(`/api/microlive/connections/${c.id}`, { method: 'DELETE' }), '已删除')}>删除</button>
                   </>}
                 </div>
                 {c.last_test?.checks && <div className="chips">{c.last_test.checks.map((x) => <Tag key={x.name} tone={x.ok ? 'ok' : 'fail'}>{x.name}：{x.detail}</Tag>)}</div>}
@@ -109,7 +110,7 @@ export default function MicroLivePage({ notify, onNavigate, isAdmin }: PageProps
                     <td className="right">
                       {isAdmin && <div className="button-row">
                         <button className="button small primary" disabled={!st.ready || !!busy} onClick={() => setLaunch(r)}>启动</button>
-                        {r.can_raise && <button className="button small" onClick={() => window.confirm(`把「${r.name}」的资金上限从 ${r.cap} 升到 ${r.next_cap}？`) && act(r.slug, () => post(`/api/microlive/tiers/${r.slug}/raise`), '已升档')}>升档</button>}
+                        {r.can_raise && <button className="button small" onClick={async () => await appConfirm(`把「${r.name}」的资金上限从 ${r.cap} 升到 ${r.next_cap}？`) && act(r.slug, () => post(`/api/microlive/tiers/${r.slug}/raise`), '已升档')}>升档</button>}
                       </div>}
                     </td>
                   </tr>

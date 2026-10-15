@@ -9,6 +9,7 @@ import { LimitBars, LimitEditor, METRICS, UsageSummary, WINDOWS, fmtCost, fmtTok
 import { Callout, EmptyState, Field, Heading, Loading, Modal, Panel, Tag } from '../components/ui'
 import NodeTab from './NodeTab'
 import type { PageProps } from './types'
+import { appConfirm } from '../components/dialog'
 
 type Tab = 'workspace' | 'quota' | 'members' | 'runs' | 'node' | 'audit' | 'system' | 'account'
 const TABS: { key: Tab; label: string }[] = [
@@ -370,7 +371,7 @@ function MembersTab({ me, isAdmin, notify }: { me: Me; isAdmin: boolean; notify:
                 ) : <><td /><td /><td /><td /></>)}
                 <td>{m.last_login_at ? fmtTime(m.last_login_at) : '—'}</td>
                 {isAdmin && <td className="right">{m.user_id !== me.user.id && (
-                  <button className="button small danger" onClick={() => window.confirm(`移出 ${m.email}？`) && act(() => v4.removeMember(m.user_id), '已移出')}>移出</button>
+                  <button className="button small danger" onClick={async () => await appConfirm(`移出 ${m.email}？`) && act(() => v4.removeMember(m.user_id), '已移出')}>移出</button>
                 )}</td>}
               </tr>
               )

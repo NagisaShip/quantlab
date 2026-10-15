@@ -156,10 +156,12 @@ class LabStore:
     def append(self, pid: str, msg: dict[str, Any]) -> dict[str, Any]:
         with _lock(f"t:{pid}"):
             data = self.store.get_blob(THREADS, pid) or {"messages": []}
-            seq = (data["messages"][-1]["seq"] if data["messages"] else 0) + 1
+            # 序号只增不减：编辑 / 重试删掉的序号不再复用，前端按「序号更大」增量拉取才不会漏消息
+            seq = max(int(data.get("next_seq") or 0), (data["messages"][-1]["seq"] if data["messages"] else 0) + 1)
             row = {"seq": seq, "created_at": _now(), "data": {}, "content": "", **msg}
             row["seq"] = seq
             data["messages"].append(row)
+            data["next_seq"] = seq + 1
             self.store.put_blob(THREADS, pid, data)
             return row
 
@@ -170,6 +172,8 @@ class LabStore:
             data = self.store.get_blob(THREADS, pid) or {"messages": []}
             keep = [m for m in data["messages"] if m["seq"] < from_seq]
             gone = [m for m in data["messages"] if m["seq"] >= from_seq]
+            top = max((m["seq"] for m in data["messages"]), default=0)
+            data["next_seq"] = max(int(data.get("next_seq") or 0), top + 1)
             data["messages"] = keep
             self.store.put_blob(THREADS, pid, data)
         for m in gone:
@@ -191,7 +195,7 @@ class LabStore:
                     refs.append(self.put_image(dst, blob["url"], name=img.get("name", "")))
             if refs:
                 m["data"]["images"] = refs
-        self.store.put_blob(THREADS, dst, {"messages": rows})
+        self.store.put_blob(THREADS, dst, {"messages": rows, "next_seq": (rows[-1]["seq"] + 1) if rows else 1})
         return len(rows)
 
     def update(self, pid: str, seq: int, **changes: Any) -> None:
@@ -558,6 +562,31 @@ def _gated(mode: str, name: str) -> bool:
     return False
 
 
+#: 对话进度里给工具起的短名字（「根据 X 的结果继续推理」）
+TOOL_PHASE = {
+    "run_backtest": "回测",
+    "get_market_summary": "行情摘要",
+    "search_templates": "模板搜索",
+    "write_strategy": "写代码",
+    "convene_team": "团队评审",
+    "search_platform": "平台检索",
+    "web_search": "联网搜索",
+    "fetch_page": "读网页",
+    "set_goal": "设定目标",
+    "check_goals": "目标检查",
+    "walk_forward": "分段回测",
+    "set_market": "设定标的",
+    "ask_user": "提问",
+    "write_factor": "写因子",
+    "evaluate_factor": "因子评估",
+    "write_model_spec": "写训练规格",
+    "train_model": "训练",
+    "save_strategy": "保存策略",
+    "save_factor": "存因子",
+    "save_model": "存模型",
+}
+
+
 def _describe_call(name: str, args: dict[str, Any]) -> str:
     note = str(args.get("note") or args.get("topic") or "").strip()
     if name in EDIT_TOOLS:
@@ -629,10 +658,19 @@ class StrategyLab:
         if cur.get("stop_requested"):
             raise StopRequested()
 
-    def _phase(self, pid: str, phase: str) -> None:
+    def _phase(self, pid: str, phase: str, detail: str | None = None) -> None:
+        """回合进度：phase 是一句话的「正在做什么」，detail 是补充说明（参数、步数、上一步结果）。"""
         cur = self.store.get(pid) or {}
-        job = cur.get("job") or {}
-        self.store.patch(pid, job={**job, "phase": phase})
+        job = cur.get("job")
+        if not job:
+            return
+        self.store.patch(pid, job={**job, "phase": phase, "detail": detail if detail is not None else ""})
+
+    def _answered(self, pid: str) -> None:
+        """研究者回答了提问：清掉「等待回答」。回答是在后台回合里处理的，回合没结束前保持 running，
+        前端据此继续跟随，才能看到 AI 接着做的事；回合结束时由 start() 落到 idle / awaiting_user。"""
+        cur = self.store.get(pid) or {}
+        self.store.patch(pid, status="running" if cur.get("job") else "idle")
 
     def _post(self, pid: str, **msg: Any) -> dict[str, Any]:
         return self.store.append(pid, msg)
@@ -682,6 +720,7 @@ class StrategyLab:
         card = self._post(
             pid, role="tool", kind="tool", data={"name": name, "label": label, "args": args, "status": "running"}
         )
+        self._phase(pid, label, " · ".join(f"{k} {v}" for k, v in args.items() if v not in (None, ""))[:160])
         t0 = time.perf_counter()
         try:
             out = fn()
@@ -787,9 +826,24 @@ class StrategyLab:
         asked = False
         pending: list[dict[str, Any]] = []
         stream = _Streamer(self, pid)
+        used: list[str] = []  # 本回合已调用的工具（中文说明），用来写进度
+        who = (project.get("model") or "默认模型").split("/")[-1]
         for step in range(10):
             self._check_stop(pid)
-            self._phase(pid, "模型思考中" if step == 0 else f"模型继续推理（第 {step + 1} 步）")
+            if step == 0:
+                self._phase(
+                    pid,
+                    "阅读对话与上下文，规划怎么回答" if mode != "plan" else "阅读对话与上下文，先拟一份计划",
+                    f"{who} · 思考 {project.get('effort') or 'medium'} · 上下文 {len(messages)} 段"
+                    + (f" · 附图 {len(images)} 张" if images else ""),
+                )
+            else:
+                last = used[-3:]
+                self._phase(
+                    pid,
+                    f"根据「{'、'.join(last)}」的结果继续推理" if last else "继续推理",
+                    f"第 {step + 1} 步 · 本回合已调用 {len(used)} 个工具",
+                )
             result = router.chat(
                 messages, role="code_gen", temperature=0.2, tools=list(tools.values()), max_tokens=8192, on_delta=stream
             )
@@ -830,6 +884,7 @@ class StrategyLab:
             )
             for call in result.tool_calls:
                 tool = tools.get(call.name)
+                used.append(TOOL_PHASE.get(call.name, call.name))
                 if tool is not None and _gated(mode, call.name):
                     args = dict(call.arguments or {})
                     pending.append({"tool": call.name, "args": args, "label": _describe_call(call.name, args)})
@@ -1376,7 +1431,7 @@ class StrategyLab:
         project = self.store.get(pid) or {}
         if int(project.get("compacted_before") or 0) >= seq:
             self.store.patch(pid, compacted_before=0)
-        self.store.patch(pid, status="idle")
+        self._answered(pid)
         return target
 
     def save_work(self, pid: str) -> dict[str, Any]:
@@ -1504,7 +1559,7 @@ class StrategyLab:
         data = open_ask["data"]
         if data.get("approval") and choice in (APPROVE, REJECT):
             self.store.update(pid, open_ask["seq"], data={"answered": choice})
-            self.store.patch(pid, status="idle")
+            self._answered(pid)
             self._post(pid, role="user", kind="text", content=choice + (f"：{note}" if note else ""))
             if choice == REJECT:
                 if note:
@@ -1530,7 +1585,7 @@ class StrategyLab:
             return True
         if data.get("plan") and choice in (PLAN_GO, PLAN_EDIT):
             self.store.update(pid, open_ask["seq"], data={"answered": choice})
-            self.store.patch(pid, status="idle")
+            self._answered(pid)
             self._post(pid, role="user", kind="text", content=choice + (f"：{note}" if note else ""))
             if choice == PLAN_GO:
                 # 研究者确认了计划：这一回合按「接受编辑」执行（改动直接落地，运行仍可在手动模式下审批）
@@ -2038,10 +2093,16 @@ class StrategyLab:
         if self._decide_permission(pid, choice, note):
             return
         msgs = [m for m in self.store.messages(pid) if m["kind"] == "ask" and m["data"].get("answered") is None]
+        open_ask = msgs[-1]["data"] if msgs else {}
         for m in msgs:
             self.store.update(pid, m["seq"], data={"answered": choice})
-        self.store.patch(pid, status="idle")
+        self._answered(pid)
         self._post(pid, role="user", kind="text", content=choice + (f"：{note}" if note else ""))
+        text = choice + (f"。{note}" if note else "")
+        # AI 用 ask_user 提的问题（例如选研究方向），或研究者自己写的回答：都交回模型接着做
+        if not open_ask.get("decision") or choice not in (open_ask.get("options") or []):
+            self.chat(pid, text)
+            return
         if choice.startswith("按建议修改") or choice == "仍然开始":
             pending = next(
                 (
@@ -2101,10 +2162,10 @@ class StrategyLab:
                 self.store.patch(pid, code="", current_v=project.get("current_v"))
                 self.autopilot(pid)
             else:
-                hint = "好的。请描述你想换的方向（例如“改成 4 小时级别的均值回归”），我会从新方向重新开始。"
-                self._post(pid, role="assistant", kind="text", content=hint)
-        elif note:
-            self.chat(pid, note)
+                # 没写新方向：让模型基于目前结果提几个方向给研究者点选
+                self.chat(pid, "我想换个研究方向。请结合目前的结果提出 2-3 个明显不同的新方向，用 ask_user 让我选。")
+        else:
+            self.chat(pid, text)
 
     def _chat_or_note(self, pid: str, note: str) -> None:
         self.pin(pid, kind="note", title="研究者的补充要求", text=note)

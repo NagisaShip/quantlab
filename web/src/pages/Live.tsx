@@ -4,6 +4,7 @@ import { MODE_LABEL, v4, type Comparison, type ImportItem, type ImportRowError, 
 import { ApiError } from '../http'
 import { Callout, EmptyState, Field, Heading, Loading, Panel, Segments, Tag } from '../components/ui'
 import type { PageProps } from './types'
+import { appConfirm } from '../components/dialog'
 
 const KIND_LABEL: Record<string, string> = { fills: '成交', flows: '资金流水', balances: '余额快照' }
 const METHOD_LABEL: Record<string, string> = {
@@ -315,7 +316,7 @@ function ImportPanel({ imports, notify, onDone }: { imports: ImportItem[]; notif
                   <td className="right">
                     {i.kind === 'fills' && <a className="button small ghost" href={v4.importExportUrl(i.id)}>导出</a>}
                     <button className="button small danger" onClick={async () => {
-                      if (!window.confirm('删除这次导入及其全部数据？')) return
+                      if (!await appConfirm('删除这次导入及其全部数据？')) return
                       try { await v4.deleteImport(i.id); onDone() } catch (e) { notify((e as Error).message, true) }
                     }}>删除</button>
                   </td>

@@ -7,6 +7,7 @@ import { rd, type Shadow, type ShadowCompare } from '../apiRd'
 import TradingTerminal from '../components/TradingTerminal'
 import { demo, type DemoConnection, type TerminalSession } from '../apiDemo'
 import type { PageProps } from './types'
+import { appConfirm } from '../components/dialog'
 
 const STATUS: Record<string, [string, string]> = {
   running: ['运行中', ''],
@@ -291,9 +292,9 @@ function ShadowRuns({ sessions, approved, notify, onNavigate, onChanged }: {
   const act = async (fn: () => Promise<unknown>, msg: string) => {
     try { await fn(); notify(msg); load(); onChanged() } catch (e) { notify((e as Error).message, true) }
   }
-  const promote = (sh: Shadow) => {
+  const promote = async (sh: Shadow) => {
     const ready = sh.compare?.ready
-    if (!window.confirm(ready ? `用「${sh.candidate_name}」替换「${sh.baseline_name}」？基准实验会停止，候选继续运行。仍是模拟，不会真实下单。`
+    if (!await appConfirm(ready ? `用「${sh.candidate_name}」替换「${sh.baseline_name}」？基准实验会停止，候选继续运行。仍是模拟，不会真实下单。`
       : `还没满足替换条件（${sh.compare?.verdict ?? '没有数据'}）。确定强制替换吗？`)) return
     act(() => rd.promote(sh.id, !ready), '已替换：基准实验已停止')
   }
@@ -403,12 +404,12 @@ function PaperDetail({ id, onNavigate, notify }: { id: string } & Pick<PageProps
     }
   }
   const stop = async () => {
-    if (!window.confirm('停止实验？持仓不会自动平仓，按最后价格估值。')) return
+    if (!await appConfirm('停止实验？持仓不会自动平仓，按最后价格估值。')) return
     await v3.paperStop(id)
     load()
   }
   const remove = async () => {
-    if (!window.confirm('删除实验记录？')) return
+    if (!await appConfirm('删除实验记录？')) return
     await v3.paperDelete(id)
     onNavigate('paper')
   }
@@ -436,7 +437,7 @@ function PaperDetail({ id, onNavigate, notify }: { id: string } & Pick<PageProps
           : <button className="button small" disabled={s.status !== 'running'} onClick={async () => { try { await v3.paperPause(id); load() } catch (e) { notify((e as Error).message, true) } }}>暂停</button>}
         <button className="button small" disabled={!['running', 'paused'].includes(s.status)} onClick={stop}>停止（不平仓）</button>
         <button className="button small primary" disabled={!['running', 'paused'].includes(s.status)} onClick={async () => {
-          if (!window.confirm(isDemo
+          if (!await appConfirm(isDemo
             ? (isLive ? '一键停止？平台会先熔断（不再开仓），再把全部持仓的市价卖单送到交易所实盘（真实成交），然后结束实验。' : '一键停止？平台会先熔断（不再开仓），再把全部持仓的市价卖单送到交易所模拟盘，然后结束实验。')
             : '模拟平仓并结束？将撤销全部委托，并按最新价格 ± 成本卖出全部持仓（模拟成交，不是真实下单）。')) return
           try { await v3.paperLiquidate(id); notify(isLive ? '已一键停止：平仓单已送到交易所' : isDemo ? '已一键停止：平仓单已送到模拟盘' : '已模拟平仓并结束'); load() } catch (e) { notify((e as Error).message, true) }

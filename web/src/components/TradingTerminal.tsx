@@ -4,6 +4,7 @@ import { demo, ORDER_STATUS, type LiveQuote, type Terminal, type TerminalSession
 import { num } from '../http'
 import KlineChart from './KlineChart'
 import { Callout, EmptyState, Tag } from './ui'
+import { appConfirm } from './dialog'
 
 const TF_MS: Record<string, number> = {
   '1m': 60_000, '3m': 180_000, '5m': 300_000, '15m': 900_000, '30m': 1_800_000,
@@ -59,7 +60,7 @@ export default function TradingTerminal({ id, session, version, notify, onChange
   const lastPrice = quote?.forming?.c ?? (t?.bars.length ? t.bars[t.bars.length - 1].c : null)
 
   const unhalt = async () => {
-    if (!window.confirm('解除熔断，允许策略重新开仓？请先确认触发原因已经处理。')) return
+    if (!await appConfirm('解除熔断，允许策略重新开仓？请先确认触发原因已经处理。')) return
     try { await demo.unhalt(id); notify('已解除熔断'); onChanged() } catch (e) { notify((e as Error).message, true) }
   }
 

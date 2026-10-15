@@ -1,5 +1,6 @@
 /* 规则 DSL v2 的逐项表单：规则编辑页（DslEditor）与策略编辑器的「规则」视图共用。 */
 import { Field } from '../../components/ui'
+import { appPrompt } from '../../components/dialog'
 
 /* ---------- 规则 DSL v2 的前端类型（与后端 DSL_SCHEMA 同一份结构） ---------- */
 export type Operand = { ref?: string; price?: string; const?: number | string; lag?: number; mul?: number }
@@ -180,8 +181,8 @@ export function RuleForm({ spec, onChange, errAt, indicatorTypes, name, onNameCh
             <button className="button small ghost" onClick={() => { const n = { ...form.params }; delete n[p]; update({ params: n }) }}>删除</button>
           </div>
         ))}
-        <button className="button small" onClick={() => {
-          const k = window.prompt('参数名（小写字母、数字、下划线）')
+        <button className="button small" onClick={async () => {
+          const k = await appPrompt('参数名（小写字母、数字、下划线）')
           if (k && /^[a-z][a-z0-9_]{0,23}$/.test(k)) update({ params: { ...form.params, [k]: 10 } })
         }}>＋ 参数</button>
       </div>
@@ -205,8 +206,8 @@ export function RuleForm({ spec, onChange, errAt, indicatorTypes, name, onNameCh
             <button className="button small ghost" onClick={() => { const n = { ...form.indicators }; delete n[key]; update({ indicators: n }) }}>删除</button>
           </div>
         ))}
-        <button className="button small" onClick={() => {
-          const k = window.prompt('指标名（小写字母、数字、下划线），例如 ma20')
+        <button className="button small" onClick={async () => {
+          const k = await appPrompt('指标名（小写字母、数字、下划线），例如 ma20')
           if (k && /^[a-z][a-z0-9_]{0,23}$/.test(k)) update({ indicators: { ...form.indicators, [k]: { type: 'sma', period: 20 } } })
         }}>＋ 指标</button>
       </div>

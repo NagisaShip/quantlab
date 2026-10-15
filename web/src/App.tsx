@@ -13,6 +13,7 @@ import AssemblePage from './pages/Assemble'
 import DisciplinePage from './pages/Discipline'
 import ValidationPage from './pages/Validation'
 import { DiscussionCard } from './components/chat/Discussion'
+import { DialogHost } from './components/dialog'
 import StrategyLabPage from './pages/StrategyLab'
 import RoleLibraryPage from './pages/RoleLibrary'
 import LongRunningPage from './pages/LongRunning'
@@ -45,6 +46,8 @@ import { PageHead } from './components/PageHead'
 import { PageSlot } from './components/pageSlot'
 import { SearchButton } from './components/SearchPalette'
 import { SettingsShell, settingsKeyOf } from './components/SettingsShell'
+import { SidebarConversations } from './pages/lab/Conversations'
+import { SideToggle, SideResizer, useSidebar } from './components/sidebar'
 
 type PageKey =
   | 'home'
@@ -324,9 +327,11 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
   const hub = PARENT[page] ? undefined : HUBS[HUB_OF[page] ?? page]
   const nav = navOf(page)
   const crumb = nav !== page ? nav : null
-  // 研究四阶段合并成一个可折叠的「研究流程」：在 AI 研究室默认收起，给对话列表让位置；手动展开 / 收起会记住
+  // 研究四阶段合并成一个可折叠的「研究流程」：默认收起，给常驻的对话列表让位置；手动展开 / 收起会记住。
+  // 每个页面同一个默认值，进出 AI 研究室时侧栏不变形
   const stageOf = NAV.find((g) => g.step && g.items.some((i) => i.key === nav))
-  const flowOpen = flowPref ?? page !== 'lab'
+  const flowOpen = flowPref ?? false
+  const side = useSidebar()
 
   const render = () => {
     const arg = route.arg
@@ -416,6 +421,7 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
         </SettingsShell>
         {busy && <BusyOverlay title={busy.title} note={busy.note} />}
         <RoleDrawer notify={notify} />
+        <DialogHost />
         {toast && <Toast message={toast.message} error={toast.error} onDone={() => setToast(null)} />}
       </>
     )
@@ -423,10 +429,11 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
 
   return (
     <>
-      <aside className="sidebar">
+      <aside className="sidebar" aria-hidden={side.collapsed || undefined}>
         <div className="side-top">
           <a className="side-brand" href="#/home"><LogoMark size={20} />QuantLab</a>
           <SearchButton onNavigate={go} />
+          <SideToggle collapsed={false} onToggle={side.toggle} />
         </div>
 
         <nav aria-label="主导航">
@@ -463,7 +470,7 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
             })}
           </div>
           {NAV.filter((g) => !g.step).slice(1).map((group) => (
-            <div key={group.group || 'more'} className={flowOpen || page !== 'lab' ? undefined : 'nav-more-tight'}>
+            <div key={group.group || 'more'}>
               {group.group && <div className="nav-label">{group.group}</div>}
               {group.items.map((item) => (
                 <button key={item.key} className="nav-item" aria-current={nav === item.key ? 'page' : undefined} onClick={() => go(item.key)}>
@@ -474,14 +481,19 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
             </div>
           ))}
         </nav>
-        <div id="sidebar-slot" className="sidebar-slot" />
+        <div className="sidebar-slot">
+          <SidebarConversations activeId={page === 'lab' ? route.arg : ''} notify={notify} />
+          <div id="sidebar-slot" className="sidebar-slot-extra" />
+        </div>
 
         <AccountMenu me={me} reachable={reachable} llmReady={llmReady} onNavigate={go} />
+        <SideResizer width={side.width} onWidth={side.setWidth} />
       </aside>
 
       <div className="shell">
         <header className="topbar">
           <div>
+            {side.collapsed && <SideToggle collapsed onToggle={side.toggle} />}
             <span className="breadcrumb">{me.workspace?.name ?? '工作区'}</span>
             <span className="separator">/</span>
             {crumb && (
@@ -510,6 +522,7 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
 
       {busy && <BusyOverlay title={busy.title} note={busy.note} />}
       <RoleDrawer notify={notify} />
+      <DialogHost />
       <AskAIPanel />
       {toast && <Toast message={toast.message} error={toast.error} onDone={() => setToast(null)} />}
     </>

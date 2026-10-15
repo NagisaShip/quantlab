@@ -16,6 +16,7 @@ import {
 import { UseInStrategy } from '../components/modelReport'
 import { EmptyState, Field, Heading, Loading, Panel, Segments, Tag } from '../components/ui'
 import type { PageProps } from './types'
+import { appConfirm } from '../components/dialog'
 
 type Tab = 'list' | 'design' | 'replay' | 'radar' | 'costs' | 'record' | 'runs'
 const TABS: { value: Tab; label: string }[] = [
@@ -115,7 +116,7 @@ function SchemeDetail({ id, meta, algoLabel, notify, onDeleted }: { id: string; 
         </select>
         <button className="button small" onClick={() => toLab(`改进执行方案「${s.name}」：在完成率不降的前提下降低成本`)}>交给 AI 改进</button>
         <button className="button small" onClick={() => toLab(`召集执行小组评审「${s.name}」：成本分解、逆向选择、不同市场状态下的表现`)}>召集团队评审</button>
-        <button className="button small danger" onClick={async () => { if (window.confirm(`删除执行方案「${s.name}」？试验记录会保留。`)) { await execution.remove(id); onDeleted() } }}>删除</button>
+        <button className="button small danger" onClick={async () => { if (await appConfirm(`删除执行方案「${s.name}」？试验记录会保留。`)) { await execution.remove(id); onDeleted() } }}>删除</button>
       </>}>
         <div className="fx-meta">
           <span>{algoLabel(c.algo)} · {meta?.styles.find((x) => x.id === c.style)?.label ?? c.style} · {s.symbols.join(', ')}</span>
@@ -580,7 +581,7 @@ function Recorder({ notify, onUse }: { notify: PageProps['notify']; onUse: (id: 
                   <td className="right">
                     {r.status === 'recording' && <button className="button small" onClick={async () => { await execution.stopRecording(r.id); reload() }}>停止</button>}
                     {r.status !== 'recording' && r.snapshots >= 20 && <button className="button small" onClick={() => onUse(r.id)}>用于仿真</button>}
-                    <button className="button small danger" onClick={async () => { if (window.confirm('删除这段录制？')) { await execution.deleteRecording(r.id); reload() } }}>删除</button>
+                    <button className="button small danger" onClick={async () => { if (await appConfirm('删除这段录制？')) { await execution.deleteRecording(r.id); reload() } }}>删除</button>
                   </td>
                 </tr>
               ))}</tbody>

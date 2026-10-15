@@ -6,6 +6,7 @@ import { ApiError } from '../http'
 import { Callout, Heading, Loading, Panel, Segments, Tag } from '../components/ui'
 import { makeErrAt, RuleForm, type RuleSpec as Spec } from './rulecode/RuleForm'
 import type { PageProps } from './types'
+import { appConfirm } from '../components/dialog'
 
 export default function DslEditorPage({ slug, onNavigate, notify, setBusy }: PageProps & { slug?: string }) {
   const [spec, setSpec] = useState<Spec | null>(null)
@@ -92,7 +93,7 @@ export default function DslEditorPage({ slug, onNavigate, notify, setBusy }: Pag
   // 规则 → 代码：先保存规则，再把同一个策略原地转成带 @rule 注释的 Python 代码策略
   const toCode = async () => {
     if (!val?.ok) { notify('规则未通过校验，修正后才能转为代码', true); return }
-    if (!window.confirm('转为代码策略后在代码编辑器中编辑。代码保持与 @rule 注释一致时，仍可切回规则视图。')) return
+    if (!await appConfirm('转为代码策略后在代码编辑器中编辑。代码保持与 @rule 注释一致时，仍可切回规则视图。')) return
     try {
       const r = await v4.dslSave({ name: name || '规则策略', spec, slug: savedSlug })
       await ruleCode.convertDsl(r.strategy.slug)
@@ -187,7 +188,7 @@ function VersionsPanel({ slug, notify }: { slug: string; notify: PageProps['noti
                   try { await v4.freezeVersion(v.id); load() } catch (e) { notify((e as Error).message, true) }
                 }}>冻结</button>}
                 {v.status !== 'ARCHIVED' && <button className="button small ghost" onClick={async () => {
-                  if (!window.confirm('归档后该版本不能再发起新的运行（历史运行仍可追溯）')) return
+                  if (!await appConfirm('归档后该版本不能再发起新的运行（历史运行仍可追溯）')) return
                   try { await v4.archiveVersion(v.id); load() } catch (e) { notify((e as Error).message, true) }
                 }}>归档</button>}
               </td>

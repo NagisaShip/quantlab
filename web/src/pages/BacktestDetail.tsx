@@ -22,6 +22,7 @@ import { cumulative } from './Editor'
 import { openInLab } from '../components/handoff'
 import { backtestAskContext, useAskAIContext } from '../components/AskAI'
 import type { PageProps } from './types'
+import { appConfirm } from '../components/dialog'
 
 type Tab = 'fills' | 'breakdown' | 'daily' | 'logs' | 'code' | 'manifest' | 'ai' | 'ledger' | 'signals' | 'guards'
 const COMPARE_KEY = 'qa.compare'
@@ -93,7 +94,7 @@ export default function BacktestDetailPage({ id, onNavigate, notify }: PageProps
   }
 
   const remove = async () => {
-    if (!window.confirm('删除这条回测记录？')) return
+    if (!await appConfirm('删除这条回测记录？')) return
     await v3.deleteBacktest(id)
     notify('已删除')
     onNavigate(row?.slug ? `backtests/${row.slug}` : 'backtests')

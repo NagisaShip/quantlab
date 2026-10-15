@@ -8,6 +8,7 @@ import { CompareView } from './backtests/CompareView'
 import { HistoryTab } from './backtests/HistoryTab'
 import { NewTab } from './backtests/NewTab'
 import type { PageProps } from './types'
+import { appConfirm } from '../components/dialog'
 
 const TABS = [['', '记录'], ['compare', '策略对比'], ['new', '新建回测'], ['history', '历史实验']] as const
 
@@ -68,7 +69,7 @@ function Records({ slug, onNavigate, notify, tabs }: Pick<PageProps, 'onNavigate
   }
 
   const remove = async (id: string) => {
-    if (!window.confirm('删除这条回测记录？')) return
+    if (!await appConfirm('删除这条回测记录？')) return
     await v3.deleteBacktest(id)
     toggleOff(id)
     load()

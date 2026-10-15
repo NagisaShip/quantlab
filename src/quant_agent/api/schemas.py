@@ -16,6 +16,10 @@ class ModelSettingIn(BaseModel):
     inputs: list[Literal["text", "image", "audio", "video", "file"]] = Field(default_factory=lambda: ["text"])
     price_in: str = Field("", max_length=20, description="输入价格：每百万 token，按服务商币种")
     price_out: str = Field("", max_length=20, description="输出价格：每百万 token，按服务商币种")
+    price_cache: str = Field("", max_length=20, description="缓存命中的输入价格：每百万 token；留空按普通输入价")
+    price_cache_write: str = Field(
+        "", max_length=20, description="缓存写入价格（Anthropic 等单独计费）：每百万 token；留空按普通输入价"
+    )
 
 
 class LimitRuleIn(BaseModel):

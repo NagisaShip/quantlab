@@ -11,6 +11,7 @@ import { Scatter } from '../components/charts2'
 import { f3, fp } from '../components/factorReport'
 import { Callout, EmptyState, Field, Heading, Loading, MetricCard, Panel, Segments, Tag } from '../components/ui'
 import type { PageProps } from './types'
+import { appConfirm, appPrompt } from '../components/dialog'
 
 type Tab = 'ledger' | 'holdout' | 'lineage'
 const TABS: { value: Tab; label: string }[] = [
@@ -279,13 +280,13 @@ function HoldoutViewPanel({ notify, onNavigate }: Pick<PageProps, 'notify' | 'on
     try { setH(await rd.seal({ days, note })); notify('紧封线已设置') } catch (e) { notify((e as Error).message, true) } finally { setBusy(false) }
   }
   const remove = async () => {
-    const reason = window.prompt('解除紧封会让之后的研究用到全部数据，已开封的记录保留。写一句原因：')
+    const reason = await appPrompt('解除紧封会让之后的研究用到全部数据，已开封的记录保留。写一句原因：')
     if (!reason || reason.trim().length < 2) return
     try { await rd.removeSeal(reason.trim()); await load(); notify('已解除紧封') } catch (e) { notify((e as Error).message, true) }
   }
   const unseal = async () => {
     const name = options.find((o) => o.ref === ref)?.label ?? ref
-    if (!window.confirm(`开封「${name}」？\n\n每个成果只能开封一次，结果永久记录。开封后如果再改它，这份测试集对它就不再干净。`)) return
+    if (!await appConfirm(`开封「${name}」？\n\n每个成果只能开封一次，结果永久记录。开封后如果再改它，这份测试集对它就不再干净。`)) return
     setBusy(true)
     try {
       const r = await rd.unseal(kind, ref)

@@ -95,15 +95,43 @@ def clean_limits(rules: Any) -> list[dict[str, Any]]:
     return sorted(out.values(), key=lambda x: (x["metric"], WINDOWS[x["window"]]))
 
 
-def usage_tokens(usage: dict[str, Any] | None) -> tuple[int, int]:
-    """各家 usage 字段归一成 (输入, 输出) token。"""
-    u = usage or {}
-    inp = u.get("input_tokens", u.get("prompt_tokens", 0)) or 0
-    out = u.get("output_tokens", u.get("completion_tokens", 0)) or 0
+def _int(v: Any) -> int:
     try:
-        return max(0, int(inp)), max(0, int(out))
+        return max(0, int(v or 0))
     except (TypeError, ValueError):
-        return 0, 0
+        return 0
+
+
+def usage_breakdown(usage: dict[str, Any] | None) -> dict[str, int]:
+    """各家 usage 归一成 {input, cache_read, cache_write, output}。input 是全部输入（含缓存部分）。
+
+    - OpenAI Chat Completions：prompt_tokens（含缓存）+ prompt_tokens_details.cached_tokens
+    - DeepSeek：prompt_tokens + prompt_cache_hit_tokens
+    - OpenAI Responses：input_tokens（含缓存）+ input_tokens_details.cached_tokens
+    - Anthropic：input_tokens 不含缓存；cache_read_input_tokens / cache_creation_input_tokens 另计
+    """
+    u = usage or {}
+    out = _int(u.get("output_tokens", u.get("completion_tokens")))
+    if "cache_read_input_tokens" in u or "cache_creation_input_tokens" in u:
+        read, write = _int(u.get("cache_read_input_tokens")), _int(u.get("cache_creation_input_tokens"))
+        return {
+            "input": _int(u.get("input_tokens")) + read + write,
+            "cache_read": read,
+            "cache_write": write,
+            "output": out,
+        }
+    total = _int(u.get("input_tokens", u.get("prompt_tokens")))
+    details = u.get("input_tokens_details") or u.get("prompt_tokens_details") or {}
+    read = _int(details.get("cached_tokens") if isinstance(details, dict) else 0) or _int(
+        u.get("prompt_cache_hit_tokens")
+    )
+    return {"input": total, "cache_read": min(read, total), "cache_write": 0, "output": out}
+
+
+def usage_tokens(usage: dict[str, Any] | None) -> tuple[int, int]:
+    """(全部输入, 输出) token，用于每日配额计量。"""
+    b = usage_breakdown(usage)
+    return b["input"], b["output"]
 
 
 def fmt_cost(micro: int | Decimal) -> str:
@@ -239,6 +267,10 @@ class ModelHub:
                 "inputs": inputs if inputs and inputs != ["text"] else None,
                 "price_in": plain(dec(st.get("price_in"))) if dec(st.get("price_in")) > 0 else "",
                 "price_out": plain(dec(st.get("price_out"))) if dec(st.get("price_out")) > 0 else "",
+                "price_cache": plain(dec(st.get("price_cache"))) if dec(st.get("price_cache")) > 0 else "",
+                "price_cache_write": plain(dec(st.get("price_cache_write")))
+                if dec(st.get("price_cache_write")) > 0
+                else "",
             }
             clean = {k: v for k, v in clean.items() if v}
             if clean:
@@ -396,11 +428,23 @@ class ModelHub:
 
     # ------------------------------------------------------------------ 计量
     @staticmethod
-    def cost_micro(pc: ProviderConfig, model: str, inp: int, out: int) -> int:
+    def cost_micro(
+        pc: ProviderConfig, model: str, inp: int, out: int, cache_read: int = 0, cache_write: int = 0
+    ) -> int:
+        """inp 是全部输入（含缓存）。缓存命中 / 写入按各自单价，没填就按普通输入价。"""
         st = pc.setting(model)
         rate = dec(pc.fx_rate, "1") if pc.currency != "CNY" else Decimal(1)
+        p_in = dec(st.get("price_in"))
+        p_read = dec(st.get("price_cache")) if dec(st.get("price_cache")) > 0 else p_in
+        p_write = dec(st.get("price_cache_write")) if dec(st.get("price_cache_write")) > 0 else p_in
+        plain_in = max(0, inp - cache_read - cache_write)
         # 价格是「每百万 token」：tokens × 价格 / 1e6 元 = tokens × 价格 微元
-        micro = (Decimal(inp) * dec(st.get("price_in")) + Decimal(out) * dec(st.get("price_out"))) * rate
+        micro = (
+            Decimal(plain_in) * p_in
+            + Decimal(cache_read) * p_read
+            + Decimal(cache_write) * p_write
+            + Decimal(out) * dec(st.get("price_out"))
+        ) * rate
         return int(micro.to_integral_value())
 
     def record(self, pc: ProviderConfig, model: str, usage: dict[str, Any] | None) -> None:
@@ -408,20 +452,22 @@ class ModelHub:
         ws = ctx.workspace_id
         if not ws:
             return
-        inp, out = usage_tokens(usage)
+        b = usage_breakdown(usage)
+        cost = self.cost_micro(pc, model, b["input"], b["output"], b["cache_read"], b["cache_write"])
         self.db.execute(
             "INSERT INTO llm_usage (workspace_id, user_id, scope, provider, model, input_tokens, output_tokens, "
-            "cost_micro, created_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?)",
+            "cache_read_tokens, cache_write_tokens, cost_micro, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (
                 ws,
                 ctx.user_id or "system",
                 pc.scope,
                 pc.name,
                 model,
-                inp,
-                out,
-                self.cost_micro(pc, model, inp, out),
+                b["input"],
+                b["output"],
+                b["cache_read"],
+                b["cache_write"],
+                cost,
                 now_ms(),
             ),
         )
@@ -501,6 +547,7 @@ class ModelHub:
             args.append(user_id)
         by_model = self.db.fetchall(
             "SELECT provider, scope, model, COUNT(*) AS calls, SUM(input_tokens) AS input_tokens, "
+            "SUM(cache_read_tokens) AS cache_read_tokens, SUM(cache_write_tokens) AS cache_write_tokens, "
             f"SUM(output_tokens) AS output_tokens, SUM(cost_micro) AS cost_micro FROM llm_usage WHERE {where} "
             "GROUP BY provider, scope, model ORDER BY cost_micro DESC, calls DESC",
             tuple(args),
@@ -530,19 +577,29 @@ class ModelHub:
             **{k: v for k, v in r.items() if k != "cost_micro"},
             "cost": fmt_cost(r.get("cost_micro") or 0),
             **(
-                {"input_tokens": int(r["input_tokens"] or 0), "output_tokens": int(r["output_tokens"] or 0)}
+                {
+                    "input_tokens": int(r["input_tokens"] or 0),
+                    "output_tokens": int(r["output_tokens"] or 0),
+                    "cache_read_tokens": int(r.get("cache_read_tokens") or 0),
+                    "cache_write_tokens": int(r.get("cache_write_tokens") or 0),
+                }
                 if "input_tokens" in r
                 else {}
             ),
         }
         total_tokens = sum(int(r["input_tokens"] or 0) + int(r["output_tokens"] or 0) for r in by_model)
         total_cost = sum(int(r["cost_micro"] or 0) for r in by_model)
+        total_in = sum(int(r["input_tokens"] or 0) for r in by_model)
+        total_read = sum(int(r.get("cache_read_tokens") or 0) for r in by_model)
         return {
             "days": days,
             "total": {
                 "calls": sum(int(r["calls"]) for r in by_model),
                 "tokens": total_tokens,
                 "cost": fmt_cost(total_cost),
+                "cache_read_tokens": total_read,
+                # 缓存命中率：命中的输入 / 全部输入
+                "cache_hit_rate": round(total_read / total_in, 4) if total_in else None,
             },
             "by_model": [norm(r) for r in by_model],
             "by_user": [norm(r) for r in by_user],

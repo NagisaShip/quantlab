@@ -16,6 +16,7 @@ import { COLORS, LineChart, Sparkline } from '../components/charts2'
 import { Markdown } from '../components/markdown'
 import { Callout, EmptyState, Heading, Loading, Modal, Panel, Tag } from '../components/ui'
 import type { PageProps } from './types'
+import { appConfirm } from '../components/dialog'
 
 const TABS: { key: string; label: string; q: Record<string, unknown> }[] = [
   { key: 'all', label: '全部', q: {} },
@@ -373,7 +374,7 @@ export function PostPage({ id, onNavigate, notify }: PageProps & { id: string })
         <button className="button small" onClick={() => act(() => v3.featurePost(id))}>{post.featured ? '取消精华' : '设为精华'}</button>
         <button className="button small" onClick={() => act(() => v3.pinPost(id))}>{post.pinned ? '取消置顶' : '置顶'}</button>
         {mine && <button className="button small" onClick={() => setEditing(true)}>编辑</button>}
-        {mine && <button className="button small danger" onClick={async () => { if (window.confirm('删除这篇帖子？')) { await v3.deletePost(id); onNavigate('square') } }}>删除</button>}
+        {mine && <button className="button small danger" onClick={async () => { if (await appConfirm('删除这篇帖子？')) { await v3.deletePost(id); onNavigate('square') } }}>删除</button>}
       </div>
 
       <div className="community-layout">
