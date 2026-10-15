@@ -193,6 +193,7 @@ class AppServices:
                 base_url=row.get("base_url") or (existing.base_url if existing else ""),
                 api_key=secrets.get(name) or (existing.api_key if existing else ""),
                 models=row.get("models") or (existing.models if existing else []),
+                model_settings=row.get("model_settings") or (existing.model_settings if existing else {}),
             )
         for name, key in secrets.items():
             if name in self.config.providers and key:

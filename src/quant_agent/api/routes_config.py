@@ -57,6 +57,7 @@ def read_config() -> dict:
                 "key_source": source,
                 "key_masked": masked,
                 "models": p.models,
+                "model_settings": p.model_settings,
                 "custom": p.name in ui_names,
             }
         )
@@ -163,12 +164,29 @@ def upsert_provider(payload: ProviderIn) -> dict:
     models = [m.strip() for m in payload.models if m.strip()]
     if not models:
         raise HTTPException(400, "至少填写一个模型名")
+    settings: dict[str, dict] = {}
+    for m in models:
+        st = payload.model_settings.get(m)
+        if st is None:
+            continue
+        inputs = list(dict.fromkeys(st.inputs)) or ["text"]
+        clean = {
+            "label": st.label.strip(),
+            "request_model": "" if st.request_model.strip() == m else st.request_model.strip(),
+            "context_window": st.context_window,
+            "effort": st.effort,
+            "inputs": inputs if inputs != ["text"] else None,
+        }
+        clean = {k: v for k, v in clean.items() if v}
+        if clean:
+            settings[m] = clean
     record = {
         "id": name,
         "name": name,
         "type": payload.type if payload.type in ("anthropic", "openai_responses") else "openai_compatible",
         "base_url": payload.base_url.rstrip("/"),
         "models": models,
+        "model_settings": settings,
     }
     s.global_store.upsert(Collections.PROVIDERS, record)
     if payload.api_key.strip():
@@ -333,7 +351,8 @@ def test_provider(payload: ProviderTestIn) -> dict:
             [Message(role="user", content=payload.prompt)],
             model=payload.target,
             temperature=0.0,
-            max_tokens=64,
+            max_tokens=1024,  # 推理模型会先花掉一部分输出额度在思考上，太小会只剩空回复
+            effort="low",
         )
     except LLMError as e:
         return {"ok": False, "error": str(e), "target": payload.target}

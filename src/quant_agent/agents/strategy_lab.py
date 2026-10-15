@@ -1181,7 +1181,10 @@ class StrategyLab:
         from ..llm.router import context_window
 
         target = self.model_target(project)
-        return context_window(target.partition("/")[2] or target) if target else 32_000
+        if not target:
+            return 32_000
+        per_target = getattr(self.router, "context_window_for", None)
+        return per_target(target) if callable(per_target) else context_window(target.partition("/")[2] or target)
 
     def history_budget(self, project: dict[str, Any]) -> int:
         """对话历史的原文预算：窗口越大放得越多，但封顶，避免每轮都把长历史全量重发。"""

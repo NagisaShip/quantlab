@@ -639,6 +639,20 @@ main:not(.full) { padding-bottom: 88px; }
 .prov-empty { padding: 16px; border: 1px dashed var(--line); border-radius: 10px; text-align: center; font-size: 12.5px; color: var(--faint); }
 .prov-found small { font-size: 11.5px; color: var(--muted); }
 .prov-found .chip-row { max-height: 160px; overflow-y: auto; }
+.prov-found-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.prov-found-head input { width: 200px; max-width: 100%; height: 30px; font-size: 12.5px; }
+.prov-found-none { padding: 4px 2px; }
+.prov-model-card.open { border: 1px solid var(--line); border-radius: 10px; background: var(--sheet); padding: 8px; }
+.prov-model-label { flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--muted); padding: 0 8px; line-height: 22px; border: 1px solid var(--line); border-radius: 6px; }
+.icon-btn svg { display: block; margin: auto; }
+.icon-btn.on { background: var(--accent-soft); color: var(--accent); }
+.prov-model-set { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 12px; padding: 10px 2px 2px; }
+.prov-model-set .prov-field > select { max-width: none; }
+.prov-wide { grid-column: 1 / -1; }
+.prov-checks { display: flex; flex-wrap: wrap; gap: 6px 16px; }
+.prov-check { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ink); min-height: 28px; cursor: pointer; }
+.prov-check input { width: auto; margin: 0; }
+@media (max-width: 720px) { .prov-model-set { grid-template-columns: 1fr; } }
 .prov-foot { display: flex; justify-content: flex-end; gap: 8px; }
 
 @media (max-width: 720px) {

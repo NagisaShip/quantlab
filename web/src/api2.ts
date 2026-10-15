@@ -349,7 +349,17 @@ export interface ProviderView {
   key_source: string
   key_masked: string
   models: string[]
+  model_settings?: Record<string, ModelSetting>
   custom: boolean
+}
+
+/** 目录模型的可选设置；routing 里仍用目录 ID 引用，请求时换成 request_model。 */
+export interface ModelSetting {
+  label?: string
+  request_model?: string
+  context_window?: number | null
+  effort?: '' | 'low' | 'medium' | 'high' | 'max'
+  inputs?: string[]
 }
 
 export interface PostSummary {
@@ -528,7 +538,7 @@ export const v3 = {
   /* AI 模型 */
   config: () =>
     get<{ providers: ProviderView[]; routing: Record<string, string | string[]>; config_path: string | null }>('/api/config'),
-  saveProvider: (p: { name: string; type: string; base_url: string; api_key: string; models: string[] }) =>
+  saveProvider: (p: { name: string; type: string; base_url: string; api_key: string; models: string[]; model_settings?: Record<string, ModelSetting> }) =>
     post<{ ok: boolean; provider: ProviderView }>('/api/config/providers', p),
   deleteProvider: (name: string) => del<{ ok: boolean }>(`/api/config/providers/${name}`),
   discoverModels: (p: { name: string; type: string; base_url: string; api_key: string }) =>

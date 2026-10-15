@@ -8,12 +8,23 @@ from pydantic import BaseModel, Field
 
 
 # ---------------- 模型配置 ----------------
+class ModelSettingIn(BaseModel):
+    label: str = Field("", max_length=60, description="菜单里显示的名字，留空用模型 ID")
+    request_model: str = Field("", max_length=200, description="实际请求的模型名，留空与目录 ID 相同")
+    context_window: int | None = Field(None, ge=1024, le=10_000_000)
+    effort: Literal["", "low", "medium", "high", "max"] = ""
+    inputs: list[Literal["text", "image", "audio", "video", "file"]] = Field(default_factory=lambda: ["text"])
+
+
 class ProviderIn(BaseModel):
     name: str
     type: Literal["openai_compatible", "openai_responses", "anthropic", "local"] = "openai_compatible"
     base_url: str = ""
     api_key: str = ""
     models: list[str] = Field(default_factory=list)
+    model_settings: dict[str, ModelSettingIn] = Field(
+        default_factory=dict, description="按模型 ID 的显示名、实际请求模型、上下文窗口、默认思考等级与输入类型"
+    )
 
 
 class RoutingIn(BaseModel):

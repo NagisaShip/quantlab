@@ -32,6 +32,15 @@ class ProviderConfig:
     base_url: str
     api_key: str
     models: list[str] = field(default_factory=list)
+    # 按目录模型 ID 的可选设置：label 菜单显示名、request_model 实际请求的模型、
+    # context_window 上下文窗口、effort 默认思考等级、inputs 支持的输入类型
+    model_settings: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+    def setting(self, model: str) -> dict[str, Any]:
+        return self.model_settings.get(model) or {}
+
+    def request_model(self, model: str) -> str:
+        return str(self.setting(model).get("request_model") or "").strip() or model
 
 
 @dataclass
@@ -69,6 +78,7 @@ class AgentConfig:
                 base_url=cfg.get("base_url", ""),
                 api_key=cfg.get("api_key", ""),
                 models=cfg.get("models", []),
+                model_settings=cfg.get("model_settings", {}),
             )
             for name, cfg in merged.get("providers", {}).items()
         }
@@ -228,20 +238,22 @@ class ModelRouter:
             if not self._has_credentials(provider_name):
                 errors.append(f"[{provider_name}] 未配置 API Key，已跳过")
                 continue
-            for candidate in self._effort_variants(provider_name, model_name, effort):
+            pc = self.config.providers.get(provider_name)
+            target_effort = effort or (pc.setting(model_name).get("effort") if pc else None) or None
+            for candidate in self._effort_variants(provider_name, model_name, target_effort):
                 if emitted["any"] and on_delta:
                     on_delta("reset", "")
                     emitted["any"] = False
                 try:
                     client = self._client(provider_name)
                     extra: dict[str, Any] = {}
-                    if effort:
-                        extra["effort"] = effort
+                    if target_effort:
+                        extra["effort"] = target_effort
                     if on_delta:
                         extra["on_delta"] = relay
                     return client.chat(
                         messages,
-                        model=candidate,
+                        model=pc.request_model(candidate) if pc else candidate,
                         temperature=temperature,
                         tools=tools,
                         max_tokens=max_tokens,
@@ -273,12 +285,21 @@ class ModelRouter:
         pc = self.config.providers.get(provider_name)
         if pc is None:
             return "none"
+        model_name = pc.request_model(model_name)
         if pc.type == "anthropic":
             return anthropic_effort_mode(model_name)
         mode = openai_effort_mode(model_name, pc.base_url)
         if mode == "switch" and not any("reason" in m or m.endswith("-r1") for m in pc.models):
             return "none"
         return mode
+
+    def context_window_for(self, target: str) -> int:
+        """目录里手动设置的上下文窗口优先，否则按实际请求的模型名估算。"""
+        provider_name, _, model_name = target.partition("/")
+        pc = self.config.providers.get(provider_name)
+        if pc is None:
+            return context_window(model_name or target)
+        return int(pc.setting(model_name).get("context_window") or 0) or context_window(pc.request_model(model_name))
 
     def current_target(self, role: str = "default") -> str:
         primary = self.config.routing.get(role) or self.config.routing.get("default") or ""
@@ -291,6 +312,7 @@ class ModelRouter:
             for m in pc.models:
                 if m:
                     target = f"{name}/{m}"
+                    st = pc.setting(m)
                     out.append(
                         {
                             "provider": name,
@@ -299,7 +321,11 @@ class ModelRouter:
                             "type": pc.type,
                             "ready": self._has_credentials(name),
                             "effort": self.effort_mode(target),
-                            "context_window": context_window(m),
+                            "context_window": self.context_window_for(target),
+                            "label": st.get("label") or "",
+                            "request_model": pc.request_model(m),
+                            "default_effort": st.get("effort") or "",
+                            "inputs": st.get("inputs") or ["text"],
                         }
                     )
         return out

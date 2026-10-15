@@ -128,6 +128,7 @@ export interface LabView { project: LabProject; messages: LabMessage[]; context:
 export interface ModelOption {
   provider: string; model: string; target: string; type: string
   ready?: boolean; effort?: 'native' | 'budget' | 'switch' | 'none'; context_window?: number
+  label?: string; request_model?: string; default_effort?: Effort | ''; inputs?: string[]
 }
 export interface EffortOption { id: Effort; label: string; hint: string }
 

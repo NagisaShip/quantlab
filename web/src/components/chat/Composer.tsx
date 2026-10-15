@@ -60,7 +60,7 @@ export function ModelMenu({ models, value, defaultModel, effort, efforts, onMode
     <div className="cmp-pop-anchor" ref={pop.ref}>
       <button type="button" className="cmp-model" disabled={disabled} onClick={() => pop.setOpen(!pop.open)}
         aria-haspopup="menu" aria-expanded={pop.open} title="选择模型与思考努力程度">
-        <span>{modelLabel(effective)}</span>
+        <span>{current?.label || modelLabel(effective)}</span>
         {effortSupported && <span className="cmp-effort-tag">{effortLabel}</span>}
         <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden><path d="M2 3.5 5 6.5 8 3.5" fill="none" stroke="currentColor" strokeWidth="1.4" /></svg>
       </button>
@@ -82,7 +82,7 @@ export function ModelMenu({ models, value, defaultModel, effort, efforts, onMode
           <button type="button" role="menuitemradio" aria-checked={!value} className={`cmp-menu-item${!value ? ' on' : ''}`}
             onClick={() => { onModel(''); pop.setOpen(false) }}>
             <span className="cmp-menu-main">跟随全局路由</span>
-            <span className="cmp-menu-sub">{modelLabel(defaultModel)}</span>
+            <span className="cmp-menu-sub">{models.find((m) => m.target === defaultModel)?.label || modelLabel(defaultModel)}</span>
           </button>
           {Object.entries(groups).map(([provider, items]) => (
             <div key={provider}>
@@ -94,10 +94,12 @@ export function ModelMenu({ models, value, defaultModel, effort, efforts, onMode
                     className={`cmp-menu-item${value === m.target ? ' on' : ''}${ready ? '' : ' off'}`}
                     onClick={() => {
                       if (!ready) { window.location.hash = '#/models'; return }
-                      onModel(m.target); pop.setOpen(false)
+                      onModel(m.target)
+                      if (m.default_effort) onEffort(m.default_effort)
+                      pop.setOpen(false)
                     }}
-                    title={ready ? m.target : '还没配置密钥，点击去AI 模型'}>
-                    <span className="cmp-menu-main">{modelLabel(m.target)}</span>
+                    title={ready ? (m.request_model && m.request_model !== m.model ? `${m.target} → ${m.request_model}` : m.target) : '还没配置密钥，点击去AI 模型'}>
+                    <span className="cmp-menu-main">{m.label || modelLabel(m.target)}</span>
                     <span className="cmp-menu-sub">
                       {ready ? (m.context_window ? `${fmtTokens(m.context_window)} 上下文` : '') : '未配置'}
                     </span>

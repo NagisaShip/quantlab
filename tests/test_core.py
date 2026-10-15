@@ -213,6 +213,32 @@ def test_router_falls_back():
     assert calls == ["primary", "backup"]
 
 
+def test_router_model_settings_map_request_model_and_effort():
+    seen = []
+
+    class FakeProvider:
+        def chat(self, messages, *, model, temperature=0.2, tools=None, max_tokens=None, effort=None):
+            seen.append((model, effort))
+            return ChatResult(content="ok", model=model, provider="gw")
+
+    settings = {
+        "fast": {"label": "快速", "request_model": "vendor-fast-2026", "context_window": 64000, "effort": "low"}
+    }
+    cfg = AgentConfig(
+        providers={"gw": ProviderConfig("gw", "openai_compatible", "http://x", "k", ["fast"], settings)},
+        routing={"default": "gw/fast"},
+        limits={},
+        trace={},
+    )
+    router = ModelRouter(cfg)
+    router._clients = {"gw": FakeProvider()}
+    router.chat([Message(role="user", content="hi")])
+    router.chat([Message(role="user", content="hi")], effort="high")
+    assert seen == [("vendor-fast-2026", "low"), ("vendor-fast-2026", "high")]
+    [m] = router.available_models()
+    assert (m["target"], m["label"], m["context_window"], m["default_effort"]) == ("gw/fast", "快速", 64000, "low")
+
+
 # ---------------- 引导 ----------------
 def test_guidance_render():
     g = GUIDANCES["trend"]

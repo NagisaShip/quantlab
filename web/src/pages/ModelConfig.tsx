@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api, type Preset } from '../api'
-import { v3, type ProviderView } from '../api2'
+import { v3, type ModelSetting, type ProviderView } from '../api2'
 import { Callout, Heading, Loading } from '../components/ui'
 import { get, request } from '../http'
 import type { PageProps } from './types'
@@ -25,9 +25,33 @@ interface Draft {
   type: string
   base_url: string
   api_key: string
-  models: string[]
+  models: ModelRow[]
   has_key: boolean
 }
+
+/** 模型目录的一行：id 是目录 ID（路由里引用它），其余为可选设置，表单里都按字符串编辑。 */
+interface ModelRow {
+  id: string
+  label: string
+  request_model: string
+  context_window: string
+  effort: string
+  inputs: string[]
+}
+
+const EFFORTS: [string, string][] = [['', '跟随对话'], ['low', '低'], ['medium', '中'], ['high', '高'], ['max', '极高']]
+const INPUTS: [string, string][] = [['text', '文本'], ['image', '图片'], ['file', '文件'], ['audio', '音频'], ['video', '视频']]
+
+const rowOf = (id: string, st?: ModelSetting): ModelRow => ({
+  id, label: st?.label ?? '', request_model: st?.request_model ?? '',
+  context_window: st?.context_window ? String(st.context_window) : '', effort: st?.effort ?? '', inputs: st?.inputs?.length ? st.inputs : ['text'],
+})
+
+const settingOf = (r: ModelRow): ModelSetting => ({
+  label: r.label.trim(), request_model: r.request_model.trim(),
+  context_window: Number(r.context_window) > 0 ? Math.round(Number(r.context_window)) : null,
+  effort: r.effort as ModelSetting['effort'], inputs: r.inputs,
+})
 
 const presetLabel = (p: Preset) => p.label.replace('[OI]', 'OpenAI')
 
@@ -51,7 +75,7 @@ function ProtocolSelect({ value, onChange }: { value: string; onChange: (v: stri
 function draftFromPreset(p: Preset, prev?: Draft): Draft {
   return {
     mode: 'preset', editing: null, name: p.name, type: p.type === 'anthropic' ? 'anthropic' : 'openai_compatible',
-    base_url: '', api_key: prev?.api_key ?? '', models: p.models.filter(Boolean), has_key: false,
+    base_url: '', api_key: prev?.api_key ?? '', models: p.models.filter(Boolean).map((m) => rowOf(m)), has_key: false,
   }
 }
 
@@ -76,6 +100,11 @@ export default function ModelConfigPage({ notify }: PageProps) {
   useEffect(() => { refresh().catch((e: Error) => setError(e.message)) }, [refresh])
 
   const allModels = config?.providers.flatMap((p) => p.models.filter(Boolean).map((m) => `${p.name}/${m}`)) ?? []
+  const labelOf = (target: string) => {
+    const [prov, ...rest] = target.split('/')
+    const label = config?.providers.find((p) => p.name === prov)?.model_settings?.[rest.join('/')]?.label
+    return label ? `${target}（${label}）` : target
+  }
   const keyed = config?.providers.filter((p) => p.has_key && p.name !== 'local') ?? []
   const presetOf = (name: string) => presets.find((p) => p.name === name)
 
@@ -84,7 +113,8 @@ export default function ModelConfigPage({ notify }: PageProps) {
     setDraft({
       mode: pre ? 'preset' : 'custom', editing: p.name, name: p.name,
       type: protocolOf(p.type),
-      base_url: pre && p.base_url === pre.base_url ? '' : p.base_url, api_key: '', models: p.models.filter(Boolean), has_key: p.has_key,
+      base_url: pre && p.base_url === pre.base_url ? '' : p.base_url, api_key: '', has_key: p.has_key,
+      models: p.models.filter(Boolean).map((m) => rowOf(m, p.model_settings?.[m])),
     })
   }
 
@@ -143,7 +173,7 @@ export default function ModelConfigPage({ notify }: PageProps) {
                   </div>
                 )
               })}
-              <button className="prov-add" onClick={() => setDraft(presets[0] ? draftFromPreset(presets[0]) : { mode: 'custom', editing: null, name: '', type: 'openai_compatible', base_url: '', api_key: '', models: [''], has_key: false })}>
+              <button className="prov-add" onClick={() => setDraft(presets[0] ? draftFromPreset(presets[0]) : { mode: 'custom', editing: null, name: '', type: 'openai_compatible', base_url: '', api_key: '', models: [rowOf('')], has_key: false })}>
                 ＋ 添加模型服务商
               </button>
             </div>
@@ -160,7 +190,7 @@ export default function ModelConfigPage({ notify }: PageProps) {
                 <div><b>{label}</b><small>{hint}</small></div>
                 <select value={routing[k] ?? ''} onChange={(e) => setRouting({ ...routing, [k]: e.target.value })}>
                   <option value="">（使用默认）</option>
-                  {allModels.map((m) => <option key={m} value={m}>{m}{keyed.some((p) => m.startsWith(p.name + '/')) ? '' : '（无密钥）'}</option>)}
+                  {allModels.map((m) => <option key={m} value={m}>{labelOf(m)}{keyed.some((p) => m.startsWith(p.name + '/')) ? '' : '（无密钥）'}</option>)}
                 </select>
               </div>
             ))}
@@ -198,20 +228,26 @@ function ProviderEditor({ draft, setDraft, presets, existing, onCancel, onSaved,
   const [busy, setBusy] = useState(false)
   const [discovering, setDiscovering] = useState(false)
   const [found, setFound] = useState<string[] | null>(null)
+  const [query, setQuery] = useState('')
+  const [open, setOpen] = useState<number | null>(null)
   const pre = presets.find((p) => p.name === draft.name)
   const isPreset = draft.mode === 'preset'
   const baseUrl = draft.base_url.trim() || (isPreset ? pre?.base_url ?? '' : '')
-  const models = draft.models.map((m) => m.trim()).filter(Boolean)
+  const models = draft.models.map((m) => m.id.trim()).filter(Boolean)
   const nameOk = /^[a-z0-9][a-z0-9_-]{0,30}$/.test(draft.name.trim().toLowerCase())
   const taken = !draft.editing && existing.some((p) => p.name === draft.name.trim().toLowerCase() && p.custom)
   const valid = nameOk && /^https?:\/\//.test(baseUrl) && models.length > 0 && !taken
   const set = (patch: Partial<Draft>) => setDraft({ ...draft, ...patch })
+  const setRow = (i: number, patch: Partial<ModelRow>) => set({ models: draft.models.map((r, j) => (j === i ? { ...r, ...patch } : r)) })
+  const q = query.trim().toLowerCase()
+  const shown = found?.filter((m) => !q || m.toLowerCase().includes(q)) ?? []
 
   const discover = async () => {
     setDiscovering(true)
     try {
       const r = await v3.discoverModels({ name: draft.editing ?? draft.name, type: draft.type, base_url: baseUrl, api_key: draft.api_key.trim() })
       setFound(r.models)
+      setQuery('')
       if (!r.models.length) notify('服务商没有返回模型列表，可以手动添加模型 ID')
     } catch (e) {
       notify((e as Error).message, true)
@@ -223,7 +259,8 @@ function ProviderEditor({ draft, setDraft, presets, existing, onCancel, onSaved,
   const save = async () => {
     setBusy(true)
     try {
-      await v3.saveProvider({ name: draft.name.trim().toLowerCase(), type: draft.type, base_url: baseUrl, api_key: draft.api_key.trim(), models })
+      const model_settings = Object.fromEntries(draft.models.filter((r) => r.id.trim()).map((r) => [r.id.trim(), settingOf(r)]))
+      await v3.saveProvider({ name: draft.name.trim().toLowerCase(), type: draft.type, base_url: baseUrl, api_key: draft.api_key.trim(), models, model_settings })
       onSaved(draft.editing ? '已保存' : '已添加服务商。密钥存放在本机数据目录，接口只返回脱敏值')
     } catch (e) {
       notify((e as Error).message, true)
@@ -239,7 +276,7 @@ function ProviderEditor({ draft, setDraft, presets, existing, onCancel, onSaved,
       {!draft.editing && (
         <div className="seg" role="tablist">
           <button role="tab" aria-selected={isPreset} onClick={() => presets[0] && setDraft(draftFromPreset(pre ?? presets[0], draft))}>第三方模型服务商</button>
-          <button role="tab" aria-selected={!isPreset} onClick={() => setDraft({ ...draft, mode: 'custom', name: '', base_url: '', models: [''] })}>自定义模型 API</button>
+          <button role="tab" aria-selected={!isPreset} onClick={() => setDraft({ ...draft, mode: 'custom', name: '', base_url: '', models: [rowOf('')] })}>自定义模型 API</button>
         </div>
       )}
       {draft.editing && <h3 className="prov-editor-title">编辑 {pre ? presetLabel(pre) : draft.name}</h3>}
@@ -286,25 +323,71 @@ function ProviderEditor({ draft, setDraft, presets, existing, onCancel, onSaved,
           <div><b>模型目录</b><small>第一个作为该服务商的默认模型</small></div>
           <button className="button small ghost" onClick={discover} disabled={discovering || !/^https?:\/\//.test(baseUrl)}>{discovering ? '获取中…' : '获取可用模型'}</button>
         </div>
-        {draft.models.map((m, i) => (
-          <div key={i} className="prov-model">
-            <input value={m} onChange={(e) => set({ models: draft.models.map((x, j) => (j === i ? e.target.value : x)) })} placeholder="模型 ID，例如 deepseek-chat" />
-            <button className="icon-btn" aria-label="移除" onClick={() => set({ models: draft.models.filter((_, j) => j !== i) })}>×</button>
+        {draft.models.map((r, i) => (
+          <div key={i} className={`prov-model-card${open === i ? ' open' : ''}`}>
+            <div className="prov-model">
+              <input value={r.id} onChange={(e) => setRow(i, { id: e.target.value })} placeholder="模型 ID，例如 deepseek-chat" aria-label="模型 ID" />
+              {r.label.trim() && open !== i && <span className="prov-model-label" title="菜单显示名">{r.label}</span>}
+              <button className={`icon-btn${open === i ? ' on' : ''}`} aria-label="模型设置" aria-expanded={open === i}
+                title="显示名、实际请求模型、上下文窗口、默认思考等级、输入类型" onClick={() => setOpen(open === i ? null : i)}>
+                <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden fill="none" stroke="currentColor" strokeWidth="1.4">
+                  <path d="M2 4h7M12 4h2M2 12h2M7 12h7" /><circle cx="10.5" cy="4" r="1.6" /><circle cx="5.5" cy="12" r="1.6" />
+                </svg>
+              </button>
+              <button className="icon-btn" aria-label="移除" onClick={() => { set({ models: draft.models.filter((_, j) => j !== i) }); setOpen(null) }}>×</button>
+            </div>
+            {open === i && (
+              <div className="prov-model-set">
+                <label className="prov-field">菜单显示名
+                  <input value={r.label} onChange={(e) => setRow(i, { label: e.target.value })} placeholder={r.id || '留空显示模型 ID'} maxLength={60} />
+                </label>
+                <label className="prov-field">实际请求模型
+                  <input value={r.request_model} onChange={(e) => setRow(i, { request_model: e.target.value })}
+                    placeholder={r.id ? `留空即 ${r.id}` : '留空与模型 ID 相同'} list={found?.length ? 'prov-found-ids' : undefined} />
+                  <small>路由与对话里仍按模型 ID 引用，换模型只改这里</small>
+                </label>
+                <label className="prov-field">上下文窗口（tokens）
+                  <input type="number" min={1024} step={1024} inputMode="numeric" value={r.context_window}
+                    onChange={(e) => setRow(i, { context_window: e.target.value })} placeholder="留空自动估算，例如 128000" />
+                </label>
+                <label className="prov-field">默认思考等级
+                  <select value={r.effort} onChange={(e) => setRow(i, { effort: e.target.value })}>
+                    {EFFORTS.map(([k, label]) => <option key={k} value={k}>{label}</option>)}
+                  </select>
+                </label>
+                <div className="prov-field prov-wide">输入类型
+                  <div className="prov-checks">
+                    {INPUTS.map(([k, label]) => (
+                      <label key={k} className="prov-check">
+                        <input type="checkbox" checked={r.inputs.includes(k)} disabled={k === 'text'}
+                          onChange={(e) => setRow(i, { inputs: e.target.checked ? [...r.inputs, k] : r.inputs.filter((x) => x !== k) })} />
+                        {label}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         ))}
         {!draft.models.length && <div className="prov-empty">还没有模型。获取可用模型，或手动添加模型 ID。</div>}
         {found && found.length > 0 && (
           <div className="prov-found">
-            <small>服务商返回 {found.length} 个模型，点击加入：</small>
-            <div className="chip-row">
-              {found.map((m) => {
-                const on = models.includes(m)
-                return <button key={m} className={`chip${on ? ' on' : ''}`} onClick={() => set({ models: on ? draft.models.filter((x) => x.trim() !== m) : [...draft.models.filter((x) => x.trim()), m] })}>{m}</button>
-              })}
+            <div className="prov-found-head">
+              <small>服务商返回 {found.length} 个模型{q ? `，匹配 ${shown.length} 个` : ''}，点击加入：</small>
+              <input type="search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索模型名" aria-label="搜索模型名" />
             </div>
+            <div className="chip-row">
+              {shown.map((m) => {
+                const on = models.includes(m)
+                return <button key={m} className={`chip${on ? ' on' : ''}`} onClick={() => set({ models: on ? draft.models.filter((x) => x.id.trim() !== m) : [...draft.models.filter((x) => x.id.trim()), rowOf(m)] })}>{m}</button>
+              })}
+              {!shown.length && <small className="prov-found-none">没有匹配“{query}”的模型</small>}
+            </div>
+            <datalist id="prov-found-ids">{found.map((m) => <option key={m} value={m} />)}</datalist>
           </div>
         )}
-        <button className="button small" onClick={() => set({ models: [...draft.models, ''] })}>＋ 添加模型</button>
+        <button className="button small" onClick={() => { set({ models: [...draft.models, rowOf('')] }); setOpen(draft.models.length) }}>＋ 添加模型</button>
       </div>
 
       <div className="prov-foot">
