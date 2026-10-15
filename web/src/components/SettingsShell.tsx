@@ -33,7 +33,10 @@ export const SETTINGS_GROUPS: { group: string; items: SettingsItem[] }[] = [
   },
   {
     group: '开发者',
-    items: [{ key: 'docs', label: '策略 API 文档', icon: 'docs', keywords: 'sdk 接口 文档' }],
+    items: [
+      { key: 'docs', label: '策略 API 文档', icon: 'docs', keywords: 'sdk 接口 文档' },
+      { key: 'brand', label: '视觉规范', icon: 'models', keywords: 'logo bot 品牌 机器人 表情 动效 设计规范 红绿' },
+    ],
   },
 ]
 

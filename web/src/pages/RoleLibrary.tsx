@@ -98,7 +98,7 @@ export default function RoleLibraryPage({ notify, onNavigate }: PageProps) {
 
   return (
     <div className="rl">
-      <Heading title="角色与团队" actions={<a className="button" href="#/teams">开始团队讨论</a>} />
+      <Heading title="角色与团队" actions={<a className="button" href="#/lab" title="在对话里输入 /discuss 发起团队讨论">在研究室发起讨论</a>} />
 
       <section className="rl-section">
         <div className="rl-section-head">
@@ -142,7 +142,7 @@ export default function RoleLibraryPage({ notify, onNavigate }: PageProps) {
       <section className="rl-section">
         <div className="rl-section-head">
           <h2>团队</h2>
-          <span className="rl-hint">单周期研究直接用这些团队；多阶段流水线在团队讨论页里组合</span>
+          <span className="rl-hint">单周期研究直接用这些团队；在 AI 研究室对话里用 /discuss 发起讨论</span>
           <span style={{ flex: 1 }} />
           <button className="button small" onClick={() => setEditingTeam({ name: '', description: '', mode: 'sequential', role_ids: [], synthesizer_id: 'research_lead', challenge_rounds: 1 })}>新建团队</button>
         </div>

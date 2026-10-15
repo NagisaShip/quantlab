@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { QuantBot } from './QuantBot'
 
 /** 16px 线性图标。stroke 跟随 currentColor，深浅主题自动适配。 */
 const P: Record<string, ReactNode> = {
@@ -45,14 +46,7 @@ export function Icon({ name, size = 16 }: { name: string; size?: number }) {
 }
 
 /** 品牌标：三根 K 线，最后一根收在最高处。 */
+/** 品牌标识：QuantLab Bot（待机，偶尔眨眼）。造型与状态见 QuantBot.tsx。 */
 export function LogoMark({ size = 18 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 18 18" aria-hidden="true">
-      <rect x="1" y="1" width="16" height="16" rx="4" fill="#2e45c8" />
-      <path d="M5 5.5v7M9 4v6.5M13 3.5v9" stroke="#c9d3ff" strokeWidth="1" strokeLinecap="round" />
-      <rect x="3.9" y="7.5" width="2.2" height="3.5" rx=".4" fill="#ffffff" />
-      <rect x="7.9" y="6" width="2.2" height="3" rx=".4" fill="#c9d3ff" />
-      <rect x="11.9" y="4.5" width="2.2" height="5.5" rx=".4" fill="#ffffff" />
-    </svg>
-  )
+  return <QuantBot size={size} state="idle" title="QuantLab" />
 }

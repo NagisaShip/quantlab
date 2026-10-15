@@ -118,7 +118,7 @@ export default function HomePage({ onNavigate, notify }: PageProps) {
             )}
           </Panel>
           {recentMissions.length > 0 && (
-            <Panel title="最近团队讨论" actions={<button className="button small" onClick={() => onNavigate('teams')}>进入</button>}>
+            <Panel title="最近团队讨论" actions={<button className="button small" onClick={() => onNavigate('lab')} title="在 AI 研究室的对话里输入 /discuss 发起">发起讨论</button>}>
               <ul className="plain-list">
                 {recentMissions.slice(0, 4).map((m) => (
                   <li key={m.id} className="clickable" onClick={() => onNavigate(`teams/${m.id}`)}>

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import {
-  isSpecKind, lab, mergeBySeq,
+  lab, mergeBySeq, missions,
   type ContextView, type Effort, type Executor, type FactorSummary, type GoalSpec, type LabKind, type LabMessage, type LabMeta,
   type LabProject, type LabProjectBrief, type Metrics, type Permission,
 } from '../apiLab'
@@ -11,9 +12,9 @@ import { AssistantText, EventLine, ToolLine, UserBubble, Working } from '../comp
 import { Composer, ContextRing, ModelMenu, usePopover, type SlashCommand } from '../components/chat/Composer'
 import { ActionMenu, AutoIterateRow, ContextStats, Icons, PermissionMenu, useFilePicker, type ActionItem } from '../components/chat/LabControls'
 import { CodeEditor } from '../components/CodeEditor'
-import { DiffView } from '../components/Diff'
+import { DiffView, lineDiff } from '../components/Diff'
 import { Markdown } from '../components/markdown'
-import { Loading } from '../components/ui'
+import { Loading, Modal } from '../components/ui'
 import { condText, domainMeta, fmtGoal, GoalChips, GoalForm, metricsOf, projectItems, projectSpec, useDefaultSpec } from './lab/goal'
 import { FactorCodeCard, FactorPanel, FactorReportCard, FactorVersionMetrics } from './lab/factor'
 import { FactorStats } from '../components/factorReport'
@@ -24,6 +25,9 @@ import { PortfolioPanel, PortfolioReportCard, PortfolioSpecCard, PortfolioVersio
 import { ExecutionPanel, ExecutionReportCard, ExecutionSpecCard, ExecutionVersionMetrics } from './lab/execution'
 import { ExecStats } from '../components/executionReport'
 import { domainUI, libraryIdOf } from './lab/domains'
+import { Conversations } from './lab/Conversations'
+import { QuantBot } from '../components/QuantBot'
+import { DiscussionCard } from '../components/chat/Discussion'
 import { rd } from '../apiRd'
 import type { PageProps } from './types'
 
@@ -33,10 +37,10 @@ const EXAMPLES = [
   'BTC、ETH、SOL 每周动量轮动，只持有最强的一个',
 ]
 
-/** 新建项目页只有 /goal；项目里的完整命令见 buildCommands。 */
-const SLASH: SlashCommand[] = [
-  { cmd: '/goal', help: '设定目标：指标条件、回测范围、轮数', group: '迭代', arg: '[描述]' },
-]
+const SYMBOL_PICKS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT', 'DOGE/USDT', 'ADA/USDT', 'AVAX/USDT', 'LINK/USDT', 'TON/USDT']
+/** 设置 · 模型 里的「AI 生成简短建议」开关（本机偏好，默认开） */
+export const suggestOn = () => store.get('qa.lab.suggest', '1') === '1'
+
 const PERMISSION_ALIAS: Record<string, Permission> = {
   auto: 'auto', manual: 'manual', edits: 'accept_edits', accept: 'accept_edits', accept_edits: 'accept_edits', plan: 'plan', bypass: 'bypass',
 }
@@ -54,8 +58,6 @@ const TOOL_ICON: Record<string, string> = {
 }
 
 type PanelTab = 'code' | 'versions' | 'context' | 'goals'
-const PANEL_TABS: [PanelTab, string][] = [['code', '代码'], ['versions', '迭代'], ['context', '上下文'], ['goals', '目标']]
-const domainTabs = (label: string): [PanelTab, string][] => [['code', label], ['versions', '迭代'], ['context', '上下文'], ['goals', '目标']]
 
 const pct = (v: number | null | undefined, d = 1) => (v === null || v === undefined ? '—' : `${(v * 100).toFixed(d)}%`)
 const num = (v: number | null | undefined, d = 2) => (v === null || v === undefined ? '—' : v.toFixed(d))
@@ -64,8 +66,9 @@ export default function StrategyLabPage({ onNavigate, notify, arg }: PageProps &
   const [meta, setMeta] = useState<LabMeta | null>(null)
   const [projects, setProjects] = useState<LabProjectBrief[]>([])
   const [activeId, setActiveId] = useState<string>(arg || '')
-  const [filter, setFilter] = useState('')
-  const [railOpen, setRailOpen] = useState(() => store.get('qa.lab.rail', '1') === '1')
+  const [newFolder, setNewFolder] = useState('')
+  const [slot, setSlot] = useState<HTMLElement | null>(null)
+  useEffect(() => { setSlot(document.getElementById('sidebar-slot')) }, [])
 
   const refreshList = useCallback(async () => {
     const r = await lab.projects()
@@ -83,70 +86,32 @@ export default function StrategyLabPage({ onNavigate, notify, arg }: PageProps &
     setActiveId(id)
     window.history.replaceState(null, '', id ? `#/lab/${id}` : '#/lab')
   }
-  const toggleRail = () => { const v = !railOpen; setRailOpen(v); store.set('qa.lab.rail', v ? '1' : '0') }
-
-  const q = filter.trim()
-  const shown = projects.filter((p) => !q || p.title.includes(q) || p.idea.includes(q))
 
   return (
-    <div className={`lab2${railOpen ? '' : ' rail-closed'}`}>
-      <aside className="lab2-rail" aria-label="策略项目">
-        <div className="lab2-rail-top">
-          <button className="lab2-new" onClick={() => open('')}>
-            <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden><path d="M7 2v10M2 7h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>
-            新对话
-          </button>
-          <button className="lab2-icon" onClick={toggleRail} title="收起项目列表" aria-label="收起项目列表">
-            <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden><rect x="2" y="3" width="12" height="10" rx="2" fill="none" stroke="currentColor" strokeWidth="1.3" /><path d="M6 3v10" stroke="currentColor" strokeWidth="1.3" /></svg>
-          </button>
-        </div>
-        <input className="lab2-search" placeholder="搜索" value={filter} onChange={(e) => setFilter(e.target.value)} aria-label="搜索项目" />
-        <div className="lab2-list">
-          {shown.length === 0 && <div className="lab2-list-empty">{q ? '没有匹配的项目' : '还没有项目'}</div>}
-          {shown.map((p) => (
-            <button key={p.id} className={`lab2-item${p.id === activeId ? ' on' : ''}`} onClick={() => open(p.id)} title={p.idea}>
-              <span className="lab2-item-title">{p.status !== 'idle' && <i className={`dot ${p.status}`} />}{p.title}</span>
-              <span className="lab2-item-meta">
-                {domainUI(p.kind) ? <>{domainUI(p.kind)!.noun} · {p.securities.length} 个标的</> : p.securities[0]} · {p.timeframe}{p.current_v ? ` · v${p.current_v}` : ''}
-                {p.kind === 'factor'
-                  ? p.metrics?.rank_ic !== undefined && p.metrics?.rank_ic !== null && <> · RankIC {num(p.metrics.rank_ic, 3)}</>
-                  : isSpecKind(p.kind) ? p.metrics?.oos_rank_ic !== undefined && p.metrics?.oos_rank_ic !== null && <> · 样本外 {num(p.metrics.oos_rank_ic, 3)}</>
-                  : p.metrics?.sharpe !== undefined && p.metrics?.sharpe !== null && <> · 夏普 {num(p.metrics.sharpe)}</>}
-              </span>
-            </button>
-          ))}
-        </div>
-        {meta && !meta.llm_ready && (
-          <a href="#/models" className="lab2-rail-foot">未配置模型，当前为规则降级 · 去配置</a>
-        )}
-      </aside>
+    <div className="lab2 rail-closed">
+      {slot && createPortal(
+        <Conversations projects={projects} activeId={activeId} notify={notify} onChanged={refreshList}
+          onOpen={open} onNew={(folder) => { setNewFolder(folder ?? ''); open('') }} />,
+        slot,
+      )}
+      {meta && !meta.llm_ready && slot && createPortal(<a href="#/models" className="conv-foot">未配置模型，当前为规则降级 · 去配置</a>, slot)}
 
       {activeId ? (
         <ProjectView key={activeId} id={activeId} meta={meta} notify={notify} onNavigate={onNavigate}
-          railOpen={railOpen} onToggleRail={toggleRail}
-          onChanged={refreshList} onDeleted={() => { open(''); refreshList() }} />
+          onChanged={refreshList} onDeleted={() => { open(''); refreshList() }} onOpenProject={(pid) => { refreshList(); open(pid) }} />
       ) : (
-        <Welcome meta={meta} notify={notify} railOpen={railOpen} onToggleRail={toggleRail}
-          onCreated={(id) => { refreshList(); open(id) }} />
+        <Welcome key={newFolder} meta={meta} notify={notify} folder={newFolder}
+          onCreated={(id) => { setNewFolder(''); refreshList(); open(id) }} />
       )}
     </div>
-  )
-}
-
-function RailToggle({ show, onClick }: { show: boolean; onClick: () => void }) {
-  if (!show) return null
-  return (
-    <button className="lab2-icon" onClick={onClick} title="展开项目列表" aria-label="展开项目列表">
-      <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden><rect x="2" y="3" width="12" height="10" rx="2" fill="none" stroke="currentColor" strokeWidth="1.3" /><path d="M6 3v10" stroke="currentColor" strokeWidth="1.3" /></svg>
-    </button>
   )
 }
 
 /* ------------------------------------------------------------------ */
 /* 新对话                                                              */
 /* ------------------------------------------------------------------ */
-function Welcome({ meta, notify, onCreated, railOpen, onToggleRail }: {
-  meta: LabMeta | null; notify: PageProps['notify']; onCreated: (id: string) => void; railOpen: boolean; onToggleRail: () => void
+function Welcome({ meta, notify, onCreated, folder }: {
+  meta: LabMeta | null; notify: PageProps['notify']; onCreated: (id: string) => void; folder?: string
 }) {
   const [draft, setDraft] = useState<LabDraft | null>(peekLabDraft)   // 从别的页面带过来的想法 / 代码
   const [kind, setKindState] = useState<LabKind>(() => draft?.kind ?? (store.get('qa.lab.kind', 'strategy') as LabKind))
@@ -163,11 +128,16 @@ function Welcome({ meta, notify, onCreated, railOpen, onToggleRail }: {
   const [effort, setEffort] = useState<Effort>(() => store.get('qa.lab.effort', 'medium') as Effort)
   const [research, setResearch] = useState<'none' | 'market' | 'team'>('market')
   const [source, setSource] = useState<'auto' | 'exchange' | 'synthetic'>('auto')
+  const [permission, setPermissionState] = useState<Permission>(() => store.get('qa.lab.permission', 'auto') as Permission)
+  const setPermission = (p: Permission) => { setPermissionState(p); store.set('qa.lab.permission', p) }
+  // 标的：默认交给 AI 根据对话决定（带了标的过来、或手动选过时用手动）
+  const [marketAuto, setMarketAuto] = useState(() => !draft?.securities?.length)
+  const [files, setFiles] = useState<{ title: string; text: string }[]>([])
   const [auto, setAuto] = useState(false)
-  const [night, setNight] = useState(false)   // 放进夜班队列，而不是现在开始
   const [busy, setBusy] = useState(false)
   const [goalOpen, setGoalOpen] = useState<{ initial: GoalSpec; unparsed?: string } | null>(null)
-  const settings = usePopover()
+  const [goalSet, setGoalSet] = useState(false)   // 用 /goal 设过目标才能自动迭代；没有目标就是普通对话
+  const market = usePopover()
   const metrics = metricsOf(dmeta)
 
   useEffect(() => {
@@ -177,9 +147,26 @@ function Welcome({ meta, notify, onCreated, railOpen, onToggleRail }: {
   }, [defaults, draft])
   useEffect(() => { clearLabDraft() }, [])
 
-  const create = async (opts: { spec?: GoalSpec; start?: boolean } = {}) => {
-    const goal = opts.spec ?? spec
-    const startAuto = opts.start ?? auto
+  const queueNight = async (text: string) => {
+    setBusy(true)
+    try {
+      await rd.addTask({ kind, idea: text, executor: isFactor ? executor : 'solo', symbols: spec.symbols, timeframe: spec.timeframe, rounds: Math.min(8, spec.max_rounds), data_source: source })
+      notify('已加入夜班队列，开班后自动研究，结果在晨报里')
+      setIdea('')
+    } catch (e) { notify((e as Error).message, true) } finally { setBusy(false) }
+  }
+
+  const onFiles = useCallback(async (list: File[]) => {
+    const texts = list.filter((f) => !f.type.startsWith('image/') && f.size <= 2_000_000)
+    const read = await Promise.all(texts.map(async (f) => ({ title: f.name.slice(0, 60), text: (await f.text()).slice(0, 4000) })))
+    if (read.length) { setFiles((prev) => [...prev, ...read]); notify(`已附带 ${read.length} 个文件，会钉进新对话的上下文`) }
+    if (list.some((f) => f.type.startsWith('image/'))) notify('图片请在对话创建后再发送', true)
+  }, [notify])
+  const pickFiles = useFilePicker(onFiles)
+
+  const create = async () => {
+    const goal = spec
+    const startAuto = auto && goalSet
     const text = idea.trim()
     if (busy || !text) return
     if (text.startsWith('/goal')) {
@@ -189,29 +176,29 @@ function Welcome({ meta, notify, onCreated, railOpen, onToggleRail }: {
       try {
         const r = await lab.goalParse(rest, undefined, kind)
         setGoalOpen({ initial: { ...r.spec, symbols: r.parsed_fields.includes('symbols') ? r.spec.symbols : spec.symbols }, unparsed: r.unparsed })
+        setMarketAuto(!r.parsed_fields.includes('symbols') && marketAuto)
       } catch (e) { notify((e as Error).message, true) }
       return
     }
-    setBusy(true)
-    if (night) {
-      try {
-        await rd.addTask({ kind, idea: text, executor: isFactor ? executor : 'solo', symbols: goal.symbols, timeframe: goal.timeframe, rounds: Math.min(8, goal.max_rounds), data_source: source })
-        notify('已加入夜班队列，开班后自动研究，结果在晨报里')
-        setIdea('')
-        window.location.hash = '/long-running'
-      } catch (e) { notify((e as Error).message, true) } finally { setBusy(false) }
+    if (text.startsWith('/night')) {
+      const rest = text.replace(/^\/night\s*/, '').trim()
+      if (!rest) { notify('用法：/night 你的研究想法', true); return }
+      await queueNight(rest)
       return
     }
+    setBusy(true)
     try {
+      const pins = [...(draft?.pins ?? []), ...files.map((f) => ({ kind: 'file', ...f }))]
       const v = await lab.create({
         kind, idea: text, securities: goal.symbols, timeframe: goal.timeframe, model, effort, max_rounds: goal.max_rounds,
-        bars_limit: goal.bars_limit, data_source: source,
+        bars_limit: goal.bars_limit, data_source: source, permission, market_auto: marketAuto && !goalSet, suggest: suggestOn(),
         ...(isFactor ? { horizon: goal.horizon ?? 1, executor, universe } : {}),
-        ...(draft?.title ? { title: draft.title } : {}), ...(draft?.code ? { code: draft.code } : {}), ...(draft?.pins?.length ? { pins: draft.pins } : {}),
+        ...(draft?.title ? { title: draft.title } : {}), ...(draft?.code ? { code: draft.code } : {}), ...(pins.length ? { pins } : {}),
+        ...(folder ? { folder } : {}),
       })
       const id = v.project.id
-      await lab.setGoal(id, goal, { review: false, start: startAuto, research: isFactor ? 'none' : research })
-      if (!startAuto) await lab.send(id, text)
+      if (goalSet) await lab.setGoal(id, goal, { review: false, start: startAuto, research: isFactor ? 'none' : research })
+      if (!startAuto) await lab.send(id, text, { suggest: suggestOn() })
       onCreated(id)
     } catch (e) {
       notify((e as Error).message, true)
@@ -219,83 +206,118 @@ function Welcome({ meta, notify, onCreated, railOpen, onToggleRail }: {
     }
   }
 
+  const welcomeCommands: SlashCommand[] = [
+    { cmd: '/goal', group: '迭代', arg: '[描述]', help: '设定目标：指标条件、回测范围、轮数（设了目标才能自动迭代）' },
+    { cmd: '/night', group: '迭代', arg: '[想法]', help: '放进夜班队列：无人值守地自动研究，结果写进晨报' },
+  ]
+  const plusItems: ActionItem[] = [
+    { label: '添加文件或照片', icon: Icons.attach, hint: '文本、CSV、JSON 会钉进新对话的上下文', onClick: pickFiles },
+    { label: '斜杠命令', icon: Icons.slash, hint: '/goal、/night', onClick: () => setIdea('/') },
+    {
+      label: '插件', icon: Icons.plugin, submenu: [
+        ...(isFactor ? [{ label: '研究小组执行', icon: Icons.team, hint: ui?.teamHint ?? '', checked: executor === 'team', onClick: () => { const v = executor === 'team' ? 'solo' : 'team'; setExecutor(v); store.set('qa.lab.executor', v) } }] : []),
+        { label: '夜班', icon: Icons.loop, hint: '/night：把这个想法放进夜班队列', onClick: () => setIdea(`/night ${idea.replace(/^\/\S*\s*/, '')}`) },
+        { label: '联网搜索与模型…', icon: Icons.search, hint: '在设置里配置', onClick: () => { window.location.hash = '#/models' } },
+      ],
+    },
+    { label: '自动迭代', divider: true, render: () => (
+      <AutoIterateRow rounds={spec.max_rounds} needsGoal={!goalSet} onSetGoal={() => setGoalOpen({ initial: spec })}
+        onRounds={(n) => setSpec({ ...spec, max_rounds: n })} onStart={(n) => { setSpec({ ...spec, max_rounds: n }); setAuto(true) }} />
+    ) },
+  ]
+  const kinds = meta?.kinds ?? [{ id: 'strategy' as LabKind, label: '策略', hint: '' }, { id: 'factor' as LabKind, label: '因子', hint: '' }]
+  const marketLabel = marketAuto ? '标的：自动' : `${isFactor ? `${spec.symbols.length} 个标的` : spec.symbols[0] || '标的'} · ${spec.timeframe}${isFactor ? ` · 持有 ${spec.horizon ?? 1} 期` : ''}`
+
   return (
     <section className="lab2-main">
-      <header className="lab2-head">
-        <RailToggle show={!railOpen} onClick={onToggleRail} />
-      </header>
+      <header className="lab2-head">{folder && <span className="lab2-sub">新对话将放进项目「{folder}」</span>}</header>
       <div className="lab2-welcome">
+        <QuantBot size={52} state={busy ? 'thinking' : 'idle'} className="lab2-welcome-bot" />
         <h1>{ui ? ui.welcome : '有什么交易想法？'}</h1>
         {goalOpen && (
           <div className="lab2-goal-pop">
             <GoalForm meta={dmeta} domain={kind} initial={goalOpen.initial} unparsed={goalOpen.unparsed} onCancel={() => setGoalOpen(null)}
               submitting={busy} startLabel="保存并开启自动迭代"
-              onSubmit={(g, start) => { setSpec(g); setGoalOpen(null); if (start) setAuto(true) }} />
+              onSubmit={(g, start) => { setSpec(g); setGoalSet(true); setMarketAuto(false); setGoalOpen(null); if (start) setAuto(true) }} />
           </div>
         )}
-        <Composer value={idea} onChange={setIdea} onSend={() => create()} disabled={busy} autoFocus commands={SLASH.slice(0, 1)}
+        <Composer value={idea} onChange={setIdea} onSend={() => create()} disabled={busy} autoFocus commands={welcomeCommands}
           placeholder={ui ? ui.placeholder : '描述一个想法，例如：BTC 4 小时突破 55 根新高做多，ATR 止损'}
-          sendLabel={night ? '加入夜班' : auto ? '开始自动迭代' : '发送'}
-          above={<>
+          sendLabel={auto && goalSet ? '开始自动迭代' : '发送'}
+          above={(draft?.attached || files.length || goalSet || (auto && goalSet)) ? <>
             {draft?.attached && (
               <div className="cmp-attached">
                 <span>已附带：{draft.attached}</span>
                 <button type="button" aria-label="移除附带内容" onClick={() => setDraft(null)}>×</button>
               </div>
             )}
-            {spec.items.length > 0 && <GoalChips items={spec.items} metrics={metrics} onOpen={() => setGoalOpen(goalOpen ? null : { initial: spec })} />}
-          </>}
-          left={<>
-            <div className="cmp-seg" role="group" aria-label="研究类型">
-              {(meta?.kinds ?? [{ id: 'strategy' as LabKind, label: '策略', hint: '' }, { id: 'factor' as LabKind, label: '因子', hint: '' }]).map((k) => (
-                <button key={k.id} type="button" aria-pressed={kind === k.id} title={k.hint} onClick={() => setKind(k.id)}>{k.label}</button>
-              ))}
-            </div>
-            <button type="button" className={`cmp-chip${executor === 'team' || night ? ' on' : ''}`} aria-pressed={executor === 'team' || night}
-              title={night ? '不现在开始：放进夜班队列，按预算无人值守地自动迭代，结果写进第二天的晨报' : executor === 'team' ? ui?.teamHint : '点一下切换执行者：单个 AI → 研究小组 → 夜班'}
-              onClick={() => {
-                if (night) { setNight(false); setExecutor('solo'); store.set('qa.lab.executor', 'solo') }
-                else if (isFactor && executor === 'solo') { setExecutor('team'); store.set('qa.lab.executor', 'team') }
-                else setNight(true)
-              }}>
-              {night ? `夜班${isFactor && executor === 'team' ? ' · 研究小组' : ''}` : executor === 'team' && isFactor ? '研究小组' : '单个 AI'}
-            </button>
-            {!night && (
-              <button type="button" className={`cmp-chip${auto ? ' on' : ''}`} onClick={() => setAuto(!auto)} aria-pressed={auto}
-                title={ui ? ui.autoHint : '开启后：调研 → 写代码 → 回测 → 对照目标改进，最后问你是否满意'}>
-                自动迭代{auto ? ` · ${spec.max_rounds} 轮` : ''}
-              </button>
+            {files.map((f, i) => (
+              <div key={i} className="cmp-attached">
+                <span>📎 {f.title}</span>
+                <button type="button" aria-label="移除文件" onClick={() => setFiles(files.filter((_, j) => j !== i))}>×</button>
+              </div>
+            ))}
+            {goalSet && <GoalChips items={spec.items} metrics={metrics} onOpen={() => setGoalOpen(goalOpen ? null : { initial: spec })} />}
+            {auto && goalSet && (
+              <div className="cmp-attached on">
+                <span>发送后自动迭代 · 最多 {spec.max_rounds} 轮</span>
+                <button type="button" aria-label="取消自动迭代" onClick={() => setAuto(false)}>×</button>
+              </div>
             )}
-            <div className="cmp-pop-anchor" ref={settings.ref}>
-              <button type="button" className="cmp-chip" onClick={() => settings.setOpen(!settings.open)} aria-expanded={settings.open}>
-                {isFactor ? `${spec.symbols.length} 个标的` : spec.symbols[0] || '标的'} · {spec.timeframe}{isFactor ? ` · 持有 ${spec.horizon ?? 1} 期` : ''}
+          </> : undefined}
+          left={<>
+            <ActionMenu items={plusItems} />
+            <PermissionMenu value={permission} onChange={setPermission} />
+          </>}
+          right={<>
+            <div className="cmp-pop-anchor" ref={market.ref}>
+              <button type="button" className={`cmp-chip${marketAuto ? '' : ' on'}`} onClick={() => market.setOpen(!market.open)} aria-expanded={market.open}
+                title={marketAuto ? '由 AI 根据对话决定标的与周期；点开可以手动选' : '研究类型、标的与周期'}>
+                {ui ? `${ui.noun} · ` : ''}{marketLabel}
               </button>
-              {settings.open && (
-                <div className="cmp-menu cmp-menu-form">
-                  {isFactor && meta?.universes && (
-                    <label>标的池
-                      <select value={universe} onChange={(e) => {
-                        const u = meta.universes!.find((x) => x.id === e.target.value)
-                        setUniverse(e.target.value)
-                        if (u) setSpec({ ...spec, symbols: u.symbols })
-                      }}>
-                        {meta.universes.map((u) => <option key={u.id} value={u.id}>{u.name}（{u.symbols.length}）</option>)}
-                      </select>
-                    </label>
-                  )}
-                  <label>标的<input value={spec.symbols.join(', ')} placeholder="BTC/USDT, ETH/USDT"
-                    onChange={(e) => setSpec({ ...spec, symbols: e.target.value.split(/[,，\s]+/).filter(Boolean) })} /></label>
-                  <label>周期
-                    <select value={spec.timeframe} onChange={(e) => setSpec({ ...spec, timeframe: e.target.value })}>
-                      {['15m', '1h', '4h', '1d'].map((t) => <option key={t}>{t}</option>)}
-                    </select>
+              {market.open && (
+                <div className="cmp-menu cmp-menu-form cmp-menu-right market-menu">
+                  <div className="cmp-menu-label">研究类型</div>
+                  <div className="cmp-seg" role="group" aria-label="研究类型" style={{ gridTemplateColumns: `repeat(${kinds.length}, 1fr)` }}>
+                    {kinds.map((k) => (
+                      <button key={k.id} type="button" className={kind === k.id ? 'on' : ''} aria-pressed={kind === k.id} title={k.hint} onClick={() => setKind(k.id)}>{k.label}</button>
+                    ))}
+                  </div>
+                  <label className="market-auto">
+                    <input type="checkbox" checked={marketAuto} onChange={(e) => setMarketAuto(e.target.checked)} />
+                    <span>由 AI 根据对话决定标的与周期</span>
                   </label>
-                  {isFactor && (
-                    <label>持有期
-                      <select value={spec.horizon ?? 1} onChange={(e) => setSpec({ ...spec, horizon: Number(e.target.value) })}>
-                        {[1, 2, 3, 4, 6, 12, 24].map((n) => <option key={n} value={n}>{n} 根 K 线</option>)}
-                      </select>
-                    </label>
+                  {!marketAuto && (
+                    <>
+                      {isFactor && meta?.universes && (
+                        <label>标的池
+                          <select value={universe} onChange={(e) => {
+                            const u = meta.universes!.find((x) => x.id === e.target.value)
+                            setUniverse(e.target.value)
+                            if (u) setSpec({ ...spec, symbols: u.symbols })
+                          }}>
+                            {meta.universes.map((u) => <option key={u.id} value={u.id}>{u.name}（{u.symbols.length}）</option>)}
+                          </select>
+                        </label>
+                      )}
+                      <label>标的
+                        <input list="lab-symbols" value={spec.symbols.join(', ')} placeholder="BTC/USDT, ETH/USDT"
+                          onChange={(e) => setSpec({ ...spec, symbols: e.target.value.split(/[,，\s]+/).filter(Boolean) })} />
+                        <datalist id="lab-symbols">{SYMBOL_PICKS.map((x) => <option key={x} value={x} />)}</datalist>
+                      </label>
+                      <label>周期
+                        <select value={spec.timeframe} onChange={(e) => setSpec({ ...spec, timeframe: e.target.value })}>
+                          {['5m', '15m', '1h', '4h', '1d'].map((t) => <option key={t}>{t}</option>)}
+                        </select>
+                      </label>
+                      {isFactor && (
+                        <label>持有期
+                          <select value={spec.horizon ?? 1} onChange={(e) => setSpec({ ...spec, horizon: Number(e.target.value) })}>
+                            {[1, 2, 3, 4, 6, 12, 24].map((n) => <option key={n} value={n}>{n} 根 K 线</option>)}
+                          </select>
+                        </label>
+                      )}
+                    </>
                   )}
                   <label>{ui ? `${ui.evaluate}数据` : '回测数据'}
                     <select value={source} onChange={(e) => setSource(e.target.value as typeof source)}>
@@ -310,12 +332,12 @@ function Welcome({ meta, notify, onCreated, railOpen, onToggleRail }: {
                 </div>
               )}
             </div>
-          </>}
-          right={meta && (
-            <ModelMenu models={meta.models} value={model} defaultModel={meta.default_model} effort={effort} efforts={meta.efforts}
-              onModel={(m) => { setModel(m); store.set('qa.lab.model', m) }}
-              onEffort={(e) => { setEffort(e); store.set('qa.lab.effort', e) }} />
-          )} />
+            {meta && (
+              <ModelMenu models={meta.models} value={model} defaultModel={meta.default_model} effort={effort} efforts={meta.efforts}
+                onModel={(m) => { setModel(m); store.set('qa.lab.model', m) }}
+                onEffort={(e) => { setEffort(e); store.set('qa.lab.effort', e) }} />
+            )}
+          </>} />
         <div className="lab2-examples">
           {(ui ? ui.examples : EXAMPLES).map((x) => <button key={x} className="lab2-example" onClick={() => setIdea(x)}>{x}</button>)}
         </div>
@@ -327,9 +349,9 @@ function Welcome({ meta, notify, onCreated, railOpen, onToggleRail }: {
 /* ------------------------------------------------------------------ */
 /* 项目对话                                                            */
 /* ------------------------------------------------------------------ */
-function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, railOpen, onToggleRail }: {
+function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpenProject }: {
   id: string; meta: LabMeta | null; notify: PageProps['notify']; onNavigate: PageProps['onNavigate']
-  onChanged: () => void; onDeleted: () => void; railOpen: boolean; onToggleRail: () => void
+  onChanged: () => void; onDeleted: () => void; onOpenProject: (id: string) => void
 }) {
   const [project, setProject] = useState<LabProject | null>(null)
   const [messages, setMessages] = useState<LabMessage[]>([])
@@ -340,6 +362,15 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, railO
   const [goalOpen, setGoalOpen] = useState<{ initial: GoalSpec; unparsed?: string } | null>(null)
   const [goalBusy, setGoalBusy] = useState(false)
   const [ctxAt, setCtxAt] = useState<number | undefined>()
+  const [editorOpen, setEditorOpen] = useState(false)
+  // 从别的对话「从此处分叉」过来时，把那条用户消息预填进输入框
+  useEffect(() => {
+    try {
+      const k = `qa.lab.prefill.${id}`
+      const v = sessionStorage.getItem(k)
+      if (v) { setInput(v); sessionStorage.removeItem(k) }
+    } catch { /* 存储不可用 */ }
+  }, [id])
   const [rounds, setRounds] = useState<number | null>(null)
   const cursor = useRef({ after: 0, since: 0 })
   const scroller = useRef<HTMLDivElement>(null)
@@ -399,7 +430,7 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, railO
     panelInit.current = true
     const saved = store.get('qa.lab.panel', '')
     if (saved === 'none') return
-    if (project.code && window.innerWidth >= 1600) setPanel((saved as PanelTab) || 'code')
+    if (window.innerWidth >= 1500) setPanel((saved as PanelTab) || 'code')
   }, [project])
 
   useEffect(() => {
@@ -408,6 +439,7 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, railO
   }, [messages])
 
   const openPanel = (t: PanelTab | null) => { setPanel(t); store.set('qa.lab.panel', t ?? 'none') }
+  const openEditor = () => setEditorOpen(true)
 
   const act = async (fn: () => Promise<unknown>) => {
     try {
@@ -442,7 +474,7 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, railO
     }
     setInput('')
     stick.current = true
-    await act(() => lab.send(id, t))
+    await act(() => lab.send(id, t, { suggest: suggestOn() }))
   }
 
   const patch = (p: Partial<LabProject>) => act(() => lab.update(id, p))
@@ -498,21 +530,43 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, railO
     }
   })
   const roundsNow = rounds ?? project.max_rounds
-  const startAuto = (n: number) => act(async () => {
+  const hasGoal = !!project.goal?.items?.length || !!project.goal_set
+  const startAuto = (n: number) => !hasGoal ? setGoalOpen({ initial: projectSpec(project) }) : act(async () => {
     if (n !== project.max_rounds) await lab.update(id, { max_rounds: n })
     await lab.autopilot(id, { rounds: n })
   })
   const setPermission = (p: Permission) => { patch({ permission: p }); notify(`权限模式：${({ auto: '自动', manual: '手动', accept_edits: '接受编辑', plan: '计划', bypass: '跳过权限确认' } as Record<Permission, string>)[p]}`) }
   const noCode = !project.code
+  const startDiscussion = (topic: string) => act(async () => {
+    const directive = (topic || `评审「${project.title}」：${project.idea || '当前研究'}；逻辑是否自洽、证据是否可信、最大风险在哪里、下一步怎么做`).slice(0, 600)
+    const presets = await missions.presets()
+    const teamId = project.team_id || presets.teams[0]?.id || null
+    const v = await missions.create({
+      directive, mode: 'single', team_id: teamId, lab_project_id: id,
+      symbol: project.securities[0], timeframe: project.timeframe, include_market_data: true,
+    })
+    await lab.discussion(id, v.mission.id, directive)
+    stick.current = true
+  })
+  const queueNight = (idea: string) => act(async () => {
+    await rd.addTask({
+      kind: (project.kind ?? 'strategy') as 'strategy', idea: (idea || project.idea || project.title).slice(0, 2000),
+      executor: project.executor ?? 'solo', symbols: project.securities, timeframe: project.timeframe,
+      rounds: Math.min(8, project.max_rounds), data_source: project.data_source,
+    })
+    notify('已加入夜班队列：开班后无人值守地研究，结果写进晨报')
+  })
   const evalLabel = ui ? `${ui.evaluate}当前${ui.noun}` : '回测当前版本'
   const commands: SlashCommand[] = [
     { cmd: ui ? '/eval' : '/backtest', group: '运行', help: evalLabel, run: () => act(() => lab.backtest(id)), disabled: running || noCode },
     ...(!ui || project.kind === 'factor' ? [{ cmd: '/stress', group: '运行', help: ui ? '2× 成本评估（只看，不改成绩）' : '2× 成本压力测试', run: () => act(() => lab.backtest(id, 2)), disabled: running || noCode }] : []),
     ...(!ui ? [{ cmd: '/walkforward', group: '运行', arg: '[段数]', help: '分段回测：检查是否只在某段有效', run: (a: string) => act(() => lab.walkForward(id, Math.min(6, Math.max(2, Number(a) || 3)))), disabled: running || noCode }] : []),
-    { cmd: '/auto', group: '迭代', arg: '[轮数]', help: `按目标自动迭代（现在 ${roundsNow} 轮）`, run: (a: string) => startAuto(Math.min(8, Math.max(1, Number(a) || roundsNow))), disabled: running },
+    { cmd: '/auto', group: '迭代', arg: '[轮数]', help: hasGoal ? `按目标自动迭代（现在 ${roundsNow} 轮）` : '需要先设定目标（/goal）；没有目标就直接对话', run: (a: string) => startAuto(Math.min(8, Math.max(1, Number(a) || roundsNow))), disabled: running || !hasGoal },
     { cmd: '/goal', group: '迭代', arg: '[描述]', help: '设定目标：指标条件、回测范围、轮数' },
+    { cmd: '/night', group: '迭代', arg: '[想法]', help: '放进夜班队列：无人值守地自动研究，结果写进晨报', run: (a: string) => queueNight(a) },
     { cmd: '/explain', group: '协作', help: ui ? `解释当前${ui.noun}的逻辑与风险` : '逐段解释当前策略', run: () => send('/explain'), disabled: running || noCode },
     { cmd: '/team', group: '协作', arg: '[议题]', help: ui ? '召集研究小组评审' : '召集团队评审', run: (a: string) => send(a ? `/team ${a}` : '/team'), disabled: running },
+    { cmd: '/discuss', group: '协作', arg: '[议题]', help: '团队讨论：多个角色依次发言、相互质疑，最后汇总（发言以气泡显示在对话里）', run: (a: string) => startDiscussion(a), disabled: running },
     ...(ui ? [{ cmd: '/crew', group: '协作', help: project.executor === 'team' ? '自动迭代改为单个 AI 执行' : '自动迭代改为研究小组执行', run: () => patch({ executor: project.executor === 'team' ? 'solo' : 'team' }), disabled: running }] : []),
     { cmd: '/pin', group: '上下文', arg: '[内容]', help: '钉一段材料到上下文', run: (a: string) => (a ? act(() => lab.pin(id, { kind: 'note', title: a.slice(0, 24), text: a })) : openPanel('context')) },
     { cmd: '/compact', group: '上下文', help: '把较早的对话压缩成摘要', run: () => compact(), disabled: running || compacting },
@@ -526,16 +580,41 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, railO
     {
       label: '插件', icon: Icons.plugin, submenu: [
         ...(ui ? [{ label: '研究小组执行', icon: Icons.team, hint: '自动迭代时由小组讨论后再实现', checked: project.executor === 'team', onClick: () => patch({ executor: project.executor === 'team' ? 'solo' : 'team' }), disabled: running }] : []),
-        { label: '团队评审', icon: Icons.team, hint: '/team', onClick: () => send('/team'), disabled: running },
+        { label: '团队讨论', icon: Icons.team, hint: '/discuss：多个角色发言、质疑、汇总', onClick: () => startDiscussion(''), disabled: running },
+        { label: '快速评审', icon: Icons.team, hint: '/team：召集团队给一份评审结论', onClick: () => send('/team'), disabled: running },
+        { label: '夜班', icon: Icons.loop, hint: '/night：放进夜班队列，结果写进晨报', onClick: () => queueNight('') },
         { label: '钉一段材料', icon: Icons.pin, hint: '/pin', onClick: () => openPanel('context') },
         { label: ui ? `存入${ui.libraryName}` : '保存为平台策略', icon: Icons.save, hint: '/save', onClick: saveOut, disabled: running || noCode },
         { label: '联网搜索与模型…', icon: Icons.search, hint: '在设置里配置', onClick: () => onNavigate('models') },
       ],
     },
     { label: '自动迭代', divider: true, render: () => (
-      <AutoIterateRow rounds={roundsNow} disabled={running} onRounds={(n) => { setRounds(n); lab.update(id, { max_rounds: n }).catch(() => undefined) }} onStart={startAuto} />
+      <AutoIterateRow rounds={roundsNow} disabled={running} needsGoal={!hasGoal} onSetGoal={() => setGoalOpen({ initial: projectSpec(project) })} onRounds={(n) => { setRounds(n); lab.update(id, { max_rounds: n }).catch(() => undefined) }} onStart={startAuto} />
     ) },
   ]
+  const forkAt = async (m: LabMessage) => {
+    try {
+      // 用户消息：分叉到它之前，并把它预填进新对话的输入框；AI 消息：分叉到它为止
+      const r = await lab.fork(id, m.role === 'user' ? Math.max(1, m.seq - 1) : m.seq)
+      if (m.role === 'user') { try { sessionStorage.setItem(`qa.lab.prefill.${r.project.id}`, m.content) } catch { /* 忽略 */ } }
+      notify('已分叉出新对话')
+      onOpenProject(r.project.id)
+    } catch (e) { notify((e as Error).message, true) }
+  }
+  const lastAssistant = [...messages].reverse().find((m) => m.role === 'assistant' && m.kind === 'text')?.seq
+  const msgActions: MessageActions = {
+    running,
+    notify,
+    lastSeq: lastAssistant,
+    onSuggest: (text) => { if (text.startsWith('/')) setInput(text + ' '); else send(text) },
+    onPinText: (title, text) => act(async () => { await lab.pin(id, { kind: 'team', title, text: text.slice(0, 4000) }); notify('已钉进上下文') }),
+    onEdit: (m, text) => { stick.current = true; act(() => lab.rewind(id, m.seq, text)) },
+    onRetry: (m) => { stick.current = true; act(() => lab.rewind(id, m.seq)) },
+    onFork: forkAt,
+    onPin: (m) => act(async () => { await lab.pin(id, { kind: 'note', title: m.content.replace(/\s+/g, ' ').slice(0, 24), text: m.content.slice(0, 4000) }); notify('已钉进上下文') }),
+    onCopy: (m) => { navigator.clipboard?.writeText(m.content).then(() => notify('已复制'), () => notify('复制失败', true)) },
+  }
+  const changes = changeStats(project)
   const lastAsk = [...messages].reverse().find((m) => m.kind === 'ask')
   const streamingNow = messages.some((m) => m.data?.streaming)
 
@@ -543,7 +622,6 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, railO
     <>
       <section className="lab2-main">
         <header className="lab2-head">
-          <RailToggle show={!railOpen} onClick={onToggleRail} />
           <input className="lab2-title" defaultValue={project.title} aria-label="项目名称"
             onBlur={(e) => e.target.value.trim() && e.target.value !== project.title && patch({ title: e.target.value.trim() })} />
           <span className="lab2-sub">
@@ -555,7 +633,11 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, railO
             {ui && libId && <> · <a href={`#/${ui.libraryRoute(libId)}`}>已存入{ui.libraryName}</a></>}
           </span>
           <span className="lab2-head-gap" />
-          {!panel && <PanelTabs project={project} panel={panel} onPick={(k) => openPanel(k)} />}
+          <button type="button" className={`lab2-sessbtn${panel ? ' on' : ''}`} aria-pressed={!!panel} onClick={() => openPanel(panel ? null : 'code')}
+            title="会话栏：更改、迭代、上下文、目标">
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" aria-hidden><rect x="2" y="2.5" width="12" height="11" rx="2" /><path d="M10 2.5v11" /></svg>
+            {changes.add + changes.del > 0 && <span className="lab2-sessbtn-diff"><b className="add">+{changes.add}</b><b className="del">−{changes.del}</b></span>}
+          </button>
           <ProjectMenu onDelete={() => window.confirm(ui ? `删除这个${ui.noun}研究？已存入${ui.libraryName}的内容不受影响。` : '删除这个策略项目？已保存的平台策略不受影响。') && lab.remove(id).then(onDeleted)}
             onSave={saveOut} hasCode={!!project.code} saved={!!(project.slug || libId)}
             saveLabel={ui ? `${libId ? '更新' : '存入'}${ui.libraryName}` : undefined} />
@@ -565,10 +647,10 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, railO
           onScroll={(e) => { const el = e.currentTarget; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80 }}>
           <div className="lab2-thread">
             {messages.map((m) => (
-              <MessageView key={m.seq} m={m} project={project} meta={dmeta} active={m === lastAsk && project.status === 'awaiting_user'}
+              <MessageView key={m.seq} m={m} project={project} meta={dmeta} active={m === lastAsk && project.status === 'awaiting_user'} actions={msgActions}
                 onDecide={(choice, note) => act(() => lab.decide(id, choice, note))}
                 onOpenBacktest={(btId) => onNavigate(`backtest/${btId}`)} onOpenEditor={(slug) => onNavigate(`editor/${slug}`)}
-                onOpenCode={() => openPanel('code')} onOpenLibrary={(route) => onNavigate(route)} />
+                onOpenCode={openEditor} onOpenLibrary={(route) => onNavigate(route)} />
             ))}
             {running && !streamingNow && <Working phase={project.job?.phase} />}
             {!messages.length && !running && <div className="lab2-empty">输入 / 查看快捷指令</div>}
@@ -604,30 +686,16 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, railO
       </section>
 
       {panel && (
-        <aside className="lab2-panel" aria-label="项目面板">
+        <aside className="lab2-panel" aria-label="会话栏">
           <div className="lab2-panel-head">
-            <PanelTabs project={project} panel={panel} onPick={(k) => openPanel(k === panel ? null : k)} />
-            <button className="lab2-icon" onClick={() => openPanel(null)} aria-label="关闭面板" title="关闭">
+            <b>会话</b>
+            <button className="lab2-icon" onClick={() => openPanel(null)} aria-label="关闭会话栏" title="关闭">
               <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden><path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>
             </button>
           </div>
           <div className="lab2-panel-body side-cards">
-            <SideCard id="code" focus={panel} title={ui ? ui.panelLabel : '代码'} meta={project.code ? `v${project.current_v}` : '还没有'}>
-              {isModel && <ModelPanel project={project} running={running}
-                onSave={(code) => act(() => lab.saveCode(id, code, '手动修改训练规格'))} onSaveLibrary={saveOut}
-                onTrain={() => act(() => lab.backtest(id))} onOpenModel={(mid) => onNavigate(`modellib/${mid}`)} />}
-              {project.kind === 'portfolio' && <PortfolioPanel project={project} running={running}
-                onSave={(code) => act(() => lab.saveCode(id, code, '手动修改配置方案'))} onSaveLibrary={saveOut}
-                onRun={() => act(() => lab.backtest(id))} onOpenScheme={(sid) => onNavigate(`portfolio/${sid}`)} />}
-              {project.kind === 'execution' && <ExecutionPanel project={project} running={running}
-                onSave={(code) => act(() => lab.saveCode(id, code, '手动修改执行方案'))} onSaveLibrary={saveOut}
-                onRun={() => act(() => lab.backtest(id))} onOpenScheme={(sid) => onNavigate(`execution/${sid}`)} />}
-              {project.kind === 'factor' && <FactorPanel project={project} running={running}
-                onSave={(code) => act(() => lab.saveCode(id, code, '手动修改表达式'))} onSaveLibrary={saveOut}
-                onEvaluate={() => act(() => lab.backtest(id))} onOpenFactor={(fid) => onNavigate(`factors/${fid}`)} />}
-              {!isFactor && <CodeTab project={project} onSave={(code) => act(() => lab.saveCode(id, code))}
-                onSaveStrategy={saveOut}
-                onOpenEditor={(slug) => onNavigate(`editor/${slug}`)} />}
+            <SideCard id="code" focus={panel} title="更改" meta={project.code ? `v${project.current_v}` : ''}>
+              <ChangesCard project={project} stats={changes} fileName={fileNameOf(project.kind)} onOpen={openEditor} />
             </SideCard>
             <SideCard id="versions" focus={panel} title="迭代" meta={project.versions.length ? `${project.versions.length} 个版本` : '还没有'}>
               <VersionsTab project={project} metrics={metricsOf(dmeta)} onRestore={(v) => act(() => lab.restore(id, v))}
@@ -636,29 +704,39 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, railO
             <SideCard id="context" focus={panel} title="上下文"
               meta={context ? `已使用 ${Math.round((context.total / Math.max(1, context.budget)) * 100)}%` : ''}>
               {context && <ContextTab context={context} updatedAt={ctxAt} compacting={compacting} onCompact={compact}
+                autoCompact={project.auto_compact !== false} onAutoCompact={(v) => patch({ auto_compact: v })}
                 onUnpin={(pid) => act(() => lab.unpin(id, pid))}
                 onPin={(title, text) => act(() => lab.pin(id, { kind: 'note', title, text }))} />}
             </SideCard>
-            <SideCard id="goals" focus={panel} title="目标" meta={projectItems(project).length ? `${projectItems(project).length} 个条件` : '未设置'}>
-              <GoalForm meta={dmeta} domain={project.kind} initial={panelSpec} projectId={id} compact submitting={goalBusy || running}
-                onSubmit={saveGoal} />
+            <SideCard id="goals" focus={panel} title="目标" meta={hasGoal ? `${projectItems(project).length} 个条件` : '未设置'}>
+              <GoalSummary project={project} metrics={metricsOf(dmeta)} hasGoal={hasGoal} running={running} rounds={roundsNow}
+                onEdit={() => setGoalOpen({ initial: projectSpec(project) })} onStart={() => startAuto(roundsNow)} />
             </SideCard>
           </div>
         </aside>
       )}
-    </>
-  )
-}
 
-function PanelTabs({ project, panel, onPick }: { project: LabProject; panel: PanelTab | null; onPick: (k: PanelTab) => void }) {
-  return (
-    <nav className="lab2-tabs" aria-label="项目面板">
-      {(domainUI(project.kind) ? domainTabs(domainUI(project.kind)!.panelLabel) : PANEL_TABS).map(([k, label]) => (
-        <button key={k} className={panel === k ? 'on' : ''} aria-pressed={panel === k} onClick={() => onPick(k)}>
-          {label}{k === 'versions' && project.versions.length ? ` ${project.versions.length}` : ''}
-        </button>
-      ))}
-    </nav>
+      {editorOpen && (
+        <Modal title={`${fileNameOf(project.kind)} · v${project.current_v}`} onClose={() => setEditorOpen(false)} width={960}>
+          <div className="lab2-editor-modal">
+            {isModel && <ModelPanel project={project} running={running}
+              onSave={(code) => act(() => lab.saveCode(id, code, '手动修改训练规格'))} onSaveLibrary={saveOut}
+              onTrain={() => act(() => lab.backtest(id))} onOpenModel={(mid) => onNavigate(`modellib/${mid}`)} />}
+            {project.kind === 'portfolio' && <PortfolioPanel project={project} running={running}
+              onSave={(code) => act(() => lab.saveCode(id, code, '手动修改配置方案'))} onSaveLibrary={saveOut}
+              onRun={() => act(() => lab.backtest(id))} onOpenScheme={(sid) => onNavigate(`portfolio/${sid}`)} />}
+            {project.kind === 'execution' && <ExecutionPanel project={project} running={running}
+              onSave={(code) => act(() => lab.saveCode(id, code, '手动修改执行方案'))} onSaveLibrary={saveOut}
+              onRun={() => act(() => lab.backtest(id))} onOpenScheme={(sid) => onNavigate(`execution/${sid}`)} />}
+            {project.kind === 'factor' && <FactorPanel project={project} running={running}
+              onSave={(code) => act(() => lab.saveCode(id, code, '手动修改表达式'))} onSaveLibrary={saveOut}
+              onEvaluate={() => act(() => lab.backtest(id))} onOpenFactor={(fid) => onNavigate(`factors/${fid}`)} />}
+            {!isFactor && <CodeTab project={project} onSave={(code) => act(() => lab.saveCode(id, code))}
+              onSaveStrategy={saveOut} onOpenEditor={(slug) => onNavigate(`editor/${slug}`)} />}
+          </div>
+        </Modal>
+      )}
+    </>
   )
 }
 
@@ -686,22 +764,111 @@ function ProjectMenu({ onDelete, onSave, hasCode, saved, saveLabel }: { onDelete
 /* ------------------------------------------------------------------ */
 /* 消息                                                               */
 /* ------------------------------------------------------------------ */
-function MessageView({ m, project, meta, active, onDecide, onOpenBacktest, onOpenEditor, onOpenCode, onOpenLibrary }: {
-  m: LabMessage; project: LabProject; meta: LabMeta | null; active: boolean
+interface MessageActions {
+  running: boolean
+  notify: PageProps['notify']
+  lastSeq?: number
+  onSuggest: (text: string) => void
+  onPinText: (title: string, text: string) => void
+  onEdit: (m: LabMessage, text: string) => void
+  onRetry: (m: LabMessage) => void
+  onFork: (m: LabMessage) => void
+  onPin: (m: LabMessage) => void
+  onCopy: (m: LabMessage) => void
+}
+
+/** 消息完成时间：流式消息按最后一次更新（结束）算。 */
+function msgTime(m: LabMessage) {
+  const t = m.updated_at ?? m.created_at
+  const d = new Date(t < 1e12 ? t * 1000 : t)
+  const today = new Date().toDateString() === d.toDateString()
+  const hm = d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })
+  return { short: today ? hm : `${d.getMonth() + 1}/${d.getDate()} ${hm}`, full: d.toLocaleString('zh-CN', { hour12: false }) }
+}
+
+const MI = {
+  edit: <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M10.5 2.8 13.2 5.5 6 12.7l-3.2.5.5-3.2Z" /></svg>,
+  retry: <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M13 8a5 5 0 1 1-1.5-3.6" /><path d="M13 2.5v3h-3" /></svg>,
+  fork: <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden><circle cx="4.5" cy="3.5" r="1.5" /><circle cx="11.5" cy="3.5" r="1.5" /><circle cx="8" cy="12.5" r="1.5" /><path d="M4.5 5v1.5c0 1.4 1 2.2 2.3 2.6L8 9.5M11.5 5v1.5c0 1.4-1 2.2-2.3 2.6L8 9.5V11" /></svg>,
+  copy: <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" aria-hidden><rect x="5" y="5" width="8.5" height="8.5" rx="1.6" /><path d="M11 5V3.6c0-.6-.5-1.1-1.1-1.1H3.6c-.6 0-1.1.5-1.1 1.1v6.3c0 .6.5 1.1 1.1 1.1H5" /></svg>,
+  pin: <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M9.8 2.5 13.5 6.2 11 7.4 8.6 9.8 8.2 12.4 3.6 7.8 6.2 7.4 8.6 5Z" /><path d="m5.8 10.2-3.3 3.3" /></svg>,
+}
+
+function MsgBar({ m, items, align }: { m: LabMessage; items: [keyof typeof MI, string, () => void, boolean?][]; align: 'left' | 'right' }) {
+  const t = msgTime(m)
+  return (
+    <div className={`msg-bar ${align}`}>
+      {items.map(([icon, label, fn, disabled]) => (
+        <button key={label} type="button" className="msg-act" title={label} aria-label={label} disabled={disabled} onClick={fn}>{MI[icon]}</button>
+      ))}
+      <time className="msg-time" dateTime={new Date((m.updated_at ?? m.created_at) * (m.created_at < 1e12 ? 1000 : 1)).toISOString()} title={t.full}>{t.short}</time>
+    </div>
+  )
+}
+
+function UserMessage({ m, actions }: { m: LabMessage; actions: MessageActions }) {
+  const [editing, setEditing] = useState(false)
+  const [text, setText] = useState(m.content)
+  if (editing) {
+    return (
+      <div className="cb-user msg-editing anim-in">
+        <textarea autoFocus rows={Math.min(8, Math.max(2, text.split('\n').length))} value={text} onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') setEditing(false)
+            if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && text.trim()) { e.preventDefault(); setEditing(false); actions.onEdit(m, text.trim()) }
+          }} />
+        <div className="msg-edit-foot">
+          <span>编辑后会删掉这条消息之后的对话，从这里重新开始</span>
+          <button type="button" className="button small ghost" onClick={() => { setEditing(false); setText(m.content) }}>取消</button>
+          <button type="button" className="button small primary" disabled={!text.trim() || actions.running} onClick={() => { setEditing(false); actions.onEdit(m, text.trim()) }}>发送</button>
+        </div>
+      </div>
+    )
+  }
+  return (
+    <div className="msg-wrap user">
+      <UserBubble>{m.content}{m.data?.edited && <span className="msg-edited">已编辑</span>}</UserBubble>
+      <MsgBar m={m} align="right" items={[
+        ['edit', '编辑', () => { setText(m.content); setEditing(true) }, actions.running],
+        ['retry', '重试', () => actions.onRetry(m), actions.running],
+        ['fork', '从此处分叉', () => actions.onFork(m)],
+      ]} />
+    </div>
+  )
+}
+
+function MessageView({ m, project, meta, active, actions, onDecide, onOpenBacktest, onOpenEditor, onOpenCode, onOpenLibrary }: {
+  m: LabMessage; project: LabProject; meta: LabMeta | null; active: boolean; actions: MessageActions
   onOpenLibrary: (route: string) => void
   onDecide: (choice: string, note: string) => void
   onOpenBacktest: (id: string) => void
   onOpenEditor: (slug: string) => void
   onOpenCode: () => void
 }) {
-  if (m.role === 'user' && m.kind === 'text') return <UserBubble>{m.content}</UserBubble>
+  if (m.role === 'user' && m.kind === 'text') return <UserMessage m={m} actions={actions} />
   if (m.role === 'user' && m.kind === 'code') return <UserBubble>手动保存为 v{m.data.v}：{m.content}</UserBubble>
   const d = m.data || {}
   switch (m.kind) {
     case 'text':
       if (m.role === 'event') return <EventLine>{m.content}</EventLine>
-      return <AssistantText content={m.content} thinking={d.thinking} thinkingMs={d.thinking_ms} streaming={!!d.streaming}
-        model={m.model} fallback={m.mode === 'fallback'} />
+      return (
+        <div className="msg-wrap ai">
+          <AssistantText content={m.content} thinking={d.thinking} thinkingMs={d.thinking_ms} streaming={!!d.streaming}
+            model={m.model} fallback={m.mode === 'fallback'} />
+          {!d.streaming && m.seq === actions.lastSeq && !actions.running && Array.isArray(d.suggestions) && d.suggestions.length > 0 && (
+            <div className="msg-suggest anim-in">
+              {(d.suggestions as string[]).map((x) => <button key={x} type="button" className="chip" onClick={() => actions.onSuggest(x)}>{x}</button>)}
+            </div>
+          )}
+          {!d.streaming && m.content && (
+            <MsgBar m={m} align="left" items={[
+              ['copy', '复制', () => actions.onCopy(m)],
+              ['fork', '从这里分叉', () => actions.onFork(m)],
+              ['pin', '钉进上下文', () => actions.onPin(m)],
+            ]} />
+          )}
+        </div>
+      )
     case 'error':
       return <EventLine tone="error">{m.content}</EventLine>
     case 'tool':
@@ -737,6 +904,9 @@ function MessageView({ m, project, meta, active, onDecide, onOpenBacktest, onOpe
       return <GoalEvent m={m} metrics={metricsOf(meta)} />
     case 'walkforward':
       return <WalkForwardCard m={m} />
+    case 'discussion':
+      return <DiscussionCard missionId={d.mission_id} topic={m.content} notify={actions.notify}
+        onPin={(text) => actions.onPinText(`团队讨论结论 · ${m.content.slice(0, 16)}`, text)} />
     case 'saved':
       return (
         <EventLine tone="ok">
@@ -1044,8 +1214,9 @@ function VersionsTab({ project, onRestore, onOpenBacktest, metrics }: { project:
   )
 }
 
-function ContextTab({ context, updatedAt, onUnpin, onPin, onCompact, compacting }: {
+function ContextTab({ context, updatedAt, onUnpin, onPin, onCompact, compacting, autoCompact, onAutoCompact }: {
   context: ContextView; updatedAt?: number; onUnpin: (id: string) => void; onPin: (title: string, text: string) => void; onCompact: () => void; compacting: boolean
+  autoCompact: boolean; onAutoCompact: (v: boolean) => void
 }) {
   const [title, setTitle] = useState('')
   const [text, setText] = useState('')
@@ -1053,6 +1224,15 @@ function ContextTab({ context, updatedAt, onUnpin, onPin, onCompact, compacting 
   return (
     <div className="lab2-ctx">
       <ContextStats context={context} updatedAt={updatedAt} />
+      <div className="side-toggle">
+        <div>
+          <b>自动压缩</b>
+          <small>{autoCompact
+            ? `对话原文超过 ${Math.round((context.history_budget ?? 0) * 1.25 / 1000)}k tokens 时，下一回合前先把较早的对话压成摘要`
+            : '已关闭：较早的对话只按条截断，不生成摘要；可随时手动「压缩历史」'}</small>
+        </div>
+        <button type="button" role="switch" aria-checked={autoCompact} aria-label="自动压缩" className={`switch${autoCompact ? ' on' : ''}`} onClick={() => onAutoCompact(!autoCompact)}><i /></button>
+      </div>
       <div className="side-sub">
         <div className="side-sub-head"><b>钉住的材料</b><span>{pins.length ? `${pins.length} 份` : '没有'}</span></div>
         {pins.length > 0 && (
@@ -1075,6 +1255,79 @@ function ContextTab({ context, updatedAt, onUnpin, onPin, onCompact, compacting 
       </div>
       <div className="button-row" style={{ justifyContent: 'flex-end' }}>
         <button className="button small" disabled={compacting} onClick={onCompact}>{compacting ? '正在压缩…' : '压缩历史'}</button>
+      </div>
+    </div>
+  )
+}
+
+const FILE_NAMES: Record<string, string> = { strategy: 'strategy.py', factor: 'factor.expr', model: 'model_spec.json', portfolio: 'portfolio.json', execution: 'execution.json' }
+const fileNameOf = (kind?: LabKind) => FILE_NAMES[kind ?? 'strategy'] ?? 'strategy.py'
+
+/** 改动统计：相对空文件（整个对话累计）与相对上一版。 */
+function changeStats(project: LabProject) {
+  const code = project.code || ''
+  const versions = project.versions || []
+  const cur = versions.find((v) => v.v === project.current_v)
+  const prev = versions.filter((v) => v.v < project.current_v).slice(-1)[0]
+  const count = (a: string, b: string) => {
+    const ops = lineDiff(a, b)
+    return { add: ops.filter((o) => o.kind === 'add').length, del: ops.filter((o) => o.kind === 'del').length }
+  }
+  const total = code ? count('', code) : { add: 0, del: 0 }
+  const last = cur && prev ? count(prev.code || '', cur.code || code) : null
+  return { ...total, last, prevV: prev?.v ?? null }
+}
+
+/** 更改：只显示对文件做了多少改动，点开到文件编辑。 */
+function ChangesCard({ project, stats, fileName, onOpen }: {
+  project: LabProject; stats: ReturnType<typeof changeStats>; fileName: string; onOpen: () => void
+}) {
+  if (!project.code) return <div className="lab2-panel-empty small">还没有改动。AI 写出第一版后会显示在这里。</div>
+  return (
+    <div className="chg">
+      <button type="button" className="chg-row" onClick={onOpen} title="打开文件编辑">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" aria-hidden><path d="M4 1.8h5.5L13 5.3v8.9H4Z" /><path d="M9.5 1.8v3.5H13" /></svg>
+        <span className="chg-file">{fileName}</span>
+        <span className="chg-num"><b className="add">+{stats.add}</b><b className="del">−{stats.del}</b></span>
+      </button>
+      {stats.last && (
+        <div className="chg-sub">相对 v{stats.prevV}：<b className="add">+{stats.last.add}</b> <b className="del">−{stats.last.del}</b></div>
+      )}
+    </div>
+  )
+}
+
+/** 目标概览：条件、范围、轮数；编辑在输入框上方弹出，不在侧栏里塞表单。 */
+function GoalSummary({ project, metrics, hasGoal, running, rounds, onEdit, onStart }: {
+  project: LabProject; metrics: ReturnType<typeof metricsOf>; hasGoal: boolean; running: boolean; rounds: number
+  onEdit: () => void; onStart: () => void
+}) {
+  if (!hasGoal) {
+    return (
+      <div className="goal-sum empty">
+        <p>还没有目标。现在是普通对话；设定目标后才能自动迭代。</p>
+        <button type="button" className="button small primary" onClick={onEdit}>设定目标</button>
+      </div>
+    )
+  }
+  const spec = projectSpec(project)
+  const range = spec.start || spec.end
+    ? `${spec.start ? new Date(spec.start).toISOString().slice(0, 10) : '最早'} 至 ${spec.end ? new Date(spec.end).toISOString().slice(0, 10) : '最新'}`
+    : `最近 ${spec.bars_limit.toLocaleString()} 根 K 线`
+  return (
+    <div className="goal-sum">
+      <div className="goal-sum-chips">
+        {spec.items.map((c, i) => <span key={i} className={`goal-chip${c.priority === 'try' ? ' try' : ''}`}>{condText(c, metrics)}</span>)}
+      </div>
+      <dl className="goal-sum-dl">
+        <div><dt>标的</dt><dd>{spec.symbols.join('、')} · {spec.timeframe}</dd></div>
+        <div><dt>区间</dt><dd>{range}</dd></div>
+        <div><dt>轮数</dt><dd>最多 {rounds} 轮</dd></div>
+        {spec.note ? <div><dt>备注</dt><dd>{spec.note}</dd></div> : null}
+      </dl>
+      <div className="goal-sum-actions">
+        <button type="button" className="button small" onClick={onEdit}>编辑目标</button>
+        <button type="button" className="button small primary" disabled={running} onClick={onStart}>开始自动迭代</button>
       </div>
     </div>
   )

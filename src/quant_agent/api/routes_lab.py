@@ -103,6 +103,9 @@ class ProjectIn(BaseModel):
     cost_bps: float = Field(10.0, ge=0, le=200)
     hypothesis: dict[str, Any] | None = None
     permission: Literal["auto", "manual", "accept_edits", "plan", "bypass"] = "auto"
+    folder: str = Field("", max_length=40)
+    market_auto: bool = Field(False, description="标的与周期交给 AI 根据对话决定")
+    suggest: bool = True
 
 
 class ProjectPatch(BaseModel):
@@ -124,12 +127,16 @@ class ProjectPatch(BaseModel):
     permission: Literal["auto", "manual", "accept_edits", "plan", "bypass"] | None = Field(
         None, description="权限模式：自动 / 手动（改动与运行先问）/ 接受编辑 / 计划 / 跳过一切确认"
     )
+    pinned: bool | None = Field(None, description="置顶")
+    folder: str | None = Field(None, max_length=40, description="所属项目（文件夹）；空串表示不归入项目")
+    auto_compact: bool | None = Field(None, description="上下文超出原文预算时自动压缩较早的对话")
 
 
 class MessageIn(BaseModel):
     text: str = Field(..., min_length=1, max_length=8000)
     model: str | None = None  # 底栏切换的模型 / 努力程度：随消息一起提交，并记到项目上
     effort: Effort | None = None
+    suggest: bool | None = Field(None, description="回答末尾是否附简短的后续建议（设置里的开关）")
     wait: bool = False
 
 
@@ -543,7 +550,11 @@ def send_message(pid: str, payload: MessageIn) -> dict:
     _project_or_404(lab, pid)
     if lab.store.get(pid).get("status") == "running":  # type: ignore[union-attr]
         raise HTTPException(409, "这个项目正在运行，请等它结束或先停止")
-    changes = {k: v for k, v in {"model": payload.model, "effort": payload.effort}.items() if v is not None}
+    changes = {
+        k: v
+        for k, v in {"model": payload.model, "effort": payload.effort, "suggest": payload.suggest}.items()
+        if v is not None
+    }
     if changes:
         lab.store.patch(pid, **changes)
     lab.store.append(pid, {"role": "user", "kind": "text", "content": payload.text})
@@ -760,7 +771,9 @@ def start_autopilot(pid: str, payload: AutopilotIn) -> dict:
     if payload.goals:
         goals = {**p.get("goals", DEFAULT_GOALS), **payload.goals.model_dump()}
         goal = G.merge_legacy(p, goals)
-        lab.store.patch(pid, goals=goals, **({"goal": goal} if goal is not None else {}))
+        lab.store.patch(pid, goals=goals, goal_set=True, **({"goal": goal} if goal is not None else {}))
+    elif not lab.has_goal(p):
+        raise HTTPException(400, "还没有设定目标：先用 /goal 设定目标再自动迭代；没有目标时直接对话即可")
     return _start(
         lab,
         pid,
@@ -775,6 +788,64 @@ def decide(pid: str, payload: DecisionIn) -> dict:
     lab = _lab_for(pid)
     _project_or_404(lab, pid)
     return _start(lab, pid, "decision", lambda: lab.decide(pid, payload.choice, payload.note), payload.wait)
+
+
+class DiscussionIn(BaseModel):
+    mission_id: str = Field(..., max_length=40)
+    topic: str = Field("", max_length=400)
+
+
+@router.post("/projects/{pid}/discussion", summary="在对话里挂一张团队讨论卡片（/discuss 发起的讨论，发言以气泡展示）")
+def attach_discussion(pid: str, payload: DiscussionIn) -> dict:
+    lab = _lab_for(pid)
+    _project_or_404(lab, pid)
+    lab.store.append(
+        pid,
+        {
+            "role": "event",
+            "kind": "discussion",
+            "content": payload.topic or "团队讨论",
+            "data": {"mission_id": payload.mission_id},
+        },
+    )
+    return _view(lab, _project_or_404(lab, pid))
+
+
+class ForkIn(BaseModel):
+    seq: int | None = Field(None, ge=1, description="从这条消息（含）分叉；不填则复制整段对话")
+    title: str = Field("", max_length=60)
+
+
+class RewindIn(BaseModel):
+    seq: int = Field(..., ge=1, description="要编辑 / 重试的用户消息序号")
+    text: str | None = Field(None, max_length=8000, description="编辑后的内容；不填则按原文重试")
+    wait: bool = False
+
+
+@router.post("/projects/{pid}/fork", summary="从某条消息分叉出一个新对话（挂在原对话下）")
+def fork_project(pid: str, payload: ForkIn) -> dict:
+    lab = _lab_for(pid)
+    _project_or_404(lab, pid)
+    p = lab.fork(pid, seq=payload.seq, title=payload.title)
+    return {"project": _brief(p)}
+
+
+@router.post("/projects/{pid}/rewind", summary="编辑或重试一条用户消息：删掉它之后的对话，用新内容重新发送")
+def rewind_project(pid: str, payload: RewindIn) -> dict:
+    lab = _lab_for(pid)
+    p = _project_or_404(lab, pid)
+    if p.get("status") == "running":
+        raise HTTPException(409, "这个对话正在运行，请等它结束或先停止")
+    try:
+        old = lab.rewind(pid, payload.seq)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    text = (payload.text if payload.text is not None else old["content"]).strip()
+    if not text:
+        raise HTTPException(400, "消息不能为空")
+    edited = payload.text is not None
+    lab.store.append(pid, {"role": "user", "kind": "text", "content": text, "data": {"edited": edited}})
+    return _start(lab, pid, "chat", lambda: lab.chat(pid, text), payload.wait)
 
 
 @router.post("/projects/{pid}/stop", summary="请求停止正在运行的回合（在下一个检查点停下）")

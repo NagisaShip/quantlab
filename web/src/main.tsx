@@ -12,6 +12,8 @@ import './stylesAskAI.css'
 import './stylesRuleCode.css'
 import './stylesFactor.css'
 import './stylesTerminal.css'
+import './stylesConv.css'
+import './stylesBot.css'
 import './stylesMotion.css'
 
 applyPrefs()

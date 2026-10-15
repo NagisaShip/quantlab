@@ -167,6 +167,7 @@ class FactorLab(StrategyLab):
         return FACTOR.items_text(project_spec(project)["items"])
 
     def set_goal(self, pid: str, raw: dict[str, Any], *, source: str = "user", review: bool = False) -> dict[str, Any]:
+        self.store.patch(pid, goal_set=True)
         with _lock(f"p:{pid}"):
             project = self.store.get(pid) or {}
             spec = FACTOR.normalize_spec(raw, project_spec(project))

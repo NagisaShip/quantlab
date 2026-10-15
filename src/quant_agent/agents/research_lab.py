@@ -148,6 +148,7 @@ class DomainLab(StrategyLab):
         return self.domain.check(spec, history=history, extra=self.extra_checks(project, spec))
 
     def set_goal(self, pid: str, raw: dict[str, Any], *, source: str = "user", review: bool = False) -> dict[str, Any]:
+        self.store.patch(pid, goal_set=True)
         with _lock(f"p:{pid}"):
             project = self.store.get(pid) or {}
             spec = self.domain.normalize_spec(raw, self.project_spec(project))

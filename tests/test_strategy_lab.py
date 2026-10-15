@@ -264,6 +264,123 @@ def test_plan_permission_hides_edit_tools_and_asks_to_execute(client):
     assert view["messages"][-1]["data"]["options"] == ["按计划执行", "修改计划"]
 
 
+def test_autopilot_needs_goal_and_model_gets_slash_tools(client):
+    router = ScriptedRouter(["好的，我们先聊聊思路。"])
+    get_services().router = router
+    p = _project(client, model="fake/fake-1")
+    r = client.post(f"/api/lab/projects/{p['id']}/autopilot", json={"wait": True})
+    assert r.status_code == 400 and "目标" in r.text
+    client.post(f"/api/lab/projects/{p['id']}/messages", json={"text": "聊聊", "wait": True})
+    names = {t.name for t in router.calls[0]["tools"]}
+    assert {"start_autopilot", "pin_note", "compact_history", "save_work"} <= names
+
+
+def test_fork_rewind_and_conversation_fields(client):
+    router = ScriptedRouter(["第一版回答", "重试后的回答", "编辑后的回答"])
+    get_services().router = router
+    p = _project(client, model="fake/fake-1")
+    pid = p["id"]
+    view = client.post(f"/api/lab/projects/{pid}/messages", json={"text": "你好", "wait": True}).json()
+    user = next(m for m in view["messages"] if m["role"] == "user" and m["content"] == "你好")
+    # 重试：删掉之后的回答，按原文重新发送
+    view = client.post(f"/api/lab/projects/{pid}/rewind", json={"seq": user["seq"], "wait": True}).json()
+    assert view["messages"][-1]["content"] == "重试后的回答"
+    assert sum(1 for m in view["messages"] if m["role"] == "user") == 1
+    # 编辑：换成新内容
+    user = next(m for m in view["messages"] if m["role"] == "user")
+    body = {"seq": user["seq"], "text": "改一下", "wait": True}
+    view = client.post(f"/api/lab/projects/{pid}/rewind", json=body).json()
+    assert [m["content"] for m in view["messages"] if m["role"] == "user"] == ["改一下"]
+    # 从用户消息分叉：子对话挂在原对话下，只带到那条消息为止
+    user = next(m for m in view["messages"] if m["role"] == "user")
+    child = client.post(f"/api/lab/projects/{pid}/fork", json={"seq": user["seq"]}).json()["project"]
+    assert child["parent_id"] == pid and child["fork_seq"] == user["seq"]
+    cv = client.get(f"/api/lab/projects/{child['id']}").json()
+    assert cv["messages"][-2]["content"] == "改一下" and "分叉" in cv["messages"][-1]["content"]
+    # 置顶、归入项目
+    patched = client.patch(f"/api/lab/projects/{child['id']}", json={"pinned": True, "folder": "BTC 研究"}).json()
+    assert patched["project"]["pinned"] and patched["project"]["folder"] == "BTC 研究"
+
+
+def test_suggestions_and_ai_sets_market(client):
+    from quant_agent.agents.strategy_lab import split_suggestions
+
+    assert split_suggestions("好的。\n<suggestions>跑一次回测|把止损收紧</suggestions>") == (
+        "好的。",
+        ["跑一次回测", "把止损收紧"],
+    )
+    router = ScriptedRouter(
+        [
+            ChatResult(
+                content="先定标的。",
+                model="m",
+                provider="fake",
+                tool_calls=[
+                    ToolCall(id="1", name="set_market", arguments={"symbols": ["eth/usdt"], "timeframe": "4h"})
+                ],
+            ),
+            "就用 ETH 4 小时。\n<suggestions>写一版均线策略|/backtest</suggestions>",
+        ]
+    )
+    get_services().router = router
+    p = _project(client, model="fake/fake-1", market_auto=True)
+    view = client.post(f"/api/lab/projects/{p['id']}/messages", json={"text": "做个趋势策略", "wait": True}).json()
+    assert view["project"]["securities"] == ["ETH/USDT"] and view["project"]["timeframe"] == "4h"
+    assert not view["project"]["market_auto"]
+    assert any(
+        "set_market" in m.content or "标的" in m.content for m in router.calls[0]["messages"] if m.role == "system"
+    )
+    last = view["messages"][-1]
+    assert last["content"] == "就用 ETH 4 小时。" and last["data"]["suggestions"] == ["写一版均线策略", "/backtest"]
+    # 关掉建议：不再提示模型
+    router.replies = ["好的"]
+    client.post(f"/api/lab/projects/{p['id']}/messages", json={"text": "嗯", "suggest": False, "wait": True})
+    assert not any("<suggestions>" in m.content for m in router.calls[-1]["messages"] if m.role == "system")
+
+
+def test_roles_get_all_tools_unless_restricted():
+    from quant_agent.agents.roles import Role
+    from quant_agent.agents.team import TeamRunner, ToolRegistry
+
+    reg = ToolRegistry()
+    reg.register("web_search", lambda query="": "ok")
+    reg.register("market_summary", lambda query="": "ok")
+    runner = TeamRunner(None, None, tools=reg)
+    seen = {}
+
+    def fake_make(name):
+        seen.setdefault("names", []).append(name)
+        return None
+
+    runner._make_tool = fake_make
+    for restrict, expect in ((False, {"web_search", "market_summary"}), (True, {"market_summary"})):
+        seen.clear()
+        role = Role(id="r", name="R", tools=["market_summary"], restrict_tools=restrict)
+        try:
+            runner._invoke(role, "hi", max_steps=1)
+        except Exception:
+            pass
+        assert set(seen["names"]) == expect
+
+
+def test_auto_compact_before_long_turn(client):
+    from quant_agent.api.routes_lab import _lab
+    from quant_agent.platform import context
+
+    router = ScriptedRouter(["摘要：研究者要做 BTC 均线。", "继续回答"])
+    get_services().router = router
+    p = _project(client, model="fake/fake-1")
+    ws = client.get("/api/auth/me").json()["workspace"]["id"]
+    with context.bind(ws):
+        store = _lab().store
+        for i in range(8):
+            role = "user" if i % 2 == 0 else "assistant"
+            store.append(p["id"], {"role": role, "kind": "text", "content": "很长的讨论 " * 4000})
+    view = client.post(f"/api/lab/projects/{p['id']}/messages", json={"text": "继续", "wait": True}).json()
+    assert any(m["content"].startswith("已把前面") for m in view["messages"])
+    assert view["project"]["compacted_before"] > 0
+
+
 def test_llm_autopilot_revises_with_backtest_feedback(client):
     revised = GOOD.replace('"weight": 0.6', '"weight": 0.4')
     router = ScriptedRouter([f"一句话\n```python\n{GOOD}```", f"降低仓位\n```python\n{revised}```"])
@@ -290,7 +407,7 @@ def test_background_turn_streams_messages(client):
     """不带 wait：回合在后台线程执行（继承工作区上下文），前端用 after 增量轮询。"""
     import time
 
-    p = _project(client, max_rounds=1)
+    p = _project(client, max_rounds=1, goals={"min_sharpe": 0.5})
     r = client.post(f"/api/lab/projects/{p['id']}/autopilot", json={})
     assert r.status_code == 200 and r.json()["project"]["status"] == "running"
     seen, after = [], 0

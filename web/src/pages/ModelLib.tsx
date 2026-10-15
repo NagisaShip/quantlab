@@ -13,6 +13,7 @@ import { f3, fp } from '../components/factorReport'
 import { CurveChart, isVol, MODEL_STATUS_TONE, ModelCardView, ModelFullReport, UseInStrategy } from '../components/modelReport'
 import { LineChart, Sparkline } from '../components/charts2'
 import { EmptyState, Field, Heading, Loading, Panel, Segments, Tag } from '../components/ui'
+import { QuantBot, QuantEyes, viewFromSignal } from '../components/QuantBot'
 import type { PageProps } from './types'
 
 type Tab = 'list' | 'train' | 'runs'
@@ -156,13 +157,34 @@ function ModelDetail({ id, meta, notify, onDeleted }: { id: string; meta: ModelM
           <UseInStrategy code={usageSnippet('predict', m.name)} />
         </Panel>
         <Panel title="最新预测" subtitle={lv ? `截至 ${when(lv.t)} UTC` : undefined}>
-          {lv ? (
-            <div className="ml-latest">
-              {Object.entries(lv.values).sort((a, b) => (b[1] ?? -1e9) - (a[1] ?? -1e9)).map(([s, v]) => (
-                <div key={s}><span>{s}</span><b className={`num ${(v ?? 0) >= 0 ? 'positive' : 'negative'}`}>{v === null ? '—' : isVol(m.summary) ? fp(v, 2) : v.toFixed(3)}</b></div>
-              ))}
-            </div>
-          ) : <EmptyState glyph="◇" title="还没有预测">点「检查健康度」用最新数据算一次。</EmptyState>}
+          {lv ? (() => {
+            const sig = { task: m.summary?.task, label: m.summary?.label }
+            const rows = Object.entries(lv.values).sort((a, b) => (b[1] ?? -1e9) - (a[1] ?? -1e9))
+            const views = rows.map(([, v]) => viewFromSignal(v, sig))
+            const bull = views.filter((x) => x === 'bull').length
+            const bear = views.filter((x) => x === 'bear').length
+            // 整体观点：多数方向占一半以上才表达，否则中性；波动率模型永远中性
+            const overall = bull > rows.length / 2 ? 'bull' : bear > rows.length / 2 ? 'bear' : 'neutral'
+            return (
+              <>
+                <div className="ml-view">
+                  <QuantBot size={30} state="idle" view={overall} />
+                  {isVol(m.summary)
+                    ? <span>这是波动率模型，不表达涨跌方向。</span>
+                    : <span>模型观点：<b>{overall === 'bull' ? '看涨' : overall === 'bear' ? '看跌' : '中性'}</b> · {bull} 个看涨、{bear} 个看跌、{rows.length - bull - bear} 个中性{m.summary?.label === 'cs_rank' ? '（截面排名：相对强弱）' : ''}</span>}
+                </div>
+                <div className="ml-latest">
+                  {rows.map(([s, v], i) => (
+                    <div key={s}>
+                      <QuantEyes size={15} state="idle" view={views[i]} motion="none" className="ml-eyes" />
+                      <span>{s}</span>
+                      <b className={`num ${(v ?? 0) >= 0 ? 'positive' : 'negative'}`}>{v === null ? '—' : isVol(m.summary) ? fp(v, 2) : v.toFixed(3)}</b>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )
+          })() : <EmptyState glyph="◇" title="还没有预测">点「检查健康度」用最新数据算一次。</EmptyState>}
         </Panel>
       </div>
       <Panel title="训练报告">

@@ -38,6 +38,9 @@ class Role:
     effort: str = ""  # 思考努力程度 low|medium|high|max，空则用模型默认
     avatar: str = ""  # 头像：一个 emoji 或 1~2 个字，空则取名字首字
     tools: list[str] = field(default_factory=list)
+    # False（默认）：角色可以自动调用平台登记的全部工具（含联网搜索），tools 只是推荐；
+    # True：只允许 tools 里勾选的工具
+    restrict_tools: bool = False
     output_format: str = ""
     tags: list[str] = field(default_factory=list)
     builtin: bool = False
@@ -555,6 +558,7 @@ class RoleStore:
             effort=str(payload.get("effort") or ""),
             avatar=str(payload.get("avatar") or "")[:4],
             tools=list(payload.get("tools", [])),
+            restrict_tools=bool(payload.get("restrict_tools", False)),
             output_format=payload.get("output_format", ""),
             tags=list(payload.get("tags", [])),
             builtin=False,
@@ -620,6 +624,7 @@ class RoleDesigner:
             model=payload.get("model", DEFAULT_MODEL),
             temperature=float(payload.get("temperature", 0.3)),
             tools=list(payload.get("tools", [])),
+            restrict_tools=bool(payload.get("restrict_tools", False)),
             output_format=payload.get("output_format", ""),
             tags=list(payload.get("tags", [])),
             builtin=False,

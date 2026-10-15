@@ -15,6 +15,7 @@ import type { ContextView, Effort } from '../apiLab'
 import { Composer, ContextRing, ModelMenu, PlusMenu } from './chat/Composer'
 import { AssistantText, EventLine, UserBubble, Working } from './chat/Blocks'
 import { openInLab } from './handoff'
+import { QuantBot } from './QuantBot'
 
 /* ------------------------------------------------------------------ */
 /* 页面资料登记                                                         */
@@ -293,7 +294,7 @@ export function AskAIPanel() {
       {open && (
         <aside className="ask-panel" role="complementary" aria-label="问 AI">
           <header className="ask-head">
-            <b>问 AI</b>
+            <b className="brandmark"><QuantBot size={20} state={running ? 'thinking' : 'idle'} title="QuantLab Bot" />问 AI</b>
             <div className="ask-head-actions">
               {canHandoff && (
                 <button type="button" className="ask-head-btn" onClick={continueInLab} title="把对话和代码带进 AI 研究室">在研究室继续</button>

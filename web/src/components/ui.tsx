@@ -1,6 +1,7 @@
-import { useContext, useEffect, useRef, useState, type ReactNode } from 'react'
+import { Component, useContext, useEffect, useRef, useState, type ErrorInfo, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { PageSlot } from './pageSlot'
+import { QuantBot, QuantEyes } from './QuantBot'
 
 /** 面板：白色圆角卡片 + 标题行。flush 表示内容自己管边距（常用于表格）。 */
 export function Panel({
@@ -161,19 +162,19 @@ export function Callout({
 }
 
 export function EmptyState({
-  glyph = '◷',
+  glyph,
   title,
   children,
   action,
 }: {
-  glyph?: string
+  glyph?: ReactNode
   title: string
   children?: ReactNode
   action?: ReactNode
 }) {
   return (
     <div className="empty-state">
-      <span>{glyph}</span>
+      {glyph === undefined ? <QuantBot size={34} state="idle" motion="low" title={title} /> : <span>{glyph}</span>}
       <h3>{title}</h3>
       {children && <p>{children}</p>}
       {action}
@@ -183,8 +184,8 @@ export function EmptyState({
 
 export function Loading({ label = '加载中' }: { label?: string }) {
   return (
-    <div className="empty-state">
-      <span className="spinner lg" />
+    <div className="bot-loading" role="status" aria-live="polite">
+      <QuantEyes size={34} state="thinking" speed={1.2} title={label} className="bot-loading-eyes" />
       <h3>{label}…</h3>
     </div>
   )
@@ -270,7 +271,7 @@ export function BusyOverlay({ title, note }: { title: string; note?: string }) {
   return (
     <div className="busy-overlay">
       <div className="busy-card">
-        <div className="spinner lg" style={{ margin: '0 auto 18px' }} />
+        <QuantBot size={52} state="focus" title={title} />
         <strong>{title}</strong>
         {note && <p>{note}</p>}
       </div>
@@ -287,6 +288,7 @@ export function Toast({ message, error, onDone }: { message: string; error?: boo
       aria-live="polite"
       onClick={onDone}
     >
+      <QuantEyes size={18} state={error ? 'error' : 'happy'} motion="low" title={error ? '出错了' : '完成'} />
       {message}
     </div>
   )
@@ -339,4 +341,26 @@ export function SplitButton({ label, onClick, items }: {
       )}
     </div>
   )
+}
+
+/** 页面级错误兜底：低动态的报错 Bot + 原因 + 重试，不让一个页面的异常拖垮整个应用。 */
+export class PageErrorBoundary extends Component<{ children: ReactNode; resetKey?: string }, { error: Error | null }> {
+  state = { error: null as Error | null }
+  static getDerivedStateFromError(error: Error) { return { error } }
+  componentDidCatch(error: Error, info: ErrorInfo) { console.error('页面出错', error, info.componentStack) }
+  componentDidUpdate(prev: { resetKey?: string }) { if (prev.resetKey !== this.props.resetKey && this.state.error) this.setState({ error: null }) }
+  render() {
+    if (!this.state.error) return this.props.children
+    return (
+      <div className="bot-error-page anim-fade" role="alert">
+        <QuantBot size={64} state="error" motion="low" title="页面出错了" />
+        <h3>这个页面出错了</h3>
+        <p>{this.state.error.message || '未知错误'}</p>
+        <div className="button-row">
+          <button className="button primary" onClick={() => this.setState({ error: null })}>重试</button>
+          <a className="button" href="#/home">回到首页</a>
+        </div>
+      </div>
+    )
+  }
 }

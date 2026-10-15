@@ -1,5 +1,5 @@
 // 手机看板的最小 Service Worker：只缓存页面外壳，接口一律走网络（看板上的数字必须是实时的）。
-const SHELL = 'quantlab-shell-v1'
+const SHELL = 'quantlab-shell-v3'
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(SHELL).then((c) => c.addAll(['/', '/manifest.webmanifest', '/icon.svg'])).then(() => self.skipWaiting()))
 })

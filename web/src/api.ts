@@ -178,6 +178,8 @@ export interface Role {
   effort?: string
   avatar?: string
   tools: string[]
+  /** true：只允许 tools 里勾选的工具；默认 false：AI 自动调用全部平台工具 */
+  restrict_tools?: boolean
   output_format: string
   tags: string[]
   builtin: boolean

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, type ConfigView, type Health } from './api'
-import { BusyOverlay, Toast } from './components/ui'
+import { BusyOverlay, PageErrorBoundary, Toast } from './components/ui'
 import { RoleDrawer } from './components/roles'
 import { Icon, LogoMark } from './components/icons'
 import Tape from './components/Tape'
@@ -12,7 +12,7 @@ import ExecutionPage from './pages/Execution'
 import AssemblePage from './pages/Assemble'
 import DisciplinePage from './pages/Discipline'
 import ValidationPage from './pages/Validation'
-import CommandCenterPage from './pages/CommandCenter'
+import { DiscussionCard } from './components/chat/Discussion'
 import StrategyLabPage from './pages/StrategyLab'
 import RoleLibraryPage from './pages/RoleLibrary'
 import LongRunningPage from './pages/LongRunning'
@@ -28,6 +28,7 @@ import OptimizePage from './pages/Optimize'
 import PaperPage from './pages/Paper'
 import CommunityPage, { PostPage } from './pages/Community'
 import ApiDocsPage from './pages/ApiDocs'
+import BrandPage from './pages/Brand'
 import LoginPage from './pages/Login'
 import SettingsPage from './pages/Settings'
 import LivePage from './pages/Live'
@@ -67,6 +68,7 @@ type PageKey =
   | 'prompts'
   | 'models'
   | 'docs'
+  | 'brand'
   | 'live'
   | 'accounts'
   | 'demo'
@@ -80,7 +82,7 @@ type PageKey =
   | 'post'
 
 /** 这些页面在全屏「设置」里打开，不显示主侧栏。 */
-const SETTINGS_PAGES = new Set<PageKey>(['settings', 'models', 'roles', 'prompts', 'long-running', 'docs'])
+const SETTINGS_PAGES = new Set<PageKey>(['settings', 'models', 'roles', 'prompts', 'long-running', 'docs', 'brand'])
 
 /** 对话类页面铺满主区域，不要页边距与页脚。 */
 const FULL_BLEED = new Set<PageKey>(['lab', 'teams'])
@@ -142,7 +144,6 @@ const NAV: { group: string; step?: number; items: { key: PageKey; label: string 
  * 第一个是入口本身。
  */
 const HUBS: Partial<Record<PageKey, { key: PageKey; label: string }[]>> = {
-  lab: [{ key: 'lab', label: '单人对话' }, { key: 'teams', label: '团队讨论' }],
   strategies: [{ key: 'strategies', label: '策略列表' }, { key: 'assemble', label: '积木搭建' }],
   portfolio: [{ key: 'portfolio', label: '组合与风控' }, { key: 'execution', label: '下单执行' }],
   live: [{ key: 'live', label: '实盘对照' }, { key: 'accounts', label: '只读账户' }],
@@ -179,6 +180,7 @@ const PAGE_TITLES: Record<PageKey, string> = {
   prompts: '提示词',
   models: '模型',
   docs: '策略 API 文档',
+  brand: '视觉规范',
   editor: '策略编辑器',
   backtest: '回测详情',
   optimize: '参数优化',
@@ -239,6 +241,7 @@ const PURPOSE: Partial<Record<PageKey, string>> = {
   'long-running': '你休息时按队列自动做研究',
   settings: '工作区、成员、额度和运行节点',
   docs: '策略 SDK 的完整参考',
+  brand: 'QuantLab Bot 的造型、表情语法与使用边界',
 }
 
 const VALID_PAGES = new Set<PageKey>(Object.keys(PAGE_TITLES) as PageKey[])
@@ -311,11 +314,19 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
   const llmReady = keyedProviders > 0
 
   const [slot, setSlot] = useState<HTMLElement | null>(null)
+  const [flowPrefState, setFlowPrefState] = useState<boolean | null>(() => {
+    try { const v = localStorage.getItem('qa.nav.flow'); return v === null ? null : v === '1' } catch { return null }
+  })
+  const flowPref = flowPrefState
+  const setFlowPref = (v: boolean) => { setFlowPrefState(v); try { localStorage.setItem('qa.nav.flow', v ? '1' : '0') } catch { /* 私密模式等 */ } }
   const pageProps = { onNavigate: go, notify, setBusy }
   const showHead = page !== 'home' && !FULL_BLEED.has(page) && !PARENT[page]
   const hub = PARENT[page] ? undefined : HUBS[HUB_OF[page] ?? page]
   const nav = navOf(page)
   const crumb = nav !== page ? nav : null
+  // 研究四阶段合并成一个可折叠的「研究流程」：在 AI 研究室默认收起，给对话列表让位置；手动展开 / 收起会记住
+  const stageOf = NAV.find((g) => g.step && g.items.some((i) => i.key === nav))
+  const flowOpen = flowPref ?? page !== 'lab'
 
   const render = () => {
     const arg = route.arg
@@ -358,10 +369,20 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
         return <PostPage key={arg} id={arg} {...pageProps} />
       case 'docs':
         return <ApiDocsPage {...pageProps} />
+      case 'brand':
+        return <BrandPage {...pageProps} />
       case 'data':
         return <DataCenterPage arg={arg || undefined} {...pageProps} />
       case 'teams':
-        return <CommandCenterPage key={arg ? 'm' : 'new'} arg={arg || undefined} {...pageProps} />
+        // 团队讨论已并入 AI 研究室（/discuss）；旧链接只读查看那次讨论
+        if (!arg) { window.setTimeout(() => go('lab')); return null }
+        return (
+          <div className="mission-solo">
+            <p className="hint">团队讨论已并入 AI 研究室：在任意对话里输入 <code>/discuss 议题</code> 发起。下面是这次讨论的记录。</p>
+            <DiscussionCard missionId={arg} topic="团队讨论" notify={notify}
+              onPin={(t) => { navigator.clipboard?.writeText(t).then(() => notify('结论已复制，可以粘贴进研究室的对话')) }} />
+          </div>
+        )
       case 'roles':
         return <RoleLibraryPage {...pageProps} />
       case 'long-running':
@@ -409,16 +430,43 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
         </div>
 
         <nav aria-label="主导航">
-          {NAV.map((group) => (
-            <div key={group.group || 'top'} className={group.step ? 'nav-step' : undefined}>
-              {group.group && <div className="nav-label">{group.step && <i>{group.step}</i>}{group.group}</div>}
+          {NAV.filter((g) => !g.step).slice(0, 1).map((group) => (
+            <div key="top">
               {group.items.map((item) => (
-                <button
-                  key={item.key}
-                  className="nav-item"
-                  aria-current={navOf(page) === item.key ? 'page' : undefined}
-                  onClick={() => go(item.key)}
-                >
+                <button key={item.key} className="nav-item" aria-current={nav === item.key ? 'page' : undefined} onClick={() => go(item.key)}>
+                  <Icon name={item.key} />
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          ))}
+          <div className={`nav-flow${flowOpen ? ' open' : ''}`}>
+            <button type="button" className="nav-flow-head" aria-expanded={flowOpen} onClick={() => setFlowPref(!flowOpen)}>
+              <span>研究流程</span>
+              {!flowOpen && stageOf && <em>{stageOf.step} · {stageOf.group}</em>}
+              <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden><path d="m3.5 2 3 3-3 3" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" /></svg>
+            </button>
+            {NAV.filter((g) => g.step).map((group) => {
+              const items = flowOpen ? group.items : group.items.filter((i) => nav === i.key)
+              if (!items.length) return null
+              return (
+                <div key={group.group} className="nav-flow-stage">
+                  {flowOpen && <div className="nav-flow-label"><i>{group.step}</i>{group.group}</div>}
+                  {items.map((item) => (
+                    <button key={item.key} className="nav-item" aria-current={nav === item.key ? 'page' : undefined} onClick={() => go(item.key)}>
+                      <Icon name={item.key} />
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
+              )
+            })}
+          </div>
+          {NAV.filter((g) => !g.step).slice(1).map((group) => (
+            <div key={group.group || 'more'} className={flowOpen || page !== 'lab' ? undefined : 'nav-more-tight'}>
+              {group.group && <div className="nav-label">{group.group}</div>}
+              {group.items.map((item) => (
+                <button key={item.key} className="nav-item" aria-current={nav === item.key ? 'page' : undefined} onClick={() => go(item.key)}>
                   <Icon name={item.key} />
                   {item.label}
                 </button>
@@ -426,6 +474,7 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
             </div>
           ))}
         </nav>
+        <div id="sidebar-slot" className="sidebar-slot" />
 
         <AccountMenu me={me} reachable={reachable} llmReady={llmReady} onNavigate={go} />
       </aside>
@@ -454,7 +503,7 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
           {showHead && <PageHead key={nav} title={NAV_LABEL[nav] ?? PAGE_TITLES[page]} purpose={PURPOSE[page]} page={page} onSlot={setSlot} onNavigate={go} />}
           {hub && <HubTabs tabs={hub} page={page} />}
           <PageSlot.Provider value={showHead ? slot : null}>
-            <div className="page-enter" key={page}>{render()}</div>
+            <div className="page-enter" key={page}><PageErrorBoundary resetKey={`${page}/${route.arg}`}>{render()}</PageErrorBoundary></div>
           </PageSlot.Provider>
         </main>
       </div>

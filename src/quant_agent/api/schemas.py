@@ -119,6 +119,7 @@ class RoleIn(BaseModel):
     effort: str = ""
     avatar: str = ""
     tools: list[str] = Field(default_factory=list)
+    restrict_tools: bool = Field(False, description="只允许 tools 里的工具；默认 False：AI 可自动调用全部平台工具")
     output_format: str = ""
     tags: list[str] = Field(default_factory=list)
 

@@ -300,7 +300,9 @@ class TeamRunner:
     # ---------------- 单角色调用 ----------------
     def _invoke(self, role: Role, task: str, *, max_steps: int = 6) -> TeamRunStep:
         started = time.time()
-        tools = [t for t in (self._make_tool(name) for name in role.tools) if t is not None]
+        # 默认把平台工具都交给角色、由 AI 自己决定何时调用；角色勾了「只用指定工具」才收窄
+        names = role.tools if getattr(role, "restrict_tools", False) else sorted({*self.tools.names(), *role.tools})
+        tools = [t for t in (self._make_tool(name) for name in names) if t is not None]
         agent = Agent(
             name=role.id,
             role="reasoning",

@@ -142,6 +142,25 @@ class LabStore:
             self.store.put_blob(THREADS, pid, data)
             return row
 
+    def truncate(self, pid: str, from_seq: int) -> int:
+        """删掉 seq >= from_seq 的消息（编辑 / 重试用户消息时回到那一刻），返回删掉的条数。"""
+        with _lock(f"t:{pid}"):
+            data = self.store.get_blob(THREADS, pid) or {"messages": []}
+            keep = [m for m in data["messages"] if m["seq"] < from_seq]
+            removed = len(data["messages"]) - len(keep)
+            data["messages"] = keep
+            self.store.put_blob(THREADS, pid, data)
+            return removed
+
+    def copy_thread(self, src: str, dst: str, upto: int | None = None) -> int:
+        """把 src 的对话（到 upto 为止，含）复制给 dst，序号保持不变。"""
+        data = self.store.get_blob(THREADS, src) or {"messages": []}
+        rows = [dict(m) for m in data["messages"] if upto is None or m["seq"] <= upto]
+        for m in rows:
+            m.get("data", {}).pop("streaming", None)
+        self.store.put_blob(THREADS, dst, {"messages": rows})
+        return len(rows)
+
     def update(self, pid: str, seq: int, **changes: Any) -> None:
         """更新已有消息（工具卡片从“进行中”变为“完成”）。改动后 seq 不变，但给它一个新的 rev 让前端刷新。"""
         with _lock(f"t:{pid}"):
@@ -170,6 +189,17 @@ def new_project(payload: dict[str, Any]) -> dict[str, Any]:
         "effort": payload.get("effort") or "medium",  # 思考努力程度：low | medium | high | max
         "goals": goals,
         "goal": None,  # 结构化目标（/goal）；为空时按旧字段 goals 评估
+        "goal_set": bool(payload.get("goals")),  # 研究者或 AI 设过目标后才能自动迭代
+        # 对话管理：置顶、所属项目（文件夹）、分叉来源；上下文超出原文预算时自动压缩
+        "pinned": False,
+        "folder": (payload.get("folder") or "").strip()[:40],
+        "parent_id": payload.get("parent_id"),
+        "fork_seq": payload.get("fork_seq"),
+        "auto_compact": True,
+        # 标的与周期交给 AI 根据对话决定（新对话里选「自动」时）；AI 用 set_market 设好后清掉
+        "market_auto": bool(payload.get("market_auto")),
+        # 回答末尾附 2-3 条简短的后续建议（设置里可关）
+        "suggest": payload.get("suggest", True) is not False,
         "start": payload.get("start"),
         "end": payload.get("end"),
         "max_rounds": int(payload.get("max_rounds") or 4),
@@ -432,14 +462,31 @@ class StopRequested(Exception):
 #: 其余工具（查行情、搜模板、列版本、检查目标、提问）只读，任何权限模式下都可以直接用。
 EDIT_TOOLS = frozenset(
     {
-        "write_strategy", "write_factor", "write_model_spec", "write_portfolio", "write_execution",
-        "set_goal", "set_factor_goal", "set_model_goal", "set_portfolio_goal", "set_execution_goal",
+        "write_strategy",
+        "write_factor",
+        "write_model_spec",
+        "write_portfolio",
+        "write_execution",
+        "set_goal",
+        "set_factor_goal",
+        "set_model_goal",
+        "set_portfolio_goal",
+        "set_execution_goal",
+        "set_market",
     }
 )
 RUN_TOOLS = frozenset(
     {
-        "run_backtest", "walk_forward", "evaluate_factor", "train_model", "evaluate_portfolio",
-        "evaluate_execution", "convene_team",
+        "run_backtest",
+        "walk_forward",
+        "evaluate_factor",
+        "train_model",
+        "evaluate_portfolio",
+        "evaluate_execution",
+        "convene_team",
+        "start_autopilot",
+        "save_work",
+        "compact_history",
     }
 )
 PERMISSIONS = ("auto", "manual", "accept_edits", "plan", "bypass")
@@ -449,6 +496,24 @@ PLAN_HINT = (
     "【计划模式】这一轮先不要修改代码 / 规格 / 目标，也不要运行回测或评估。"
     "可以用只读工具调研，然后给出分步计划：要改什么、为什么、怎么验证、预期结果与风险。研究者确认后才会执行。"
 )
+
+
+SUGGEST_RULE = (
+    "回答结束时，如果有自然的下一步，另起一行写 <suggestions>建议1|建议2|建议3</suggestions>："
+    "2-3 条研究者可能接着发给你的话，用研究者的口吻，每条不超过 16 个字，可以是斜杠命令（如 /backtest）。"
+    "提问、等待审批或没有合适建议时不要写。"
+)
+_SUGGEST_RE = re.compile(r"\s*<suggestions>(.*?)(?:</suggestions>|$)", re.S)
+
+
+def split_suggestions(text: str) -> tuple[str, list[str]]:
+    """去掉回答末尾的 <suggestions>…</suggestions>，返回 (正文, 建议列表)。"""
+    m = _SUGGEST_RE.search(text or "")
+    if not m:
+        return text, []
+    items = [s.strip(" -·•\n\t") for s in re.split(r"[|｜\n]", m.group(1))]
+    items = [s[:24] for s in items if s][:3]
+    return (text[: m.start()] + text[m.end() :]).rstrip(), items
 
 
 def _gated(mode: str, name: str) -> bool:
@@ -660,12 +725,23 @@ class StrategyLab:
 
     # ---------------- 带工具的模型回合 ----------------
     def _chat_llm(self, pid: str, text: str, mode: str | None = None) -> None:
+        self._maybe_autocompact(pid)
         project = self.store.get(pid) or {}
         mode = mode or project.get("permission") or "auto"
         router = self._router_for(project)
         messages = self.build_messages(project, exclude_last_user=True)
+        extra_rules = []
+        if project.get("market_auto"):
+            extra_rules.append(
+                "研究者没有指定标的与周期（当前只是占位的默认值）：根据对话判断合适的标的和 K 线周期，"
+                "用 set_market 设置后再写代码或回测；如果对话里看不出来，就直接问。"
+            )
+        if project.get("suggest", True) is not False:
+            extra_rules.append(SUGGEST_RULE)
+        if extra_rules:
+            messages.append(Message(role="system", content="\n".join(extra_rules)))
         messages.append(Message(role="user", content=f"{PLAN_HINT}\n\n{text}" if mode == "plan" else text))
-        tools = self._chat_tools(pid)
+        tools = {**self._slash_tools(pid), **self._chat_tools(pid)}
         if mode == "plan":
             tools = {k: t for k, t in tools.items() if k not in EDIT_TOOLS and k not in RUN_TOOLS}
         asked = False
@@ -684,7 +760,20 @@ class StrategyLab:
             if not result.tool_calls and (code := extract_code(content)) and "def initialize" in code:
                 self._submit_code(pid, code, note="模型在回答中给出的代码", model=model)
                 content = re.sub(r"```(?:python|py)?\s*\n.*?```", "（代码已提交到编辑器）", content, flags=re.S)
+            content, suggestions = split_suggestions(content)
+            seq_before = stream.seq
             stream.finish(content, model=model, thinking=getattr(result, "thinking", "") or "")
+            if suggestions and not result.tool_calls:
+                last = seq_before or next(
+                    (
+                        m["seq"]
+                        for m in reversed(self.store.messages(pid))
+                        if m["role"] == "assistant" and m["kind"] == "text"
+                    ),
+                    None,
+                )
+                if last:
+                    self.store.update(pid, last, data={"suggestions": suggestions})
             if not result.tool_calls:
                 if mode == "plan":
                     self._ask(pid, "按这个计划执行吗？也可以写下要改的地方。", [PLAN_GO, PLAN_EDIT], decision=True)
@@ -930,6 +1019,7 @@ class StrategyLab:
     # ---------------- 目标 ----------------
     def set_goal(self, pid: str, raw: dict[str, Any], *, source: str = "user", review: bool = False) -> dict[str, Any]:
         """写入结构化目标并做合理性检查；source=model 时在对话里留一条事件。"""
+        self.store.patch(pid, goal_set=True)
         with _lock(f"p:{pid}"):
             project = self.store.get(pid) or {}
             spec = G.normalize_spec(raw, G.project_spec(project))
@@ -1172,6 +1262,177 @@ class StrategyLab:
         if run.get("synthesis"):
             self.pin(pid, kind="team", title=f"团队结论 · {topic[:20]}", text=run["synthesis"][:3000])
         return {"ok": run.get("status") == "done", "synthesis": (run.get("synthesis") or "")[:3000]}
+
+    # ---------------- 对话管理：自动压缩、分叉、回到某条消息 ----------------
+    AUTO_COMPACT_RATIO = 1.25
+
+    def has_goal(self, project: dict[str, Any]) -> bool:
+        """设过目标（研究者 /goal、AI set_goal、或建项目时给了目标）才能自动迭代；没有目标就正常对话。"""
+        goal = project.get("goal") or {}
+        return bool(goal.get("items")) or bool(project.get("goal_set"))
+
+    def _maybe_autocompact(self, pid: str) -> bool:
+        """对话原文超过预算的 1.25 倍时，先把较早的对话压成摘要（与 /compact 相同），再开始这一回合。"""
+        project = self.store.get(pid) or {}
+        if project.get("auto_compact") is False:
+            return False
+        history = self._history(project)
+        if len(history) < 6:
+            return False
+        used = sum(_approx_tokens(m["content"]) for m in history)
+        if used <= self.history_budget(project) * self.AUTO_COMPACT_RATIO:
+            return False
+        out = self.compact(pid)
+        return bool(out.get("ok"))
+
+    def fork(self, pid: str, *, seq: int | None = None, title: str = "") -> dict[str, Any]:
+        """从某条消息（含）分叉出一个新对话：复制项目设置、到那一刻为止的消息与版本，作为子对话挂在原对话下。"""
+        import copy
+
+        src = self.store.get(pid)
+        if src is None:
+            raise KeyError(pid)
+        msgs = self.store.messages(pid)
+        cut = next((m for m in msgs if m["seq"] == seq), None) if seq else None
+        at = cut["created_at"] if cut else None
+        project = copy.deepcopy(src)
+        versions = [v for v in project.get("versions") or [] if at is None or v.get("created_at", 0) <= at + 1]
+        cur = versions[-1] if versions else None
+        project.update(
+            id=uuid.uuid4().hex[:12],
+            title=(title or f"{src.get('title', '对话')} · 分叉")[:60],
+            parent_id=pid,
+            fork_seq=seq,
+            status="idle",
+            job=None,
+            stop_requested=False,
+            pinned=False,
+            versions=versions,
+            code=(cur or {}).get("code", "") if at is not None else project.get("code", ""),
+            current_v=(cur or {}).get("v", 0) if at is not None else project.get("current_v", 0),
+            created_at=_now(),
+        )
+        if at is not None and project.get("compacted_before") and project["compacted_before"] > seq:
+            project["compacted_before"] = 0
+        self.store.save(project)
+        self.store.copy_thread(pid, project["id"], upto=seq)
+        self._post(
+            project["id"],
+            role="event",
+            kind="text",
+            content=f"从「{src.get('title', '对话')}」分叉" + (f"（第 {seq} 条消息之后）" if seq else ""),
+            data={"forked_from": pid, "fork_seq": seq},
+        )
+        return self.store.get(project["id"]) or project
+
+    def rewind(self, pid: str, seq: int) -> dict[str, Any]:
+        """回到某条用户消息之前：删掉它和之后的消息，返回原消息（编辑 / 重试会重新发送）。代码版本保留。"""
+        msgs = self.store.messages(pid)
+        target = next((m for m in msgs if m["seq"] == seq), None)
+        if target is None or target["role"] != "user":
+            raise ValueError("只能从一条用户消息重新开始")
+        self.store.truncate(pid, seq)
+        project = self.store.get(pid) or {}
+        if int(project.get("compacted_before") or 0) >= seq:
+            self.store.patch(pid, compacted_before=0)
+        self.store.patch(pid, status="idle")
+        return target
+
+    def save_work(self, pid: str) -> dict[str, Any]:
+        """保存当前成果：策略存为平台策略草稿，其他研究存进各自的库。"""
+        project = self.store.get(pid) or {}
+        if not project.get("code"):
+            return {"ok": False, "error": "还没有代码或规格可保存"}
+        saver = getattr(self, "save_to_library", None)
+        if callable(saver):
+            rec = saver(pid, status="active")
+            return {"ok": rec is not None, "saved": rec} if rec else {"ok": False, "error": "还没有评估，先评估再保存"}
+        if self.tools.save_strategy is None:
+            return {"ok": False, "error": "当前环境不能保存策略"}
+        rec = self.tools.save_strategy(project)
+        self.store.patch(pid, slug=rec.get("slug"))
+        self._post(pid, role="event", kind="saved", content="已保存为策略草稿", data=rec)
+        return {"ok": True, "saved": {k: rec.get(k) for k in ("slug", "name")}}
+
+    def _slash_tools(self, pid: str) -> dict[str, Tool]:
+        """斜杠命令对应的工具：模型可以根据对话主动调用（受权限模式约束）。"""
+        obj = {"type": "object"}
+
+        def autopilot(rounds: int = 0) -> Any:
+            project = self.store.get(pid) or {}
+            if not self.has_goal(project):
+                return {"ok": False, "error": "还没有设定目标，不能自动迭代；先用 set_goal 设目标，或继续正常对话"}
+            self.autopilot(pid, rounds=int(rounds) or None, force=True)
+            p = self.store.get(pid) or {}
+            return {"ok": True, "current_v": p.get("current_v"), "status": p.get("status")}
+
+        def pin_note(title: str = "", text: str = "") -> Any:
+            if not text.strip():
+                return {"ok": False, "error": "text 不能为空"}
+            item = self.pin(pid, kind="note", title=(title or text)[:40], text=text)
+            return {"ok": True, "pin_id": item["id"]}
+
+        def compact_history() -> Any:
+            return self.compact(pid)
+
+        def set_market(symbols: list[str] | str = "", timeframe: str = "") -> Any:
+            if isinstance(symbols, str):
+                symbols = [x for x in re.split(r"[,，\s]+", symbols) if x]
+            syms = [s.strip().upper() for s in symbols or [] if s.strip()][:20]
+            tf = timeframe if timeframe in ("1m", "5m", "15m", "30m", "1h", "4h", "1d") else ""
+            if not syms and not tf:
+                return {"ok": False, "error": "至少给出标的或周期"}
+            project = self.store.get(pid) or {}
+            changes: dict[str, Any] = {"market_auto": False}
+            if syms:
+                changes["securities"] = syms
+            if tf:
+                changes["timeframe"] = tf
+            self.store.patch(pid, **changes)
+            p = self.store.get(pid) or project
+            self._post(
+                pid, role="event", kind="text", content=f"AI 把标的设为 {', '.join(p['securities'])} · {p['timeframe']}"
+            )
+            return {"ok": True, "securities": p["securities"], "timeframe": p["timeframe"]}
+
+        return {
+            "start_autopilot": Tool(
+                "start_autopilot",
+                "按已设定的目标自动迭代若干轮（等同 /auto）。没有目标时不可用；研究者明确要求连续改进时再用",
+                {**obj, "properties": {"rounds": {"type": "integer", "description": "轮数 1-8，不填用项目设置"}}},
+                autopilot,
+            ),
+            "pin_note": Tool(
+                "pin_note",
+                "把一段重要材料钉进上下文（等同 /pin）：研究者给的约束、调研结论、需要长期记住的事实",
+                {**obj, "properties": {"title": {"type": "string"}, "text": {"type": "string"}}, "required": ["text"]},
+                pin_note,
+            ),
+            "compact_history": Tool(
+                "compact_history",
+                "把较早的对话压缩成摘要（等同 /compact），对话很长、上下文吃紧时用",
+                {**obj, "properties": {}},
+                compact_history,
+            ),
+            "set_market": Tool(
+                "set_market",
+                "设置研究的标的与 K 线周期（研究者没指定、或对话里改了主意时用）",
+                {
+                    **obj,
+                    "properties": {
+                        "symbols": {"type": "array", "items": {"type": "string"}, "description": '如 ["BTC/USDT"]'},
+                        "timeframe": {"type": "string", "enum": ["1m", "5m", "15m", "30m", "1h", "4h", "1d"]},
+                    },
+                },
+                set_market,
+            ),
+            "save_work": Tool(
+                "save_work",
+                "保存当前成果（等同 /save）：策略存为平台策略草稿，因子 / 模型 / 方案存进对应的库。研究者认可后再用",
+                {**obj, "properties": {}},
+                lambda: self.save_work(pid),
+            ),
+        }
 
     # ---------------- 权限：审批 ----------------
     def _ask_approval(self, pid: str, pending: list[dict[str, Any]]) -> None:

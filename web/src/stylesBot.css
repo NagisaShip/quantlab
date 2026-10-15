@@ -1,0 +1,180 @@
+/*
+ * QuantLab Bot：造型固定，状态只改动画与嘴、观点只改颜色。见 components/QuantBot.tsx。
+ * 观点色用全局 --up / --down，跟随「红涨绿跌 / 绿涨红跌」切换，不写死红绿。
+ */
+:root {
+  --qb-head: #2e45c8;
+  --qb-head-hi: #4a62ea;
+  --qb-visor: #22379f;
+  --qb-eye: #ffffff;
+  --qb-error: #ff9a3c;   /* 报错的 × 用橙色：与涨跌红绿区分开 */
+}
+:root[data-theme="dark"] {
+  --qb-head: #3a51d8;
+  --qb-head-hi: #5a71f2;
+  --qb-visor: #2638a8;
+}
+
+.qbot { display: inline-block; flex: none; overflow: visible; vertical-align: middle; --qb-speed: 1; }
+.qbot .qbot-visor { fill: var(--qb-visor); opacity: .55; }
+.qbot .qbot-eye { transform-box: fill-box; transform-origin: center; transition: transform var(--dur-3, 240ms) var(--ease-spring, ease); }
+.qbot .qbot-eyes { transform-box: fill-box; transform-origin: center; }
+.qbot .qbot-wick { stroke: var(--qb-eye); stroke-width: 1.1; stroke-linecap: round; opacity: .9; transition: opacity var(--dur-2, 180ms), stroke var(--dur-3, 240ms); }
+.qbot .qbot-body {
+  fill: var(--qb-eye); stroke: var(--qb-eye); stroke-width: 0; transform-box: fill-box; transform-origin: center;
+  transition: transform 90ms ease-out, fill var(--dur-3, 240ms) var(--ease-out, ease), stroke var(--dur-3, 240ms);
+}
+.qbot .qbot-squint { fill: none; stroke: var(--qb-eye); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; opacity: 0; transition: opacity var(--dur-2, 180ms); }
+.qbot .qbot-mouth {
+  fill: none; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; opacity: 0;
+  transform-box: fill-box; transform-origin: center; transform: scale(.3);
+  transition: opacity var(--dur-2, 180ms), transform var(--dur-3, 240ms) var(--ease-spring, ease);
+}
+.qbot .qbot-mouth.check { stroke: #fff; }
+.qbot .qbot-mouth.cross { stroke: var(--qb-error); }
+.qbot .qbot-mouth.on { opacity: 1; transform: scale(1); }
+.qbot .qbot-head { transform-box: fill-box; transform-origin: 50% 70%; }
+
+/* ---- 纯眼睛符号：跟随文字颜色（√ 也跟随文字色；× 仍是橙色） ---- */
+.qeyes { --qb-eye: currentColor; }
+.qeyes .qbot-mouth.check { stroke: currentColor; }
+
+/* ---- 观点：实体与影线一起变色；未知 = 空心 ---- */
+.qbot-bull { --qb-view: var(--up); }
+.qbot-bear { --qb-view: var(--down); }
+/* 在蓝色头部上：观点色提亮一些，保证深色的涨 / 跌色也看得清；纯眼睛符号直接用原色 */
+.qbot:not(.qeyes).qbot-bull { --qb-view: color-mix(in srgb, var(--up) 68%, #fff); }
+.qbot:not(.qeyes).qbot-bear { --qb-view: color-mix(in srgb, var(--down) 62%, #fff); }
+.qbot-bull .qbot-body, .qbot-bear .qbot-body { fill: var(--qb-view); stroke: var(--qb-view); }
+.qbot-bull .qbot-wick, .qbot-bear .qbot-wick { stroke: var(--qb-view); opacity: 1; }
+.qbot:not(.qeyes).qbot-bull .qbot-body, .qbot:not(.qeyes).qbot-bear .qbot-body { stroke-width: .5; }
+.qbot-unknown .qbot-body { fill: transparent; stroke: var(--qb-eye); stroke-width: 1; }
+.qbot-unknown.qeyes .qbot-body { stroke-width: 1.1; }
+
+/* ---- 待机：眨眼（实体收拢成十字星） ---- */
+.qbot.blink .qbot-body { transform: scaleY(.1); }
+
+/* ---- 思考：两眼上下交错浮动 ---- */
+.qbot-thinking .qbot-eye.l { animation: qb-float calc(1.3s * var(--qb-speed)) ease-in-out infinite; }
+.qbot-thinking .qbot-eye.r { animation: qb-float calc(1.3s * var(--qb-speed)) ease-in-out infinite; animation-delay: calc(-.65s * var(--qb-speed)); }
+.qbot-thinking .qbot-body { animation: qb-stretch calc(1.3s * var(--qb-speed)) ease-in-out infinite; }
+.qbot-thinking .qbot-eye.r .qbot-body { animation-delay: calc(-.65s * var(--qb-speed)); }
+@keyframes qb-float { 0%, 100% { transform: translateY(1.3px); } 50% { transform: translateY(-1.3px); } }
+@keyframes qb-stretch { 0%, 100% { transform: scaleY(.86); } 50% { transform: scaleY(1.12); } }
+
+/* ---- 专注：实体高频微幅呼吸（盘口 Tick 级跳动） ---- */
+.qbot-focus .qbot-body { animation: qb-tick calc(.46s * var(--qb-speed)) linear infinite; }
+.qbot-focus .qbot-eye.r .qbot-body { animation-delay: calc(-.23s * var(--qb-speed)); animation-duration: calc(.52s * var(--qb-speed)); }
+@keyframes qb-tick { 0% { transform: scaleY(1); } 22% { transform: scaleY(1.08); } 45% { transform: scaleY(.93); } 70% { transform: scaleY(1.04); } 100% { transform: scaleY(1); } }
+
+/* ---- 全力：> < ---- */
+.qbot-strain .qbot-body, .qbot-strain .qbot-wick { opacity: 0; }
+.qbot-strain .qbot-squint { opacity: 1; }
+.qbot-strain .qbot-eye { animation: qb-press calc(.7s * var(--qb-speed)) ease-in-out infinite; }
+.qbot-strain .qbot-eye.r { animation-delay: calc(-.35s * var(--qb-speed)); }
+.qbot-strain .qbot-head { animation: qb-shiver calc(.18s * var(--qb-speed)) linear infinite; }
+@keyframes qb-press { 0%, 100% { transform: scale(1); } 50% { transform: scale(.88, 1.06); } }
+@keyframes qb-shiver { 0%, 100% { transform: translateX(0); } 50% { transform: translateX(.18px); } }
+
+/* ---- 完成：两眼同步轻弹两下 + 白色 √（组件 1.8 秒后自动回到待机） ---- */
+.qbot-happy .qbot-eyes { animation: qb-hop calc(.85s * var(--qb-speed)) var(--ease-spring, ease) 2; }
+@keyframes qb-hop { 0%, 100% { transform: translateY(0); } 28% { transform: translateY(-2.2px); } 52% { transform: translateY(0); } 70% { transform: translateY(-.8px); } }
+
+/* ---- 困惑：两眼错位，停顿 ---- */
+.qbot-confused .qbot-eye.l { transform: translateY(-1.4px) rotate(-9deg); }
+.qbot-confused .qbot-eye.r { transform: translateY(1.1px); }
+.qbot-confused .qbot-head, .qbot-confused .qbot-eyes { animation: qb-tilt calc(2.8s * var(--qb-speed)) ease-in-out infinite; }
+@keyframes qb-tilt { 0%, 12% { transform: rotate(0); } 24%, 70% { transform: rotate(-5deg); } 84%, 100% { transform: rotate(0); } }
+
+/* ---- 报错：橙色 × ---- */
+.qbot-error .qbot-eye { transform: translateY(-.8px); }
+.qbot-error .qbot-body { transform: scaleY(.62); }
+.qbot-error .qbot-head, .qeyes.qbot-error .qbot-eyes { animation: qb-shake .5s ease-in-out 1; }
+@keyframes qb-shake { 0%, 100% { transform: translateX(0); } 20% { transform: translateX(-.9px); } 40% { transform: translateX(.9px); } 60% { transform: translateX(-.5px); } 80% { transform: translateX(.4px); } }
+
+/* ---- 一次性短动画：按钮点击 / 任务启动 / 完成 / 失败 ---- */
+.qbot.flash-tap .qbot-body { animation: qb-blink-once .26s ease-out 1 !important; }
+.qbot.flash-start .qbot-eyes { animation: qb-rise .62s var(--ease-spring, ease) 1 !important; }
+.qbot.flash-done .qbot-eyes { animation: qb-hop .7s var(--ease-spring, ease) 2 !important; }
+.qbot.flash-fail .qbot-eyes { animation: qb-shake .5s ease-in-out 1 !important; }
+@keyframes qb-blink-once { 0%, 100% { transform: scaleY(1); } 45% { transform: scaleY(.1); } }
+@keyframes qb-rise { 0% { transform: translateY(0) scaleY(1); } 35% { transform: translateY(-1.6px) scaleY(1.18); } 70% { transform: translateY(.3px) scaleY(.96); } 100% { transform: translateY(0) scaleY(1); } }
+
+/* ---- 低动态（通知、空状态、错误页）：去掉循环动画，只保留眨眼与一次性反馈 ---- */
+.qbot.calm.qbot-thinking .qbot-eye, .qbot.calm.qbot-thinking .qbot-body,
+.qbot.calm.qbot-focus .qbot-body, .qbot.calm.qbot-strain .qbot-eye, .qbot.calm.qbot-strain .qbot-head,
+.qbot.calm.qbot-confused .qbot-head, .qbot.calm.qbot-confused .qbot-eyes { animation: none; }
+.qbot.calm.qbot-thinking .qbot-eye.l { transform: translateY(-.9px); }
+.qbot.calm.qbot-thinking .qbot-eye.r { transform: translateY(.9px); }
+
+/* ---- 简化静态：图标、小头像（≤18px）——平涂，无面罩，线条略粗 ---- */
+.qbot.simple .qbot-wick { stroke-width: 1.4; opacity: 1; }
+
+.qbot.still *, .qbot.still { animation: none !important; transition: none !important; }
+
+/* ---------------------------------------------------------------- 平台中的用法 */
+.brandmark { display: inline-flex; align-items: center; gap: 8px; }
+.side-brand .qbot, .auth-brand .qbot { margin-right: 2px; }
+
+/* 加载：Bot 思考 + 文案 */
+.bot-loading { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 36px 0; color: var(--muted); }
+.bot-loading h3 { margin: 0; font-size: 13.5px; font-weight: 500; color: var(--muted); }
+.bot-loading .qbot { filter: drop-shadow(0 6px 14px rgba(46, 69, 200, .18)); }
+.busy-card .qbot { display: block; margin: 0 auto 14px; filter: drop-shadow(0 8px 18px rgba(46, 69, 200, .22)); }
+
+/* 提示条：前面一个小 Bot */
+.toast { display: inline-flex; align-items: center; gap: 8px; }
+.toast .qbot { margin-left: -4px; }
+
+/* 对话：处理中 */
+.cb-working { display: flex; align-items: center; gap: 8px; }
+.cb-working .qbot { flex: none; }
+.cb-ai-meta .qbot { margin-right: 2px; }
+
+/* 空状态 */
+.empty-state .qbot { margin-bottom: 4px; opacity: .92; }
+
+/* 模型最新预测：每行一个小 Bot 表达观点 */
+.ml-latest > div { display: flex; align-items: center; gap: 8px; }
+.ml-latest > div > span { flex: 1; }
+.ml-view { display: flex; align-items: center; gap: 10px; font-size: 12.5px; color: var(--muted); margin-bottom: 10px; }
+.ml-view b { color: var(--ink); font-weight: 600; }
+
+/* 视觉规范页 */
+.brand-hero { display: grid; grid-template-columns: auto 1fr; gap: 24px; align-items: center; padding: 22px 24px; border: 1px solid var(--line); border-radius: 16px; background: var(--sheet); }
+.brand-hero h2 { margin: 0 0 6px; font-size: 20px; }
+.brand-hero p { margin: 0; color: var(--muted); line-height: 1.7; font-size: 13.5px; }
+.brand-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.brand-cell { border: 1px solid var(--line); border-radius: 14px; padding: 16px 12px 12px; display: grid; justify-items: center; gap: 8px; background: var(--sheet); text-align: center; cursor: default; transition: border-color var(--dur-2), box-shadow var(--dur-3) var(--ease-out), transform var(--dur-3) var(--ease-out); }
+.brand-cell:hover { border-color: var(--accent-line, var(--line)); box-shadow: 0 8px 22px -14px rgba(46, 69, 200, .5); transform: translateY(-2px); }
+.brand-cell b { font-size: 13px; }
+.brand-cell small { font-size: 11.5px; color: var(--muted); line-height: 1.5; }
+.brand-cell code { font-size: 11px; color: var(--faint); }
+.brand-matrix { display: grid; grid-template-columns: 90px repeat(3, 1fr); gap: 6px; align-items: center; }
+.brand-matrix > div { display: grid; justify-items: center; padding: 8px 0; }
+.brand-matrix .rh, .brand-matrix .ch { font-size: 12px; color: var(--muted); }
+.brand-matrix .rh { justify-items: start; }
+.brand-sizes { display: flex; align-items: flex-end; gap: 18px; flex-wrap: wrap; }
+.brand-sizes figure { margin: 0; display: grid; justify-items: center; gap: 6px; font-size: 11px; color: var(--faint); }
+.brand-rules { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
+.brand-rules > div { border-radius: 12px; padding: 14px; background: var(--sunken); font-size: 12.5px; line-height: 1.65; color: var(--ink-2); }
+.brand-rules b { display: block; font-size: 13px; color: var(--ink); margin-bottom: 4px; }
+@media (max-width: 720px) {
+  .brand-hero { grid-template-columns: 1fr; justify-items: center; text-align: center; }
+  .brand-matrix { grid-template-columns: 64px repeat(3, 1fr); }
+}
+
+/* AI 研究室新对话：大号 Bot */
+.lab2-welcome-bot { display: block; margin: 0 auto 10px; filter: drop-shadow(0 10px 22px rgba(46, 69, 200, .2)); }
+
+/* 纯眼睛符号的配色：加载与处理中用品牌蓝；行内状态跟随文字色 */
+.bot-loading-eyes, .cb-working-eyes { color: var(--qb-head); }
+:root[data-theme="dark"] .bot-loading-eyes, :root[data-theme="dark"] .cb-working-eyes { color: var(--qb-head-hi); }
+.toast .qeyes { color: #fff; }
+.cb-event .qeyes { color: var(--danger, #d64545); margin-right: 4px; }
+.ml-eyes { color: var(--muted); }
+.bot-error-page { display: grid; justify-items: center; gap: 10px; padding: 72px 16px; text-align: center; }
+.bot-error-page h3 { margin: 6px 0 0; font-size: 17px; }
+.bot-error-page p { margin: 0; color: var(--muted); max-width: 520px; overflow-wrap: anywhere; }
+.brand-eyes { color: var(--qb-head); display: grid; place-items: center; height: 56px; }
+.button .qeyes { margin-right: 6px; }

@@ -4,6 +4,7 @@ import { v3, type LimitRule, type ModelConfigView, type ModelSetting, type Model
 import { LimitBars, LimitEditor, UsageSummary } from '../components/modelUsage'
 import { Callout, Heading, Loading } from '../components/ui'
 import { get, request } from '../http'
+import { store } from '../components/prefs'
 import type { PageProps } from './types'
 
 /**
@@ -310,6 +311,7 @@ export default function ModelConfigPage({ notify, onNavigate }: PageProps) {
         </section>
       )}
 
+      <ChatPrefs notify={notify} />
       <TestSection allModels={allModels} defaultTarget={keyed[0] ? `${keyed[0].name}/${keyed[0].models[0]}` : ''} />
       <SearchSection notify={notify} />
       <p className="set-foot">
@@ -625,3 +627,23 @@ function SearchSection({ notify }: { notify: PageProps['notify'] }) {
   )
 }
 
+
+/** 对话偏好（本机）：AI 研究室里，AI 每次回答末尾附 2-3 条简短的后续建议，点一下就能接着问。 */
+function ChatPrefs({ notify }: { notify: PageProps['notify'] }) {
+  const [on, setOn] = useState(() => store.get('qa.lab.suggest', '1') === '1')
+  const toggle = () => {
+    const v = !on
+    setOn(v)
+    store.set('qa.lab.suggest', v ? '1' : '0')
+    notify(v ? '已开启：AI 回答后会给出简短建议' : '已关闭 AI 建议')
+  }
+  return (
+    <section className="set-section">
+      <div className="set-section-head"><h3>对话偏好</h3></div>
+      <div className="set-row">
+        <div><b>AI 生成简短建议</b><small>在 AI 研究室里，每次回答末尾给出 2-3 条你可能想接着说的话（不额外调用模型，随回答一起生成）</small></div>
+        <button type="button" role="switch" aria-checked={on} aria-label="AI 生成简短建议" className={`switch${on ? ' on' : ''}`} onClick={toggle}><i /></button>
+      </div>
+    </section>
+  )
+}

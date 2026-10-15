@@ -79,6 +79,15 @@ export interface LabProject {
   model: string
   effort: Effort
   compacted_before?: number
+  /** 对话管理：置顶、所属项目（文件夹）、分叉来源；设过目标后才能自动迭代；上下文超额时自动压缩 */
+  pinned?: boolean
+  folder?: string
+  parent_id?: string | null
+  fork_seq?: number | null
+  goal_set?: boolean
+  auto_compact?: boolean
+  market_auto?: boolean
+  suggest?: boolean
   goals: Goals
   goal?: (Partial<GoalSpec> & { items: GoalCond[] }) | null
   start?: number | null
@@ -108,7 +117,7 @@ export interface LabMessage {
   seq: number
   role: 'user' | 'assistant' | 'tool' | 'event'
   kind: 'text' | 'tool' | 'code' | 'backtest' | 'round' | 'team' | 'ask' | 'error' | 'saved' | 'goal' | 'walkforward' |
-    'factor_code' | 'factor_report' | 'model_spec' | 'model_report' | 'portfolio_spec' | 'portfolio_report' | 'execution_spec' | 'execution_report'
+    'factor_code' | 'factor_report' | 'model_spec' | 'model_report' | 'portfolio_spec' | 'portfolio_report' | 'execution_spec' | 'execution_report' | 'discussion'
   content: string
   data: Record<string, any>
   mode?: 'llm' | 'fallback'
@@ -172,7 +181,7 @@ export const lab = {
   view: (id: string, after = 0, since = 0) => get<LabView>(`/api/lab/projects/${id}?after=${after}&since=${since}`),
   update: (id: string, p: Partial<Omit<LabProject, 'goals'>> & { goals?: Partial<Goals> }) => patch<{ project: LabProject }>(`/api/lab/projects/${id}`, p),
   remove: (id: string) => del<{ ok: boolean }>(`/api/lab/projects/${id}`),
-  send: (id: string, text: string, opts: { model?: string; effort?: Effort } = {}) =>
+  send: (id: string, text: string, opts: { model?: string; effort?: Effort; suggest?: boolean } = {}) =>
     post<LabView>(`/api/lab/projects/${id}/messages`, { text, ...opts }),
   goalParse: (text: string, project_id?: string, domain?: LabKind) =>
     post<{ spec: GoalSpec; parsed_fields: string[]; unparsed: string; check: GoalCheck }>('/api/lab/goal/parse', { text, project_id, domain }),
@@ -182,6 +191,9 @@ export const lab = {
     post<LabView & { goal: { spec: GoalSpec; check: GoalCheck } }>(`/api/lab/projects/${id}/goal`, { spec, review: true, ...opts }),
   walkForward: (id: string, segments = 3) => post<LabView>(`/api/lab/projects/${id}/walkforward`, { segments }),
   compact: (id: string) => post<LabView>(`/api/lab/projects/${id}/compact`),
+  fork: (id: string, seq?: number, title = '') => post<{ project: LabProjectBrief }>(`/api/lab/projects/${id}/fork`, { seq, title }),
+  rewind: (id: string, seq: number, text?: string) => post<LabView>(`/api/lab/projects/${id}/rewind`, { seq, text }),
+  discussion: (id: string, mission_id: string, topic: string) => post<LabView>(`/api/lab/projects/${id}/discussion`, { mission_id, topic }),
   /** 实时推送：回合结束（或超时）后流自动关闭；返回 Promise 在关闭时 resolve。 */
   events: (id: string, after: number, since: number, onData: (v: Partial<LabView> & { project: LabProject; messages: LabMessage[]; server_time: number }) => void, signal?: AbortSignal) =>
     streamSSE(`/api/lab/projects/${id}/events?after=${after}&since=${since}`, onData, signal),

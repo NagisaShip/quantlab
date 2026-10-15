@@ -6,6 +6,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { ContextView, Permission } from '../../apiLab'
 import { StepSlider } from '../StepSlider'
+import { QuantEyes, useBotFlash } from '../QuantBot'
 import { usePopover } from './Composer'
 
 const fmtK = (n: number) => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(n % 1_000_000 ? 1 : 0)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n))
@@ -156,18 +157,26 @@ export function ActionMenu({ items, label = '添加与操作' }: { items: Action
 }
 
 /** 菜单里的「自动迭代」：左右滑动设置轮数，点开始。 */
-export function AutoIterateRow({ rounds, onRounds, onStart, disabled, max = 8 }: {
-  rounds: number; onRounds: (n: number) => void; onStart: (n: number) => void; disabled?: boolean; max?: number
+export function AutoIterateRow({ rounds, onRounds, onStart, disabled, needsGoal, onSetGoal, max = 8 }: {
+  rounds: number; onRounds: (n: number) => void; onStart: (n: number) => void; disabled?: boolean
+  /** 没有目标时自动迭代不可用：显示「先设定目标」 */
+  needsGoal?: boolean; onSetGoal?: () => void; max?: number
 }) {
   const opts = Array.from({ length: max }, (_, i) => ({ id: String(i + 1), label: String(i + 1) }))
+  const fx = useBotFlash()
   return (
-    <div className="auto-row">
+    <div className={`auto-row${needsGoal ? ' locked' : ''}`}>
       <div className="auto-row-head">
         <span className="act-icon">{Icons.loop}</span>
-        <span className="act-text"><span className="act-label">自动迭代</span><span className="act-hint">按目标连续改进，最多 {rounds} 轮</span></span>
-        <button type="button" className="button small primary" disabled={disabled} onClick={() => onStart(rounds)}>开始</button>
+        <span className="act-text">
+          <span className="act-label">自动迭代</span>
+          <span className="act-hint">{needsGoal ? '需要先设定目标；没有目标就直接对话' : `按目标连续改进，最多 ${rounds} 轮`}</span>
+        </span>
+        {needsGoal
+          ? <button type="button" className="button small" onClick={onSetGoal}>设定目标</button>
+          : <button type="button" className="button small primary" disabled={disabled} onClick={() => { fx.fire('start'); onStart(rounds) }}><QuantEyes size={14} motion="low" flash={fx.flash} />开始</button>}
       </div>
-      <StepSlider options={opts} value={String(rounds)} onChange={(v) => onRounds(Number(v))} label="自动迭代轮数" compact />
+      {!needsGoal && <StepSlider options={opts} value={String(rounds)} onChange={(v) => onRounds(Number(v))} label="自动迭代轮数" compact />}
     </div>
   )
 }

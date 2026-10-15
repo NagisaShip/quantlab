@@ -176,6 +176,10 @@ export function RoleDrawer({ notify }: { notify: (msg: string, error?: boolean) 
               </label>
 
               <div className="rd-field"><span>可用工具</span>
+                <label className="rd-tool rd-tools-mode" title="默认让 AI 根据任务自己决定调用哪些工具（含联网搜索）">
+                  <input type="checkbox" checked={!draft.restrict_tools} onChange={(e) => set('restrict_tools', !e.target.checked)} />
+                  <span>{draft.restrict_tools ? '只用下面勾选的工具' : 'AI 自动调用全部平台工具（推荐）；下面勾选的作为重点'}</span>
+                </label>
                 <div className="rd-tools">
                   {tools.map((t) => (
                     <label key={t.name} className="rd-tool" title={t.description}>

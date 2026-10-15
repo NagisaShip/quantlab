@@ -2,6 +2,7 @@
 import { useState, type ReactNode } from 'react'
 import { Markdown } from '../markdown'
 import { modelLabel } from './Composer'
+import { QuantEyes, type BotState } from '../QuantBot'
 
 export function UserBubble({ children }: { children: ReactNode }) {
   return <div className="cb-user"><div className="cb-user-bubble">{children}</div></div>
@@ -65,13 +66,26 @@ export function ToolLine({ icon, label, args, status, elapsedMs, detail }: {
 }
 
 export function EventLine({ children, tone }: { children: ReactNode; tone?: 'ok' | 'error' | 'warn' }) {
-  return <div className={`cb-event${tone ? ' ' + tone : ''}`}><span>{children}</span></div>
+  return (
+    <div className={`cb-event${tone ? ' ' + tone : ''}`}>
+      <span>{tone === 'error' && <QuantEyes size={15} state="error" motion="low" title="出错了" />}{children}</span>
+    </div>
+  )
+}
+
+/** 阶段文字 → Bot 状态：跑回测 / 训练 / 仿真是「专注」，多轮迭代冲刺是「全力」，其余是「思考」。 */
+export function botStateOf(phase?: string): BotState {
+  if (!phase) return 'thinking'
+  if (/第\s*\d+\s*轮|迭代|冲刺/.test(phase)) return 'strain'
+  if (/回测|评估|训练|仿真|运行|试跑|压力/.test(phase)) return 'focus'
+  return 'thinking'
 }
 
 /** 等待模型时的占位：一行轻微闪动的阶段文字。 */
 export function Working({ phase, onStop }: { phase?: string; onStop?: () => void }) {
   return (
     <div className="cb-working">
+      <QuantEyes size={20} state={botStateOf(phase)} title={phase || '处理中'} className="cb-working-eyes" />
       <span className="cb-shimmer">{phase || '处理中'}…</span>
       {onStop && <button type="button" className="link" onClick={onStop}>停止</button>}
     </div>
