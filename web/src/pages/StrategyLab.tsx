@@ -372,6 +372,7 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
     } catch { /* 存储不可用 */ }
   }, [id])
   const [rounds, setRounds] = useState<number | null>(null)
+  const [attachments, setAttachments] = useState<Attachment[]>([])
   const cursor = useRef({ after: 0, since: 0 })
   const scroller = useRef<HTMLDivElement>(null)
   const stick = useRef(true)
@@ -453,7 +454,8 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
 
   const send = async (text?: string) => {
     const t = (text ?? input).trim()
-    if (!t || !project) return
+    const imgs = text === undefined ? attachments : []
+    if ((!t && !imgs.length) || !project) return
     const [head, ...restParts] = t.split(/\s+/)
     const local = text === undefined ? commands.find((c) => c.cmd === head && c.run) : undefined
     if (local) {
@@ -474,7 +476,17 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
     }
     setInput('')
     stick.current = true
-    await act(() => lab.send(id, t, { suggest: suggestOn() }))
+    if (!imgs.length) { await act(() => lab.send(id, t, { suggest: suggestOn() })); return }
+    setAttachments([])
+    try {
+      await lab.send(id, t, { suggest: suggestOn(), images: imgs.map((a) => ({ data_url: a.url, name: a.name })) })
+      await pull()
+      follow()
+    } catch (e) {
+      setAttachments(imgs) // 发送失败：附件留在输入框里，可以换模型后重发
+      setInput(t)
+      notify((e as Error).message, true)
+    }
   }
 
   const patch = (p: Partial<LabProject>) => act(() => lab.update(id, p))
@@ -495,6 +507,25 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
     try { apply(await lab.compact(id)) } catch (e) { notify((e as Error).message, true) } finally { setCompacting(false) }
   }
 
+  const imageModel = meta?.models.find((m) => m.target === (project?.model || meta.default_model))
+  const imageBlock = project && domainUI(project.kind)
+    ? '这类研究的对话暂不支持图片，请在策略研究里使用'
+    : !imageModel?.inputs?.includes('image')
+      ? `当前模型${imageModel ? `「${imageModel.label || imageModel.model}」` : ''}未开启图片输入：可在 设置 → 模型 里为它勾选「图片」，或换一个支持图片的模型`
+      : ''
+  const onImages = useCallback(async (images: File[]) => {
+    if (imageBlock) { notify(imageBlock, true); return }
+    const room = MAX_IMAGES - attachments.length
+    if (images.length > room) notify(`一条消息最多带 ${MAX_IMAGES} 张图片，多出的已跳过`, true)
+    const added: Attachment[] = []
+    for (const f of images.slice(0, Math.max(0, room))) {
+      if (!IMAGE_TYPES.includes(f.type)) { notify(`${f.name} 不是 PNG / JPEG / GIF / WebP，已跳过`, true); continue }
+      if (f.size > MAX_IMAGE_BYTES) { notify(`${f.name} 太大（超过 5 MB），已跳过`, true); continue }
+      added.push({ key: `${Date.now()}-${Math.random()}`, name: f.name || '粘贴的图片', url: await readDataUrl(f) })
+    }
+    if (added.length) setAttachments((prev) => [...prev, ...added].slice(0, MAX_IMAGES))
+  }, [imageBlock, attachments.length, notify])
+
   const onFiles = useCallback(async (files: File[]) => {
     const images = files.filter((f) => f.type.startsWith('image/'))
     const texts = files.filter((f) => !f.type.startsWith('image/'))
@@ -506,9 +537,9 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
         notify(text.length > 4000 ? `已钉住 ${f.name}（只保留前 4000 字）` : `已钉住 ${f.name}`)
       } catch (e) { notify((e as Error).message, true) }
     }
-    if (images.length) notify('图片还不能作为模型输入：当前对话只支持文本；可以把图片里的要点写下来再发送', true)
+    if (images.length) await onImages(images)
     if (texts.length) pull().catch(() => undefined)
-  }, [id, notify, pull])
+  }, [id, notify, pull, onImages])
   const pickFiles = useFilePicker(onFiles)
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -575,7 +606,7 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
     { cmd: '/mode', group: '项目', arg: '[auto|manual|edits|plan|bypass]', help: '切换权限模式', run: (a: string) => (PERMISSION_ALIAS[a.toLowerCase()] ? setPermission(PERMISSION_ALIAS[a.toLowerCase()]) : notify('用法：/mode auto | manual | edits | plan | bypass', true)) },
   ]
   const plusItems: ActionItem[] = [
-    { label: '添加文件或照片', icon: Icons.attach, hint: '文本、CSV、JSON 会钉进上下文', onClick: pickFiles },
+    { label: '添加文件或照片', icon: Icons.attach, hint: imageBlock ? '文本、CSV、JSON 会钉进上下文（当前模型不收图片）' : '文本钉进上下文，图片随下一条消息发给模型', onClick: pickFiles },
     { label: '斜杠命令', icon: Icons.slash, hint: '/backtest、/auto、/team…', onClick: () => setInput('/') },
     {
       label: '插件', icon: Icons.plugin, submenu: [
@@ -666,10 +697,18 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
           )}
           <Composer value={input} onChange={setInput} onSend={() => send()} running={running} onStop={() => act(() => lab.stop(id))}
             commands={commands} placeholder={running ? '正在处理，可随时停止' : ui ? ui.replyPlaceholder : '回复…'}
-            above={(goalOpen || (running && project.job?.kind === 'autopilot')) ? (
-              <GoalChips items={projectItems(project)} metrics={metricsOf(dmeta)}
-                onOpen={() => setGoalOpen(goalOpen ? null : { initial: projectSpec(project) })} />
-            ) : undefined}
+            hasAttachments={attachments.length > 0}
+            onPasteFiles={(files) => { const imgs = files.filter((f) => f.type.startsWith('image/')); if (imgs.length) onImages(imgs) }}
+            above={(goalOpen || (running && project.job?.kind === 'autopilot') || attachments.length) ? (<>
+              {attachments.length > 0 && (
+                <AttachTray items={attachments} warning={imageBlock}
+                  onRemove={(key) => setAttachments((prev) => prev.filter((a) => a.key !== key))} />
+              )}
+              {(goalOpen || (running && project.job?.kind === 'autopilot')) && (
+                <GoalChips items={projectItems(project)} metrics={metricsOf(dmeta)}
+                  onOpen={() => setGoalOpen(goalOpen ? null : { initial: projectSpec(project) })} />
+              )}
+            </>) : undefined}
             left={<>
               <ActionMenu items={plusItems} />
               <PermissionMenu value={project.permission} onChange={setPermission} disabled={running} />
@@ -762,6 +801,39 @@ function ProjectMenu({ onDelete, onSave, hasCode, saved, saveLabel }: { onDelete
 }
 
 /* ------------------------------------------------------------------ */
+/* 图片附件                                                           */
+/* ------------------------------------------------------------------ */
+interface Attachment { key: string; name: string; url: string }
+const MAX_IMAGES = 4
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024
+const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp']
+
+function readDataUrl(f: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader()
+    r.onload = () => resolve(String(r.result))
+    r.onerror = () => reject(r.error)
+    r.readAsDataURL(f)
+  })
+}
+
+function AttachTray({ items, warning, onRemove }: { items: Attachment[]; warning?: string; onRemove: (key: string) => void }) {
+  return (
+    <div className="cmp-attach">
+      {items.map((a) => (
+        <div key={a.key} className="cmp-attach-item anim-pop" title={a.name}>
+          <img src={a.url} alt={a.name} />
+          <button type="button" onClick={(e) => { e.stopPropagation(); onRemove(a.key) }} aria-label={`移除 ${a.name}`} title="移除">
+            <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden><path d="M2 2l6 6M8 2l-6 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>
+          </button>
+        </div>
+      ))}
+      {warning && <span className="cmp-attach-warn anim-fade">{warning}</span>}
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------ */
 /* 消息                                                               */
 /* ------------------------------------------------------------------ */
 interface MessageActions {
@@ -806,7 +878,7 @@ function MsgBar({ m, items, align }: { m: LabMessage; items: [keyof typeof MI, s
   )
 }
 
-function UserMessage({ m, actions }: { m: LabMessage; actions: MessageActions }) {
+function UserMessage({ m, actions, projectId }: { m: LabMessage; actions: MessageActions; projectId: string }) {
   const [editing, setEditing] = useState(false)
   const [text, setText] = useState(m.content)
   if (editing) {
@@ -818,16 +890,28 @@ function UserMessage({ m, actions }: { m: LabMessage; actions: MessageActions })
             if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && text.trim()) { e.preventDefault(); setEditing(false); actions.onEdit(m, text.trim()) }
           }} />
         <div className="msg-edit-foot">
-          <span>编辑后会删掉这条消息之后的对话，从这里重新开始</span>
+          <span>编辑后会删掉这条消息之后的对话，从这里重新开始{(m.data?.images?.length ?? 0) > 0 ? '；附图会一起重新发送' : ''}</span>
           <button type="button" className="button small ghost" onClick={() => { setEditing(false); setText(m.content) }}>取消</button>
           <button type="button" className="button small primary" disabled={!text.trim() || actions.running} onClick={() => { setEditing(false); actions.onEdit(m, text.trim()) }}>发送</button>
         </div>
       </div>
     )
   }
+  const images = (m.data?.images ?? []) as { id: string; name?: string }[]
   return (
     <div className="msg-wrap user">
-      <UserBubble>{m.content}{m.data?.edited && <span className="msg-edited">已编辑</span>}</UserBubble>
+      {images.length > 0 && (
+        <div className="cb-user with-images">
+          <div className="cb-user-images stagger">
+            {images.map((im) => (
+              <a key={im.id} href={lab.imageUrl(projectId, im.id)} target="_blank" rel="noreferrer" title={im.name || '查看原图'}>
+                <img src={lab.imageUrl(projectId, im.id)} alt={im.name || '附图'} loading="lazy" />
+              </a>
+            ))}
+          </div>
+        </div>
+      )}
+      {(m.content || m.data?.edited) && <UserBubble>{m.content}{m.data?.edited && <span className="msg-edited">已编辑</span>}</UserBubble>}
       <MsgBar m={m} align="right" items={[
         ['edit', '编辑', () => { setText(m.content); setEditing(true) }, actions.running],
         ['retry', '重试', () => actions.onRetry(m), actions.running],
@@ -845,7 +929,7 @@ function MessageView({ m, project, meta, active, actions, onDecide, onOpenBackte
   onOpenEditor: (slug: string) => void
   onOpenCode: () => void
 }) {
-  if (m.role === 'user' && m.kind === 'text') return <UserMessage m={m} actions={actions} />
+  if (m.role === 'user' && m.kind === 'text') return <UserMessage m={m} actions={actions} projectId={project.id} />
   if (m.role === 'user' && m.kind === 'code') return <UserBubble>手动保存为 v{m.data.v}：{m.content}</UserBubble>
   const d = m.data || {}
   switch (m.kind) {

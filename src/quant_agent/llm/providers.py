@@ -19,7 +19,7 @@ from typing import Any
 
 import httpx
 
-from .base import ChatResult, LLMError, Message, Tool, ToolCall
+from .base import ChatResult, LLMError, Message, Tool, ToolCall, split_data_url
 
 
 def _resolve_env(value: str) -> str:
@@ -254,7 +254,11 @@ class OpenAIResponsesProvider(OpenAICompatibleProvider):
             if m.role == "tool":
                 items.append({"type": "function_call_output", "call_id": m.tool_call_id, "output": m.content})
                 continue
-            if m.content:
+            if m.images and m.role == "user":
+                parts: list[dict[str, Any]] = [{"type": "input_text", "text": m.content}] if m.content else []
+                parts += [{"type": "input_image", "image_url": u} for u in m.images]
+                items.append({"role": "user", "content": parts})
+            elif m.content:
                 items.append({"role": m.role, "content": m.content})
             for tc in m.tool_calls:
                 items.append(
@@ -607,6 +611,10 @@ def _to_anthropic(m: Message) -> dict[str, Any]:
     blocks: list[dict[str, Any]] = []
     if m.role == "assistant":
         blocks.extend(m.provider_blocks)  # thinking 块必须原样排在最前面
+    if m.role == "user":
+        for url in m.images:  # 图片放在文字前面，Anthropic 推荐的顺序
+            media_type, data = split_data_url(url)
+            blocks.append({"type": "image", "source": {"type": "base64", "media_type": media_type, "data": data}})
     if m.content:
         blocks.append({"type": "text", "text": m.content})
     for tc in m.tool_calls:

@@ -37,6 +37,7 @@ from .copilot import StrategyCopilot, extract_code, smoke_test, static_explain
 
 COLLECTION = "lab_projects"
 THREADS = "lab_threads"
+IMAGES = "lab_images"  # 对话里附带的图片：每张单独一个 blob，消息里只留引用，免得线程 blob 越来越大
 
 DEFAULT_GOALS: dict[str, float | None] = {
     "min_sharpe": 1.0,  # 夏普下限
@@ -123,6 +124,8 @@ class LabStore:
             return self.save(cur)
 
     def delete(self, pid: str) -> bool:
+        for m in self.messages(pid):
+            self._drop_images(pid, m)
         self.store.delete_blob(THREADS, pid)
         return self.store.delete(COLLECTION, pid)
 
@@ -131,6 +134,24 @@ class LabStore:
         """after：只要序号更大的新消息；since：同时带上此时刻之后被更新过的旧消息（工具卡片状态变化）。"""
         data = self.store.get_blob(THREADS, pid) or {}
         return [m for m in data.get("messages", []) if m["seq"] > after or (since and m.get("updated_at", 0) > since)]
+
+    # ---- 图片附件 ----
+    def put_image(self, pid: str, data_url: str, *, name: str = "") -> dict[str, Any]:
+        """存一张图片（data URL），返回消息里引用它的 {id, mime, name}。"""
+        mime = data_url[5 : data_url.index(";")]
+        iid = f"{pid}-{uuid.uuid4().hex[:12]}"
+        self.store.put_blob(IMAGES, iid, {"pid": pid, "mime": mime, "url": data_url})
+        return {"id": iid, "mime": mime, "name": name}
+
+    def get_image(self, pid: str, iid: str) -> dict[str, Any] | None:
+        blob = self.store.get_blob(IMAGES, iid)
+        return blob if blob and blob.get("pid") == pid else None
+
+    def _drop_images(self, pid: str, msg: dict[str, Any], keep: set[str] | frozenset[str] = frozenset()) -> None:
+        """删掉这条消息引用的、属于本对话的图片（分叉出去的对话有自己的副本，不受影响）。"""
+        for img in (msg.get("data") or {}).get("images") or []:
+            if img["id"] not in keep and self.get_image(pid, img["id"]) is not None:
+                self.store.delete_blob(IMAGES, img["id"])
 
     def append(self, pid: str, msg: dict[str, Any]) -> dict[str, Any]:
         with _lock(f"t:{pid}"):
@@ -142,22 +163,34 @@ class LabStore:
             self.store.put_blob(THREADS, pid, data)
             return row
 
-    def truncate(self, pid: str, from_seq: int) -> int:
-        """删掉 seq >= from_seq 的消息（编辑 / 重试用户消息时回到那一刻），返回删掉的条数。"""
+    def truncate(self, pid: str, from_seq: int, *, keep_images: set[str] | frozenset[str] = frozenset()) -> int:
+        """删掉 seq >= from_seq 的消息（编辑 / 重试用户消息时回到那一刻），返回删掉的条数。
+        被删消息的附图一并删除，keep_images 里的除外（重试时要把原图再发一次）。"""
         with _lock(f"t:{pid}"):
             data = self.store.get_blob(THREADS, pid) or {"messages": []}
             keep = [m for m in data["messages"] if m["seq"] < from_seq]
-            removed = len(data["messages"]) - len(keep)
+            gone = [m for m in data["messages"] if m["seq"] >= from_seq]
             data["messages"] = keep
             self.store.put_blob(THREADS, pid, data)
-            return removed
+        for m in gone:
+            self._drop_images(pid, m, keep_images)
+        return len(gone)
 
     def copy_thread(self, src: str, dst: str, upto: int | None = None) -> int:
         """把 src 的对话（到 upto 为止，含）复制给 dst，序号保持不变。"""
         data = self.store.get_blob(THREADS, src) or {"messages": []}
         rows = [dict(m) for m in data["messages"] if upto is None or m["seq"] <= upto]
         for m in rows:
-            m.get("data", {}).pop("streaming", None)
+            m["data"] = dict(m.get("data") or {})
+            m["data"].pop("streaming", None)
+            # 附图复制一份给新对话：各自持有，删掉任何一边都不影响另一边
+            refs = []
+            for img in m["data"].get("images") or []:
+                blob = self.get_image(src, img["id"])
+                if blob is not None:
+                    refs.append(self.put_image(dst, blob["url"], name=img.get("name", "")))
+            if refs:
+                m["data"]["images"] = refs
         self.store.put_blob(THREADS, dst, {"messages": rows})
         return len(rows)
 
@@ -701,7 +734,8 @@ class StrategyLab:
     # =====================================================================
     # 对话
     # =====================================================================
-    def chat(self, pid: str, text: str) -> None:
+    def chat(self, pid: str, text: str, images: list[str] | None = None) -> None:
+        """images：本轮附带的图片（data URL），只随这一条用户消息发给模型。"""
         text = text.strip()
         cmd = text.split(maxsplit=1)
         head = cmd[0] if cmd else ""
@@ -719,12 +753,12 @@ class StrategyLab:
             self.autopilot(pid)
             return
         try:
-            self._chat_llm(pid, text)
+            self._chat_llm(pid, text, images=images)
         except LLMError as exc:
             self._chat_fallback(pid, text, str(exc))
 
     # ---------------- 带工具的模型回合 ----------------
-    def _chat_llm(self, pid: str, text: str, mode: str | None = None) -> None:
+    def _chat_llm(self, pid: str, text: str, mode: str | None = None, images: list[str] | None = None) -> None:
         self._maybe_autocompact(pid)
         project = self.store.get(pid) or {}
         mode = mode or project.get("permission") or "auto"
@@ -740,7 +774,13 @@ class StrategyLab:
             extra_rules.append(SUGGEST_RULE)
         if extra_rules:
             messages.append(Message(role="system", content="\n".join(extra_rules)))
-        messages.append(Message(role="user", content=f"{PLAN_HINT}\n\n{text}" if mode == "plan" else text))
+        if images and not text:
+            text = "（见附图）"
+        messages.append(
+            Message(
+                role="user", content=f"{PLAN_HINT}\n\n{text}" if mode == "plan" else text, images=list(images or [])
+            )
+        )
         tools = {**self._slash_tools(pid), **self._chat_tools(pid)}
         if mode == "plan":
             tools = {k: t for k, t in tools.items() if k not in EDIT_TOOLS and k not in RUN_TOOLS}
@@ -1331,7 +1371,8 @@ class StrategyLab:
         target = next((m for m in msgs if m["seq"] == seq), None)
         if target is None or target["role"] != "user":
             raise ValueError("只能从一条用户消息重新开始")
-        self.store.truncate(pid, seq)
+        keep = {img["id"] for img in (target.get("data") or {}).get("images") or []}
+        self.store.truncate(pid, seq, keep_images=keep)
         project = self.store.get(pid) or {}
         if int(project.get("compacted_before") or 0) >= seq:
             self.store.patch(pid, compacted_before=0)
@@ -1559,7 +1600,10 @@ class StrategyLab:
             lines = [f"- {'研究者' if m['role'] == 'user' else '助手'}：{m['content'][:80]}" for m in reversed(older)]
             msgs.append(Message(role="system", content="[早前对话摘要]\n" + "\n".join(lines[-30:])))
         for m in reversed(kept):
-            msgs.append(Message(role=m["role"], content=m["content"][:6000]))
+            content = m["content"][:6000]
+            if n := len((m.get("data") or {}).get("images") or []):
+                content = f"{content}\n[附图 {n} 张，仅在当轮发送给模型]".strip()  # 历史图片不重发，省 token
+            msgs.append(Message(role=m["role"], content=content))
         return msgs
 
     def _history(self, project: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1569,7 +1613,7 @@ class StrategyLab:
             for m in self.store.messages(project["id"])
             if m["role"] in ("user", "assistant")
             and m["kind"] in ("text", "ask")
-            and m.get("content")
+            and (m.get("content") or (m.get("data") or {}).get("images"))
             and m["seq"] > cut
         ]
 

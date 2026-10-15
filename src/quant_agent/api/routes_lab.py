@@ -8,16 +8,20 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
+import inspect
 from types import SimpleNamespace
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from fastapi.responses import JSONResponse, Response, StreamingResponse
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from ..agents import lab_goal as G
 from ..agents.strategy_lab import DEFAULT_GOALS, LabStore, LabTools, StrategyLab, new_project
 from ..engine.research import summarize_metrics
+from ..llm.base import split_data_url
 from ..platform.errors import AppError
 from ..research import goals as RG
 from ..sdk import declared_params
@@ -132,12 +136,46 @@ class ProjectPatch(BaseModel):
     auto_compact: bool | None = Field(None, description="上下文超出原文预算时自动压缩较早的对话")
 
 
+IMAGE_TYPES = ("image/png", "image/jpeg", "image/gif", "image/webp")
+MAX_IMAGES = 4
+MAX_IMAGE_BYTES = 5 * 1024 * 1024  # 单张解码后上限，与 Anthropic 的单图限制一致
+
+
+class ImageIn(BaseModel):
+    data_url: str = Field(..., max_length=MAX_IMAGE_BYTES * 4 // 3 + 100)  # data:image/png;base64,...
+    name: str = Field("", max_length=200)
+
+    @field_validator("data_url")
+    @classmethod
+    def _check(cls, v: str) -> str:
+        try:
+            mime, data = split_data_url(v)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from None
+        if mime not in IMAGE_TYPES:
+            raise ValueError("只支持 PNG / JPEG / GIF / WebP 图片")
+        try:
+            raw = base64.b64decode(data, validate=True)
+        except (binascii.Error, ValueError):
+            raise ValueError("图片 base64 无法解码") from None
+        if len(raw) > MAX_IMAGE_BYTES:
+            raise ValueError(f"单张图片不能超过 {MAX_IMAGE_BYTES // 1024 // 1024} MB")
+        return v
+
+
 class MessageIn(BaseModel):
-    text: str = Field(..., min_length=1, max_length=8000)
+    text: str = Field("", max_length=8000)
+    images: list[ImageIn] = Field(default_factory=list, max_length=MAX_IMAGES)
     model: str | None = None  # 底栏切换的模型 / 努力程度：随消息一起提交，并记到项目上
     effort: Effort | None = None
     suggest: bool | None = Field(None, description="回答末尾是否附简短的后续建议（设置里的开关）")
     wait: bool = False
+
+    @model_validator(mode="after")
+    def _not_empty(self) -> MessageIn:
+        if not self.text.strip() and not self.images:
+            raise ValueError("消息不能为空")
+        return self
 
 
 class AutopilotIn(BaseModel):
@@ -550,6 +588,8 @@ def send_message(pid: str, payload: MessageIn) -> dict:
     _project_or_404(lab, pid)
     if lab.store.get(pid).get("status") == "running":  # type: ignore[union-attr]
         raise HTTPException(409, "这个项目正在运行，请等它结束或先停止")
+    if payload.images:
+        _check_image_input(lab, pid, payload.model)
     changes = {
         k: v
         for k, v in {"model": payload.model, "effort": payload.effort, "suggest": payload.suggest}.items()
@@ -557,8 +597,41 @@ def send_message(pid: str, payload: MessageIn) -> dict:
     }
     if changes:
         lab.store.patch(pid, **changes)
-    lab.store.append(pid, {"role": "user", "kind": "text", "content": payload.text})
+    refs = [lab.store.put_image(pid, im.data_url, name=im.name) for im in payload.images]
+    lab.store.append(
+        pid, {"role": "user", "kind": "text", "content": payload.text, "data": {"images": refs} if refs else {}}
+    )
+    if refs:
+        urls = [im.data_url for im in payload.images]
+        return _start(lab, pid, "chat", lambda: lab.chat(pid, payload.text, images=urls), payload.wait)
     return _start(lab, pid, "chat", lambda: lab.chat(pid, payload.text), payload.wait)
+
+
+def _check_image_input(lab: StrategyLab, pid: str, model: str | None) -> None:
+    """图片只发给目录里勾选了「图片」输入的模型；其它研究室的对话暂不支持图片。"""
+    if "images" not in inspect.signature(lab.chat).parameters:
+        raise HTTPException(400, "这类研究项目的对话暂不支持图片，请在策略研究里使用")
+    target = model or lab.model_target(lab.store.get(pid) or {})
+    listing = lab.router.available_models() if hasattr(lab.router, "available_models") else []
+    info = next((m for m in listing if m.get("target") == target), None)
+    if info is None or "image" not in (info.get("inputs") or []):
+        raise HTTPException(
+            400,
+            f"当前模型 {target or '（未选择）'} 未开启图片输入："
+            "请在 设置 → 模型 里为它勾选「图片」，或换一个支持图片的模型",
+        )
+
+
+@router.get("/projects/{pid}/images/{iid}", summary="读取对话里附带的图片")
+def get_image(pid: str, iid: str) -> Response:
+    lab = _lab_for(pid)
+    blob = lab.store.get_image(pid, iid)
+    if blob is None:
+        raise HTTPException(404, "图片不存在")
+    _, data = split_data_url(blob["url"])
+    return Response(
+        base64.b64decode(data), media_type=blob["mime"], headers={"Cache-Control": "private, max-age=86400"}
+    )
 
 
 class GoalItemIn(BaseModel):
@@ -841,10 +914,15 @@ def rewind_project(pid: str, payload: RewindIn) -> dict:
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     text = (payload.text if payload.text is not None else old["content"]).strip()
-    if not text:
+    refs = list((old.get("data") or {}).get("images") or [])
+    if not text and not refs:
         raise HTTPException(400, "消息不能为空")
     edited = payload.text is not None
-    lab.store.append(pid, {"role": "user", "kind": "text", "content": text, "data": {"edited": edited}})
+    data: dict[str, Any] = {"edited": edited, **({"images": refs} if refs else {})}
+    lab.store.append(pid, {"role": "user", "kind": "text", "content": text, "data": data})
+    if refs:  # 编辑 / 重试时附图一起重新发给模型
+        urls = [b["url"] for b in (lab.store.get_image(pid, r["id"]) for r in refs) if b]
+        return _start(lab, pid, "chat", lambda: lab.chat(pid, text, images=urls), payload.wait)
     return _start(lab, pid, "chat", lambda: lab.chat(pid, text), payload.wait)
 
 
