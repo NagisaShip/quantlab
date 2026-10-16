@@ -35,6 +35,7 @@ import { appConfirm, appPrompt } from '../components/dialog'
 import { ShareButton } from '../components/Share'
 import { PresenceBar, ShareToButton, ShareToModal, usePresence } from '../components/Social'
 import { QuotePicker, QuoteTray, quotePrefix, type Quote } from '../components/chat/Quotes'
+import { usePlatformCommands } from '../components/chat/platformCommands'
 
 export const SYMBOL_PICKS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT', 'DOGE/USDT', 'ADA/USDT', 'AVAX/USDT', 'LINK/USDT', 'TON/USDT']
 /** 设置 · 模型 里的「AI 生成简短建议」开关（本机偏好，默认开） */
@@ -739,6 +740,7 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
   const [quotes, setQuotes] = useState<Quote[]>([])
   const [quotePicking, setQuotePicking] = useState(false)
   const [sharing, setSharing] = useState(false)
+  const platformCmds = usePlatformCommands([])
   const addQuote = (q: Quote) => { setQuotes((prev) => (prev.some((x) => x.key === q.key) ? prev : [...prev, q].slice(-6))); setQuotePicking(false) }
   // 多人协作：谁也在看这个对话；有人在输入（草稿非空）时显示为「正在编辑」
   const presence = usePresence('project', id, !!input.trim())
@@ -910,7 +912,8 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
             </div>
           )}
           <Composer value={input} onChange={setInput} onSend={() => send()} running={running} onStop={() => act(() => lab.stop(id))} onLongText={(f) => onFiles([f])}
-            commands={commands} placeholder={running ? '正在处理，可随时停止' : ui ? ui.replyPlaceholder : '回复…'}
+            commands={[...commands, ...platformCmds.filter((p) => !commands.some((c) => c.cmd === p.cmd))]}
+            placeholder={running ? '正在处理，可随时停止' : ui ? ui.replyPlaceholder : '回复…'}
             hasAttachments={attachments.length > 0}
             onPasteFiles={(files) => onFiles(files)}
             above={(goalOpen || (running && project.job?.kind === 'autopilot') || attachments.length || quotes.length) ? (<>

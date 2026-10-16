@@ -9,6 +9,7 @@ import { get } from '../../http'
 import { lab, labPrefs, type Effort, type LabKind, type LabMeta } from '../../apiLab'
 import { models } from '../../apiModels'
 import { Composer, ModelMenu, type SlashCommand } from '../../components/chat/Composer'
+import { usePlatformCommands } from '../../components/chat/platformCommands'
 import { Sparkline } from '../../components/charts2'
 import { QuantBot, QuantEyes, useBotFlash, viewFromSignal, type BotView } from '../../components/QuantBot'
 import { store } from '../../components/prefs'
@@ -62,10 +63,12 @@ export function HomeAsk({ onNavigate, notify, brief }: { onNavigate: (k: string)
   const [model, setModel] = useState(() => store.get('qa.lab.model', ''))
   const [effort, setEffort] = useState<Effort>(() => store.get('qa.lab.effort', 'medium') as Effort)
   useEffect(() => { lab.meta().then(setMeta).catch(() => undefined) }, [])
-  const commands: SlashCommand[] = [
+  const baseCmds: SlashCommand[] = [
     ...TYPE_CMDS.map((c) => ({ cmd: c.cmd, group: '研究类型', arg: '[想法]', help: `${c.help}（也可用 ${c.alias[0]}）` })),
     ...EXTRA_CMDS,
   ]
+  // 平台上的每个功能都能从首页直接用斜杠命令发起（新对话里 AI 会直接调用对应工具）
+  const commands = [...baseCmds, ...usePlatformCommands(baseCmds)]
 
   const start = async () => {
     const t = text.trim()

@@ -131,3 +131,17 @@ main { max-width: var(--page-max, 1480px); }
 .return-pill-go { border: 0; background: none; color: var(--accent); font-weight: 600; font-size: 12.5px; padding: 5px 12px; cursor: pointer; }
 .return-pill-go:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
 .return-pill-x { border: 0; border-left: 1px solid var(--accent-line); background: none; color: var(--muted); padding: 5px 9px; cursor: pointer; }
+
+/* ---------- 全站：不显示滚动条（滚轮 / 触控板 / 触摸照常滚动），界面更干净 ---------- */
+* { scrollbar-width: none; }
+*::-webkit-scrollbar { display: none; width: 0; height: 0; }
+
+/* ---------- 文字默认不可选中：只有内容（对话、帖子、报告、代码、表格数据、输入框）可以选中复制 ---------- */
+body { -webkit-user-select: none; user-select: none; }
+input, textarea, select, [contenteditable="true"],
+.md, .cb-user-bubble, .chat-msg, .comment-body, .issue-reply-body, .rp-doc, .rich-preview,
+pre, code, .code-editor, .code-view, .cm-editor, .qb-math-src,
+.qb-table td, .md-html td, .table-wrap td, .kv dd, .mono, .num, .selectable,
+.toast, .callout, .auth-error {
+  -webkit-user-select: text; user-select: text;
+}

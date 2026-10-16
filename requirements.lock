@@ -26,6 +26,15 @@ starlette==1.6.0              # [verified]
 typing-extensions==4.16.0     # [verified]
 typing-inspection==0.4.4      # [verified]
 uvicorn==0.53.0               # [verified]
+optuna==5.0.0                 # [verified]  智能调参（Agent 的 start_tuning 依赖它）
+alembic==1.20.0               # [verified]  optuna 依赖
+colorlog==6.12.0              # [verified]  optuna 依赖
+mako==1.4.3                   # [verified]  optuna 依赖
+markupsafe==3.0.4             # [verified]  optuna 依赖
+packaging==26.3               # [verified]  optuna 依赖
+sqlalchemy==2.1.4             # [verified]  optuna 依赖
+tqdm==4.70.1                  # [verified]  optuna 依赖
+colorama==0.4.6 ; sys_platform == "win32"   # [verified]  tqdm 依赖
 psycopg==3.2.10               # [pinned]    PostgreSQL 驱动（测试用的是源码构建的 psycopg 3 + libpq 16）
 psycopg-binary==3.2.10        # [pinned]
 pyarrow==22.0.0               # [pinned]    Parquet K 线缓存（缺省时退回 JSON，功能等价）

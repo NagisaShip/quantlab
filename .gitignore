@@ -72,3 +72,6 @@ playwright-report/
 
 # ---- 本机整理出来的旧文件（不入库）----
 _archive/
+
+# ---- Claude Code 本地会话文件（工作树、启动配置）----
+.claude/

@@ -1366,6 +1366,9 @@ class StrategyLab:
                 "如果我没有列出方向，先提出 3 个明显不同、可以独立验证的方向；完成后并排对比，"
                 "按证据质量（是否正式回测、样本外、2 倍成本）而不是收益高低给出结论。"
             )
+        elif head.startswith("/") and self.tools.platform_tools:
+            # 平台上的每个功能都能用斜杠命令调用：/<工具名> 参数说明 → 让 AI 直接调用这个工具（审批规则照旧）
+            text = platform_slash(head[1:], rest) or text
         try:
             self._chat_llm(pid, text, images=images)
         except LLMError as exc:
@@ -4265,6 +4268,21 @@ def affirms(text: str, term: str) -> bool:
         if not _NEGATION.search(head):
             return True
     return False
+
+
+def platform_slash(name: str, rest: str) -> str:
+    """研究者输入 /<平台工具名>：改写成「请调用这个工具」的明确指令；不是平台工具返回空串。"""
+    from . import platform_tools as PT
+
+    tool = PT.registry().get(name)
+    if tool is None:
+        return ""
+    params = "、".join(f"{k}（{(v or {}).get('description', '')}）" for k, v in tool.params.items()) or "无"
+    return (
+        f"【斜杠命令 /{name}】请直接调用平台工具「{tool.title}」（{name}）。"
+        f"我给的说明 / 参数：{rest or '（没有，按当前对话的上下文补齐）'}。"
+        f"该工具的参数：{params}。缺参数时先用只读工具查到再调用；调用后用一两句话汇报结果。"
+    )
 
 
 def _clip(text: str, n: int) -> str:
