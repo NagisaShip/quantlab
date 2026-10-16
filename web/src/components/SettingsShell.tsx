@@ -41,29 +41,152 @@ export const SETTINGS_GROUPS: { group: string; items: SettingsItem[] }[] = [
   },
 ]
 
+/**
+ * 设置小项索引：搜索时除了匹配页面，还能直接匹配页面里的某一项（例如「联网搜索」「单轮工具调用上限」），
+ * 点击后跳到对应页面并滚动定位、高亮那一项。text 是页面上该项标题的文字（用来定位），keywords 补充同义词。
+ */
+export interface SettingsEntry { page: string; text: string; keywords?: string }
+export const SETTINGS_ENTRIES: SettingsEntry[] = [
+  { page: 'settings/account', text: '双因素认证', keywords: '两步验证 TOTP 验证器 恢复码 安全' },
+  { page: 'settings/account', text: '修改密码', keywords: '密码 当前密码 新密码' },
+  { page: 'settings/workspace', text: '工作区名称', keywords: '名称 改名' },
+  { page: 'settings/workspace', text: '报表时区', keywords: '时区 timezone' },
+  { page: 'settings/workspace', text: '新建工作区', keywords: '创建' },
+  { page: 'settings/workspace', text: '凭邀请码加入', keywords: '加入 邀请码' },
+  { page: 'settings/quota', text: '运行额度', keywords: '同时进行的任务 每日运行次数 bar 纸面模拟 python 策略' },
+  { page: 'settings/quota', text: '用量', keywords: '工作区用量 上限 自定义上限 配额 回测次数 CPU token 数 LLM 调用 下载量 存储' },
+  { page: 'settings/quota', text: 'AI 模型额度', keywords: '模型额度 申请 提升 审批' },
+  { page: 'settings/quota', text: '我的模型用量', keywords: '费用 token 缓存' },
+  { page: 'settings/quota', text: '工作区模型用量', keywords: '成员用量 费用' },
+  { page: 'settings/members', text: '成员与邀请', keywords: '邀请 角色 共享模型 个人模型 限额' },
+  { page: 'settings/node', text: '节点状态', keywords: '运行节点 心跳' },
+  { page: 'settings/node', text: '交易所时钟', keywords: '时钟偏差 时间同步' },
+  { page: 'settings/node', text: '聊天机器人', keywords: 'telegram 飞书 绑定 通知' },
+  { page: 'settings/system', text: '网络可用性实测', keywords: '网络 连通 交易所 延迟' },
+  { page: 'settings/system', text: 'worker 与策略隔离', keywords: '沙箱 隔离 子进程' },
+  { page: 'settings/lab', text: '新对话的默认设置', keywords: '默认' },
+  { page: 'settings/lab', text: '默认研究类型', keywords: '研究类型 自动 策略 因子 模型' },
+  { page: 'settings/lab', text: '权限模式', keywords: '自动 手动 计划 审批' },
+  { page: 'settings/lab', text: '思考努力程度', keywords: 'effort 推理' },
+  { page: 'settings/lab', text: 'AI 生成简短建议', keywords: '建议 后续' },
+  { page: 'settings/lab', text: '团队讨论结论自动加入上下文', keywords: '团队 discuss 上下文' },
+  { page: 'settings/lab', text: '单轮工具调用上限', keywords: '工具调用 上限 次数' },
+  { page: 'settings/lab', text: '涨跌配色', keywords: '红涨绿跌 绿涨红跌 颜色' },
+  { page: 'settings/lab', text: '主题', keywords: '深色 浅色 暗色 dark' },
+  { page: 'settings/lab', text: '首页关注列表', keywords: '关注 标的 周期 首页' },
+  { page: 'settings/lab', text: '浏览器直连交易所', keywords: '行情 直连 IP 封禁 限流 请求' },
+  { page: 'models', text: '工作区共享', keywords: '共享模型 服务商 密钥' },
+  { page: 'models', text: '用途路由', keywords: '路由 降级链 fallback 重试' },
+  { page: 'models', text: '模型目录', keywords: '模型列表 上下文 价格' },
+  { page: 'models', text: '计费与限额', keywords: '价格 限额 费用' },
+  { page: 'models', text: '连通性测试', keywords: '测试 调用 验证 密钥' },
+  { page: 'models', text: '联网搜索', keywords: '搜索 google 谷歌 brave tavily serper searxng rss 来源 密钥 web search' },
+  { page: 'models', text: '对话偏好', keywords: '建议 工具调用' },
+  { page: 'long-running', text: '定时调度', keywords: 'cron 夜班 晨报' },
+  { page: 'long-running', text: '通知型 Agent', keywords: '推送 通知' },
+]
+
+/** 跳转后要定位的设置项文字：SettingsShell 在内容渲染后取走并滚动过去。 */
+let pendingLocate = ''
+/** 从别处（全局搜索）跳进设置并定位到某一项：先调它，再导航到 entry.page。 */
+export function locateSettingAfterNav(text: string) {
+  pendingLocate = text
+}
+
+/** 在设置内容区里找标题文字匹配的那一项（标题、加粗标签、表单项），滚动到中间并短暂高亮。 */
+function locate(root: HTMLElement | null, text: string): boolean {
+  if (!root || !text) return false
+  const needle = text.trim().toLowerCase()
+  const cands = root.querySelectorAll<HTMLElement>('h2, h3, h4, .set-row b, .panel-title, .panel h2, label > span, .field-label, th, legend, summary')
+  let hit: HTMLElement | null = null
+  for (const el of cands) {
+    const t = (el.textContent || '').trim().toLowerCase()
+    if (t === needle) { hit = el; break }
+    if (!hit && t.startsWith(needle)) hit = el
+  }
+  if (!hit) for (const el of cands) if ((el.textContent || '').toLowerCase().includes(needle)) { hit = el; break }
+  if (!hit) return false
+  const block = (hit.closest('.set-row, .set-section, .panel, .field, section') as HTMLElement | null) || hit
+  block.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  block.classList.remove('set-flash')
+  void block.offsetWidth
+  block.classList.add('set-flash')
+  window.setTimeout(() => block.classList.remove('set-flash'), 2000)
+  return true
+}
+
+/** 部署管理员才看得到的「运维」分组。 */
+export const ADMIN_GROUP: { group: string; items: SettingsItem[] } = {
+  group: '部署运维',
+  items: [
+    { key: 'admin/overview', label: '服务器总览', icon: 'overview', keywords: '运维 服务器 磁盘 数据库 worker 运行队列 健康' },
+    { key: 'admin/users', label: '账号管理', icon: 'accounts', keywords: '用户 封禁 解封 重置密码 下线 管理员 创建账号' },
+    { key: 'admin/workspaces', label: '全部工作区', icon: 'teams', keywords: '工作区 停用 恢复' },
+    { key: 'admin/usage', label: '全站模型用量', icon: 'models', keywords: '用量 费用 token 账号 工作区 服务商' },
+    { key: 'admin/announce', label: '公告与平台设置', icon: 'square', keywords: '公告 横幅 开放注册 邀请码' },
+    { key: 'admin/audit', label: '全站审计', icon: 'validation', keywords: '审计 日志 操作记录' },
+  ],
+}
+
 /** 路由（page + arg）落在哪个设置项上。 */
 export function settingsKeyOf(page: string, arg: string): string {
   if (page === 'settings') return `settings/${arg.split('/')[0] || 'workspace'}`
+  if (page === 'admin') return `admin/${arg.split('/')[0] || 'overview'}`
   return page
 }
 
-export function SettingsShell({ current, onNavigate, onClose, badges, children }: {
+export function SettingsShell({ current, onNavigate, onClose, badges, children, isAdmin }: {
   current: string
   onNavigate: (k: string) => void
   onClose: () => void
   badges?: Record<string, string>
   children: ReactNode
+  isAdmin?: boolean
 }) {
   const [q, setQ] = useState('')
   const navRef = useRef<HTMLElement>(null)
   // 手机端导航是一行横向滚动的标签，当前项要滚到可见处
   useEffect(() => { navRef.current?.querySelector('[aria-current="page"]')?.scrollIntoView({ block: 'nearest', inline: 'center' }) }, [current])
   const needle = q.trim().toLowerCase()
-  const groups = SETTINGS_GROUPS.map((g) => ({
+  const all = isAdmin ? [...SETTINGS_GROUPS, ADMIN_GROUP] : SETTINGS_GROUPS
+  const groups = all.map((g) => ({
     ...g,
     items: g.items.filter((i) => !needle || `${g.group} ${i.label} ${i.keywords ?? ''}`.toLowerCase().includes(needle)),
   })).filter((g) => g.items.length)
-  const label = SETTINGS_GROUPS.flatMap((g) => g.items).find((i) => i.key === current)?.label ?? '设置'
+  const label = all.flatMap((g) => g.items).find((i) => i.key === current)?.label ?? '设置'
+  const pageLabel = (key: string) => SETTINGS_GROUPS.flatMap((g) => g.items).find((i) => i.key === key)?.label ?? key
+  const contentRef = useRef<HTMLDivElement>(null)
+  const [, bump] = useState(0)
+  // 小项：静态索引 + 当前页面上实际渲染出来的标题（覆盖索引里没有的项）
+  const entries = (() => {
+    if (!needle) return [] as SettingsEntry[]
+    const out = SETTINGS_ENTRIES.filter((e) => `${e.text} ${e.keywords ?? ''} ${pageLabel(e.page)}`.toLowerCase().includes(needle))
+    const root = contentRef.current
+    if (root) {
+      root.querySelectorAll<HTMLElement>('h3, .set-row b, .panel-title, label > span').forEach((el) => {
+        const t = (el.textContent || '').trim()
+        if (t && t.length <= 30 && t.toLowerCase().includes(needle) && !out.some((e) => e.page === current && e.text === t)) out.push({ page: current, text: t })
+      })
+    }
+    return out.slice(0, 12)
+  })()
+  const go = (e: SettingsEntry) => {
+    setQ('')
+    if (e.page === current) { locate(contentRef.current, e.text); return }
+    pendingLocate = e.text
+    onNavigate(e.page)
+  }
+  // 跳到新页面后等内容（含异步加载的部分）渲染出来再定位，最多等 2 秒
+  useEffect(() => {
+    if (!pendingLocate) return
+    const text = pendingLocate
+    let tries = 0
+    const t = window.setInterval(() => {
+      tries += 1
+      if (locate(contentRef.current, text) || tries > 20) { window.clearInterval(t); pendingLocate = '' }
+    }, 100)
+    return () => window.clearInterval(t)
+  }, [current])
 
   return (
     <div className="set-shell">
@@ -74,7 +197,14 @@ export function SettingsShell({ current, onNavigate, onClose, badges, children }
         </div>
         <label className="set-search">
           <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" aria-hidden="true"><circle cx="7" cy="7" r="4.5" /><path d="m10.4 10.4 3.1 3.1" /></svg>
-          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索设置" aria-label="搜索设置" />
+          <input value={q} onChange={(e) => { setQ(e.target.value); bump((x) => x + 1) }} placeholder="搜索设置或某一项" aria-label="搜索设置"
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') setQ('')
+              if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+                if (entries[0]) go(entries[0])
+                else if (groups[0]?.items[0]) { setQ(''); onNavigate(groups[0].items[0].key) }
+              }
+            }} />
         </label>
         <nav aria-label="设置导航" ref={navRef}>
           {groups.map((g) => (
@@ -89,12 +219,23 @@ export function SettingsShell({ current, onNavigate, onClose, badges, children }
               ))}
             </div>
           ))}
-          {!groups.length && <div className="set-none">没有匹配的设置</div>}
+          {entries.length > 0 && (
+            <div className="set-group set-entries anim-fade">
+              <div className="set-group-label">设置项</div>
+              {entries.map((e) => (
+                <button key={`${e.page}:${e.text}`} className="set-item set-entry" onClick={() => go(e)} title={`跳到「${pageLabel(e.page)}」的「${e.text}」`}>
+                  <span>{e.text}</span>
+                  <small>{pageLabel(e.page)}</small>
+                </button>
+              ))}
+            </div>
+          )}
+          {!groups.length && !entries.length && <div className="set-none">没有匹配的设置</div>}
         </nav>
       </aside>
       <section className="set-body" aria-label={label}>
         <button className="set-close desktop-only" onClick={onClose} aria-label="关闭设置">×</button>
-        <div className="set-content page-enter" key={current}>{children}</div>
+        <div className="set-content page-enter" key={current} ref={contentRef}>{children}</div>
       </section>
     </div>
   )

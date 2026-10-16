@@ -569,7 +569,7 @@ class MissionRunner:
             "1. 已验证的事实（注明出处）；2. 未验证的假设（写清楚怎么验证）；"
             "3. 被剔除的无依据结论（例如没有数据支持的收益 / 回撤预测）；4. 分歧与你的判断；5. 下一步行动项。"
         )
-        step = self.teams._invoke(role, task, max_steps=3)
+        step = self.teams._invoke(role, task, max_steps=2, use_tools=False)
         self._finish_speech(mid, holder["seq"], role, step, "synthesis")
         final = next((u for u in self.store.feed(mid) if u["seq"] == holder["seq"]), {})
         self.store.patch(mid, conclusion=final.get("content", ""))

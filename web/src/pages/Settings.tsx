@@ -3,7 +3,7 @@ import { fmtTime, v3, type LimitMetric, type LimitRule, type LimitWindow, type M
 import {
   KIND_LABEL, MODE_LABEL, RUN_STATE, v4,
   type AuditItem, type Invite, type Me, type Member, type NetworkStatus, type Role, type Run, type RunEvent,
-  type TotpStatus, type UsagePanel as UsagePanelData,
+  type TotpStatus, type UsageItem, type UsagePanel as UsagePanelData,
 } from '../api3'
 import { LimitBars, LimitEditor, METRICS, UsageSummary, WINDOWS, fmtCost, fmtTokens } from '../components/modelUsage'
 import { Callout, EmptyState, Field, Heading, Loading, Modal, Panel, Tag } from '../components/ui'
@@ -11,6 +11,7 @@ import NodeTab from './NodeTab'
 import LabPrefsTab from './settings/LabPrefs'
 import type { PageProps } from './types'
 import { appConfirm } from '../components/dialog'
+import { memberDefaults } from '../apiCollab'
 
 type Tab = 'workspace' | 'quota' | 'members' | 'runs' | 'node' | 'audit' | 'system' | 'account' | 'lab'
 const TABS: { key: Tab; label: string }[] = [
@@ -100,7 +101,7 @@ function WorkspaceTab({ me, isAdmin, notify, onSaved }: { me: Me; isAdmin: boole
 
 const STATUS_LABEL: Record<QuotaRequest['status'], [string, string]> = { pending: ['待处理', 'warn'], approved: ['已批准', 'pass'], denied: ['已拒绝', 'fail'] }
 const ruleText = (r: LimitRule) =>
-  `每 ${WINDOWS.find(([k]) => k === r.window)?.[1]} ${r.metric === 'cost' ? `¥${r.limit}` : `${fmtTokens(Number(r.limit))} token`}`
+  `${WINDOWS.find(([k]) => k === r.window)?.[1]} ${r.metric === 'cost' ? `¥${r.limit}` : `${fmtTokens(Number(r.limit))} token`}`
 
 /**
  * 额度与升级：AI 模型额度——成员看自己的限额并申请提升，管理员审批（批准后自动更新该成员的限额）
@@ -163,7 +164,7 @@ function QuotaTab({ me, isAdmin, notify, onSaved, onNavigate }: {
                 {METRICS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
               </select>
               <select value={ask.window} onChange={(e) => setAsk({ ...ask, window: e.target.value as LimitWindow })} aria-label="时间段">
-                {WINDOWS.map(([k, l]) => <option key={k} value={k}>每 {l}</option>)}
+                {WINDOWS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
               </select>
               <input type="number" min={0} value={ask.limit} onChange={(e) => setAsk({ ...ask, limit: e.target.value })}
                 placeholder={ask.metric === 'cost' ? '希望的上限（元）' : '希望的上限（token）'} aria-label="希望的上限" />
@@ -232,7 +233,7 @@ function QuotaTab({ me, isAdmin, notify, onSaved, onNavigate }: {
         </label>
         {!isAdmin && <Callout tone="warn">只有工作区管理员可以修改运行额度。</Callout>}
       </section>
-      <UsagePanel />
+      <UsagePanel isAdmin={isAdmin} notify={notify} />
     </div>
   )
 }
@@ -258,21 +259,66 @@ function fmtBytes(v: string): { text: string; exact: string } {
   return { text: `${x.toFixed(1)} ${units[i]}`, exact: `${v} 字节` }
 }
 
-function UsagePanel() {
+/** 字节类上限按 GB 编辑，其余按展示单位编辑；空值 = 不限制。 */
+const GB = 1024 ** 3
+function limitDraft(it: UsageItem): string {
+  if (it.limit === null) return ''
+  return it.unit === '字节' ? String(Number((Number(it.limit) / GB).toFixed(3))) : it.limit
+}
+
+function UsagePanel({ isAdmin, notify }: { isAdmin: boolean; notify: PageProps['notify'] }) {
   const [data, setData] = useState<UsagePanelData | null>(null)
   const [err, setErr] = useState('')
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState<Record<string, string>>({})
+  const [saving, setSaving] = useState(false)
   const load = useCallback(() => {
     v4.usage(30).then((r) => { setData(r); setErr('') }).catch((e) => setErr((e as Error).message))
   }, [])
   useEffect(() => { load(); const t = setInterval(load, 30000); return () => clearInterval(t) }, [load])
 
+  const startEdit = () => {
+    if (!data) return
+    setDraft(Object.fromEntries(data.items.filter((it) => it.quota_key).map((it) => [it.quota_key, limitDraft(it)])))
+    setEditing(true)
+  }
+  const save = async () => {
+    if (!data) return
+    const patch: Record<string, string | null> = {}
+    for (const it of data.items) {
+      if (!it.quota_key || !(it.quota_key in draft)) continue
+      const raw = draft[it.quota_key].trim()
+      if (raw === limitDraft(it)) continue
+      if (!raw) { patch[it.quota_key] = null; continue }
+      const n = Number(raw)
+      if (!Number.isFinite(n) || n < 0) { notify(`「${it.label}」上限要填非负数字，留空表示不限制`, true); return }
+      patch[it.quota_key] = it.unit === '字节' ? String(Math.round(n * GB)) : String(n)
+    }
+    if (!Object.keys(patch).length) { setEditing(false); return }
+    setSaving(true)
+    try {
+      await v4.setUsageLimits(patch)
+      notify(`已更新 ${Object.keys(patch).length} 项上限`)
+      setEditing(false)
+      load()
+    } catch (e) {
+      notify((e as Error).message, true)
+    } finally {
+      setSaving(false)
+    }
+  }
+
   if (err) return <Panel title="用量"><Callout tone="fail">用量加载失败：{err}<button className="button small ghost" style={{ marginLeft: 10 }} onClick={load}>重试</button></Callout></Panel>
   if (!data) return <Panel title="用量"><Loading /></Panel>
   return (
-    <Panel title="用量" subtitle={`按工作区计量（${data.day}，UTC 自然日）· 跨工作区互不可见`}>
+    <Panel title="用量" subtitle={`按工作区计量（${data.day}，UTC 自然日）· 跨工作区互不可见`}
+      actions={isAdmin ? (editing ? <>
+        <button className="button small ghost" onClick={() => setEditing(false)} disabled={saving}>取消</button>
+        <button className="button small" onClick={save} disabled={saving}>{saving ? '保存中…' : '保存上限'}</button>
+      </> : <button className="button small ghost" onClick={startEdit}>自定义上限</button>) : undefined}>
       <div className="table-wrap">
         <table>
-          <thead><tr><th>计量项</th><th className="right">已用</th><th className="right">上限</th><th className="right">占比</th><th>口径</th></tr></thead>
+          <thead><tr><th>计量项</th><th className="right">已用</th><th className="right">上限{editing && <small className="muted">（留空 = 不限制）</small>}</th><th className="right">占比</th><th>口径</th></tr></thead>
           <tbody>
             {data.items.map((it) => {
               const isBytes = it.unit === '字节'
@@ -281,7 +327,15 @@ function UsagePanel() {
                 <tr key={it.metric}>
                   <td>{it.label}</td>
                   <td className="right mono" title={used.exact}>{used.text}</td>
-                  <td className="right mono">{it.limit === null ? '不限' : (isBytes ? fmtBytes(it.limit).text : it.limit)}</td>
+                  <td className="right mono">
+                    {editing && it.quota_key ? (
+                      <span className="usage-limit-edit anim-fade">
+                        <input type="number" min={0} step="any" value={draft[it.quota_key] ?? ''} placeholder="不限" aria-label={`${it.label}上限`}
+                          onChange={(e) => setDraft({ ...draft, [it.quota_key]: e.target.value })} style={{ width: 120, textAlign: 'right' }} />
+                        <small className="muted"> {isBytes ? 'GB' : it.unit}</small>
+                      </span>
+                    ) : it.limit === null ? '不限' : (isBytes ? fmtBytes(it.limit).text : it.limit)}
+                  </td>
                   <td className="right">
                     {it.used_percent === null ? '—' : (
                       <span className={it.exhausted ? 'negative' : undefined}>
@@ -296,7 +350,7 @@ function UsagePanel() {
           </tbody>
         </table>
       </div>
-      <p className="hint" style={{ marginTop: 10 }}>{data.note}</p>
+      <p className="hint" style={{ marginTop: 10 }}>{data.note}{isAdmin ? ' 管理员可点「自定义上限」调整每一项；改动记入审计日志。' : ' 上限由工作区管理员设定。'}</p>
     </Panel>
   )
 }
@@ -382,6 +436,7 @@ function MembersTab({ me, isAdmin, notify }: { me: Me; isAdmin: boolean; notify:
           </tbody>
         </table>
       </div>
+      {isAdmin && <DefaultLimits notify={notify} />}
       {isAdmin && (
         <>
           <h3 className="section-title" style={{ marginTop: 22 }}>邀请成员</h3>
@@ -436,6 +491,23 @@ function MembersTab({ me, isAdmin, notify }: { me: Me; isAdmin: boolean; notify:
         </Modal>
       )}
     </div>
+  )
+}
+
+/** 新成员默认限额：邀请来的成员没有单独设过限额时，按这里计算（每日 / 每周 / 每月 / 累计 / 滚动）。 */
+function DefaultLimits({ notify }: { notify: PageProps['notify'] }) {
+  const [rules, setRules] = useState<LimitRule[] | null>(null)
+  useEffect(() => { memberDefaults.get().then((r) => setRules(r.limits)).catch(() => setRules([])) }, [])
+  if (!rules) return null
+  return (
+    <section className="set-section" style={{ marginTop: 22 }}>
+      <h3 className="section-title">新成员默认限额</h3>
+      <p className="hint" style={{ marginTop: 0 }}>你邀请来的成员使用工作区共享模型（你的 API 密钥）时，没有单独设过限额的都按这里计算。可以组合多条，例如「每日 ¥5 + 每周 ¥20 + 累计 ¥200」。单独设置过的成员以表格里的为准。</p>
+      <LimitEditor rules={rules} onChange={setRules} empty="不限额" />
+      <button type="button" className="button small primary" style={{ marginTop: 8 }} onClick={async () => {
+        try { setRules((await memberDefaults.save(rules.filter((r) => Number(r.limit) > 0))).limits); notify('默认限额已保存') } catch (e) { notify((e as Error).message, true) }
+      }}>保存默认限额</button>
+    </section>
   )
 }
 

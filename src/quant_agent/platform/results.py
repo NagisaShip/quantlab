@@ -190,7 +190,18 @@ class LocalResultBackend:
         with self._lock:
             if fmt == "parquet":
                 cols = {c: [r[i] for r in rows] for i, c in enumerate(columns)}
-                pq.write_table(pa.table(cols), tmp, compression="zstd")
+                # 行式数组（成交、日志…）的元素是键不固定的对象：parquet 会推成结构体并给缺的键补 None，
+                # 读回就不再逐元素相等。这些列按 JSON 文本存，读回原样还原。
+                as_json = [c for c in columns if c in ROW_SERIES]
+                for c in as_json:
+                    cols[c] = [None if v is None else json.dumps(v, ensure_ascii=False, default=str) for v in cols[c]]
+                table = pa.table(cols).replace_schema_metadata(
+                    {
+                        b"quantlab_lengths": json.dumps(payload.get("lengths") or {}).encode("utf-8"),
+                        b"quantlab_json_cols": json.dumps(as_json).encode("utf-8"),
+                    }
+                )
+                pq.write_table(table, tmp, compression="zstd")
             else:
                 with open(tmp, "w", encoding="utf-8") as fh:
                     fh.write(json.dumps({**payload, "format": fmt}, ensure_ascii=False, separators=(",", ":")))
@@ -209,6 +220,13 @@ class LocalResultBackend:
             table = pq.read_table(pqp)
             d = table.to_pydict()
             names = list(d)
+            raw = (table.schema.metadata or {}).get(b"quantlab_json_cols")
+            try:
+                json_cols = set(json.loads(raw)) if raw else set()
+            except (ValueError, TypeError):
+                json_cols = set()
+            for c in json_cols & set(names):
+                d[c] = [None if v is None else json.loads(v) for v in d[c]]
             return [[d[c][i] for c in names] for i in range(table.num_rows)]
         js = self.path_for(key, FALLBACK_FORMAT)
         if not js.exists():
@@ -234,7 +252,17 @@ class LocalResultBackend:
         pqp = self.path_for(key, "parquet")
         if pq is not None and pqp.exists():
             pf = pq.ParquetFile(pqp)
-            return {"format": "parquet", "columns": list(pf.schema_arrow.names), "rows": pf.metadata.num_rows}
+            raw = (pf.schema_arrow.metadata or {}).get(b"quantlab_lengths")
+            try:
+                lengths = dict(json.loads(raw)) if raw else {}
+            except (ValueError, TypeError):
+                lengths = {}
+            return {
+                "format": "parquet",
+                "columns": list(pf.schema_arrow.names),
+                "rows": pf.metadata.num_rows,
+                "lengths": lengths,
+            }
         js = self.path_for(key, FALLBACK_FORMAT)
         if not js.exists():
             return None
@@ -399,6 +427,11 @@ def from_columns(payload: dict[str, Any], rows: list[list[Any]]) -> dict[str, li
     for c, n in lengths.items():
         if c in out:
             out[c] = out[c][:n]
+    # 旧 parquet 文件没记原始长度：行式数组（日志、成交…）的元素都是对象，尾部的 None 只可能是补位
+    for c in ROW_SERIES:
+        if c in out and c not in lengths:
+            while out[c] and out[c][-1] is None:
+                out[c].pop()
     return out
 
 

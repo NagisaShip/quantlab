@@ -141,8 +141,21 @@ class Agent:
                 )
                 messages.append(Message(role="tool", content=output, tool_call_id=call.id, name=call.name))
 
-        run.status = "done"  # 达到步数上限，返回已有内容
+        run.status = "done"  # 达到步数上限：最后一步多半是工具调用、没有文字，再要一次不带工具的最终答复
         run.final = run.steps[-1].content if run.steps else ""
+        if not run.final.strip() and run.steps:
+            messages.append(
+                Message(role="user", content="已达到工具调用步数上限。请不要再调用工具，直接根据以上信息给出最终答复。")
+            )
+            try:
+                result = self.router.chat(messages, role=self.role, model=self.model, temperature=self.temperature)
+                run.final = result.content or ""
+                run.model = f"{result.provider}/{result.model}"
+                run.usage = result.usage or run.usage
+                run.steps.append(AgentStep(index=self.max_steps, kind="llm", content=run.final, model=run.model))
+            except Exception as e:
+                run.final = ""
+                run.steps.append(AgentStep(index=self.max_steps, kind="llm", content=f"最终答复失败: {e}"))
         run.ended_at = int(time.time() * 1000)
         return run
 

@@ -37,6 +37,10 @@ PARAMS_FILE = "params.json"
 VERSIONS_DIR = "versions"
 SPEC_FILE = "SPEC.md"
 
+# 保存钩子：平台层在这里登记「谁（人还是 Agent）改出了哪个版本」（编辑人员标记、策略血缘图）。
+# 命令行与单元测试里没有注册时什么都不做；钩子出错不影响保存本身。
+SAVE_HOOKS: list[Any] = []
+
 SLUG_RE = re.compile(r"[^a-zA-Z0-9_\-]+")
 VALID_SLUG = re.compile(r"[a-z0-9][a-z0-9_\-]{0,80}")
 
@@ -279,6 +283,14 @@ class StrategyRepository:
         meta_path.write_text(json.dumps(meta.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
         rec = self.get(slug)
         assert rec is not None
+        if previous is None or previous.version != version:
+            for hook in SAVE_HOOKS:
+                try:
+                    hook(self, rec, previous.version if previous else "", origin)
+                except Exception:  # noqa: BLE001 - 标记失败不能让保存失败
+                    import logging
+
+                    logging.getLogger("quantlab.repo").exception("策略保存钩子失败：%s", slug)
         return rec
 
     def update_meta(self, slug: str, **changes: Any) -> StrategyRecord | None:

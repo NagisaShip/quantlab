@@ -11,6 +11,7 @@ import time
 from types import SimpleNamespace
 from typing import Any, Literal
 
+from ..timeframes import is_timeframe
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
@@ -852,7 +853,7 @@ def assemble(payload: AssembleIn) -> dict:
         from .schemas import NewStrategyIn
 
         c = out["config"]
-        tf = c["timeframe"] if c["timeframe"] in ("1m", "5m", "15m", "30m", "1h", "4h", "1d") else "4h"
+        tf = c["timeframe"] if is_timeframe(c["timeframe"]) else "4h"
         res = new_strategy(
             NewStrategyIn(
                 name=c["name"],

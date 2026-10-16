@@ -204,3 +204,9 @@ main.full > .page-enter > * { flex: 1 1 0%; min-height: 0; }
 .app-dialog-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 20px 16px; }
 .button.danger-solid { background: var(--danger, #d64545); border-color: var(--danger, #d64545); color: #fff; }
 .button.danger-solid:hover:not(:disabled) { filter: brightness(1.06); }
+
+/* 审批卡片：左侧平台标识，头顶弹出一个问号（弹出 → 轻微回弹 → 慢慢浮动） */
+@keyframes m-q-pop { 0% { opacity: 0; transform: translate(-2px, 6px) scale(.3); } 70% { opacity: 1; transform: translate(0, -2px) scale(1.12); } 100% { opacity: 1; transform: none; } }
+@keyframes m-q-float { 0%, 100% { transform: none; } 50% { transform: translateY(-2px); } }
+.approval-q { animation: m-q-pop var(--dur-4) var(--ease-spring) backwards, m-q-float 2.4s var(--ease-in-out) var(--dur-4) infinite; }
+@media (prefers-reduced-motion: reduce) { .approval-q { animation: none; } }

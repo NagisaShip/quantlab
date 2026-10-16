@@ -114,6 +114,14 @@ export interface MarketEvent {
 
 export interface LiqStats { running: boolean; messages?: number; last_ts?: number | null; error?: string | null; [k: string]: unknown }
 
+export interface AutoSync {
+  enabled: boolean
+  interval_hours: number
+  last_run: number | null
+  last_result: { groups: number; datasets: number; errors: string[]; at: number } | null
+  due?: boolean
+}
+
 export const datahub = {
   connectors: () => get<{ connectors: Connector[]; field_scope: Record<string, string>; can_edit_keys: boolean }>('/api/datahub/connectors'),
   datasets: () => get<{ datasets: Dataset[] }>('/api/datahub/datasets'),
@@ -122,6 +130,9 @@ export const datahub = {
   sync: (p: { connector: string; symbols?: string[]; period?: string; series?: string; name?: string; start?: number; wait?: boolean }) =>
     post<{ ok: boolean; queued?: boolean; datasets?: Dataset[]; errors?: { key: string; error: string }[] }>('/api/datahub/sync', p),
   importCsv: (p: { name: string; text: string; symbol?: string; lag_hours?: number }) => post<{ dataset: Dataset }>('/api/datahub/import', p),
+  auto: () => get<AutoSync>('/api/datahub/auto'),
+  setAuto: (enabled: boolean, interval_hours: number) => post<AutoSync>('/api/datahub/auto', { enabled, interval_hours }),
+  autoRun: () => post<{ ok: boolean; queued: boolean }>('/api/datahub/auto/run'),
   setKey: (connector: string, key: string) => post<{ ok: boolean; has_key: boolean }>('/api/datahub/keys', { connector, key }),
   events: (p: { kind?: string; coin?: string; limit?: number } = {}) => {
     const q = new URLSearchParams(Object.entries(p).filter(([, v]) => v !== undefined && v !== '').map(([k, v]) => [k, String(v)]))

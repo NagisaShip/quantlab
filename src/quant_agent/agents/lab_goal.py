@@ -17,6 +17,8 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
+from ..timeframes import TimeframeTable
+
 # 指标目录：键 → (中文名, 单位, 默认方向, 合理区间提示)
 #   单位 pct 表示小数（0.2 = 20%），num 为普通数值，int 为整数
 METRICS: dict[str, dict[str, Any]] = {
@@ -42,7 +44,7 @@ LEGACY = {
 }
 LEGACY_BY_METRIC = {m: k for k, (m, _) in LEGACY.items()}
 
-TIMEFRAMES = ("1m", "5m", "15m", "30m", "1h", "4h", "1d")
+TIMEFRAMES = TimeframeTable({k: 1 for k in ("1m", "5m", "15m", "30m", "1h", "4h", "1d")}, lambda ms: 1)  # 任意合法周期都算
 TF_MS = {
     "1m": 60_000,
     "5m": 300_000,
@@ -397,13 +399,13 @@ def parse_goal_text(text: str) -> dict[str, Any]:
             rest = re.sub(r"\b(BTC|ETH|SOL|BNB|XRP|DOGE|ADA|AVAX|LINK|DOT)\b", " ", rest, flags=re.I)
 
     # 3. 周期
-    tf = re.search(r"\b(1m|5m|15m|30m|1h|4h|1d)\b|(\d+)\s*(分钟|小时|日线|天)", s, re.I)
+    tf = re.search(r"\b(\d{1,4}(?:ms|s|m|h|d))\b|(\d+)\s*(毫秒|秒|分钟|小时|日线|天)", s, re.I)
     if tf:
         if tf.group(1):
             spec["timeframe"] = tf.group(1).lower()
         else:
             n, u = int(tf.group(2)), tf.group(3)
-            cand = {"分钟": f"{n}m", "小时": f"{n}h", "日线": "1d", "天": "1d"}[u]
+            cand = {"毫秒": f"{n}ms", "秒": f"{n}s", "分钟": f"{n}m", "小时": f"{n}h", "日线": "1d", "天": "1d"}[u]
             if cand in TIMEFRAMES:
                 spec["timeframe"] = cand
         rest = rest.replace(tf.group(0), " ", 1)

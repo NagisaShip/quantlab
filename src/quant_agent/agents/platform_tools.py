@@ -26,6 +26,8 @@ SCENES: dict[str, dict[str, str]] = {
     "trading": {"label": "模拟交易", "hint": "纸面模拟与交易所模拟盘：查看、启动、停止"},
     "validation": {"label": "上线验证", "hint": "晋级关卡、真实度报告、压力演练、值守员"},
     "checkup": {"label": "策略体检与调参", "hint": "未来函数、预热、成本翻倍、参数平台、红队意见；智能调参"},
+    "library": {"label": "研究库与台账", "hint": "因子库、模型库、组合与执行方案、试验台账、实盘对照；删除记录（需审批）"},
+    "collab": {"label": "协作与广场", "hint": "发帖到策略广场、在群组里发消息、查看与更新指派给我的任务"},
 }
 # 页面 → 默认加载的场景
 PAGE_SCENES: dict[str, list[str]] = {
@@ -36,15 +38,34 @@ PAGE_SCENES: dict[str, list[str]] = {
     "strategy": ["strategy"],
     "optimize": ["strategy", "checkup"],
     "data": ["data"],
-    "factors": ["data"],
+    "factors": ["data", "library"],
+    "modellib": ["library"],
+    "portfolio": ["library"],
+    "execution": ["library"],
+    "discipline": ["library"],
     "paper": ["trading"],
     "demo": ["trading"],
-    "live": ["trading"],
+    "live": ["trading", "library"],
     "validation": ["validation", "trading"],
     "checkup": ["checkup", "strategy"],
     "home": ["strategy", "trading"],
+    "square": ["collab", "strategy"],
+    "post": ["collab", "strategy"],
+    "groups": ["collab", "strategy"],
 }
 RISK_LABEL = {"read": "只读", "run": "新建记录", "confirm": "需要你确认"}
+
+#: 审批类别：研究室的权限模式按类别决定哪些操作先弹审批
+APPROVAL_CATEGORIES: dict[str, dict[str, str]] = {
+    "delete": {"label": "删除记录", "hint": "删除策略、回测、因子等记录（不可恢复）"},
+    "trading": {"label": "模拟交易与晋级", "hint": "启动 / 停止纸面模拟与交易所模拟盘、晋级、微实盘急停"},
+    "config": {"label": "改平台配置", "hint": "校准回测成本等会影响以后所有回测的设置"},
+    "save": {"label": "保存到库", "hint": "把成果保存为平台策略、入因子库 / 模型库 / 方案库"},
+    "edit": {"label": "改代码与目标", "hint": "提交新版本代码 / 规格、修改目标与标的"},
+    "run": {"label": "运行计算", "hint": "回测、评估、训练、团队评审、自动迭代"},
+}
+#: 「自动」权限下规则要求必须先审批的类别
+RULE_REQUIRED = ("delete", "trading", "config")
 
 
 @dataclass
@@ -59,6 +80,13 @@ class PlatformTool:
     handler: Callable[..., Any]
     summary: Callable[[dict[str, Any]], str] | None = None  # confirm 类：卡片上的一句话
     required: list[str] = field(default_factory=list)
+    category: str = ""  # 审批类别；空 = 按 risk 推断（confirm → trading，run → run，read → 不审批）
+
+    @property
+    def approval(self) -> str:
+        if self.category:
+            return self.category
+        return {"confirm": "trading", "run": "run"}.get(self.risk, "")
 
     def schema(self) -> dict[str, Any]:
         return {"type": "object", "properties": self.params, "required": self.required}
@@ -72,6 +100,7 @@ class PlatformTool:
             "when": self.when,
             "risk": self.risk,
             "risk_label": RISK_LABEL[self.risk],
+            "approval": self.approval,
             "params": list(self.params),
         }
 
@@ -627,6 +656,179 @@ def t_microlive_kill() -> Any:
     return {k: out.get(k) for k in ("stopped", "failed")} if isinstance(out, dict) else out
 
 
+def _lib_rows(rows: list[dict[str, Any]], keys: tuple[str, ...]) -> list[dict[str, Any]]:
+    return [{k: r.get(k) for k in keys if r.get(k) is not None} for r in rows[:40]]
+
+
+def t_list_factors(status: str = "", query: str = "") -> Any:
+    from ..research.factor_lib import FactorLibrary
+
+    lib = FactorLibrary(_svc().store)
+    rows = lib.search(query) if query else lib.list(status or None)
+    return _lib_rows(rows, ("id", "name", "expr", "status", "category", "summary", "updated_at"))
+
+
+def t_list_models(status: str = "") -> Any:
+    from ..research.model_lib import ModelLibrary
+
+    lib = ModelLibrary(_svc().store)
+    return {
+        "models": _lib_rows(lib.list(status or None), ("id", "name", "status", "learner", "summary", "updated_at")),
+        "recent_runs": _lib_rows(lib.runs(12), ("id", "name", "learner", "summary", "created_at")),
+    }
+
+
+def t_list_portfolios(status: str = "") -> Any:
+    from ..research.portfolio_lib import PortfolioLibrary
+
+    lib = PortfolioLibrary(_svc().store)
+    return {
+        "schemes": _lib_rows(lib.list(status or None), ("id", "name", "status", "method", "summary", "updated_at")),
+        "recent_runs": _lib_rows(lib.runs(12), ("id", "name", "summary", "created_at")),
+    }
+
+
+def t_list_executions(status: str = "") -> Any:
+    from ..research.execution_lib import ExecutionLibrary
+
+    lib = ExecutionLibrary(_svc().store)
+    return {
+        "schemes": _lib_rows(lib.list(status or None), ("id", "name", "status", "algo", "summary", "updated_at")),
+        "recent_runs": _lib_rows(lib.runs(12), ("id", "name", "summary", "created_at")),
+    }
+
+
+def t_trial_ledger(domain: str = "") -> Any:
+    from ..api.routes_rd import ledger
+
+    out = _call(lambda: ledger(domain or None))
+    if isinstance(out, dict) and "families" in out:
+        out = {**out, "families": out["families"][:30], "recent": (out.get("recent") or [])[:20]}
+    return out
+
+
+def t_fill_comparisons() -> Any:
+    from ..api.routes_live import list_comparisons
+
+    out = _call(list_comparisons)
+    if isinstance(out, dict) and isinstance(out.get("items"), list):
+        out = {"items": out["items"][:20]}
+    return out
+
+
+def t_delete_strategy(slug: str) -> Any:
+    from ..api.routes_studio import delete_strategy
+
+    return _call(lambda: delete_strategy(slug))
+
+
+def t_delete_backtests(ids: list[str]) -> Any:
+    from ..api.routes_research import BatchDeleteIn, batch_delete_backtests
+
+    return _call(lambda: batch_delete_backtests(BatchDeleteIn(ids=[str(i) for i in ids or []][:200])))
+
+
+def t_delete_factor(fid: str) -> Any:
+    from ..research.factor_lib import FactorLibrary
+
+    return {"ok": FactorLibrary(_svc().store).delete(fid)}
+
+
+# ---------------------------------------------------------------------------
+# 协作：Agent 发帖、群消息、任务
+# ---------------------------------------------------------------------------
+AGENT_NAME = "QuantBot"
+
+
+def _agent_source(conversation: str = "") -> dict[str, Any]:
+    from ..platform import context
+
+    ctx = context.current()
+    return {"kind": "agent", "label": AGENT_NAME, "on_behalf_of": ctx.user_name or "", "user_id": ctx.user_id or "",
+            "conversation": conversation}
+
+
+def _agent_name() -> str:
+    from ..platform import context
+
+    return f"{AGENT_NAME}（代 {context.current().user_name}）"
+
+
+def t_community_post(
+    title: str, body: str, type: str = "article", tags: list[str] | None = None, strategy_slug: str = "",
+    backtest_id: str = "", refs: list[dict[str, Any]] | None = None,
+) -> Any:
+    from ..api.routes_community import publish
+    from ..api.schemas import PostIn
+
+    def go() -> Any:
+        payload = PostIn(
+            type=type if type in ("article", "question", "strategy") else "article", title=title, body=body,
+            tags=list(tags or [])[:8], strategy_slug=strategy_slug or None, backtest_id=backtest_id or None,
+            refs=list(refs or []),
+        )
+        post = publish(payload, _agent_source())
+        return {"post_id": post["id"], "title": post["title"], "link": f"#/post/{post['id']}"}
+
+    return _call(go)
+
+
+def t_list_groups() -> Any:
+    from ..platform import context
+
+    ctx = context.current()
+    groups = _svc().collab.list_groups(context.current_workspace(), ctx.user_id or "")
+    return [
+        {"id": g["id"], "name": g["name"], "joined": bool(g["my_role"]), "members": g["member_count"],
+         "open_tasks": g["open_tasks"], "unread": g["unread"]}
+        for g in groups
+    ]
+
+
+def t_group_message(group_id: str, body: str, refs: list[dict[str, Any]] | None = None) -> Any:
+    from ..platform import context
+
+    def go() -> Any:
+        from ..api.routes_collab import _resolve_refs
+
+        ctx = context.current()
+        c = _svc().collab
+        c.require_group_member(group_id, ctx.user_id or "", ws=context.current_workspace())
+        msg = c.post_message(group_id, author_id=ctx.user_id or "", author_name=_agent_name(), body=body,
+                             refs=_resolve_refs(list(refs or [])), author_kind="agent")
+        return {"message_id": msg["id"], "group_id": group_id}
+
+    return _call(go)
+
+
+def t_my_tasks(include_closed: bool = False) -> Any:
+    from ..platform import context
+
+    ctx = context.current()
+    rows = _svc().collab.tasks(assignee_id=ctx.user_id or "", ws=context.current_workspace(),
+                               include_closed=include_closed)
+    keys = ("id", "title", "status", "priority", "due_at", "group_id", "creator_name", "description", "overdue")
+    return [{k: t[k] for k in keys} for t in rows]
+
+
+def t_update_task(task_id: str, status: str = "", note: str = "") -> Any:
+    from ..platform import context
+
+    def go() -> Any:
+        ctx = context.current()
+        c = _svc().collab
+        task = c.task(task_id)
+        mod = c.group_role(task["group_id"], ctx.user_id or "") in ("owner", "admin")
+        out = c.update_task(task_id, {"status": status} if status else {}, by=ctx.user_id or "",
+                            by_name=_agent_name(), moderator=mod)
+        if note:
+            c.post_message(task["group_id"], author_id=ctx.user_id or "", author_name=_agent_name(), body=note,
+                           refs=[{"type": "task", "id": task_id, "title": task["title"]}], author_kind="agent")
+        return {"id": out["id"], "status": out["status"]}
+
+    return _call(go)
+
+
 def _S(t: str, d: str, **kw: Any) -> dict[str, Any]:
     return {"type": t, "description": d, **kw}
 
@@ -891,6 +1093,7 @@ def build() -> dict[str, PlatformTool]:
             t_apply_calibration,
             required=["report_id"],
             summary=lambda a: f"用报告 {a.get('report_id')} 的校准值替换回测成本假设",
+            category="config",
         ),
         PlatformTool(
             "start_stress_drill",
@@ -978,6 +1181,181 @@ def build() -> dict[str, PlatformTool]:
             "read",
             {"opt_id": _S("string", "优化记录 id，可空"), "slug": _S("string", "策略 slug，可空")},
             t_tuning_result,
+        ),
+        PlatformTool(
+            "list_factors",
+            "因子库",
+            "library",
+            "因子库里的因子（表达式、状态、评估摘要）；query 按名字 / 表达式搜索。",
+            "要复用已有因子、避免重复研究时",
+            "read",
+            {"status": _S("string", "按状态过滤，可空"), "query": _S("string", "搜索关键词，可空")},
+            t_list_factors,
+        ),
+        PlatformTool(
+            "list_models",
+            "模型库",
+            "library",
+            "预测模型库与最近训练记录（学习器、样本外成绩）。",
+            "要复用或比较已训练的模型时",
+            "read",
+            {"status": _S("string", "按状态过滤，可空")},
+            t_list_models,
+        ),
+        PlatformTool(
+            "list_portfolios",
+            "组合方案",
+            "library",
+            "组合与风控方案库与最近评估记录。",
+            "设计或复用组合方案时",
+            "read",
+            {"status": _S("string", "按状态过滤，可空")},
+            t_list_portfolios,
+        ),
+        PlatformTool(
+            "list_executions",
+            "执行方案",
+            "library",
+            "下单执行方案库（拆单算法）与最近仿真记录。",
+            "设计或复用执行方案时",
+            "read",
+            {"status": _S("string", "按状态过滤，可空")},
+            t_list_executions,
+        ),
+        PlatformTool(
+            "trial_ledger",
+            "试验台账",
+            "library",
+            "各研究类型的试验次数，以及按试验次数修正后的最好成绩（DSR / t 门槛）。报告结论前用它说明多重检验的影响。",
+            "评价「最好成绩」是否可信时",
+            "read",
+            {"domain": _S("string", "研究类型，可空", enum=["strategy", "factor", "model", "portfolio", "execution"])},
+            t_trial_ledger,
+        ),
+        PlatformTool(
+            "fill_comparisons",
+            "实盘对照",
+            "library",
+            "真实成交与模拟结果的对照记录（逐笔归因）。",
+            "要核对模拟与真实成交差异时",
+            "read",
+            {},
+            t_fill_comparisons,
+        ),
+        PlatformTool(
+            "delete_strategy",
+            "删除策略",
+            "library",
+            "删除一个平台策略（回测记录保留）。",
+            "研究者明确要清理时",
+            "confirm",
+            {"slug": _S("string", "策略 slug")},
+            t_delete_strategy,
+            summary=lambda a: f"删除策略 {a.get('slug')}",
+            required=["slug"],
+            category="delete",
+        ),
+        PlatformTool(
+            "delete_backtests",
+            "删除回测记录",
+            "library",
+            "批量删除回测记录（不可恢复）。",
+            "研究者明确要清理时",
+            "confirm",
+            {"ids": _S("array", "回测 id 列表", items={"type": "string"})},
+            t_delete_backtests,
+            summary=lambda a: f"删除 {len(a.get('ids') or [])} 条回测记录",
+            required=["ids"],
+            category="delete",
+        ),
+        PlatformTool(
+            "delete_factor",
+            "删除因子",
+            "library",
+            "从因子库删除一个因子（试验台账保留）。",
+            "研究者明确要清理时",
+            "confirm",
+            {"fid": _S("string", "因子 id")},
+            t_delete_factor,
+            summary=lambda a: f"删除因子 {a.get('fid')}",
+            required=["fid"],
+            category="delete",
+        ),
+        PlatformTool(
+            "community_post",
+            "发帖到策略广场",
+            "collab",
+            "以 Agent 身份把研究结论发到策略广场（帖子标记为「Agent 发布 · 代某人」），可附策略、回测与引用。"
+            "正文用 Markdown；引用写成单独一行 {{ref:类型:id}}（类型：backtest / strategy / post / file），并在 refs 里列出。",
+            "研究者明确要求分享到广场时",
+            "confirm",
+            {
+                "title": _S("string", "标题（2–120 字）"),
+                "body": _S("string", "正文 Markdown"),
+                "type": _S("string", "article / question / strategy"),
+                "tags": _S("array", "标签（最多 8 个）", items={"type": "string"}),
+                "strategy_slug": _S("string", "附带的策略 slug（策略分享时）"),
+                "backtest_id": _S("string", "附带的回测 id（推荐）"),
+                "refs": _S("array", "正文引用 [{type, id}]", items={"type": "object"}),
+            },
+            t_community_post,
+            summary=lambda a: f"以 Agent 身份在策略广场发布「{a.get('title')}」",
+            required=["title", "body"],
+            category="save",
+        ),
+        PlatformTool(
+            "list_groups",
+            "我的群组",
+            "collab",
+            "列出工作区里我加入的与公开的群组（id、成员数、未读、进行中任务数）。",
+            "要在群里发消息或查任务前",
+            "read",
+            {},
+            t_list_groups,
+        ),
+        PlatformTool(
+            "group_message",
+            "在群组里发消息",
+            "collab",
+            "以 Agent 身份（代当前用户）在群组里发一条消息，可引用回测 / 策略 / 任务。",
+            "研究者要求把结果同步给群组时",
+            "confirm",
+            {
+                "group_id": _S("string", "群组 id（先用 list_groups 查）"),
+                "body": _S("string", "消息 Markdown"),
+                "refs": _S("array", "引用 [{type, id}]", items={"type": "object"}),
+            },
+            t_group_message,
+            summary=lambda a: f"在群组里发消息：{str(a.get('body') or '')[:40]}",
+            required=["group_id", "body"],
+            category="save",
+        ),
+        PlatformTool(
+            "my_tasks",
+            "我的任务",
+            "collab",
+            "指派给当前用户的群组任务（标题、状态、优先级、截止时间、是否逾期）。",
+            "研究者问「我有什么任务」或开始干活前",
+            "read",
+            {"include_closed": _S("boolean", "是否包含已完成 / 已取消")},
+            t_my_tasks,
+        ),
+        PlatformTool(
+            "update_task",
+            "更新任务状态",
+            "collab",
+            "把任务标为进行中 / 待验收 / 完成，并可在群里附一句进展说明。",
+            "完成了指派的研究任务后",
+            "confirm",
+            {
+                "task_id": _S("string", "任务 id"),
+                "status": _S("string", "todo / doing / review / done / cancelled"),
+                "note": _S("string", "进展说明（会发到群里）"),
+            },
+            t_update_task,
+            summary=lambda a: f"把任务 {a.get('task_id')} 标为 {a.get('status')}",
+            required=["task_id"],
+            category="save",
         ),
         PlatformTool(
             "morning_brief",
@@ -1127,4 +1505,4 @@ def catalog() -> dict[str, Any]:
     }
 
 
-__all__ = ["ACTIONS", "SCENES", "catalog", "confirm", "invoke", "prompt_block", "registry", "scenes_for", "tools_for"]
+__all__ = ["ACTIONS", "APPROVAL_CATEGORIES", "RULE_REQUIRED", "SCENES", "catalog", "confirm", "invoke", "prompt_block", "registry", "scenes_for", "tools_for"]

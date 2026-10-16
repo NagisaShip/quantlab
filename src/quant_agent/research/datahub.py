@@ -246,7 +246,8 @@ class DataHub:
 
     # ------------------------------------------------------------------ 目录
     def datasets(self) -> list[dict[str, Any]]:
-        rows = self.store.list(CATALOG)
+        # 自动同步的设置也存在目录里，列表时剔除
+        rows = [r for r in self.store.list(CATALOG) if r.get("kind") != "settings"]
         return sorted(rows, key=lambda r: (r.get("field", ""), r.get("symbol", ""), r.get("source", "")))
 
     def dataset(self, key: str) -> dict[str, Any] | None:
@@ -460,6 +461,78 @@ class DataHub:
             raise ValueError("这个连接器通过上传文件导入")
         out["ok"] = not out["errors"]
         return out
+
+    # ---- 自动同步：按间隔把已有数据集补到最新 ----
+    AUTO_ID = "auto_sync"
+    AUTO_SKIP = frozenset({"csv", "liquidations", "synthetic"})
+
+    def auto_settings(self) -> dict[str, Any]:
+        rec = self.store.get(CATALOG, self.AUTO_ID) or {}
+        return {
+            "enabled": bool(rec.get("enabled")),
+            "interval_hours": float(rec.get("interval_hours") or 6),
+            "last_run": rec.get("last_run"),
+            "last_result": rec.get("last_result"),
+        }
+
+    def set_auto(self, *, enabled: bool, interval_hours: float) -> dict[str, Any]:
+        cur = self.auto_settings()
+        self.store.upsert(
+            CATALOG,
+            {
+                "id": self.AUTO_ID,
+                "kind": "settings",
+                **cur,
+                "enabled": bool(enabled),
+                "interval_hours": max(0.5, min(float(interval_hours or 6), 168.0)),
+            },
+        )
+        return self.auto_settings()
+
+    def auto_due(self, now: int | None = None) -> bool:
+        st = self.auto_settings()
+        if not st["enabled"]:
+            return False
+        now = now or _now()
+        return not st["last_run"] or now - int(st["last_run"]) >= st["interval_hours"] * 3600_000
+
+    def auto_sync(self, *, force: bool = False) -> dict[str, Any]:
+        """把落后于间隔的数据集补到最新：按连接器与周期分组，各组一次同步（从最旧的终点往前多取一天）。"""
+        st = self.auto_settings()
+        now = _now()
+        stale_ms = st["interval_hours"] * 3600_000
+        groups: dict[tuple[str, str], dict[str, Any]] = {}
+        for d in self.datasets():
+            conn = d.get("connector") or ""
+            if d.get("kind") == "settings" or not conn or conn in self.AUTO_SKIP or d.get("synthetic"):
+                continue
+            if not force and d.get("synced_at") and now - int(d["synced_at"]) < stale_ms:
+                continue
+            spec = CONNECTOR_BY_ID.get(conn)
+            if spec is None or (spec.get("needs_key") and not self.secrets_fn().get(f"datahub:{conn}")):
+                continue
+            g = groups.setdefault((conn, str(d.get("period") or "1h")), {"symbols": set(), "start": now})
+            if d.get("symbol") and d["symbol"] != "*":
+                g["symbols"].add(d["symbol"])
+            if d.get("end"):
+                g["start"] = min(g["start"], int(d["end"]) - DAY)
+        synced, errors = [], []
+        for (conn, period), g in groups.items():
+            try:
+                out = self.sync(
+                    conn,
+                    symbols=sorted(g["symbols"]) or None,
+                    start=g["start"] if g["start"] < now else now - 7 * DAY,
+                    end=now,
+                    period=period if period in ("5m", "15m", "30m", "1h", "4h", "1d") else "1h",
+                )
+                synced += [x.get("key") for x in out.get("datasets") or []]
+                errors += [str(e)[:160] for e in out.get("errors") or []]
+            except Exception as exc:
+                errors.append(f"{conn}: {exc}"[:160])
+        result = {"groups": len(groups), "datasets": len(synced), "errors": errors[:10], "at": now}
+        self.store.upsert(CATALOG, {"id": self.AUTO_ID, "kind": "settings", **st, "last_run": now, "last_result": result})
+        return result
 
     def sync_async(self, connector: str, **kw: Any) -> None:
         import contextvars

@@ -26,6 +26,7 @@ from ..research.factor_lib import CATEGORIES, FactorLibrary, expr_hash, mutate, 
 from ..research.goals import FACTOR
 from ..research.panel import UNIVERSES, Panel, PanelError
 from .strategy_lab import (
+    NO_GOAL_TEXT,
     LabStore,
     LabTools,
     StopRequested,
@@ -175,7 +176,7 @@ class FactorLab(StrategyLab):
 
     # ---------------- 目标 ----------------
     def goal_text(self, project: dict[str, Any]) -> str:
-        return FACTOR.items_text(project_spec(project)["items"])
+        return FACTOR.items_text(project_spec(project)["items"]) if self.has_goal(project) else NO_GOAL_TEXT
 
     def set_goal(self, pid: str, raw: dict[str, Any], *, source: str = "user", review: bool = False) -> dict[str, Any]:
         self.store.patch(pid, goal_set=True)
@@ -394,7 +395,8 @@ class FactorLab(StrategyLab):
                 "summary": {k: s.get(k) for k in ("rank_ic", "ls_sharpe", "ls_return", "turnover")},
             }
         lib.record_trial(expr, s, source="lab", project_id=pid)
-        evaluation = FACTOR.evaluate(s, project_spec(project)["items"])
+        # 没设目标时不拿出厂默认阈值评判，只汇报实测结果
+        evaluation = FACTOR.evaluate(s, project_spec(project)["items"]) if self.has_goal(project) else None
         self._set_version_result(pid, v, metrics=s, evaluation=evaluation, admitted=report["admitted"])
         self.store.store.put_blob("factor_lab_reports", f"{pid}_{v}", report)
         self._post(
@@ -448,7 +450,11 @@ class FactorLab(StrategyLab):
             "regimes": report["regimes"],
             "groups_mean_bps": report["groups"]["mean"],
             "checks": [{"label": c["label"], "ok": c["ok"], "detail": c["detail"]} for c in report["checks"]],
-            "goal": {"passed": evaluation["passed"], "gaps": FACTOR.gap_report(evaluation)},
+            "goal": (
+                {"passed": evaluation["passed"], "gaps": FACTOR.gap_report(evaluation)}
+                if evaluation
+                else "未设定验收目标：只汇报实测结果，不要说达标或未达标"
+            ),
             "warnings": report["panel"].get("warnings", [])[:3],
         }
 

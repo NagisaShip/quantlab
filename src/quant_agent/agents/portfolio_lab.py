@@ -231,7 +231,8 @@ class PortfolioLab(DomainLab):
             self._post(pid, role="event", kind="error", content=f"评估没有完成：{exc}")
             return {"ok": False, "error": str(exc)}
         s = report["summary"]
-        evaluation = PORTFOLIO.evaluate(s, self.project_spec(project)["items"])
+        # 没设目标时不拿出厂默认阈值评判，只汇报实测结果
+        evaluation = PORTFOLIO.evaluate(s, self.project_spec(project)["items"]) if self.has_goal(project) else None
         run_id = None
         if not stress:
             lib = self.deps.library()
@@ -294,7 +295,11 @@ class PortfolioLab(DomainLab):
             "risk_contrib": (report.get("latest") or {}).get("risk_contrib"),
             "stress": [{"name": x["name"], "pnl": x["pnl"]} for x in report.get("stress") or []],
             "checks": [{"label": c["label"], "ok": c["ok"], "detail": c["detail"]} for c in report["checks"]],
-            "goal": {"passed": evaluation["passed"], "gaps": PORTFOLIO.gap_report(evaluation)},
+            "goal": (
+                {"passed": evaluation["passed"], "gaps": PORTFOLIO.gap_report(evaluation)}
+                if evaluation
+                else "未设定验收目标：只汇报实测结果，不要说达标或未达标"
+            ),
             "warnings": report["panel"].get("warnings", [])[:3],
         }
 

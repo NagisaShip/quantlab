@@ -18,6 +18,8 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from ..timeframes import TimeframeStr
+
 from ..agents import lab_goal as G
 from ..agents.strategy_lab import DEFAULT_GOALS, LabStore, LabTools, StrategyLab, new_project
 from ..agents.team import LAB_REVIEW_TEAM
@@ -78,7 +80,8 @@ class Goals(BaseModel):
 class PinIn(BaseModel):
     kind: str = "note"
     title: str = Field(..., min_length=1, max_length=60)
-    text: str = Field(..., min_length=1, max_length=8000)
+    # 文件类钉住材料（上传的 txt、超长消息自动转成的文件）最多 40 万字；上下文里只放开头，Agent 用 read_pinned_file 分段读
+    text: str = Field(..., min_length=1, max_length=400_000)
 
 
 LabKind = Literal["strategy", "factor", "model", "portfolio", "execution"]
@@ -88,9 +91,9 @@ DomainKey = Literal["strategy", "factor", "model", "portfolio", "execution"]
 class ProjectIn(BaseModel):
     kind: LabKind = "strategy"
     title: str = ""
-    idea: str = Field("", max_length=4000)
+    idea: str = Field("", max_length=20_000)
     securities: list[str] = Field(default_factory=list)
-    timeframe: Literal["1m", "5m", "15m", "30m", "1h", "4h", "1d"] = "1h"
+    timeframe: TimeframeStr = "1h"
     model: str = ""
     effort: Effort = "medium"
     goals: Goals | None = None
@@ -112,15 +115,16 @@ class ProjectIn(BaseModel):
     market_auto: bool = Field(False, description="标的与周期交给 AI 根据对话决定")
     suggest: bool = True
     max_tool_calls: int = Field(1000, ge=1, le=5000, description="单轮对话最多调用工具的次数")
-    workflow: Literal["", "pipeline", "report"] = Field("", description="研究流程：完整流程 / 调研报告")
+    workflow: Literal["", "auto", "pipeline", "report"] = Field("", description="研究流程：自动 / 完整流程 / 调研报告")
+    approvals: list[Literal["delete", "trading", "config", "save", "edit", "run"]] | None = None
     auto_team_context: bool = Field(True, description="团队讨论结论自动加入上下文")
 
 
 class ProjectPatch(BaseModel):
     title: str | None = Field(None, max_length=60)
-    idea: str | None = Field(None, max_length=4000)
+    idea: str | None = Field(None, max_length=20_000)
     securities: list[str] | None = None
-    timeframe: Literal["1m", "5m", "15m", "30m", "1h", "4h", "1d"] | None = None
+    timeframe: TimeframeStr | None = None
     model: str | None = None
     effort: Effort | None = None
     goals: Goals | None = None
@@ -139,8 +143,11 @@ class ProjectPatch(BaseModel):
     folder: str | None = Field(None, max_length=40, description="所属项目（文件夹）；空串表示不归入项目")
     auto_compact: bool | None = Field(None, description="上下文超出原文预算时自动压缩较早的对话")
     max_tool_calls: int | None = Field(None, ge=1, le=5000)
-    workflow: Literal["", "pipeline", "report"] | None = None
+    workflow: Literal["", "auto", "pipeline", "report"] | None = None
     auto_team_context: bool | None = None
+    approvals: list[Literal["delete", "trading", "config", "save", "edit", "run"]] | None = Field(
+        None, description="完全权限下仍要先审批的操作类别"
+    )
 
 
 IMAGE_TYPES = ("image/png", "image/jpeg", "image/gif", "image/webp")
@@ -171,7 +178,7 @@ class ImageIn(BaseModel):
 
 
 class MessageIn(BaseModel):
-    text: str = Field("", max_length=8000)
+    text: str = Field("", max_length=20_000)
     images: list[ImageIn] = Field(default_factory=list, max_length=MAX_IMAGES)
     model: str | None = None  # 底栏切换的模型 / 努力程度：随消息一起提交，并记到项目上
     effort: Effort | None = None
@@ -325,6 +332,64 @@ def _discuss(project: dict[str, Any], topic: str) -> dict:
     return {"mission_id": m["id"]}
 
 
+def _discussion_status(mission_id: str, wait_seconds: int = 0) -> dict:
+    """AI 查询 /discuss 的进度；wait_seconds > 0 时轮询到讨论结束或超时（Agent 不用自己写轮询）。"""
+    import time as _time
+
+    from .routes_missions import MissionStore
+
+    store = MissionStore(get_services().store)
+    deadline = _time.time() + max(0, wait_seconds)
+    while True:
+        m = store.get(mission_id)
+        if m is None:
+            return {"ok": False, "error": f"找不到讨论 {mission_id}"}
+        finished = m.get("status") in ("done", "failed", "stopped", "idle", "awaiting_approval")
+        if finished or _time.time() >= deadline:
+            break
+        _time.sleep(2.0)
+    feed = store.feed(mission_id)
+    speeches = [
+        {
+            "role": u.get("role_name"),
+            "kind": u.get("kind"),
+            "status": u.get("status"),
+            "summary": " ".join((u.get("content") or "").split())[:300],
+            "fallback": u.get("mode") == "fallback",
+        }
+        for u in feed
+        if u.get("kind") in ("speech", "challenge", "synthesis")
+    ]
+    return {
+        "ok": True,
+        "mission_id": mission_id,
+        "status": m.get("status"),
+        "finished": m.get("status") in ("done", "failed", "stopped"),
+        "stages": [{"name": st.get("name"), "status": st.get("status")} for st in m.get("stages") or []],
+        "speeches": speeches[-12:],
+        "typing": [x["role"] for x in speeches if x["status"] == "typing"],
+        "conclusion": (m.get("conclusion") or "")[:3000],
+    }
+
+
+def _visible_projects(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    from .routes_collab import filter_visible
+
+    return filter_visible("project", rows, "id")
+
+
+def _start_conversation(pid: str, text: str) -> None:
+    """另一个对话的 Agent 发来消息：消息已写入，在对应研究室后台开一轮对话。"""
+    lab = _lab_for(pid)
+    lab.start(pid, "chat", lambda: lab.chat(pid, text), wait=False)
+
+
+def _create_conversation(payload: dict[str, Any]) -> dict[str, Any]:
+    """Agent 新建对话：和研究者在界面上新建走同一条路径（含因子 / 模型等研究室的初始化与归属）。"""
+    out = create_project(ProjectIn(**payload))
+    return out["project"]
+
+
 def _night(project: dict[str, Any], idea: str) -> dict:
     """AI 发起 /night：放进夜班队列。"""
     from .routes_rd import NS, _store, _user
@@ -377,10 +442,29 @@ def _lab() -> StrategyLab:
         save_strategy=_save_strategy,
         registry=s.teams.tools,
         discuss=_discuss,
+        discussion_status=_discussion_status,
+        conversations={"start": _start_conversation, "create": _create_conversation, "visible": _visible_projects},
         night=_night,
         collinearity=_collinearity if FACTOR_READY else None,
+        stage=_stage_project,
+        platform_tools=True,
+        load_result=lambda bt_id: s.store.get_blob("backtests", bt_id),
     )
     return StrategyLab(s.router, LabStore(s.store), tools)
+
+
+def _stage_project(kind: str, payload: dict) -> tuple[StrategyLab, dict]:
+    """完整流程的一个阶段：建一个对应类型的研究项目，返回 (该研究室, 项目)。"""
+    lab = _kind_lab(kind)
+    if kind == "factor":
+        project = lab.store.save(new_factor_project(payload))
+    else:
+        project = lab.store.save(lab.new_project(payload))  # type: ignore[attr-defined]
+    lab.store.append(
+        project["id"],
+        {"role": "event", "kind": "text", "content": f"由完整流程分派：{(payload.get('idea') or '')[:300]}"},
+    )
+    return lab, project
 
 
 def _collinearity(
@@ -492,9 +576,12 @@ def _lab_for(pid: str) -> StrategyLab:
 
 
 def _project_or_404(lab: StrategyLab, pid: str) -> dict[str, Any]:
+    from .routes_collab import guard_visible
+
     p = lab.store.get(pid)
     if p is None:
         raise HTTPException(404, "策略项目不存在")
+    guard_visible("project", pid)
     return p
 
 
@@ -578,12 +665,25 @@ def lab_meta() -> dict:
 
 @router.get("/projects", summary="策略项目列表")
 def list_projects(archived: bool = False) -> dict:
+    from .routes_collab import filter_visible
+
     lab = _lab()
-    return {"projects": [_brief(p) for p in lab.store.list() if bool(p.get("archived")) == archived]}
+    rows = [p for p in lab.store.list() if bool(p.get("archived")) == archived]
+    return {"projects": [_brief(p) for p in filter_visible("project", rows, "id")]}
 
 
 @router.post("/projects", summary="新建策略项目（可带初始代码、模板或钉住的上下文）")
 def create_project(payload: ProjectIn) -> dict:
+    out = _create_project(payload)
+    from .routes_collab import claim_new
+
+    pid = (out.get("project") or {}).get("id") if isinstance(out, dict) else None
+    if pid:
+        claim_new("project", pid)
+    return out
+
+
+def _create_project(payload: ProjectIn) -> dict:
     lab = _lab()
     data = payload.model_dump()
     if payload.kind == "factor":
@@ -677,6 +777,8 @@ def patch_project(pid: str, payload: ProjectPatch) -> dict:
             changes["goal"] = goal
     if "securities" in changes:
         changes["securities"] = [x.strip().upper() for x in changes["securities"] if x.strip()] or p["securities"]
+    if "title" in changes:
+        changes["title_auto"] = False  # 研究者自己改过标题，AI 不再改
     lab.store.patch(pid, **changes)
     return {"project": _project_or_404(lab, pid)}
 
@@ -756,7 +858,7 @@ class GoalItemIn(BaseModel):
 class GoalSpecIn(BaseModel):
     items: list[GoalItemIn] | None = None
     symbols: list[str] | None = None
-    timeframe: Literal["1m", "5m", "15m", "30m", "1h", "4h", "1d"] | None = None
+    timeframe: TimeframeStr | None = None
     start: int | str | None = None
     end: int | str | None = None
     bars_limit: int | None = Field(None, ge=200, le=20_000)
@@ -886,6 +988,10 @@ def set_goal(pid: str, payload: GoalSetIn) -> dict:
 
 class WalkForwardIn(BaseModel):
     segments: int = Field(3, ge=2, le=6)
+    mode: Literal["sliced", "independent"] = Field(
+        "sliced", description="sliced 一次全区间回测按时间切段（连续复利、可复原全区间）；independent 每段重置资金单独回测"
+    )
+    attribution: Literal["close", "open"] = Field("close", description="完整交易按平仓还是开仓时间归段")
     wait: bool = False
 
 
@@ -893,7 +999,7 @@ class WalkForwardIn(BaseModel):
 def walk_forward(pid: str, payload: WalkForwardIn) -> dict:
     lab = _lab_for(pid)
     _project_or_404(lab, pid)
-    return _start(lab, pid, "walkforward", lambda: lab.walk_forward(pid, segments=payload.segments), payload.wait)
+    return _start(lab, pid, "walkforward", lambda: lab.walk_forward(pid, segments=payload.segments, mode=payload.mode, attribution=payload.attribution), payload.wait)
 
 
 @router.post("/projects/{pid}/compact", summary="压缩对话历史：把之前的对话总结成摘要钉进上下文，之后不再发原文")
@@ -1003,7 +1109,7 @@ class ForkIn(BaseModel):
 
 class RewindIn(BaseModel):
     seq: int = Field(..., ge=1, description="要编辑 / 重试的用户消息序号")
-    text: str | None = Field(None, max_length=8000, description="编辑后的内容；不填则按原文重试")
+    text: str | None = Field(None, max_length=20_000, description="编辑后的内容；不填则按原文重试")
     wait: bool = False
 
 

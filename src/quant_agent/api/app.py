@@ -34,6 +34,7 @@ from . import (
     routes_lifecycle,
     routes_live,
     routes_market,
+    routes_media,
     routes_microlive,
     routes_missions,
     routes_node,
@@ -89,6 +90,7 @@ def create_app(*, with_scheduler: bool = False) -> FastAPI:
     app.include_router(routes_live.router)
     app.include_router(routes_config.router)
     app.include_router(routes_market.router)
+    app.include_router(routes_media.router)
     app.include_router(routes_strategies.router)
     app.include_router(routes_agents.router)
     app.include_router(routes_arena.router)
@@ -113,6 +115,10 @@ def create_app(*, with_scheduler: bool = False) -> FastAPI:
         pass
     app.include_router(routes_missions.router)
     app.include_router(routes_community.router)
+    from . import routes_admin, routes_collab
+
+    app.include_router(routes_collab.router)
+    app.include_router(routes_admin.router)
     app.include_router(routes_ops.router)
     app.include_router(routes_node.router)
     app.include_router(routes_freqtrade.router)

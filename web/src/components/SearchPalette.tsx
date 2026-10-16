@@ -5,14 +5,15 @@ import { factors } from '../apiFactors'
 import { models } from '../apiModels'
 import { lab, missions } from '../apiLab'
 import { Icon } from './icons'
+import { SETTINGS_ENTRIES, SETTINGS_GROUPS, locateSettingAfterNav } from './SettingsShell'
 
 /**
  * 全局搜索（Ctrl/⌘ + K）：按类别找 AI 研究产出——研究项目、策略、因子、模型、回测、团队讨论。
  * 打开时才拉取各列表，前端做子串匹配；没有输入时显示最近更新的条目。
  */
 
-type Cat = 'lab' | 'strategy' | 'factor' | 'model' | 'backtest' | 'team'
-interface Hit { cat: Cat; id: string; title: string; sub: string; at: number; go: string }
+type Cat = 'lab' | 'strategy' | 'factor' | 'model' | 'backtest' | 'team' | 'setting'
+interface Hit { cat: Cat; id: string; title: string; sub: string; at: number; go: string; locate?: string }
 
 const CATS: { key: Cat; label: string; icon: string }[] = [
   { key: 'lab', label: 'AI 研究', icon: 'lab' },
@@ -21,6 +22,7 @@ const CATS: { key: Cat; label: string; icon: string }[] = [
   { key: 'model', label: '模型', icon: 'modellib' },
   { key: 'backtest', label: '回测', icon: 'backtests' },
   { key: 'team', label: '团队讨论', icon: 'teams' },
+  { key: 'setting', label: '设置', icon: 'models' },
 ]
 const CAT_OF = Object.fromEntries(CATS.map((c) => [c.key, c])) as Record<Cat, (typeof CATS)[number]>
 const LAB_KIND: Record<string, string> = { strategy: '策略研究', factor: '因子研究', model: '模型研究', portfolio: '组合研究', execution: '执行研究' }
@@ -44,6 +46,13 @@ async function loadAll(): Promise<Hit[]> {
   for (const m of mo?.models ?? []) hits.push({ cat: 'model', id: m.id, title: m.name, sub: `${m.spec.model} · ${m.status}`, at: m.updated_at, go: `modellib/${m.id}` })
   for (const b of bt?.backtests ?? []) hits.push({ cat: 'backtest', id: b.id, title: b.strategy_name, sub: `${b.timeframe} · ${b.securities.join(', ')}${b.label ? ` · ${b.label}` : ''}`, at: b.created_at, go: `backtest/${b.id}` })
   for (const m of mi?.missions ?? []) hits.push({ cat: 'team', id: m.id, title: m.directive, sub: m.mode === 'pipeline' ? '流水线讨论' : '单周期讨论', at: m.updated_at, go: `teams/${m.id}` })
+  // 设置页与页面里的小项：只在输入关键词时出现（at=0，不进「最近更新」）
+  const pages = SETTINGS_GROUPS.flatMap((g) => g.items)
+  for (const it of pages) hits.push({ cat: 'setting', id: it.key, title: it.label, sub: `设置 · ${it.keywords ?? ''}`, at: 0, go: it.key })
+  for (const e of SETTINGS_ENTRIES) {
+    const page = pages.find((p) => p.key === e.page)?.label ?? e.page
+    hits.push({ cat: 'setting', id: `${e.page}:${e.text}`, title: e.text, sub: `${page} · ${e.keywords ?? ''}`, at: 0, go: e.page, locate: e.text })
+  }
   return hits
 }
 
@@ -59,7 +68,7 @@ export function SearchPalette({ onNavigate, onClose }: { onNavigate: (k: string)
   const results = useMemo(() => {
     const words = q.trim().toLowerCase().split(/\s+/).filter(Boolean)
     const pool = (hits ?? []).filter((h) => !cat || h.cat === cat)
-    const matched = words.length ? pool.filter((h) => words.every((w) => `${h.title} ${h.sub}`.toLowerCase().includes(w))) : pool
+    const matched = words.length ? pool.filter((h) => words.every((w) => `${h.title} ${h.sub}`.toLowerCase().includes(w))) : pool.filter((h) => h.cat !== 'setting' || cat === 'setting')
     return [...matched].sort((a, b) => b.at - a.at).slice(0, words.length || cat ? 50 : 8)
   }, [hits, q, cat])
   const actions = q.trim() ? [] : ACTIONS
@@ -68,8 +77,8 @@ export function SearchPalette({ onNavigate, onClose }: { onNavigate: (k: string)
   useEffect(() => { setSel(0) }, [q, cat])
   useEffect(() => { listRef.current?.querySelector('[data-sel="true"]')?.scrollIntoView({ block: 'nearest' }) }, [sel])
 
-  const go = (k: string) => { onClose(); onNavigate(k) }
-  const choose = (i: number) => (i < results.length ? go(results[i].go) : actions[i - results.length] && go(actions[i - results.length].go))
+  const go = (k: string, locate?: string) => { if (locate) locateSettingAfterNav(locate); onClose(); onNavigate(k) }
+  const choose = (i: number) => (i < results.length ? go(results[i].go, results[i].locate) : actions[i - results.length] && go(actions[i - results.length].go))
 
   const onKey = (e: React.KeyboardEvent) => {
     if (e.key === 'Escape') onClose()
@@ -87,7 +96,7 @@ export function SearchPalette({ onNavigate, onClose }: { onNavigate: (k: string)
     <div className="sp-backdrop" onMouseDown={onClose}>
       <div className="sp" role="dialog" aria-label="搜索" onMouseDown={(e) => e.stopPropagation()} onKeyDown={onKey}>
         <div className="sp-input">
-          <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索研究、策略、因子、模型…" aria-label="搜索" />
+          <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索研究、策略、因子、模型、设置项…" aria-label="搜索" />
           <button className="sp-close" onClick={onClose} aria-label="关闭">×</button>
         </div>
         <div className="sp-tabs" role="tablist">
@@ -102,7 +111,7 @@ export function SearchPalette({ onNavigate, onClose }: { onNavigate: (k: string)
                 <Icon name={CAT_OF[h.cat].icon} size={15} />
                 <span className="sp-title">{h.title}</span>
                 <span className="sp-sub">{!cat && `${CAT_OF[h.cat].label} · `}{h.sub}</span>
-                <span className="sp-at">{ago(h.at)}</span>
+                <span className="sp-at">{h.at ? ago(h.at) : ''}</span>
               </button>
             ))}
             {!results.length && <div className="sp-empty">{q.trim() ? `没有找到「${q.trim()}」` : cat ? `还没有${CAT_OF[cat].label}` : '还没有 AI 研究产出，从下面开始一个'}</div>}

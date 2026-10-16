@@ -27,11 +27,26 @@ SUPPORTED_SYMBOLS = [
 ]
 
 
+@router.get("/db-cache", summary="服务端数据库缓存：各类外部请求的缓存条目、命中与未命中")
+def db_cache_stats() -> dict:
+    s = get_services()
+    return s.dbcache.stats() if s.dbcache else {"namespaces": []}
+
+
+@router.delete("/db-cache", summary="清空服务端数据库缓存（可只清一个命名空间）")
+def db_cache_clear(ns: str | None = None) -> dict:
+    s = get_services()
+    return {"deleted": s.dbcache.clear(ns) if s.dbcache else 0}
+
+
 @router.get("/symbols")
 def symbols() -> dict:
+    from ..timeframes import SUB_MINUTE_HINT, TIMEFRAME_CHOICES
+
     return {
         "symbols": SUPPORTED_SYMBOLS,
-        "timeframes": list(TIMEFRAME_MS),
+        "timeframes": list(TIMEFRAME_CHOICES),
+        "sub_minute_note": SUB_MINUTE_HINT,
         "exchanges": ["binance", "okx", "bybit"],
         "sources": ["auto", "exchange", *(["synthetic"] if get_services().market.allow_synthetic else [])],
     }
@@ -61,8 +76,12 @@ def bars(
         raise HTTPException(502, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+    stale = s.market.stale.get((exchange, symbol, timeframe), "") if source == "exchange" else ""
     return {
         "error": s.market.last_error.get(exchange, "") if source == "synthetic" else "",
+        # 交易所这次没连上、用本地缓存顶上时给出原因：界面提示「可能缺最新几根」，而不是整页报错
+        "stale": bool(stale),
+        "warning": f"交易所这次没连上（{stale}），展示的是本地缓存" if stale else "",
         "symbol": symbol,
         "timeframe": timeframe,
         "source": source,

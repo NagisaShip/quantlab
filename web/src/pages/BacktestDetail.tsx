@@ -230,7 +230,7 @@ export default function BacktestDetailPage({ id, onNavigate, notify }: PageProps
           {tab === 'daily' && <DailyTable rows={bt.daily} />}
           {tab === 'logs' && (
             <div className="logs">
-              {bt.logs.map((l, i) => <div key={i} className={`log-line ${l.level}`}><span>{fmtTime(l.ts)}</span><b>{l.level.toUpperCase()}</b>{l.message}</div>)}
+              {bt.logs.filter(Boolean).map((l, i) => <div key={i} className={`log-line ${l.level}`}><span>{fmtTime(l.ts)}</span><b>{l.level.toUpperCase()}</b>{l.message}</div>)}
               {!bt.logs.length && <EmptyState glyph="≡" title="策略没有输出日志">在策略里用 log.info("...") 输出关键判断，回测时会按时间记录在这里。</EmptyState>}
             </div>
           )}

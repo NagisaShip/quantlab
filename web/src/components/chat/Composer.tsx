@@ -6,6 +6,10 @@ import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode 
 import type { ContextView, Effort, EffortOption, ModelOption } from '../../apiLab'
 import { StepSlider } from '../StepSlider'
 import { ContextStats } from './LabControls'
+import '../../stylesBlocks.css'
+import { v3, type ModelUsage } from '../../api2'
+import { v4, type UsageItem } from '../../api3'
+import { LimitBars, fmtCost, fmtTokens as fmtTok } from '../modelUsage'
 
 const DEFAULT_EFFORTS: EffortOption[] = [
   { id: 'low', label: '低', hint: '快速回答，少想' },
@@ -170,7 +174,7 @@ export function ContextRing({ context, onCompact, onManage, compacting, updatedA
   return (
     <div className="cmp-pop-anchor" ref={pop.ref}>
       <button type="button" className={`cmp-ring ${tone}`} onClick={() => pop.setOpen(!pop.open)}
-        title={`上下文 ${context.total.toLocaleString()} / ${context.budget.toLocaleString()} tokens`} aria-label="上下文用量">
+        title={`上下文 ${context.total.toLocaleString()} / ${context.budget.toLocaleString()} tokens`} aria-label="上下文、用量与额度">
         <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden>
           <circle cx="9" cy="9" r={r} className="track" />
           <circle cx="9" cy="9" r={r} className="fill" strokeDasharray={`${c * Math.max(ratio, 0.02)} ${c}`} transform="rotate(-90 9 9)" />
@@ -180,6 +184,7 @@ export function ContextRing({ context, onCompact, onManage, compacting, updatedA
         <div className="cmp-menu cmp-menu-ctx" role="dialog" aria-label="上下文">
           <div className="ctx-title">上下文</div>
           <ContextStats context={context} updatedAt={updatedAt} />
+          <UsageQuota />
           <div className="cmp-ctx-actions">
             {onManage && <button type="button" className="button small ghost" onClick={() => { onManage(); pop.setOpen(false) }}>管理材料</button>}
             {onCompact && (
@@ -190,6 +195,55 @@ export function ContextRing({ context, onCompact, onManage, compacting, updatedA
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+ /** 圆圈弹层里的「用量与额度」：我今天 / 近 7 天的模型用量、我的限额进度、工作区当日配额。打开时才请求。 */
+function UsageQuota() {
+  const [mine, setMine] = useState<ModelUsage | null>(null)
+  const [week, setWeek] = useState<ModelUsage | null>(null)
+  const [ws, setWs] = useState<UsageItem[] | null>(null)
+  const [err, setErr] = useState('')
+  useEffect(() => {
+    let alive = true
+    Promise.allSettled([v3.modelUsage(1, 'me'), v3.modelUsage(7, 'me'), v4.usage(1)]).then(([a, b, c]) => {
+      if (!alive) return
+      if (a.status === 'fulfilled') setMine(a.value)
+      if (b.status === 'fulfilled') setWeek(b.value)
+      if (c.status === 'fulfilled') setWs(c.value.items.filter((it) => it.metric.startsWith('llm_') || it.metric === 'backtest_runs'))
+      if (a.status === 'rejected' && c.status === 'rejected') setErr('用量暂时读不到')
+    })
+    return () => { alive = false }
+  }, [])
+  return (
+    <div className="cmp-usage anim-fade">
+      <div className="ctx-title">用量与额度</div>
+      {err && <div className="cmp-usage-row muted">{err}</div>}
+      {!mine && !err && <div className="shimmer-line" aria-hidden />}
+      {mine && (
+        <div className="cmp-usage-grid">
+          <div><small>今天</small><b>{fmtTok(mine.total.tokens)}</b><span>{mine.total.calls} 次 · {fmtCost(mine.total.cost)}</span></div>
+          {week && <div><small>近 7 天</small><b>{fmtTok(week.total.tokens)}</b><span>{week.total.calls} 次 · {fmtCost(week.total.cost)}</span></div>}
+          {typeof mine.total.cache_hit_rate === 'number' && <div><small>缓存命中</small><b>{Math.round(mine.total.cache_hit_rate * 100)}%</b><span>输入 token</span></div>}
+        </div>
+      )}
+      {mine && mine.my_limits.length > 0 && <LimitBars items={mine.my_limits} compact />}
+      {ws && ws.length > 0 && (
+        <ul className="cmp-usage-ws">
+          {ws.map((it) => {
+            const pct = it.used_percent === null ? null : Math.min(100, Number(it.used_percent))
+            return (
+              <li key={it.metric} className={it.exhausted ? 'hot' : pct !== null && pct > 80 ? 'warm' : ''}>
+                <span>工作区 · {it.label}</span>
+                <span className="mono">{it.used}{it.limit === null ? '' : ` / ${it.limit}`}</span>
+                {pct !== null && <i style={{ width: `${pct}%` }} />}
+              </li>
+            )
+          })}
+        </ul>
+      )}
+      <a className="cmp-usage-link" href="#/settings/quota">查看完整用量与申请额度 →</a>
     </div>
   )
 }
@@ -231,9 +285,17 @@ export function PlusMenu({ items }: { items: PlusItem[] }) {
 /* ------------------------------------------------------------------ */
 /* 输入框                                                              */
 /* ------------------------------------------------------------------ */
+/** 单条消息上限 2 万字；超过时整段内容自动转成 txt 文件附带（研究室里 Agent 可分段读取全文） */
+export const MESSAGE_LIMIT = 20_000
+
+function textFile(text: string): File {
+  const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14)
+  return new File([text], `长文本-${stamp}.txt`, { type: 'text/plain' })
+}
+
 export function Composer({
   value, onChange, onSend, onStop, running, disabled, placeholder, commands = [], above, left, right, autoFocus, sendLabel = '发送',
-  hasAttachments, onPasteFiles, mentions,
+  hasAttachments, onPasteFiles, mentions, hideDisclaimer, onLongText,
 }: {
   value: string
   onChange: (v: string) => void
@@ -251,7 +313,23 @@ export function Composer({
   hasAttachments?: boolean                 // 带了附件时，没有文字也能发送
   onPasteFiles?: (files: File[]) => void   // 粘贴图片等文件
   mentions?: MentionOption[]               // 输入 @ 时可以点名的对象
+  hideDisclaimer?: boolean                 // 输入框下方的「可能会出错」提醒（默认显示）
+  onLongText?: (file: File) => void        // 超过 2 万字的内容转成 txt 文件交给它；不提供时截断到上限
 }) {
+  const [overflow, setOverflow] = useState('')
+  /** 粘贴 / 输入后超过上限：整段转成 txt 附件，输入框里只留一句说明 */
+  const accept = (next: string) => {
+    if (next.length <= MESSAGE_LIMIT) { onChange(next); return }
+    if (onLongText) {
+      onLongText(textFile(next))
+      onChange('')
+      setOverflow(`内容超过 ${MESSAGE_LIMIT.toLocaleString()} 字，已自动转成 txt 文件附带（共 ${next.length.toLocaleString()} 字）`)
+    } else {
+      onChange(next.slice(0, MESSAGE_LIMIT))
+      setOverflow(`单条消息最多 ${MESSAGE_LIMIT.toLocaleString()} 字，超出部分已截掉`)
+    }
+    window.setTimeout(() => setOverflow(''), 6000)
+  }
   const ta = useRef<HTMLTextAreaElement>(null)
   const [active, setActive] = useState(0)
   const slash = value.startsWith('/') && !/\s/.test(value) ? commands.filter((c) => c.cmd.startsWith(value)) : []
@@ -292,11 +370,15 @@ export function Composer({
       <div className={`cmp-box${disabled ? ' disabled' : ''}`} onClick={() => ta.current?.focus()}>
         {above && <div className="cmp-above">{above}</div>}
         <textarea ref={ta} rows={1} value={value} autoFocus={autoFocus} disabled={disabled}
-          placeholder={placeholder} onChange={(e) => onChange(e.target.value)}
-          onPaste={onPasteFiles && ((e) => {
+          placeholder={placeholder} onChange={(e) => accept(e.target.value)}
+          onPaste={(e) => {
             const files = [...e.clipboardData.files]
-            if (files.length) { e.preventDefault(); onPasteFiles(files) }
-          })}
+            if (files.length && onPasteFiles) { e.preventDefault(); onPasteFiles(files); return }
+            const pasted = e.clipboardData.getData('text')
+            const el = e.currentTarget
+            const next = value.slice(0, el.selectionStart) + pasted + value.slice(el.selectionEnd)
+            if (next.length > MESSAGE_LIMIT) { e.preventDefault(); accept(next) }
+          }}
           onKeyDown={(e) => {
             if (slash.length) {
               if (e.key === 'ArrowDown') { e.preventDefault(); setActive((active + 1) % slash.length); return }
@@ -329,6 +411,11 @@ export function Composer({
           </div>
         </div>
       </div>
+      {overflow && <div className="cmp-overflow anim-fade" role="status">{overflow}</div>}
+      {value.length > MESSAGE_LIMIT * 0.75 && (
+        <div className={`cmp-count${value.length >= MESSAGE_LIMIT ? ' full' : ''}`}>{value.length.toLocaleString()} / {MESSAGE_LIMIT.toLocaleString()}</div>
+      )}
+      {!hideDisclaimer && <div className="cmp-disclaimer">QuantLab Bot 可能会出错，请检查重要信息。</div>}
     </div>
   )
 }

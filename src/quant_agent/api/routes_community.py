@@ -97,8 +97,20 @@ def _score(post: dict[str, Any], now: float) -> float:
     return (interact + 1) / math.pow(hours + 2, 1.2)
 
 
+def source_of(post: dict[str, Any]) -> dict[str, Any]:
+    """帖子来源：人写的、Agent 发的、平台发的。旧帖子没有记录时按作者推断。"""
+    src = post.get("source")
+    if isinstance(src, dict) and src.get("kind"):
+        return src
+    if post.get("author_id") == "system":
+        return {"kind": "system", "label": "平台"}
+    return {"kind": "human", "label": "成员"}
+
+
 def _public(post: dict[str, Any], viewer: str) -> dict[str, Any]:
     out = {k: v for k, v in post.items() if k not in ("likes", "favorites")}
+    out["source"] = source_of(post)
+    out.setdefault("refs", [])
     out["like_count"] = len(post.get("likes", []))
     out["favorite_count"] = len(post.get("favorites", []))
     out["liked"] = viewer in post.get("likes", [])
@@ -198,6 +210,7 @@ def list_posts(
     featured: bool = False,
     mine: bool = False,
     favorited: bool = False,
+    source: str | None = Query(None, description="human / agent / system：只看人写的、Agent 发的或平台发的"),
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=50),
 ) -> dict:
@@ -215,6 +228,11 @@ def list_posts(
         rows = [r for r in rows if r.get("author_id") == viewer]
     if favorited:
         rows = [r for r in rows if viewer in r.get("favorites", [])]
+    if source in ("human", "agent", "system"):
+        rows = [r for r in rows if source_of(r)["kind"] == source]
+    muted = get_services().collab.muted_users(viewer) if viewer else set()
+    if muted and not mine:
+        rows = [r for r in rows if r.get("author_id") not in muted]
     if q:
         ql = q.lower()
         rows = [
@@ -263,15 +281,24 @@ def list_posts(
 
 @router.post("/posts")
 def create_post(payload: PostIn) -> dict:
+    return {"post": publish(payload, {"kind": "human", "label": "成员"})}
+
+
+def publish(payload: PostIn, source: dict[str, Any]) -> dict[str, Any]:
+    """发帖。source 标记来源：human（成员手写）/ agent（Agent 代发，附代谁发、来自哪个对话）。"""
     seed_if_empty()
     author = me()["name"]
     author_id = me()["id"]
     store = _store()
+    from .routes_collab import _resolve_refs
+
     post: dict[str, Any] = {
         "type": payload.type,
         "title": payload.title.strip(),
         "body": payload.body,
         "tags": _clean_tags(payload.tags),
+        "refs": _resolve_refs(payload.refs),
+        "source": source,
         "author": author,
         "author_id": author_id,
         "likes": [],
@@ -289,6 +316,7 @@ def create_post(payload: PostIn) -> dict:
         if rec is None:
             raise HTTPException(404, "要附加的策略不存在")
         post["strategy"] = {
+            "slug": rec.meta.slug,
             "name": rec.meta.name,
             "code": rec.source,
             "code_sha256": hashlib.sha256(rec.source.encode("utf-8")).hexdigest(),
@@ -307,6 +335,7 @@ def create_post(payload: PostIn) -> dict:
         post["backtest"] = _snapshot_backtest(bt)
         if "strategy" not in post and bt.get("code"):
             post["strategy"] = {
+                "slug": (bt.get("row") or {}).get("slug"),
                 "name": bt.get("strategy_name"),
                 "code": bt["code"],
                 "code_sha256": hashlib.sha256(bt["code"].encode("utf-8")).hexdigest(),
@@ -323,7 +352,7 @@ def create_post(payload: PostIn) -> dict:
     if payload.ai_review and saved.get("strategy"):
         _ai_review(saved["id"])
         saved = _get_post(saved["id"])
-    return {"post": _public(saved, author_id)}
+    return _public(saved, author_id)
 
 
 @router.get("/posts/{post_id}")
@@ -333,11 +362,14 @@ def read_post(post_id: str) -> dict:
     store = _store()
     store.upsert(Collections.POSTS, post)
     viewer = me()["id"]
+    collab = get_services().collab
+    muted = collab.muted_users(viewer)
     comments = [c for c in store.list(Collections.COMMENTS) if c.get("post_id") == post_id]
     comments.sort(key=lambda c: c.get("created_at", 0))
     for c in comments:
         c["like_count"] = len(c.get("likes", []))
         c["liked"] = viewer in c.get("likes", [])
+        c["muted"] = c.get("author_id") in muted
         c.pop("likes", None)
     related = [
         _public(r, viewer)
@@ -355,6 +387,8 @@ def read_post(post_id: str) -> dict:
         "viewer": me()["name"],
         "viewer_id": viewer,
         "can_moderate": _is_moderator(),
+        "post_muted": ("post", post_id) in collab.muted(viewer),
+        "author_muted": post.get("author_id") in muted,
     }
 
 
@@ -369,6 +403,14 @@ def update_post(post_id: str, payload: PostUpdateIn) -> dict:
         post["body"] = payload.body
     if payload.tags is not None:
         post["tags"] = _clean_tags(payload.tags)
+    if payload.refs is not None:
+        from .routes_collab import _resolve_refs
+
+        # 已有的引用保留发布时冻结的摘要，只给新加的补全
+        old = {(r["type"], r["id"]): r for r in post.get("refs") or []}
+        fresh = _resolve_refs([r for r in payload.refs if (r.get("type"), r.get("id")) not in old])
+        keep = [old[(r.get("type"), r.get("id"))] for r in payload.refs if (r.get("type"), r.get("id")) in old]
+        post["refs"] = keep + fresh
     post["edited_at"] = time.time()
     return {"post": _public(_store().upsert(Collections.POSTS, post), me()["id"])}
 
@@ -396,7 +438,21 @@ def _toggle(post_id: str, field: str) -> dict:
     else:
         bucket.remove(who)
     _store().upsert(Collections.POSTS, post)
+    if on and field == "likes":
+        _notify_author(post, kind="like", title=f"{me()['name']} 赞了你的帖子「{post['title']}」")
     return {"on": on, "count": len(bucket)}
+
+
+def _notify_author(post: dict[str, Any], *, kind: str, title: str, body: str = "", to: str | None = None) -> None:
+    ctx = context.current()
+    target = to or post.get("author_id")
+    if not target or target == "system":
+        return
+    get_services().collab.notify(
+        [target], kind=kind, title=title, body=body[:200], link=f"post/{post['id']}", actor_id=ctx.user_id,
+        actor_name=ctx.user_name, source_type="post", source_id=post["id"], workspace_id=ctx.workspace_id,
+        post_id=post["id"],
+    )
 
 
 @router.post("/posts/{post_id}/like")
@@ -417,6 +473,8 @@ def feature_post(post_id: str) -> dict:
     post = _get_post(post_id)
     post["featured"] = not post.get("featured")
     _store().upsert(Collections.POSTS, post)
+    if post["featured"]:
+        _notify_author(post, kind="like", title=f"你的帖子「{post['title']}」被设为精华")
     return {"featured": post["featured"]}
 
 
@@ -455,6 +513,15 @@ def clone_from_post(post_id: str) -> dict:
     )
     post["clones"] = post.get("clones", 0) + 1
     _store().upsert(Collections.POSTS, post)
+    # 血缘：把保存钩子刚记下的那一笔改成「克隆」，并记下派生自哪里
+    ctx = context.current()
+    src = f"strategy:{snap['slug']}@{snap.get('version') or ''}" if snap.get("slug") else f"post:{post_id}"
+    get_services().db.execute(
+        "UPDATE collab_edits SET action='clone', derived_from=?, note=? WHERE id=(SELECT MAX(id) FROM collab_edits "
+        "WHERE workspace_id=? AND object_type='strategy' AND object_id=?)",
+        (src, f"克隆自策略广场「{post['title']}」"[:300], ctx.workspace_id, rec.meta.slug),
+    )
+    _notify_author(post, kind="like", title=f"{me()['name']} 克隆了你分享的策略「{post['title']}」")
     return {"strategy": rec.to_dict(include_source=False)}
 
 
@@ -498,11 +565,17 @@ def _add_comment(
 @router.post("/posts/{post_id}/comments")
 def add_comment(post_id: str, payload: CommentIn) -> dict:
     post = _get_post(post_id)
-    return {
-        "comment": _add_comment(
-            post, payload.body.strip(), author=me()["name"], author_id=me()["id"], parent_id=payload.parent_id
-        )
-    }
+    comment = _add_comment(
+        post, payload.body.strip(), author=me()["name"], author_id=me()["id"], parent_id=payload.parent_id
+    )
+    name = me()["name"]
+    _notify_author(post, kind="comment", title=f"{name} 评论了你的帖子「{post['title']}」", body=payload.body)
+    if payload.parent_id:
+        parent = _store().get(Collections.COMMENTS, payload.parent_id) or {}
+        if parent.get("author_id") and parent["author_id"] != post.get("author_id"):
+            _notify_author(post, kind="comment", title=f"{name} 回复了你在「{post['title']}」下的评论",
+                           body=payload.body, to=parent["author_id"])
+    return {"comment": comment}
 
 
 @router.delete("/comments/{comment_id}")

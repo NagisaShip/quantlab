@@ -9,16 +9,14 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
+from ..timeframes import YEAR_MS, TimeframeTable
+
 # 加密市场常用：日频 Sharpe 用 sqrt(365) 年化（原方案第 7 章）。
 # 本模块按"每年 bar 数"参数化，由调用方按周期给出。
-BARS_PER_YEAR = {
-    "1m": 525_600,
-    "5m": 105_120,
-    "15m": 35_040,
-    "1h": 8_760,
-    "4h": 2_190,
-    "1d": 365,
-}
+BARS_PER_YEAR = TimeframeTable(
+    {"1m": 525_600, "5m": 105_120, "15m": 35_040, "30m": 17_520, "1h": 8_760, "4h": 2_190, "1d": 365},
+    lambda ms: YEAR_MS / ms,  # 秒级 / 毫秒级周期按 365×24 小时连续交易折算
+)
 
 
 @dataclass

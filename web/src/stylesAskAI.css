@@ -1,7 +1,15 @@
 /* 页面内「问 AI」：右下角入口 + 右侧面板。安静、暖中性色、细边框。 */
 
+.ask-fab-group { position: fixed; right: 20px; bottom: 20px; z-index: 60; display: inline-flex; align-items: center; gap: 6px; }
+.ask-fab-mini {
+  width: 34px; height: 34px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 50%;
+  background: var(--sheet); color: var(--muted); cursor: pointer; box-shadow: 0 1px 2px rgba(0, 0, 0, .05), 0 4px 14px rgba(0, 0, 0, .06);
+  opacity: 0; transform: translateX(6px); pointer-events: none; transition: opacity .16s, transform .16s, color .12s;
+}
+.ask-fab-group:hover .ask-fab-mini, .ask-fab-mini:focus-visible { opacity: 1; transform: none; pointer-events: auto; }
+.ask-fab-mini:hover { color: var(--ink); }
 .ask-fab {
-  position: fixed; right: 20px; bottom: 20px; z-index: 60;
+  position: relative;
   display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 14px;
   border: 1px solid var(--line); border-radius: 17px; background: var(--sheet); color: var(--ink-2);
   font-size: 13px; font-family: var(--sans); cursor: pointer;
@@ -56,12 +64,13 @@
 .ask-foot .cmp-menu { max-width: calc(100vw - 32px); }
 
 @media (max-width: 640px) {
-  .ask-fab { right: 14px; bottom: 14px; }
+  .ask-fab-group { right: 14px; bottom: 14px; }
+  .ask-fab-mini { opacity: 1; transform: none; pointer-events: auto; }
   .ask-panel { box-shadow: none; }
 }
 
 @media print {
-  .ask-fab, .ask-panel { display: none; }
+  .ask-fab-group, .ask-panel { display: none; }
 }
 
 /* 平台工具：调用记录、确认卡片、工具说明 */

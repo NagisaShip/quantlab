@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
+from ..timeframes import TimeframeStr
 
 
 # ---------------- 模型配置 ----------------
@@ -24,15 +25,20 @@ class ModelSettingIn(BaseModel):
 
 class LimitRuleIn(BaseModel):
     metric: Literal["tokens", "cost"] = Field(description="按 token 或按费用（元）计算")
-    window: Literal["1h", "5h", "1d", "7d", "30d"] = Field(description="滚动时间段")
+    window: Literal["1h", "5h", "1d", "7d", "30d", "day", "week", "month", "total"] = Field(
+        description="时间段：1h/5h/1d/7d/30d 为滚动；day/week/month 为自然日 / 周 / 月；total 为累计"
+    )
     limit: str = Field(max_length=20, description="上限：token 数或人民币金额")
 
 
 class ProviderIn(BaseModel):
     name: str
-    scope: Literal["workspace", "personal"] | None = Field(
-        None, description="workspace：工作区共享（管理员）；personal：个人。缺省时管理员为 workspace，其他人为 personal"
+    scope: Literal["workspace", "personal", "group"] | None = Field(
+        None,
+        description="workspace：工作区共享（管理员）；personal：个人；group：群组（群主 / 群管理员）。"
+        "缺省时管理员为 workspace，其他人为 personal",
     )
+    group_id: str = Field("", max_length=40, description="scope=group 时所属群组")
     label: str = Field("", max_length=40, description="显示名")
     type: Literal["openai_compatible", "openai_responses", "anthropic", "local"] = "openai_compatible"
     base_url: str = ""
@@ -304,7 +310,7 @@ class OrderTicketIn(BaseModel):
 
 
 # ---------------- 研究中心（v0.3） ----------------
-TIMEFRAMES = Literal["1m", "5m", "15m", "1h", "4h", "1d"]
+TIMEFRAMES = TimeframeStr
 
 
 class RiskIn(BaseModel):
@@ -503,12 +509,16 @@ class PostIn(BaseModel):
     strategy_slug: str | None = None
     backtest_id: str | None = None
     ai_review: bool = False
+    refs: list[dict[str, Any]] = Field(
+        default_factory=list, max_length=12, description="正文里引用的回测、策略、代码、文件、帖子（发布时冻结摘要）"
+    )
 
 
 class PostUpdateIn(BaseModel):
     title: str | None = Field(None, min_length=2, max_length=120)
     body: str | None = Field(None, max_length=50_000)
     tags: list[str] | None = Field(None, max_length=8)
+    refs: list[dict[str, Any]] | None = Field(None, max_length=12)
 
 
 class CommentIn(BaseModel):

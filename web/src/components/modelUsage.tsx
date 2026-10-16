@@ -5,7 +5,11 @@
 import { useState } from 'react'
 import type { LimitMetric, LimitRule, LimitStatus, LimitWindow, ModelUsage } from '../api2'
 
-export const WINDOWS: [LimitWindow, string][] = [['1h', '1 小时'], ['5h', '5 小时'], ['1d', '1 天'], ['7d', '7 天'], ['30d', '30 天']]
+/** 时间段：自然周期（每日 / 每周 / 每月 / 累计，按工作区时区切分）与滚动时间段。 */
+export const WINDOWS: [LimitWindow, string][] = [
+  ['day', '每日'], ['week', '每周'], ['month', '每月'], ['total', '累计（不重置）'],
+  ['1h', '滚动 1 小时'], ['5h', '滚动 5 小时'], ['1d', '滚动 24 小时'], ['7d', '滚动 7 天'], ['30d', '滚动 30 天'],
+]
 export const METRICS: [LimitMetric, string][] = [['tokens', '按 token'], ['cost', '按费用（元）']]
 
 export const fmtTokens = (n: number) =>
@@ -25,7 +29,8 @@ export function LimitEditor({ rules, onChange, disabled, empty = '不限额' }: 
             {METRICS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
           </select>
           <select value={r.window} disabled={disabled} onChange={(e) => set(i, { window: e.target.value as LimitWindow })} aria-label="时间段">
-            {WINDOWS.map(([k, l]) => <option key={k} value={k}>每 {l}</option>)}
+            <optgroup label="自然周期">{WINDOWS.slice(0, 4).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</optgroup>
+            <optgroup label="滚动时间段">{WINDOWS.slice(4).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</optgroup>
           </select>
           <input type="number" min={0} step={r.metric === 'cost' ? 0.01 : 1000} inputMode="decimal" value={r.limit} disabled={disabled}
             onChange={(e) => set(i, { limit: e.target.value })} placeholder={r.metric === 'cost' ? '上限（元）' : '上限（token）'} aria-label="上限" />
@@ -34,7 +39,7 @@ export function LimitEditor({ rules, onChange, disabled, empty = '不限额' }: 
       ))}
       {!rules.length && <div className="lim-empty">{empty}</div>}
       {!disabled && (
-        <button type="button" className="button small ghost" onClick={() => onChange([...rules, { metric: 'tokens', window: '1d', limit: '' }])}>＋ 添加限额</button>
+        <button type="button" className="button small ghost" onClick={() => onChange([...rules, { metric: 'tokens', window: 'day', limit: '' }])}>＋ 添加限额</button>
       )}
     </div>
   )

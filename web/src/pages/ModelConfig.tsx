@@ -623,40 +623,97 @@ function TestSection({ allModels, defaultTarget }: { allModels: string[]; defaul
   )
 }
 
-interface SearchStatus { configured: boolean; provider?: string | null; key_masked?: string }
+interface SearchProvider { id: string; label: string; signup: string; extra?: string; configured: boolean; key_masked: string; extra_value?: string | null }
+interface SearchSource { id: string; label: string; url: string; kind: 'searxng' | 'rss'; added_by: 'admin' | 'agent' }
+interface SearchStatus {
+  configured: boolean; provider?: string | null; key_masked?: string
+  providers?: SearchProvider[]; custom?: SearchSource[]; free_sources?: { id: string; label: string }[]
+}
+
+const PROVIDER_HINT: Record<string, { ph: string; note: string; extraLabel?: string }> = {
+  tavily: { ph: 'tvly-…', note: '为 LLM 设计的搜索 API，返回摘要片段，适合研究问答' },
+  serper: { ph: 'Serper API Key', note: 'Google 搜索结果（经 Serper 代理），source=google 时优先使用' },
+  google_cse: { ph: 'Google API Key', note: 'Google 官方可编程搜索：还需要搜索引擎 ID（cx）', extraLabel: '搜索引擎 ID（cx）' },
+  brave: { ph: 'Brave Subscription Token', note: 'Brave 独立索引，英文资料质量好' },
+}
 
 /** 联网搜索：AI 研究室与团队角色的 web_search / fetch_page 工具用它（部署级，部署管理员可改）。 */
 function SearchSection({ notify }: { notify: PageProps['notify'] }) {
   const [st, setSt] = useState<SearchStatus | null>(null)
-  const [key, setKey] = useState('')
-  const [busy, setBusy] = useState(false)
+  const [keys, setKeys] = useState<Record<string, string>>({})
+  const [extra, setExtra] = useState<Record<string, string>>({})
+  const [busy, setBusy] = useState('')
+  const [src, setSrc] = useState<{ label: string; url: string; kind: 'searxng' | 'rss' }>({ label: '', url: '', kind: 'searxng' })
   useEffect(() => { get<SearchStatus>('/api/config/search').then(setSt).catch(() => undefined) }, [])
-  const save = async (value: string) => {
-    setBusy(true)
-    try {
-      setSt(await request<SearchStatus>('/api/config/search', { method: 'PUT', body: JSON.stringify({ provider: 'tavily', api_key: value }) }))
-      setKey('')
-      notify(value ? '已保存联网搜索密钥' : '已移除联网搜索密钥')
-    } catch (e) {
-      notify((e as Error).message, true)
-    } finally {
-      setBusy(false)
-    }
+  const run = async (tag: string, fn: () => Promise<SearchStatus>, ok: string) => {
+    setBusy(tag)
+    try { setSt(await fn()); notify(ok) } catch (e) { notify((e as Error).message, true) } finally { setBusy('') }
   }
+  const saveKey = (p: SearchProvider, value: string) => run(p.id, () => request<SearchStatus>('/api/config/search', {
+    method: 'PUT', body: JSON.stringify({ provider: p.id, api_key: value, ...(p.extra ? { extra: value ? (extra[p.id] ?? p.extra_value ?? '') : '' } : {}) }),
+  }), value ? `已保存 ${p.label} 密钥` : `已移除 ${p.label} 密钥`).then(() => { setKeys((k) => ({ ...k, [p.id]: '' })) })
+  const addSource = () => run('src', () => request<SearchStatus>('/api/config/search/sources', { method: 'POST', body: JSON.stringify(src) }), '已添加搜索来源')
+    .then(() => setSrc({ label: '', url: '', kind: src.kind }))
+  const providers = st?.providers ?? []
   return (
     <section className="set-section">
       <div className="set-section-head"><h3>联网搜索</h3></div>
-      <div className="set-row">
+      <p className="hint" style={{ margin: '0 0 8px' }}>
+        AI 研究室与团队角色用它联网搜索、读取网页，并在回答里引用来源。没有任何密钥时自动使用免密钥来源
+        （{(st?.free_sources ?? []).map((f) => f.label).join('、') || '必应、百度、DuckDuckGo、Google 新闻、百度新闻'}）；
+        选「Google」但没有配置 Google 密钥时，会如实说明并改用免密钥来源。
+      </p>
+      {providers.map((p) => {
+        const hint = PROVIDER_HINT[p.id] || { ph: 'API Key', note: '' }
+        return (
+          <div className="set-row" key={p.id}>
+            <div>
+              <b>{p.label} <i className={`prov-dot${p.configured ? ' ok' : ''}`} /></b>
+              <small>{p.configured ? `已配置 · ${p.key_masked}${p.extra && p.extra_value ? ` · cx ${p.extra_value}` : ''}` : hint.note} <a href={p.signup} target="_blank" rel="noreferrer">申请密钥</a></small>
+            </div>
+            <div className="set-inline">
+              <input type="password" placeholder={hint.ph} value={keys[p.id] ?? ''} autoComplete="off" aria-label={`${p.label} 密钥`}
+                onChange={(e) => setKeys({ ...keys, [p.id]: e.target.value })} />
+              {p.extra && (
+                <input placeholder={hint.extraLabel || p.extra} value={extra[p.id] ?? p.extra_value ?? ''} aria-label={hint.extraLabel || p.extra}
+                  onChange={(e) => setExtra({ ...extra, [p.id]: e.target.value })} style={{ width: 150 }} />
+              )}
+              <button className="button" disabled={!!busy || !(keys[p.id] ?? '').trim() || (!!p.extra && !(extra[p.id] ?? p.extra_value ?? '').trim())}
+                onClick={() => saveKey(p, (keys[p.id] ?? '').trim())}>{busy === p.id ? '保存中…' : '保存'}</button>
+              {p.configured && <button className="button ghost" disabled={!!busy} onClick={() => saveKey(p, '')}>移除</button>}
+            </div>
+          </div>
+        )
+      })}
+      <div className="set-row set-row-stack">
         <div>
-          <b>Tavily <i className={`prov-dot${st?.configured ? ' ok' : ''}`} /></b>
-          <small>{st?.configured ? `已配置 · ${st.key_masked}` : 'AI 研究室与团队角色用它联网搜索、读取网页；没有密钥时自动改用免密钥来源（必应、百度、DuckDuckGo、Google 新闻、百度新闻）。'}<a href="https://tavily.com" target="_blank" rel="noreferrer">申请密钥</a></small>
+          <b>自定义来源</b>
+          <small>SearXNG 实例根地址（需在 settings.yml 开启 json 输出），或带 {'{q}'} 占位的 RSS 搜索地址。AI 也可以在对话里用 add_search_source 添加公网来源；web_search 的 source=custom / all 会用到。</small>
         </div>
         <div className="set-inline">
-          <input type="password" placeholder="tvly-…" value={key} onChange={(e) => setKey(e.target.value)} autoComplete="off" />
-          <button className="button" disabled={busy || !key.trim()} onClick={() => save(key.trim())}>保存</button>
-          {st?.configured && <button className="button ghost" disabled={busy} onClick={() => save('')}>移除</button>}
+          <select value={src.kind} onChange={(e) => setSrc({ ...src, kind: e.target.value as 'searxng' | 'rss' })} aria-label="来源类型">
+            <option value="searxng">SearXNG</option>
+            <option value="rss">RSS 搜索</option>
+          </select>
+          <input placeholder="名称" value={src.label} onChange={(e) => setSrc({ ...src, label: e.target.value })} style={{ width: 110 }} aria-label="来源名称" />
+          <input placeholder={src.kind === 'rss' ? 'https://example.com/rss?q={q}' : 'https://searx.example.org'} value={src.url} aria-label="来源地址"
+            onChange={(e) => setSrc({ ...src, url: e.target.value })} style={{ width: 230 }} />
+          <button className="button" disabled={!!busy || src.url.trim().length < 8} onClick={addSource}>{busy === 'src' ? '添加中…' : '添加'}</button>
         </div>
       </div>
+      {(st?.custom ?? []).length > 0 && (
+        <ul className="search-sources stagger">
+          {(st?.custom ?? []).map((c) => (
+            <li key={c.id}>
+              <span className="tag mono">{c.kind === 'rss' ? 'RSS' : 'SearXNG'}</span>
+              <b>{c.label}</b>
+              <small className="muted" title={c.url}>{c.url}</small>
+              <small className="muted">{c.added_by === 'agent' ? 'AI 添加' : '管理员添加'} · id {c.id}</small>
+              <button className="button small ghost" disabled={!!busy} onClick={() => run(`del${c.id}`, () => request<SearchStatus>(`/api/config/search/sources/${c.id}`, { method: 'DELETE' }), '已删除来源')}>删除</button>
+            </li>
+          ))}
+        </ul>
+      )}
     </section>
   )
 }

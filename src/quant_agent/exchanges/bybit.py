@@ -17,6 +17,8 @@ from typing import Any
 
 import httpx
 
+from ..timeframes import TimeframeTable
+
 from .base import (
     Balance,
     Bar,
@@ -32,7 +34,9 @@ PUBLIC_BASE = "https://api.bybit.com"
 # 只允许官方公共行情域名
 ALLOWED_HOSTS = ("api.bybit.com", "api.bytick.com")
 
-TIMEFRAME_STEP_MS = {"1m": 60_000, "5m": 300_000, "15m": 900_000, "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000}
+TIMEFRAME_STEP_MS = TimeframeTable(
+    {"1m": 60_000, "5m": 300_000, "15m": 900_000, "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000}, lambda ms: ms
+)
 INTERVAL = {"1m": "1", "5m": "5", "15m": "15", "1h": "60", "4h": "240", "1d": "D"}
 KLINE_LIMIT = 1000
 FUNDING_LIMIT = 200

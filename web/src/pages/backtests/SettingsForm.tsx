@@ -27,7 +27,7 @@ export function SettingsForm({ value, onChange, hideSecurities }: { value: SpecD
   return (
     <div className="bt-form">
       {!hideSecurities && <label>标的<input value={value.securities} onChange={(e) => set('securities', e.target.value)} placeholder="BTC/USDT, ETH/USDT" /></label>}
-      <label>周期<select value={value.timeframe} onChange={(e) => set('timeframe', e.target.value)}>{['15m', '1h', '4h', '1d'].map((t) => <option key={t}>{t}</option>)}</select></label>
+      <label>周期<select value={value.timeframe} onChange={(e) => set('timeframe', e.target.value)}>{['250ms', '1s', '5s', '1m', '15m', '1h', '4h', '1d'].map((t) => <option key={t}>{t}</option>)}</select></label>
       <label>区间
         <select value={value.range} onChange={(e) => set('range', e.target.value as SpecDraft['range'])}>
           <option value="bars">最近 N 根 K 线</option><option value="dates">指定日期</option>

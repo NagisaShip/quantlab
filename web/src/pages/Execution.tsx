@@ -3,6 +3,7 @@
  * 路由：#/execution · /design · /replay · /radar · /costs · /record · /runs · /run/<id> · /<id>
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { PythonCodeButton } from '../components/PythonCode'
 import { v4, type ImportItem } from '../api3'
 import {
   execution, type Capacity, type CostModel, type ExecConfig, type ExecMeta, type ExecReport, type ExecRun, type ExecScheme,
@@ -116,6 +117,7 @@ function SchemeDetail({ id, meta, algoLabel, notify, onDeleted }: { id: string; 
         </select>
         <button className="button small" onClick={() => toLab(`改进执行方案「${s.name}」：在完成率不降的前提下降低成本`)}>交给 AI 改进</button>
         <button className="button small" onClick={() => toLab(`召集执行小组评审「${s.name}」：成本分解、逆向选择、不同市场状态下的表现`)}>召集团队评审</button>
+        <PythonCodeButton kind="execution" artifact={s.config} name={s.name} />
         <button className="button small danger" onClick={async () => { if (await appConfirm(`删除执行方案「${s.name}」？试验记录会保留。`)) { await execution.remove(id); onDeleted() } }}>删除</button>
       </>}>
         <div className="fx-meta">

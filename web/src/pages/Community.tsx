@@ -17,12 +17,15 @@ import { Markdown } from '../components/markdown'
 import { Callout, EmptyState, Heading, Loading, Modal, Panel, Tag } from '../components/ui'
 import type { PageProps } from './types'
 import { appConfirm } from '../components/dialog'
+import { RichBody, RichEditor, SourceBadge } from '../components/RichText'
+import { inbox, type Ref } from '../apiCollab'
 
 const TABS: { key: string; label: string; q: Record<string, unknown> }[] = [
   { key: 'all', label: '全部', q: {} },
   { key: 'strategy', label: '策略分享', q: { type: 'strategy' } },
   { key: 'article', label: '文章', q: { type: 'article' } },
   { key: 'question', label: '问答', q: { type: 'question' } },
+  { key: 'agent', label: 'Agent 发布', q: { source: 'agent' } },
   { key: 'featured', label: '精华', q: { featured: true } },
   { key: 'mine', label: '我的', q: { mine: true } },
   { key: 'fav', label: '收藏', q: { favorited: true } },
@@ -152,6 +155,7 @@ function PostCard({ post, onOpen, onTag }: { post: PostSummary; onOpen: () => vo
           <h3>{post.title}</h3>
         </div>
         <p className="post-excerpt">{post.excerpt}</p>
+        {(post.refs?.length ?? 0) > 0 && <div className="post-refs-hint">⎘ 引用了 {post.refs!.map((r) => r.title || r.type).slice(0, 3).join('、')}{post.refs!.length > 3 ? ` 等 ${post.refs!.length} 项` : ''}</div>}
         {m && (
           <div className="post-metrics">
             <span>收益 <b className={tone(m.total_return)}>{fmtPct(m.total_return, 1, true)}</b></span>
@@ -163,8 +167,9 @@ function PostCard({ post, onOpen, onTag }: { post: PostSummary; onOpen: () => vo
           </div>
         )}
         <div className="post-meta">
-          <span className="avatar sm">{post.author.slice(0, 1)}</span>
+          <span className={`avatar sm${post.source?.kind === 'agent' ? ' ai' : ''}`}>{post.source?.kind === 'agent' ? '✦' : post.author.slice(0, 1)}</span>
           <span>{post.author}</span>
+          <SourceBadge source={post.source} />
           <span>· {ago(post.created_at)}</span>
           {post.strategy && <span>· {post.strategy.securities?.join(', ')} {post.strategy.timeframe}</span>}
           <span className="post-tags" onClick={(e) => e.stopPropagation()}>
@@ -210,6 +215,7 @@ export function ComposeModal({ initialType, onClose, onDone, notify, presetBackt
   const [type, setType] = useState(initialType)
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
+  const [refs, setRefs] = useState<Ref[]>([])
   const [tags, setTags] = useState<string[]>([])
   const [suggested, setSuggested] = useState<string[]>([])
   const [strategies, setStrategies] = useState<StrategyFile[]>([])
@@ -217,7 +223,6 @@ export function ComposeModal({ initialType, onClose, onDone, notify, presetBackt
   const [slug, setSlug] = useState('')
   const [btId, setBtId] = useState(presetBacktest ?? '')
   const [review, setReview] = useState(true)
-  const [preview, setPreview] = useState(false)
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
@@ -238,7 +243,9 @@ export function ComposeModal({ initialType, onClose, onDone, notify, presetBackt
         strategy_slug: type === 'strategy' && slug ? slug : null,
         backtest_id: type === 'strategy' && btId ? btId : null,
         ai_review: type === 'strategy' && review,
+        refs,
       })
+      try { localStorage.removeItem('qa.draft.post.new') } catch { /* 私密模式 */ }
       notify('已发布')
       onDone(r.post.id)
     } catch (e) {
@@ -249,16 +256,14 @@ export function ComposeModal({ initialType, onClose, onDone, notify, presetBackt
   }
 
   return (
-    <Modal title="发帖" onClose={onClose} width={900}
-      footer={<><button className="button" onClick={() => setPreview(!preview)}>{preview ? '继续编辑' : '预览'}</button><button className="button" onClick={onClose}>取消</button><button className="button primary" disabled={busy || title.trim().length < 2 || (type === 'strategy' && !slug && !btId)} onClick={submit}>{busy ? '发布中…' : '发布'}</button></>}>
+    <Modal title="发帖" onClose={onClose} width={1040}
+      footer={<><span className="hint">以你的名义发布，标记为「成员」；Agent 代发的帖子会单独标注</span><span className="spacer" /><button className="button" onClick={onClose}>取消</button><button className="button primary" disabled={busy || title.trim().length < 2 || (type === 'strategy' && !slug && !btId)} onClick={submit}>{busy ? '发布中…' : '发布'}</button></>}>
       <div className="segments" style={{ display: 'inline-flex', marginBottom: 12 }}>
         {(['strategy', 'article', 'question'] as const).map((t) => (
           <button key={t} aria-pressed={type === t} onClick={() => setType(t)}>{t === 'strategy' ? '策略分享' : t === 'article' ? '文章' : '问答'}</button>
         ))}
       </div>
-      {preview ? (
-        <div className="md-preview"><h2>{title || '（无标题）'}</h2><Markdown text={body} /></div>
-      ) : (
+      {(
         <>
           <label>标题<input value={title} maxLength={120} onChange={(e) => setTitle(e.target.value)} placeholder={type === 'question' ? '一句话说清你的问题' : '标题'} /></label>
           {type === 'strategy' && (
@@ -280,9 +285,10 @@ export function ComposeModal({ initialType, onClose, onDone, notify, presetBackt
           <div className="chip-row" style={{ marginTop: 10 }}>
             {suggested.map((t) => <button key={t} className={`chip${tags.includes(t) ? ' on' : ''}`} onClick={() => setTags(tags.includes(t) ? tags.filter((x) => x !== t) : [...tags, t].slice(0, 8))}>{t}</button>)}
           </div>
-          <label style={{ marginTop: 10 }}>正文（支持 Markdown：标题、列表、表格、代码块）
-            <textarea rows={12} value={body} onChange={(e) => setBody(e.target.value)} placeholder={type === 'strategy' ? '思路、参数、回测条件、局限……' : ''} />
-          </label>
+          <div style={{ marginTop: 10 }}>
+            <RichEditor value={body} onChange={setBody} refs={refs} onRefs={setRefs} rows={14} draftKey="post.new" notify={notify}
+              placeholder={type === 'strategy' ? '思路、参数、回测条件、局限……\n\n可以用「＋ 引用」插入回测结果、策略、代码片段和文件，或者直接粘贴截图。' : '正文（Markdown）。可以引用回测、策略、代码与文件，或直接粘贴截图。'} />
+          </div>
           {type === 'strategy' && <label className="check"><input type="checkbox" checked={review} onChange={(e) => setReview(e.target.checked)} /> 发布后请 AI 审稿人公开挑刺</label>}
         </>
       )}
@@ -292,7 +298,8 @@ export function ComposeModal({ initialType, onClose, onDone, notify, presetBackt
 
 /* ---------------- 帖子详情 ---------------- */
 export function PostPage({ id, onNavigate, notify }: PageProps & { id: string }) {
-  const [data, setData] = useState<{ post: Post; comments: CommentRow[]; related: PostSummary[]; viewer: string } | null>(null)
+  const [data, setData] = useState<Awaited<ReturnType<typeof v3.post>> | null>(null)
+  const [showMuted, setShowMuted] = useState<Set<string>>(new Set())
   const [error, setError] = useState('')
   const [text, setText] = useState('')
   const [replyTo, setReplyTo] = useState<CommentRow | null>(null)
@@ -307,7 +314,7 @@ export function PostPage({ id, onNavigate, notify }: PageProps & { id: string })
   if (error) return <Callout tone="fail">{error}</Callout>
   if (!data) return <Loading />
   const { post, comments, viewer } = data
-  const mine = post.author === viewer
+  const mine = post.author_id ? post.author_id === data.viewer_id : post.author === viewer
   const bt = post.backtest
   const roots = comments.filter((c) => !c.parent_id)
   const children = (pid: string) => comments.filter((c) => c.parent_id === pid)
@@ -351,7 +358,9 @@ export function PostPage({ id, onNavigate, notify }: PageProps & { id: string })
         {post.accepted_comment === c.id && <Tag tone="ok">已采纳</Tag>}
         <span className="muted">{ago(c.created_at)}</span>
       </div>
-      <div className="comment-body"><Markdown text={c.body} compact /></div>
+      <div className="comment-body">{c.muted && !showMuted.has(c.id)
+        ? <button type="button" className="chat-muted" onClick={() => setShowMuted(new Set([...showMuted, c.id]))}>已屏蔽 {c.author} 的评论 · 点击显示</button>
+        : <Markdown text={c.body} compact />}</div>
       <div className="comment-actions">
         <button className={`link${c.liked ? ' on' : ''}`} onClick={() => act(() => v3.likeComment(c.id))}>▲ {c.like_count}</button>
         <button className="link" onClick={() => { setReplyTo(c); document.getElementById('comment-box')?.focus() }}>回复</button>
@@ -373,6 +382,10 @@ export function PostPage({ id, onNavigate, notify }: PageProps & { id: string })
         {post.strategy && <button className="button small" disabled={reviewing} onClick={review}>{reviewing ? '审稿中…' : '✦ AI 审稿'}</button>}
         <button className="button small" onClick={() => act(() => v3.featurePost(id))}>{post.featured ? '取消精华' : '设为精华'}</button>
         <button className="button small" onClick={() => act(() => v3.pinPost(id))}>{post.pinned ? '取消置顶' : '置顶'}</button>
+        {!mine && <button className={`button small${data.post_muted ? ' on' : ''}`} title="屏蔽后，这篇帖子的新回复、点赞不再通知你"
+          onClick={() => act(() => (data.post_muted ? inbox.unmute('post', id) : inbox.mute('post', id, post.title)), data.post_muted ? '已恢复通知' : '已屏蔽这篇帖子的通知')}>{data.post_muted ? '🔕 已屏蔽' : '屏蔽通知'}</button>}
+        {!mine && post.author_id && post.author_id !== 'system' && post.source?.kind !== 'agent' && <button className="button small" title="不再看到此人的帖子与通知"
+          onClick={() => act(() => (data.author_muted ? inbox.unmute('user', post.author_id!) : inbox.mute('user', post.author_id!, post.author)), data.author_muted ? `已取消屏蔽 ${post.author}` : `已屏蔽 ${post.author}`)}>{data.author_muted ? `取消屏蔽 ${post.author}` : `屏蔽 ${post.author}`}</button>}
         {mine && <button className="button small" onClick={() => setEditing(true)}>编辑</button>}
         {mine && <button className="button small danger" onClick={async () => { if (await appConfirm('删除这篇帖子？')) { await v3.deletePost(id); onNavigate('square') } }}>删除</button>}
       </div>
@@ -388,7 +401,8 @@ export function PostPage({ id, onNavigate, notify }: PageProps & { id: string })
               </div>
               <h1 className="post-h1">{post.title}</h1>
               <div className="post-meta">
-                <span className="avatar sm">{post.author.slice(0, 1)}</span><span>{post.author}</span>
+                <span className={`avatar sm${post.source?.kind === 'agent' ? ' ai' : ''}`}>{post.source?.kind === 'agent' ? '✦' : post.author.slice(0, 1)}</span><span>{post.author}</span>
+                <SourceBadge source={post.source} />
                 <span>· {ago(post.created_at)}{post.edited_at ? '（已编辑）' : ''}</span>
                 <span>· 浏览 {post.views}</span>
                 <span className="post-tags">{post.tags.map((t) => <span key={t} className="chip small">{t}</span>)}</span>
@@ -418,7 +432,8 @@ export function PostPage({ id, onNavigate, notify }: PageProps & { id: string })
                   {bt.warnings?.map((w) => <Callout key={w} tone="warn">{w}</Callout>)}
                 </div>
               )}
-              <div className="post-body"><Markdown text={post.body} /></div>
+              {post.source?.kind === 'agent' && <Callout>这篇帖子由 {post.source.label || 'QuantBot'} 代 {post.source.on_behalf_of || post.author} 撰写并发布，结论请结合附带的回测自行判断。</Callout>}
+              <div className="post-body"><RichBody text={post.body} refs={post.refs ?? []} /></div>
               {post.strategy?.code && (
                 <details className="post-code" open={!bt}>
                   <summary>策略代码 · {post.strategy.name} · {post.strategy.securities?.join(', ')} {post.strategy.timeframe} · <span className="mono">{post.strategy.code_sha256?.slice(0, 12)}</span></summary>
@@ -468,16 +483,19 @@ export function PostPage({ id, onNavigate, notify }: PageProps & { id: string })
 function EditPostModal({ post, onClose, onSaved, notify }: { post: Post; onClose: () => void; onSaved: () => void; notify: PageProps['notify'] }) {
   const [title, setTitle] = useState(post.title)
   const [body, setBody] = useState(post.body)
+  const [refs, setRefs] = useState<Ref[]>(post.refs ?? [])
   const [tags, setTags] = useState(post.tags.join(', '))
   return (
-    <Modal title="编辑帖子" onClose={onClose} width={860}
+    <Modal title="编辑帖子" onClose={onClose} width={1040}
       footer={<><button className="button" onClick={onClose}>取消</button><button className="button primary" onClick={async () => {
-        try { await v3.updatePost(post.id, { title, body, tags: tags.split(/[,，]+/).map((t) => t.trim()).filter(Boolean) }); onSaved() } catch (e) { notify((e as Error).message, true) }
+        try { await v3.updatePost(post.id, { title, body, refs, tags: tags.split(/[,，]+/).map((t) => t.trim()).filter(Boolean) }); try { localStorage.removeItem(`qa.draft.post.${post.id}`) } catch { /* */ } onSaved() } catch (e) { notify((e as Error).message, true) }
       }}>保存</button></>}>
       <Callout>附带的策略代码与回测快照不可修改，这是为了让读者看到的始终是发布时那一份。</Callout>
       <label>标题<input value={title} onChange={(e) => setTitle(e.target.value)} /></label>
       <label style={{ marginTop: 10 }}>标签（逗号分隔）<input value={tags} onChange={(e) => setTags(e.target.value)} /></label>
-      <label style={{ marginTop: 10 }}>正文<textarea rows={14} value={body} onChange={(e) => setBody(e.target.value)} /></label>
+      <div style={{ marginTop: 10 }}>
+        <RichEditor value={body} onChange={setBody} refs={refs} onRefs={setRefs} rows={14} draftKey={`post.${post.id}`} notify={notify} />
+      </div>
     </Modal>
   )
 }

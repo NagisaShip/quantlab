@@ -18,6 +18,8 @@ from typing import Any
 
 import httpx
 
+from ..timeframes import TimeframeTable
+
 from .base import (
     Balance,
     Bar,
@@ -36,7 +38,9 @@ LIVE_BASE = "https://openapi.okx.com"  # 实验三验证可用的公共域名；
 # 只允许官方域名：区域账户用对应域名，但绝不接受任意主机
 ALLOWED_HOSTS = ("openapi.okx.com", "www.okx.com", "app.okx.com", "us.okx.com", "eea.okx.com")
 
-TIMEFRAME_STEP_MS = {"1m": 60_000, "5m": 300_000, "15m": 900_000, "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000}
+TIMEFRAME_STEP_MS = TimeframeTable(
+    {"1m": 60_000, "5m": 300_000, "15m": 900_000, "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000}, lambda ms: ms
+)
 # 日线用 UTC 开盘口径（1Dutc），与平台统一的 UTC 日界一致
 _OKX_BAR_MAP = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "1H", "4h": "4H", "1d": "1Dutc"}
 

@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Literal, Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
@@ -280,6 +280,24 @@ def _python_allowed() -> None:
             "该工作区已关闭 Python 策略，请使用规则 DSL 策略",
             details={"setting": "allow_python_strategies"},
         )
+
+
+class PyCodeIn(BaseModel):
+    kind: Literal["factor", "model", "portfolio", "execution"]
+    artifact: Any = Field(..., description="因子表达式，或模型 / 组合 / 执行规格（对象或 JSON 字符串）")
+    name: str = Field("", max_length=60)
+
+
+@router.post("/pycode", summary="研究产物 → Python 代码：因子（独立可运行，结果与平台一致）、模型 / 组合 / 执行（规格 + 复现代码）")
+def to_python(payload: PyCodeIn) -> dict:
+    try:
+        from ..research import pycode as PC
+
+        return {"code": PC.to_python(payload.kind, payload.artifact, name=payload.name)}
+    except ImportError as exc:  # pragma: no cover - numpy 没装
+        raise HTTPException(503, "需要 numpy") from exc
+    except (ValueError, KeyError, TypeError) as exc:
+        raise HTTPException(400, f"无法生成 Python 代码：{exc}") from exc
 
 
 @router.get("/backtests")

@@ -50,7 +50,7 @@ export interface LabVersion {
 export interface Pin { id: string; kind: string; title: string; text: string; created_at: number }
 
 export type LabKind = 'strategy' | 'factor' | 'model' | 'portfolio' | 'execution'
-export type Workflow = '' | 'pipeline' | 'report'
+export type Workflow = '' | 'auto' | 'pipeline' | 'report'
 export interface ReportBrief { id: string; title: string; summary: string; created_at: number }
 export interface Report extends ReportBrief {
   project_id: string; markdown: string; sources: string[]; securities: string[]; timeframe?: string; model?: string
@@ -60,6 +60,16 @@ export const isSpecKind = (k?: LabKind) => k === 'model' || k === 'portfolio' ||
 export type Executor = 'solo' | 'team'
 /** 权限模式：自动 / 手动（改动与运行先问）/ 接受编辑 / 计划 / 跳过一切确认 */
 export type Permission = 'auto' | 'manual' | 'accept_edits' | 'plan' | 'bypass'
+/** 审批类别：完全权限下研究者自选哪些仍要先批准 */
+export type ApprovalCategory = 'delete' | 'trading' | 'config' | 'save' | 'edit' | 'run'
+export const APPROVAL_CATEGORIES: { id: ApprovalCategory; label: string; hint: string }[] = [
+  { id: 'delete', label: '删除记录', hint: '删除策略、回测、因子等（不可恢复）' },
+  { id: 'trading', label: '模拟交易与晋级', hint: '启动 / 停止模拟、晋级、微实盘急停' },
+  { id: 'config', label: '改平台配置', hint: '校准回测成本等全局设置' },
+  { id: 'save', label: '保存到库', hint: '保存为平台策略、入因子库 / 模型库' },
+  { id: 'edit', label: '改代码与目标', hint: '提交新版本、修改目标与标的' },
+  { id: 'run', label: '运行计算', hint: '回测、评估、训练、团队评审' },
+]
 
 /** 因子假设卡 */
 export interface Hypothesis { category?: string; rationale?: string; direction?: string; falsify?: string }
@@ -71,6 +81,8 @@ export interface LabProject {
   horizon?: number
   executor?: Executor
   permission?: Permission
+  /** 完全权限（bypass）下仍要先审批的类别 */
+  approvals?: ApprovalCategory[]
   team_id?: string
   cost_bps?: number
   hypothesis?: Hypothesis
@@ -145,7 +157,7 @@ export interface LabMessage {
   role: 'user' | 'assistant' | 'tool' | 'event'
   kind: 'text' | 'tool' | 'code' | 'backtest' | 'round' | 'team' | 'ask' | 'error' | 'saved' | 'goal' | 'walkforward' |
     'factor_code' | 'factor_report' | 'model_spec' | 'model_report' | 'portfolio_spec' | 'portfolio_report' | 'execution_spec' | 'execution_report' | 'discussion' | 'plan' |
-    'report' | 'subagents' | 'cost_sweep'
+    'report' | 'subagents' | 'cost_sweep' | 'stability'
   content: string
   data: Record<string, any>
   mode?: 'llm' | 'fallback'

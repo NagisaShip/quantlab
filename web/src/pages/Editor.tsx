@@ -34,8 +34,10 @@ import { ruleCode, type RuleFromCode } from '../apiRuleCode'
 import { makeErrAt, RuleForm, type RuleSpec } from './rulecode/RuleForm'
 import type { PageProps } from './types'
 import { appConfirm } from '../components/dialog'
+import { EditHistory, EditorStack, ShareButton } from '../components/Share'
+import { collab, type EditorMark } from '../apiCollab'
 
-type Tab = 'result' | 'logs' | 'ai' | 'params' | 'versions' | 'history'
+type Tab = 'result' | 'logs' | 'ai' | 'params' | 'versions' | 'history' | 'editors'
 const DAY = 86_400_000
 const TF_MS: Record<string, number> = { '1m': 60_000, '5m': 300_000, '15m': 900_000, '1h': 3_600_000, '4h': 14_400_000, '1d': DAY }
 
@@ -90,6 +92,8 @@ export default function EditorPage({ slug, onNavigate, notify, setBusy }: PagePr
   const [specOpen, setSpecOpen] = useState(false)
   const [issues, setIssues] = useState<string[]>([])
   const [versions, setVersions] = useState<{ version: string; file: string; saved_at: number; lines: number }[]>([])
+  const [editors, setEditors] = useState<EditorMark[]>([])
+  useEffect(() => { collab.editors('strategy').then((r) => setEditors(r.editors[slug] ?? [])).catch(() => undefined) }, [slug, versions.length])
   const [settings, setSettings] = useState<RunSettings | null>(null)
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [tab, setTab] = useState<Tab>('result')
@@ -369,6 +373,9 @@ export default function EditorPage({ slug, onNavigate, notify, setBusy }: PagePr
         {check && <Tag>{check.is_rule ? '规则策略' : '代码策略'}</Tag>}
         {dirty && <span className="dirty-dot" title="有未保存的修改">● 未保存</span>}
         <div className="spacer" />
+        <EditorStack editors={editors} />
+        <ShareButton type="strategy" id={strategy.slug} notify={notify} compact />
+        <button className="button small" title="版本链、克隆分支与各版本的回测" onClick={() => onNavigate(`lineage/${strategy.slug}`)}>血缘</button>
         <button className="button small" onClick={save} title="Ctrl+S">保存</button>
         <button className="button small" disabled={Boolean(running)} onClick={quickRun} title="Ctrl+Enter：用当前编辑器里的代码快速跑一遍，不进回测列表">
           {running === 'quick' ? <><span className="spinner" />运行中</> : '▷ 编译运行'}
@@ -403,7 +410,7 @@ export default function EditorPage({ slug, onNavigate, notify, setBusy }: PagePr
         <label>结束<input type="date" value={settings.end} onChange={(e) => set('end', e.target.value)} /></label>
         <label>周期
           <select value={settings.timeframe} onChange={(e) => set('timeframe', e.target.value)}>
-            {['1m', '5m', '15m', '1h', '4h', '1d'].map((t) => <option key={t}>{t}</option>)}
+            {['250ms', '1s', '5s', '1m', '5m', '15m', '1h', '4h', '1d'].map((t) => <option key={t}>{t}</option>)}
           </select>
         </label>
         <label className="wide">标的池<input value={settings.securities} onChange={(e) => set('securities', e.target.value)} /></label>
@@ -477,6 +484,7 @@ export default function EditorPage({ slug, onNavigate, notify, setBusy }: PagePr
               ['params', `参数 (${Object.keys(declared).length})`],
               ['versions', `版本 (${versions.length})`],
               ['history', `回测 (${history.length})`],
+              ['editors', `编辑记录${editors.length ? ` (${editors.length} 人)` : ''}`],
             ] as [Tab, string][]).map(([k, label]) => (
               <button key={k} aria-pressed={tab === k} onClick={() => setTab(k)}>{label}</button>
             ))}
@@ -491,7 +499,7 @@ export default function EditorPage({ slug, onNavigate, notify, setBusy }: PagePr
                 strategy={strategy}
                 settings={settings}
                 errors={allErrors}
-                logs={result?.logs ?? []}
+                logs={(result?.logs ?? []).filter(Boolean)}
                 ready={Boolean(llm?.ready)}
                 notify={notify}
               />
@@ -518,6 +526,7 @@ export default function EditorPage({ slug, onNavigate, notify, setBusy }: PagePr
             )}
             {tab === 'versions' && <VersionsTab slug={strategy.slug} versions={versions} current={code} onRestore={(c) => { setCode(c); notify('已载入历史版本到编辑器，保存后生效') }} />}
             {tab === 'history' && <HistoryTab rows={history} onOpen={(id) => onNavigate(`backtest/${id}`)} />}
+            {tab === 'editors' && <div className="anim-fade"><EditHistory key={strategy.version} type="strategy" id={strategy.slug} /></div>}
           </div>
         </div>
       </div>
@@ -618,7 +627,7 @@ function ResultTab({ result, running, error, onFull, onFix }: { result: Backtest
 function LogsTab({ result, runError }: { result: BacktestResult | null; runError: string }) {
   const [level, setLevel] = useState('all')
   if (!result && !runError) return <EmptyState glyph="≡" title="运行后这里显示日志">策略里用 log.info(...) 输出的内容、委托未成交提示、运行错误都会出现在这里。</EmptyState>
-  const logs = (result?.logs ?? []).filter((l) => level === 'all' || l.level === level)
+  const logs = (result?.logs ?? []).filter((l) => l && (level === 'all' || l.level === level))
   return (
     <div className="logs">
       {runError && <div className="log-line error"><span>—</span><b>ERROR</b>{runError}</div>}

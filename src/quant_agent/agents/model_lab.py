@@ -256,7 +256,8 @@ class ModelLab(DomainLab):
             project_id=pid,
             note=((self.current(project) or {}).get("note") or ""),
         )
-        evaluation = MODEL.evaluate(s, self.project_spec(project)["items"])
+        # 没设目标时不拿出厂默认阈值评判，只汇报实测结果
+        evaluation = MODEL.evaluate(s, self.project_spec(project)["items"]) if self.has_goal(project) else None
         self._set_version_result(
             pid, v, metrics=s, evaluation=evaluation, admitted=report["admitted"], run_id=run_rec["id"]
         )
@@ -309,7 +310,11 @@ class ModelLab(DomainLab):
             "folds": [{"fold": f["fold"], "rank_ic": f["rank_ic"]} for f in report["folds"]],
             "importance": report["importance"][:8],
             "checks": [{"label": c["label"], "ok": c["ok"], "detail": c["detail"]} for c in report["checks"]],
-            "goal": {"passed": evaluation["passed"], "gaps": MODEL.gap_report(evaluation)},
+            "goal": (
+                {"passed": evaluation["passed"], "gaps": MODEL.gap_report(evaluation)}
+                if evaluation
+                else "未设定验收目标：只汇报实测结果，不要说达标或未达标"
+            ),
             "curve_tail": report["curve"][-3:],
             "warnings": report["panel"].get("warnings", [])[:3],
         }

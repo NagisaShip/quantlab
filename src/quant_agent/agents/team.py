@@ -299,26 +299,39 @@ class TeamRunner:
                 steps.append(self._invoke(role, task))
         return steps
 
+    #: 汇总时每个角色的发言最多带多少字：防止多角色长发言把汇总请求撑爆上下文 / 输出上限
+    SYNTH_CHARS_PER_STEP = 1800
+
     def _synthesize(self, role: Role, topic: str, steps: list[TeamRunStep]) -> str:
         if not steps:
             return ""
-        transcript = "\n\n".join(
-            f"### {s.role_name}（{s.model or '默认模型'}）\n{s.output if s.status == 'ok' else '[失败] ' + s.error}"
-            for s in steps
-        )
+        cap = self.SYNTH_CHARS_PER_STEP
+
+        def body(s: TeamRunStep) -> str:
+            if s.status != "ok":
+                return "[失败] " + (s.error or "")[:200]
+            out = s.output.strip()
+            return out if len(out) <= cap else out[:cap] + "……（已截断）"
+
+        transcript = "\n\n".join(f"### {s.role_name}（{s.model or '默认模型'}）\n{body(s)}" for s in steps)
         task = (
             f"调研主题：{topic}\n\n"
             f"以下是团队各角色的独立意见：\n\n{transcript}\n\n"
-            "请按你的角色要求汇总：共识、分歧与你的判断、结论、下一步行动项。"
+            "请按你的角色要求汇总：共识、分歧与你的判断、结论、下一步行动项。不要再调用工具，直接写汇总。"
         )
-        step = self._invoke(role, task, max_steps=3)
-        return step.output if step.status == "ok" else f"汇总失败：{step.error}"
+        # 汇总只需整合已有发言：不给工具，避免汇总人把步数花在查数据上、最后没写结论（曾返回「未产出内容」）
+        step = self._invoke(role, task, max_steps=2, use_tools=False)
+        if step.status == "ok":
+            return step.output
+        return fallback_synthesis(steps, reason=step.error)
 
     # ---------------- 单角色调用 ----------------
-    def _invoke(self, role: Role, task: str, *, max_steps: int = 6) -> TeamRunStep:
+    def _invoke(self, role: Role, task: str, *, max_steps: int = 6, use_tools: bool = True) -> TeamRunStep:
         started = time.time()
         # 默认把平台工具都交给角色、由 AI 自己决定何时调用；角色勾了「只用指定工具」才收窄
         names = role.tools if getattr(role, "restrict_tools", False) else sorted({*self.tools.names(), *role.tools})
+        if not use_tools:
+            names = []
         tools = [t for t in (self._make_tool(name) for name in names) if t is not None]
         agent = Agent(
             name=role.id,
@@ -392,6 +405,18 @@ class TeamRunner:
         if materials:
             parts.append("【平台数据】\n" + json.dumps(materials, ensure_ascii=False, indent=2))
         return "\n\n".join(parts)
+
+
+def fallback_synthesis(steps: list[TeamRunStep], *, reason: str = "") -> str:
+    """模型汇总失败（超时、额度、上下文过长）时的规则汇总：把成功角色的要点按原样列出，标明未经模型整合。"""
+    ok = [s for s in steps if s.status == "ok" and s.output.strip()]
+    if not ok:
+        return ""
+    lines = [f"【规则汇总】模型汇总未完成（{(reason or '未产出内容')[:120]}），以下为各角色要点原文摘录，未经整合与取舍："]
+    for s in ok:
+        first = " ".join(s.output.strip().split())[:400]
+        lines.append(f"- **{s.role_name}**：{first}")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------

@@ -182,7 +182,7 @@ export function SubagentsCard({ m, onOpen }: { m: LabMessage; onOpen: (id: strin
 /* ------------------------------------------------------------------ */
 /* 标的与周期切换                                                      */
 /* ------------------------------------------------------------------ */
-const TIMEFRAMES = ['5m', '15m', '30m', '1h', '4h', '1d']
+const TIMEFRAMES = ['250ms', '1s', '5s', '1m', '5m', '15m', '30m', '1h', '4h', '1d']
 let symbolCache: string[] | null = null
 
 export function useSymbols() {

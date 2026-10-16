@@ -9,6 +9,7 @@
  * 登记表放在模块级的小 store 里，所以 App 里只需挂一个 <AskAIPanel />，页面不需要被 Provider 包住。
  */
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { useDraft } from './draft'
 import { askStream, askAI, type AiAction, type AskContextItem, type AskMeta, type AskTurn, type ToolCatalog, type ToolRecord } from '../apiAskAI'
 import { fmtMoney, fmtNum, fmtPct, type BacktestResult } from '../api2'
 import type { ContextView, Effort } from '../apiLab'
@@ -115,6 +116,18 @@ const STARTERS: Record<string, string[]> = {
   square: ['怎么判断别人分享的回测靠不靠谱？', '克隆后应该先检查什么？'],
 }
 
+/** 页面没有登记资料时，取主区域的可见文字作为上下文（去掉按钮、导航等噪声）。 */
+function pageSnapshot(route: string): AskAIContext | null {
+  const main = document.querySelector('main')
+  if (!main) return null
+  const clone = main.cloneNode(true) as HTMLElement
+  clone.querySelectorAll('button, nav, script, style, svg, .ask-fab-group, .hub-tabs').forEach((n) => n.remove())
+  const text = (clone.innerText || clone.textContent || '').replace(/\n{3,}/g, '\n\n').trim()
+  if (!text) return null
+  const title = document.title.replace(/ · QuantLab$/, '') || route
+  return { kind: 'page', title: `「${title}」页面内容`, text: `页面：${title}（#/${window.location.hash.replace(/^#\/?/, '')}）\n\n${text.slice(0, 6000)}` }
+}
+
 const routeHead = () => window.location.hash.replace(/^#\/?/, '').split('/')[0]
 const estTokens = (s: string) => Math.ceil(s.length / 2)
 
@@ -151,7 +164,7 @@ export function AskAIPanel() {
   const [route, setRoute] = useState(routeHead)
   const [open, setOpen] = useState(false)
   const [msgs, setMsgs] = useState<Msg[]>([])
-  const [input, setInput] = useState('')
+  const [input, setInput] = useDraft('ask')
   const [running, setRunning] = useState(false)
   const [dismissed, setDismissed] = useState<string[]>([])
   const [meta, setMeta] = useState<AskMeta | null>(null)
@@ -284,6 +297,20 @@ export function AskAIPanel() {
     })
   }
 
+  /** 主入口：跳到 AI 研究室的新对话，当前页面登记的资料（没有就取页面正文摘要）钉成上下文。 */
+  const newConversation = () => {
+    const list = attached.length ? attached : [pageSnapshot(route)].filter((c): c is AskAIContext => !!c)
+    const code = list.find((c) => c.code?.trim())?.code || undefined
+    const name = list.find((c) => c.code?.trim())?.title.match(/「(.+?)」/)?.[1]
+    openInLab({
+      idea: '',
+      title: name,
+      code,
+      pins: list.filter((c) => c.text.trim()).map((c) => ({ kind: 'note', title: c.title, text: c.text.slice(0, 8000) })),
+      attached: list.map((c) => c.title).slice(0, 3).join('、') + (code ? '，以及代码' : ''),
+    })
+  }
+
   const context: ContextView = useMemo(() => {
     const target = prefs.model || meta?.default_model || ''
     const budget = meta?.models.find((m) => m.target === target)?.context_window || 128_000
@@ -303,9 +330,14 @@ export function AskAIPanel() {
   return (
     <>
       {!open && (
-        <button type="button" className="ask-fab" onClick={() => setOpen(true)} title="问 AI（附带当前页面内容）">
-          <span aria-hidden>✦</span>问 AI
-        </button>
+        <div className="ask-fab-group">
+          <button type="button" className="ask-fab-mini" onClick={() => setOpen(true)} title="在侧栏快速提问（不离开本页）" aria-label="在侧栏快速提问">
+            <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden><rect x="1.5" y="2" width="11" height="10" rx="2" fill="none" stroke="currentColor" strokeWidth="1.3" /><path d="M8.5 2v10" stroke="currentColor" strokeWidth="1.3" /></svg>
+          </button>
+          <button type="button" className="ask-fab" onClick={newConversation} title="打开一个新对话，自动附带当前页面内容">
+            <span aria-hidden>✦</span>问 AI
+          </button>
+        </div>
       )}
       {open && (
         <aside className="ask-panel" role="complementary" aria-label="问 AI">

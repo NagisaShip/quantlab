@@ -51,10 +51,16 @@ def read_config() -> dict:
     for rec in s.model_hub.visible(ws, ctx.user_id, ctx.role):
         v = s.model_hub.view(rec)
         v["custom"] = True  # 兼容旧前端：界面登记的都可以删除
-        v["editable"] = v["scope"] == "personal" or ctx.role == "admin"
+        v["editable"] = (
+            v["scope"] == "personal"
+            or ctx.role == "admin"
+            or (v["scope"] == "group" and s.model_hub.can_manage_group(ws, v["group_id"]))
+        )
         where = {"provider": v["name"], "scope": v["scope"]}
         if v["scope"] == "personal":
             where["user_id"] = v["owner_id"]
+        if v["scope"] == "group":
+            where["group_id"] = v["group_id"]
         v["limit_status"] = s.model_hub.rule_status(ws, v["limits"], **where)
         providers.append(v)
     return {
@@ -209,9 +215,11 @@ def discover_models(payload: DiscoverIn) -> dict:
 
 
 @router.delete("/providers/{name}", summary="删除一个模型服务商与其密钥")
-def delete_provider(name: str, scope: Literal["workspace", "personal"] | None = None) -> dict:
+def delete_provider(
+    name: str, scope: Literal["workspace", "personal", "group"] | None = None, group_id: str = ""
+) -> dict:
     s = get_services()
-    if not s.model_hub.delete(name, scope=_scope(scope)):
+    if not s.model_hub.delete(name, scope=_scope(scope), group_id=group_id):
         raise HTTPException(404, "没有这个服务商")
     return {"ok": True}
 
@@ -353,6 +361,28 @@ class DecideIn(BaseModel):
     note: str = Field("", max_length=200)
 
 
+class DefaultLimitsIn(BaseModel):
+    limits: list[LimitRuleIn] = Field(default_factory=list)
+
+
+@router.get("/member-defaults", summary="新成员默认限额：没有单独设置限额的成员使用工作区共享模型时按它计算")
+def get_member_defaults() -> dict:
+    s = get_services()
+    _, ws = _ctx()
+    return {"limits": s.model_hub.default_limits(ws)}
+
+
+@router.put("/member-defaults", summary="设置新成员默认限额（管理员；支持每日 / 每周 / 每月 / 累计与滚动时间段）")
+def put_member_defaults(payload: DefaultLimitsIn) -> dict:
+    s = get_services()
+    ctx, ws = _ctx()
+    if ctx.role != "admin":
+        raise AppError(ErrorCode.PERMISSION_DENIED, "只有工作区管理员可以设置默认限额")
+    limits = s.model_hub.set_default_limits(ws, [r.model_dump() for r in payload.limits])
+    s.audit.record("config.default_limits", object_type="workspace", object_id=ws, details={"limits": limits})
+    return {"limits": limits}
+
+
 @router.get("/quota-requests", summary="额度申请：成员看自己的，管理员看全部")
 def list_quota_requests() -> dict:
     s = get_services()
@@ -385,8 +415,15 @@ def decide_quota_request(rid: str, payload: DecideIn) -> dict:
 # 联网搜索（部署级）
 # ---------------------------------------------------------------------------
 class SearchKeyIn(BaseModel):
-    provider: Literal["tavily"] = "tavily"
+    provider: Literal["tavily", "serper", "google_cse", "brave"] = "tavily"
     api_key: str = Field("", max_length=400, description="留空表示删除")
+    extra: str | None = Field(None, max_length=200, description="附加参数，例如 Google 可编程搜索的 cx")
+
+
+class SearchSourceIn(BaseModel):
+    label: str = Field("", max_length=40)
+    url: str = Field(..., min_length=8, max_length=400, description="SearXNG 实例根地址，或带 {q} 的 RSS 搜索地址")
+    kind: Literal["searxng", "rss"] = "searxng"
 
 
 @router.get("/search", summary="联网搜索配置状态（密钥只回显脱敏值）")
@@ -397,7 +434,7 @@ def read_search() -> dict:
 
 @router.put("/search", summary="设置联网搜索密钥（部署级，加密存放；留空删除）")
 def update_search(payload: SearchKeyIn) -> dict:
-    from ..llm.websearch import SECRET_PREFIX
+    from ..llm.websearch import PROVIDERS, SECRET_PREFIX
 
     _require_deploy_admin()
     s = get_services()
@@ -407,6 +444,12 @@ def update_search(payload: SearchKeyIn) -> dict:
         secrets[key] = payload.api_key.strip()
     else:
         secrets.pop(key, None)
+    extra = PROVIDERS[payload.provider].get("extra")
+    if extra and payload.extra is not None:
+        if payload.extra.strip():
+            secrets[f"{key}_{extra}"] = payload.extra.strip()
+        else:
+            secrets.pop(f"{key}_{extra}", None)
     s.write_secrets(secrets)
     s.audit.record(
         "config.search",
@@ -414,4 +457,25 @@ def update_search(payload: SearchKeyIn) -> dict:
         object_id=payload.provider,
         details={"configured": bool(payload.api_key.strip())},
     )
+    return s.websearch.status()
+
+
+@router.post("/search/sources", summary="添加自定义搜索来源（SearXNG / RSS）")
+def add_search_source(payload: SearchSourceIn) -> dict:
+    _require_deploy_admin()
+    s = get_services()
+    out = s.websearch.add_custom(s.write_secrets, label=payload.label, url=payload.url, kind=payload.kind, trusted=True)
+    if not out.get("ok"):
+        raise HTTPException(400, out.get("error") or "添加失败")
+    s.audit.record("config.search_source", object_type="web_search", object_id=out["source"]["id"], details=out["source"])
+    return s.websearch.status()
+
+
+@router.delete("/search/sources/{source_id}", summary="删除自定义搜索来源")
+def delete_search_source(source_id: str) -> dict:
+    _require_deploy_admin()
+    s = get_services()
+    if not s.websearch.remove_custom(s.write_secrets, source_id):
+        raise HTTPException(404, "来源不存在")
+    s.audit.record("config.search_source_delete", object_type="web_search", object_id=source_id)
     return s.websearch.status()

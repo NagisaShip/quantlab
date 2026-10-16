@@ -34,7 +34,7 @@ export function AssistantText({ content, thinking, thinkingMs, streaming, model,
   return (
     <div className="cb-ai">
       {(thinking || thinkingLive) && <Thinking text={thinking || ''} ms={thinkingMs} live={thinkingLive} />}
-      {content && <div className={`cb-ai-text${streaming ? ' streaming' : ''}`}><Markdown text={content} compact /></div>}
+      {content && <div className={`cb-ai-text${streaming ? ' streaming' : ''}`}><Markdown text={content} compact streaming={streaming} /></div>}
       {!streaming && (model || fallback || footer) && (
         <div className="cb-ai-meta">
           {fallback ? <span className="cb-badge warn">规则降级</span> : model ? <span>{modelLabel(model)}</span> : null}

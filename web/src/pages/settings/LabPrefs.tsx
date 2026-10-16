@@ -112,6 +112,22 @@ export default function LabPrefsTab({ notify }: Pick<PageProps, 'notify'>) {
             onChange={(s, t) => { setWatch(s); setWatchTf(t); store.set('qa.home.watch', JSON.stringify(s)); store.set('qa.home.watchTf', t); saved('首页关注列表') }} />
         </div>
       </section>
+      <DirectMarketRow saved={saved} />
     </>
+  )
+}
+
+/** 展示用行情由浏览器直连交易所（关注列表、行情带、数据中心 K 线），服务器只取回测要用的数据，避免服务器 IP 被限流或封禁。 */
+function DirectMarketRow({ saved }: { saved: (m: string) => void }) {
+  const [on, setOn] = useState(() => store.get('qa.market.direct', '1') !== '0')
+  return (
+    <section className="set-section">
+      <div className="set-section-head"><h3>行情请求</h3></div>
+      <div className="set-row">
+        <div><b>浏览器直连交易所</b><small>关注列表、行情带、数据中心的 K 线由你的浏览器直接向交易所公共接口请求，不经服务器转发，避免服务器 IP 被限流；直连失败时自动改走服务器。回测始终用服务器上可审计的数据</small></div>
+        <button type="button" role="switch" aria-checked={on} aria-label="浏览器直连交易所" className={`switch${on ? ' on' : ''}`}
+          onClick={() => { const v = !on; setOn(v); store.set('qa.market.direct', v ? '1' : '0'); saved(v ? '行情改由浏览器直连交易所' : '行情改由服务器代取') }}><i /></button>
+      </div>
+    </section>
   )
 }

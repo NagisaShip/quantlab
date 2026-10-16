@@ -124,6 +124,8 @@ class AuthService:
         # TOTP 共享密钥要加密落库。默认惰性构造一个 SecretBox（数据目录同 AppServices），
         # 这样只构造 AuthService(db) 的老代码（含测试）不用改；显式传入则复用同一个实例。
         self._secrets = secrets
+        # 部署管理员在运维控制台里改的平台设置（开放注册等）；没有注册时只看环境变量
+        self.settings_reader: Any = None
 
     @property
     def secrets(self) -> Any:
@@ -141,6 +143,13 @@ class AuthService:
         return int(self.db.scalar("SELECT COUNT(*) AS n FROM users") or 0)
 
     def open_registration(self) -> bool:
+        if self.settings_reader is not None:
+            try:
+                override = (self.settings_reader() or {}).get("open_registration")
+            except Exception:
+                override = None
+            if override is not None:
+                return bool(override)
         return os.environ.get("QAGENT_OPEN_REGISTRATION", "") == "1"
 
     def register(self, *, email: str, name: str, password: str, invite_code: str | None = None) -> dict[str, Any]:
@@ -220,9 +229,17 @@ class AuthService:
         key = f"{email}|{ip}"
         limiter.check(key)
         row = self.db.fetchone("SELECT * FROM users WHERE email=?", (email,))
-        if row is None or not row["is_active"] or not verify_password(password, row["password_hash"]):
+        if row is None or not verify_password(password, row["password_hash"]):
             limiter.fail(key)
             raise AppError(ErrorCode.UNAUTHENTICATED, "邮箱或密码错误")
+        if not row["is_active"]:
+            # 密码正确才说明原因：不给撞库者额外信息
+            reason = row.get("banned_reason") or ""
+            raise AppError(
+                ErrorCode.PERMISSION_DENIED,
+                "账号已被管理员封禁" + (f"：{reason}" if reason else "") + "。如有疑问请联系部署管理员",
+                details={"banned": True},
+            )
         if self.totp_enabled(row["id"]):
             # 密码已正确：这里不再计入密码失败次数，改由 TOTP 自己的锁定策略约束
             limiter.clear(key)

@@ -224,6 +224,8 @@ def handle_backtest(ctl: TaskCtl) -> dict[str, Any]:
             "duration_ms": duration,
             "created_at": time.time(),
             "strategy_version_id": ctl.run.get("strategy_version_id"),
+            # 谁跑的这次回测：策略血缘图上按版本列出回测与执行人
+            "created_by": ctl.run.get("created_by"),
             # 来自 AI 研究室对话的回测：记下对话，回测记录页可以按对话分组
             "lab_project_id": m.get("lab_project_id"),
             "lab_title": m.get("lab_title"),
@@ -1142,6 +1144,27 @@ def scan_nightshift(services: Any) -> list[str]:
 # ---------------------------------------------------------------------------
 # 组装与派发
 # ---------------------------------------------------------------------------
+def scan_datahub(services: Any) -> dict[str, Any]:
+    """worker 周期钩子（每 10 分钟）：开启了自动同步、且到了间隔的工作区，把已有研究数据补到最新。"""
+    from ..platform import context as _ctx
+
+    try:
+        from ..research.datahub import DataHub
+    except ImportError:  # numpy 没装
+        return {}
+    done: dict[str, Any] = {}
+    for row in services.db.fetchall("SELECT id FROM workspaces"):
+        ws = row["id"]
+        with _ctx.bind(ws):
+            try:
+                hub = DataHub(services.store, secrets_fn=services.read_secrets)
+                if hub.auto_due():
+                    done[ws] = hub.auto_sync()
+            except Exception:
+                logging.getLogger("quantlab.datahub").exception("研究数据自动同步失败")
+    return done
+
+
 def scan_lifecycle(services: Any) -> dict[str, Any]:
     """worker 周期钩子（每小时）：运行中的实验做衰减判定；到期的模型登记重训任务（每个模型每天最多一次）。"""
     from ..platform import context as _ctx
@@ -1225,6 +1248,7 @@ def build_worker(services: Any, **kw: Any) -> Worker:
             (600.0, check_clock),
             (5.0, poll_bots),
             (3600.0, scan_lifecycle),
+            (600.0, scan_datahub),
         ],
         **kw,
     )

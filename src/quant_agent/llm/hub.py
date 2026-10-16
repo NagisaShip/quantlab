@@ -22,11 +22,22 @@
 
 ## 限额
 
-限额规则 `{"metric": "tokens" | "cost", "window": "1h" | "5h" | "1d" | "7d" | "30d", "limit": 数值}`，
-窗口是滚动时间段。两处可以设：
+限额规则 `{"metric": "tokens" | "cost", "window": 时间段, "limit": 数值}`。时间段有两类：
 
-- 服务商上：限制整个工作区（个人服务商则是本人）在该服务商上的用量；
-- 成员上（管理员设置）：限制该成员使用**工作区共享**模型的用量。
+- 滚动：`1h` / `5h` / `1d` / `7d` / `30d`（从现在往回数）；
+- 自然周期：`day`（每日）/ `week`（每周，周一起）/ `month`（每月）/ `total`（累计，永不重置），
+  按工作区时区切分。
+
+可以设的地方：
+
+- 服务商上：限制整个工作区（个人服务商则是本人、群组服务商则是全群）在该服务商上的用量；
+- 成员上（工作区管理员设置）：限制该成员使用**工作区共享**模型的用量；
+- 群组上：工作区管理员给群组分配共享模型额度（全体群成员合计，`ws_limits`）；
+  群主给每位群成员设定使用**群组模型**的额度（`member_limits`）。
+
+## 群组模型（scope=group）
+
+群主 / 群管理员可以登记只给本群成员使用的服务商（密钥属于登记人），用量按群组单独记账。
 
 调用前检查，超额的服务商当作不可用跳过（降级链里的下一个候选接着试），错误信息说明原因。
 """
@@ -51,8 +62,30 @@ POLICIES = "llm_member_policies"
 REQUESTS = "llm_quota_requests"
 ROUTING_KEYS = ("default", "code_gen", "reasoning", "report")
 
-WINDOWS: dict[str, int] = {"1h": 3600, "5h": 5 * 3600, "1d": 86400, "7d": 7 * 86400, "30d": 30 * 86400}
-WINDOW_LABEL = {"1h": "1 小时", "5h": "5 小时", "1d": "1 天", "7d": "7 天", "30d": "30 天"}
+# 滚动时间段的秒数；自然周期（day / week / month / total）的值只用于排序，起点见 window_start()
+WINDOWS: dict[str, int] = {
+    "1h": 3600,
+    "5h": 5 * 3600,
+    "1d": 86400,
+    "day": 86400 + 1,
+    "7d": 7 * 86400,
+    "week": 7 * 86400 + 1,
+    "30d": 30 * 86400,
+    "month": 30 * 86400 + 1,
+    "total": 10**10,
+}
+CALENDAR_WINDOWS = ("day", "week", "month", "total")
+WINDOW_LABEL = {
+    "1h": "1 小时内",
+    "5h": "5 小时内",
+    "1d": "1 天内",
+    "7d": "7 天内",
+    "30d": "30 天内",
+    "day": "每日",
+    "week": "每周",
+    "month": "每月",
+    "total": "累计",
+}
 METRIC_LABEL = {"tokens": "token", "cost": "费用（元）"}
 MICRO = Decimal(1_000_000)
 NAME_RE = re.compile(r"[a-z0-9][a-z0-9_\-]{0,30}")
@@ -93,6 +126,28 @@ def clean_limits(rules: Any) -> list[dict[str, Any]]:
             continue
         out[(metric, window)] = {"metric": metric, "window": window, "limit": plain(limit)}
     return sorted(out.values(), key=lambda x: (x["metric"], WINDOWS[x["window"]]))
+
+
+def window_start(window: str, tz: str = "Asia/Shanghai", now: float | None = None) -> int:
+    """限额时间段的起点（毫秒）。滚动段从现在往回数；自然周期按工作区时区切到今天 / 本周一 / 本月 1 日。"""
+    import datetime as dt
+    from zoneinfo import ZoneInfo
+
+    now = time.time() if now is None else now
+    if window == "total":
+        return 0
+    if window not in CALENDAR_WINDOWS:
+        return int((now - WINDOWS[window]) * 1000)
+    try:
+        zone = ZoneInfo(tz or "Asia/Shanghai")
+    except Exception:
+        zone = ZoneInfo("Asia/Shanghai")
+    local = dt.datetime.fromtimestamp(now, zone).replace(hour=0, minute=0, second=0, microsecond=0)
+    if window == "week":
+        local -= dt.timedelta(days=local.weekday())
+    elif window == "month":
+        local = local.replace(day=1)
+    return int(local.timestamp() * 1000)
 
 
 def _int(v: Any) -> int:
@@ -151,8 +206,45 @@ class ModelHub:
         return self.store.for_workspace(workspace_id or context.current_workspace())
 
     @staticmethod
-    def _id(scope: str, owner_id: str, name: str) -> str:
+    def _id(scope: str, owner_id: str, name: str, group_id: str = "") -> str:
+        if scope == "group":
+            return f"grp:{group_id}:{name}"
         return f"ws:{name}" if scope == "workspace" else f"me:{owner_id}:{name}"
+
+    def _tz(self, ws: str) -> str:
+        if self.auth is None:
+            return "Asia/Shanghai"
+        try:
+            return self.auth.workspace(ws)["settings"].get("timezone") or "Asia/Shanghai"
+        except Exception:
+            return "Asia/Shanghai"
+
+    def my_groups(self, ws: str, user_id: str | None) -> dict[str, str]:
+        """当前成员所在的群组：{group_id: 群角色}。"""
+        if not user_id:
+            return {}
+        rows = self.db.fetchall(
+            "SELECT g.id, m.role FROM collab_groups g JOIN collab_group_members m ON m.group_id=g.id "
+            "WHERE g.workspace_id=? AND m.user_id=? AND g.archived_at IS NULL",
+            (ws, user_id),
+        )
+        return {r["id"]: r["role"] for r in rows}
+
+    def group_settings(self, group_id: str) -> dict[str, Any]:
+        from ..platform.db import jload
+
+        row = self.db.fetchone("SELECT settings FROM collab_groups WHERE id=?", (group_id,))
+        return (jload(row["settings"], {}) or {}) if row else {}
+
+    def group_members(self, group_id: str) -> list[str]:
+        return [
+            r["user_id"]
+            for r in self.db.fetchall("SELECT user_id FROM collab_group_members WHERE group_id=?", (group_id,))
+        ]
+
+    def can_manage_group(self, ws: str, group_id: str) -> bool:
+        ctx = context.current()
+        return ctx.role == "admin" or self.my_groups(ws, ctx.user_id).get(group_id) in ("owner", "admin")
 
     def _records(self, ws: str) -> list[dict[str, Any]]:
         return self._ws(ws).list(PROVIDERS)
@@ -174,8 +266,17 @@ class ModelHub:
             "user_id": user_id,
             "use_workspace_models": bool(rec.get("use_workspace_models", default_use)),
             "allow_personal_models": bool(rec.get("allow_personal_models", True)),
-            "limits": clean_limits(rec.get("limits")),
+            # 没单独设过限额的成员用工作区的「新成员默认限额」
+            "limits": clean_limits(rec.get("limits") if "limits" in rec else self.default_limits(ws)),
+            "custom_limits": "limits" in rec,
         }
+
+    def default_limits(self, ws: str) -> list[dict[str, Any]]:
+        return clean_limits((self._ws(ws).get(Collections.SETTINGS, "llm_default_member_limits") or {}).get("limits"))
+
+    def set_default_limits(self, ws: str, rules: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        self._ws(ws).upsert(Collections.SETTINGS, {"id": "llm_default_member_limits", "limits": clean_limits(rules)})
+        return self.default_limits(ws)
 
     def set_policy(self, ws: str, user_id: str, patch: dict[str, Any]) -> dict[str, Any]:
         cur = self._ws(ws).get(POLICIES, user_id) or {"id": user_id}
@@ -199,27 +300,35 @@ class ModelHub:
     def visible(self, ws: str, user_id: str | None, role: str | None) -> list[dict[str, Any]]:
         """当前成员能看到的服务商记录：工作区共享（管理员总能看到）+ 本人的个人服务商。"""
         pol = self.policy(ws, user_id or "", role) if user_id else {"use_workspace_models": True}
+        groups = self.my_groups(ws, user_id)
         out = []
         for rec in self._records(ws):
             if rec.get("scope") == "personal":
                 if user_id and rec.get("owner_id") == user_id:
                     out.append(rec)
+            elif rec.get("scope") == "group":
+                if rec.get("group_id") in groups:
+                    out.append(rec)
             elif role == "admin" or pol["use_workspace_models"]:
                 out.append(rec)
-        out.sort(key=lambda r: (r.get("scope") != "workspace", r.get("created_at", 0)))
+        order = {"workspace": 0, "group": 1, "personal": 2}
+        out.sort(key=lambda r: (order.get(r.get("scope", "workspace"), 0), r.get("created_at", 0)))
         return out
 
     def find(self, ws: str, user_id: str | None, role: str | None, name: str) -> dict[str, Any] | None:
         recs = [r for r in self.visible(ws, user_id, role) if r.get("name") == name]
-        recs.sort(key=lambda r: r.get("scope") != "personal")  # 个人优先
+        recs.sort(key=lambda r: {"personal": 0, "group": 1}.get(r.get("scope", ""), 2))  # 个人 > 群组 > 工作区
         return recs[0] if recs else None
 
     def upsert(self, payload: dict[str, Any], *, scope: str) -> dict[str, Any]:
         ctx = context.current()
         ws = context.current_workspace()
         user_id = ctx.user_id or ""
+        group_id = str(payload.get("group_id") or "") if scope == "group" else ""
         if scope == "workspace" and ctx.role != "admin":
             raise AppError(ErrorCode.PERMISSION_DENIED, "只有工作区管理员可以登记工作区共享的模型服务商")
+        if scope == "group" and (not group_id or not self.can_manage_group(ws, group_id)):
+            raise AppError(ErrorCode.PERMISSION_DENIED, "只有群主或群管理员可以登记群组模型服务商")
         if scope == "personal":
             if ctx.role == "reviewer":
                 raise AppError(ErrorCode.PERMISSION_DENIED, "审阅者（只读）不能登记模型服务商")
@@ -234,18 +343,21 @@ class ModelHub:
         models = list(dict.fromkeys(m.strip() for m in payload.get("models") or [] if str(m).strip()))
         if not models:
             raise AppError(ErrorCode.INVALID_PARAMETER, "至少填写一个模型")
-        other_scope = "personal" if scope == "workspace" else "workspace"
-        clash = [
-            r
-            for r in self._records(ws)
-            if r.get("name") == name
-            and r.get("scope") == other_scope
-            and (other_scope == "workspace" or r.get("owner_id") == user_id)
-        ]
+        rid = self._id(scope, user_id, name, group_id)
+        # 成员看到的服务商按名字合并：工作区与群组之间、群组与群组之间不能重名；个人不能与工作区重名
+        clash = []
+        for r in self._records(ws):
+            rs = r.get("scope", "workspace")
+            if r.get("name") != name or r.get("id") == rid:
+                continue
+            if scope == "personal" and rs in ("personal", "group"):
+                continue
+            if rs == "personal" and (scope == "group" or r.get("owner_id") != user_id):
+                continue
+            clash.append(rs)
         if clash:
-            where = "工作区共享服务商" if other_scope == "workspace" else "你的个人服务商"
+            where = {"workspace": "工作区共享服务商", "group": "群组服务商", "personal": "你的个人服务商"}[clash[0]]
             raise AppError(ErrorCode.INVALID_PARAMETER, f"已有同名的{where}「{name}」，换一个 ID")
-        rid = self._id(scope, user_id, name)
         cur = self._ws(ws).get(PROVIDERS, rid) or {}
         settings = {}
         for m in models:
@@ -284,6 +396,7 @@ class ModelHub:
             "name": name,
             "scope": scope,
             "owner_id": user_id if scope == "personal" else "",
+            "group_id": group_id,
             "created_by": cur.get("created_by") or user_id,
             "type": payload.get("type")
             if payload.get("type") in ("anthropic", "openai_responses")
@@ -314,12 +427,14 @@ class ModelHub:
             )
         return saved
 
-    def delete(self, name: str, *, scope: str) -> bool:
+    def delete(self, name: str, *, scope: str, group_id: str = "") -> bool:
         ctx = context.current()
         ws = context.current_workspace()
         if scope == "workspace" and ctx.role != "admin":
             raise AppError(ErrorCode.PERMISSION_DENIED, "只有工作区管理员可以删除工作区共享的模型服务商")
-        rid = self._id(scope, ctx.user_id or "", name)
+        if scope == "group" and not (group_id and self.can_manage_group(ws, group_id)):
+            raise AppError(ErrorCode.PERMISSION_DENIED, "只有群主或群管理员可以删除群组模型服务商")
+        rid = self._id(scope, ctx.user_id or "", name, group_id)
         ok = self._ws(ws).delete(PROVIDERS, rid)
         if ok and self.audit is not None:
             self.audit.record("config.provider_delete", object_type="llm_provider", object_id=rid)
@@ -333,6 +448,7 @@ class ModelHub:
             "label": rec.get("label", ""),
             "scope": rec.get("scope", "workspace"),
             "owner_id": rec.get("owner_id", ""),
+            "group_id": rec.get("group_id", ""),
             "type": rec.get("type", "openai_compatible"),
             "base_url": rec.get("base_url", ""),
             "models": rec.get("models", []),
@@ -408,8 +524,9 @@ class ModelHub:
             )
         user_id = ctx.user_id if ctx.user_id and ctx.user_id != "system" else None
         providers: dict[str, ProviderConfig] = {}
-        # 先放工作区共享，再放个人：同名时个人覆盖
-        for rec in sorted(self.visible(ws, user_id, ctx.role), key=lambda r: r.get("scope") == "personal"):
+        # 先放工作区共享，再放群组，最后放个人：同名时个人覆盖
+        order = {"workspace": 0, "group": 1, "personal": 2}
+        for rec in sorted(self.visible(ws, user_id, ctx.role), key=lambda r: order.get(r.get("scope", ""), 0)):
             key = self.api_key(rec) or ("not-needed" if self._keyless(rec) else "")
             providers[rec["name"]] = ProviderConfig(
                 name=rec["name"],
@@ -420,6 +537,7 @@ class ModelHub:
                 model_settings=dict(rec.get("model_settings") or {}),
                 scope=rec.get("scope", "workspace"),
                 owner_id=rec.get("owner_id", ""),
+                group_id=rec.get("group_id", ""),
                 currency=rec.get("currency", "CNY"),
                 fx_rate=rec.get("fx_rate", "1"),
                 limits=list(rec.get("limits") or []),
@@ -463,7 +581,7 @@ class ModelHub:
         cost = self.cost_micro(pc, model, b["input"], b["output"], b["cache_read"], b["cache_write"])
         self.db.execute(
             "INSERT INTO llm_usage (workspace_id, user_id, scope, provider, model, input_tokens, output_tokens, "
-            "cache_read_tokens, cache_write_tokens, cost_micro, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "cache_read_tokens, cache_write_tokens, cost_micro, created_at, group_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 ws,
                 ctx.user_id or "system",
@@ -476,6 +594,7 @@ class ModelHub:
                 b["cache_write"],
                 cost,
                 now_ms(),
+                pc.group_id or None,
             ),
         )
 
@@ -488,6 +607,8 @@ class ModelHub:
         scope: str | None = None,
         user_id: str | None = None,
         owner_only: bool = False,
+        group_id: str | None = None,
+        user_ids: list[str] | None = None,
     ) -> tuple[int, int]:
         sql = (
             "SELECT COALESCE(SUM(input_tokens + output_tokens), 0) AS t, COALESCE(SUM(cost_micro), 0) AS c "
@@ -503,14 +624,23 @@ class ModelHub:
         if user_id:
             sql += " AND user_id=?"
             args.append(user_id)
+        if group_id:
+            sql += " AND group_id=?"
+            args.append(group_id)
+        if user_ids is not None:
+            if not user_ids:
+                return 0, 0
+            sql += f" AND user_id IN ({','.join('?' * len(user_ids))})"
+            args.extend(user_ids)
         row = self.db.fetchone(sql, tuple(args)) or {}
         return int(row.get("t") or 0), int(row.get("c") or 0)
 
     def rule_status(self, ws: str, rules: list[dict[str, Any]], **where: Any) -> list[dict[str, Any]]:
-        now = now_ms()
+        rules = clean_limits(rules)
+        tz = self._tz(ws) if any(r["window"] in CALENDAR_WINDOWS for r in rules) else "Asia/Shanghai"
         out = []
-        for r in clean_limits(rules):
-            tokens, cost = self._sum(ws, now - WINDOWS[r["window"]] * 1000, **where)
+        for r in rules:
+            tokens, cost = self._sum(ws, window_start(r["window"], tz), **where)
             limit = dec(r["limit"])
             used = Decimal(tokens) if r["metric"] == "tokens" else Decimal(cost) / MICRO
             pct = int(min(Decimal(999), used * 100 / limit)) if limit > 0 else 0
@@ -520,7 +650,7 @@ class ModelHub:
                     "used": str(used if r["metric"] == "tokens" else used.quantize(Decimal("0.0001"))),
                     "percent": pct,
                     "exceeded": used >= limit,
-                    "label": f"{WINDOW_LABEL[r['window']]}内 {METRIC_LABEL[r['metric']]} ≤ {r['limit']}",
+                    "label": f"{WINDOW_LABEL[r['window']]} {METRIC_LABEL[r['metric']]} ≤ {r['limit']}",
                 }
             )
         return out
@@ -534,14 +664,30 @@ class ModelHub:
         where: dict[str, Any] = {"provider": pc.name, "scope": pc.scope}
         if pc.scope == "personal":
             where["user_id"] = pc.owner_id
+        if pc.scope == "group":
+            where["group_id"] = pc.group_id
         for st in self.rule_status(ws, pc.limits, **where):
             if st["exceeded"]:
                 return f"已达服务商限额（{st['label']}）"
-        if pc.scope == "workspace" and ctx.user_id and ctx.user_id != "system":
+        human = bool(ctx.user_id and ctx.user_id != "system")
+        if pc.scope == "group" and human and pc.group_id:
+            rules = self.group_settings(pc.group_id).get("member_limits") or []
+            for st in self.rule_status(ws, rules, scope="group", group_id=pc.group_id, user_id=ctx.user_id):
+                if st["exceeded"]:
+                    return f"已达群主给你设定的群组模型限额（{st['label']}）"
+        if pc.scope == "workspace" and human:
             pol = self.policy(ws, ctx.user_id, ctx.role)
             for st in self.rule_status(ws, pol["limits"], scope="workspace", user_id=ctx.user_id):
                 if st["exceeded"]:
                     return f"已达你的成员限额（{st['label']}），可以在「额度与用量」里申请提升"
+            # 工作区管理员分给群组的共享模型额度：全体群成员合计
+            for gid in self.my_groups(ws, ctx.user_id):
+                rules = self.group_settings(gid).get("ws_limits") or []
+                if not rules:
+                    continue
+                for st in self.rule_status(ws, rules, scope="workspace", user_ids=self.group_members(gid)):
+                    if st["exceeded"]:
+                        return f"你所在群组的共享模型额度已用完（{st['label']}）"
         return None
 
     def stats(self, ws: str, *, days: int, user_id: str | None = None) -> dict[str, Any]:

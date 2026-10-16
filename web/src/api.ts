@@ -1,5 +1,6 @@
 /** 后端 API 客户端。所有请求走 /api 前缀（开发时由 Vite 代理到 8000）。 */
 
+import { directBars } from './marketDirect'
 import { del, get, post, put, requestText, withWs } from './http'
 
 /** 有些端点直接返回文本（源码预览），不能用 JSON 解析。 */
@@ -47,6 +48,10 @@ export interface BarsResponse {
   source: string
   count: number
   bars: BarDTO[]
+  /** browser：由浏览器直连交易所取得；不写则是服务器取得 */
+  via?: 'browser' | 'server'
+  stale?: boolean
+  warning?: string
 }
 export interface Quality {
   symbol: string
@@ -58,6 +63,9 @@ export interface Quality {
   source: string
   coverage_start: number
   coverage_end: number
+  /** 交易所暂时连不上，按本地缓存出的报告 */
+  stale?: boolean
+  warning?: string
 }
 
 export interface ParamField {
@@ -609,10 +617,14 @@ export const api = {
     }),
 
   symbols: () => get<{ symbols: string[]; timeframes: string[] }>('/api/market/symbols'),
-  bars: (symbol: string, timeframe: string, limit = 400, exchange = 'binance') =>
-    get<BarsResponse>(
+  /** 展示用 K 线：先由浏览器直连交易所（不占服务器 IP 的请求额度），拿不到再走服务器 */
+  bars: async (symbol: string, timeframe: string, limit = 400, exchange = 'binance'): Promise<BarsResponse> => {
+    const direct = await directBars(symbol, timeframe, limit, exchange)
+    if (direct) return { symbol, timeframe, source: 'exchange', count: direct.length, bars: direct, via: 'browser' }
+    return get<BarsResponse>(
       `/api/market/bars?symbol=${encodeURIComponent(symbol)}&timeframe=${timeframe}&limit=${limit}&exchange=${exchange}`,
-    ),
+    )
+  },
   quality: (symbol: string, timeframe: string, limit = 1500, exchange = 'binance') =>
     get<Quality>(
       `/api/market/quality?symbol=${encodeURIComponent(symbol)}&timeframe=${timeframe}&limit=${limit}&exchange=${exchange}`,

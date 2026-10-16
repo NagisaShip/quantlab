@@ -38,6 +38,12 @@ FUTURES_BASE = "https://fapi.binance.com"
 TESTNET_BASE = "https://testnet.binance.vision"
 
 _INTERVAL_MAP = {"1m": 60_000, "5m": 300_000, "15m": 900_000, "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000}
+#: Binance K 线接口原生支持的周期（1s 只有现货有）
+NATIVE_INTERVALS = {
+    "1s", "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w",
+}
+#: 逐笔成交聚合最多扫多少页（每页 1000 笔）：防止一次请求把 100ms 线拉成几十万次调用
+MAX_TRADE_PAGES = 200
 
 
 class BinanceAdapter(BaseAdapter):
@@ -55,8 +61,11 @@ class BinanceAdapter(BaseAdapter):
         self.api_key = api_key
         self.api_secret = api_secret
         # 行情客户端：始终指向公共数据域名
-        self._client = httpx.Client(base_url=PUBLIC_BASE, timeout=15.0, transport=transport)
-        self._fclient = httpx.Client(base_url=FUTURES_BASE, timeout=15.0, transport=transport)
+        # 行情请求会被多个后台任务并发调用：连接池放大、等待连接的超时单独放宽，避免并发时报 PoolTimeout
+        timeout = httpx.Timeout(15.0, connect=8.0, pool=30.0)
+        limits = httpx.Limits(max_connections=64, max_keepalive_connections=16)
+        self._client = httpx.Client(base_url=PUBLIC_BASE, timeout=timeout, limits=limits, transport=transport)
+        self._fclient = httpx.Client(base_url=FUTURES_BASE, timeout=timeout, limits=limits, transport=transport)
         # 交易客户端：模拟盘走 testnet，仅用于账户与订单接口
         self.trade_base = TESTNET_BASE if simulated else PUBLIC_BASE
         self._trade_client = httpx.Client(base_url=self.trade_base, timeout=15.0, transport=transport)
@@ -98,6 +107,73 @@ class BinanceAdapter(BaseAdapter):
         return out
 
     def fetch_bars(self, symbol: str, timeframe: str, start: int, end: int) -> list[Bar]:
+        """K 线。非原生周期在本地聚合：整秒周期用 1s K 线合成，亚秒周期用逐笔成交（aggTrades）合成。"""
+        from ..timeframes import parse_timeframe_ms
+
+        perp = symbol.upper().endswith(":PERP")
+        step = parse_timeframe_ms(timeframe)
+        if step is None:
+            raise UnsupportedFeature(f"不支持的周期 {timeframe}")
+        if timeframe not in NATIVE_INTERVALS or (perp and timeframe == "1s"):
+            if perp:
+                raise UnsupportedFeature(f"永续合约没有 {timeframe} 数据：秒级 / 毫秒级只支持现货")
+            if step % 1000 == 0:
+                base = self._klines(symbol, "1s", start, end)
+                return _resample(base, symbol, timeframe, step, start, end)
+            return self._trade_bars(symbol, timeframe, step, start, end)
+        return self._klines(symbol, timeframe, start, end)
+
+    def _trade_bars(self, symbol: str, timeframe: str, step: int, start: int, end: int) -> list[Bar]:
+        """逐笔成交聚合成亚秒级 K 线；没有成交的区间用上一根收盘价补一根 0 成交量的 bar，时间轴保持连续。"""
+        raw_symbol = symbol.split(":")[0].replace("/", "")
+        start = start - start % step
+        trades: list[tuple[int, float, float]] = []
+        cursor = start
+        for _ in range(MAX_TRADE_PAGES):
+            if cursor >= end:
+                break
+            # aggTrades 一次的时间窗不能超过 1 小时
+            resp = self._client.get(
+                "/api/v3/aggTrades",
+                params={"symbol": raw_symbol, "startTime": cursor, "endTime": min(end, cursor + 3_600_000) - 1, "limit": 1000},
+            )
+            resp.raise_for_status()
+            rows = resp.json()
+            if not rows:
+                cursor = min(end, cursor + 3_600_000)
+                continue
+            trades.extend((int(r["T"]), float(r["p"]), float(r["q"])) for r in rows)
+            last = int(rows[-1]["T"])
+            cursor = last + 1 if len(rows) >= 1000 else min(end, cursor + 3_600_000)
+        bars: list[Bar] = []
+        i = 0
+        prev_close: float | None = None
+        t = start
+        while t + step <= end + step and t < end:
+            o = h = lo = c = None
+            vol = 0.0
+            while i < len(trades) and trades[i][0] < t + step:
+                _, px, qty = trades[i]
+                if o is None:
+                    o = h = lo = px
+                h, lo, c = max(h, px), min(lo, px), px  # type: ignore[type-var]
+                vol += qty
+                i += 1
+            if o is None:
+                if prev_close is None:
+                    t += step
+                    continue
+                o = h = lo = c = prev_close
+            prev_close = c
+            close_time = t + step - 1
+            bars.append(
+                Bar(symbol=symbol, timeframe=timeframe, open_time=t, close_time=close_time, open=o, high=h, low=lo,  # type: ignore[arg-type]
+                    close=c, volume=vol, closed=close_time < end)  # type: ignore[arg-type]
+            )
+            t += step
+        return bars
+
+    def _klines(self, symbol: str, timeframe: str, start: int, end: int) -> list[Bar]:
         perp = symbol.upper().endswith(":PERP")
         raw_symbol = symbol.split(":")[0].replace("/", "")
         client, path = (self._fclient, "/fapi/v1/klines") if perp else (self._client, "/api/v3/klines")
@@ -389,3 +465,36 @@ def _json_or_error(resp: httpx.Response) -> dict[str, Any]:
         return resp.json()
     except ValueError as exc:
         raise UnsupportedFeature(f"交易所返回了非 JSON 响应：{resp.text[:200]}") from exc
+
+
+def _resample(base: list[Bar], symbol: str, timeframe: str, step: int, start: int, end: int) -> list[Bar]:
+    """把细周期 K 线（例如 1s）按 step 毫秒聚合成粗周期；只有凑齐的完整区间才算已收盘。"""
+    out: list[Bar] = []
+    bucket: list[Bar] = []
+    cur = None
+    for b in base:
+        k = b.open_time - b.open_time % step
+        if cur is not None and k != cur and bucket:
+            out.append(_merge(bucket, symbol, timeframe, cur, step, end))
+            bucket = []
+        cur = k
+        bucket.append(b)
+    if bucket and cur is not None:
+        out.append(_merge(bucket, symbol, timeframe, cur, step, end))
+    return out
+
+
+def _merge(bucket: list[Bar], symbol: str, timeframe: str, t: int, step: int, end: int) -> Bar:
+    close_time = t + step - 1
+    return Bar(
+        symbol=symbol,
+        timeframe=timeframe,
+        open_time=t,
+        close_time=close_time,
+        open=bucket[0].open,
+        high=max(b.high for b in bucket),
+        low=min(b.low for b in bucket),
+        close=bucket[-1].close,
+        volume=sum(b.volume for b in bucket),
+        closed=close_time < end and all(b.closed for b in bucket),
+    )

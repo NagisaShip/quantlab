@@ -60,8 +60,10 @@ def _repo() -> StrategyRepository:
 @router.get("/strategies")
 def list_strategies(kind: str | None = None) -> dict:
     """列出磁盘上的策略目录。每个策略 = 一个 .py 文件 + 元数据。"""
+    from .routes_collab import filter_visible
+
     repo = _repo()
-    items = [r.to_dict(include_source=False) for r in repo.list(kind=kind)]
+    items = filter_visible("strategy", [r.to_dict(include_source=False) for r in repo.list(kind=kind)], "slug")
     return {
         "strategies": items,
         "root": str(repo.root),
@@ -76,10 +78,13 @@ def list_strategies(kind: str | None = None) -> dict:
 
 @router.get("/strategies/{slug}")
 def get_strategy(slug: str) -> dict:
+    from .routes_collab import guard_visible
+
     repo = _repo()
     rec = repo.get(slug)
     if rec is None:
         raise HTTPException(404, "策略不存在")
+    guard_visible("strategy", slug)
     return {
         "strategy": rec.to_dict(),
         "versions": repo.versions(slug),

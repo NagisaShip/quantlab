@@ -21,6 +21,8 @@ import { FreqtradeImportModal } from '../components/FreqtradeImport'
 import { get, post } from '../http'
 import type { PageProps } from './types'
 import { appConfirm } from '../components/dialog'
+import { EditorStack, VisibilityChip } from '../components/Share'
+import { collab, type EditorMark, type Visibility } from '../apiCollab'
 
 const TIMEFRAMES = ['5m', '15m', '1h', '4h', '1d']
 const EXAMPLES = [
@@ -44,9 +46,11 @@ export default function MyStrategiesPage({ onNavigate, notify, setBusy }: PagePr
   const [error, setError] = useState('')
   const [legacy, setLegacy] = useState<{ id: string; name: string }[]>([])
   const [migrating, setMigrating] = useState(false)
+  const [marks, setMarks] = useState<{ editors: Record<string, EditorMark[]>; visibility: Record<string, { visibility: Visibility; owner_name: string }> }>({ editors: {}, visibility: {} })
 
   const load = useCallback(async () => {
     try {
+      collab.editors('strategy').then(setMarks).catch(() => undefined)
       const [s, b] = await Promise.all([v3.strategies(), v3.backtests(undefined, 300)])
       setItems(s.strategies.filter((x) => x.kind !== 'rule' || x.source !== 'builtin'))
       setBacktests(b.backtests)
@@ -173,6 +177,7 @@ export default function MyStrategiesPage({ onNavigate, notify, setBusy }: PagePr
               <thead>
                 <tr>
                   <th>策略</th>
+                  <th>编辑者</th>
                   <th>来源</th>
                   <th>标的 · 周期</th>
                   <th>状态</th>
@@ -192,6 +197,11 @@ export default function MyStrategiesPage({ onNavigate, notify, setBusy }: PagePr
                       <td className="wrap">
                         <a className="link-strong" href={`#/editor/${s.slug}`}>{s.name}</a>
                         <small>{s.version} · {s.version_count} 个历史版本{s.notes ? ` · ${s.notes.slice(0, 40)}` : ''}</small>
+                      </td>
+                      <td>
+                        <EditorStack editors={marks.editors[s.slug]} max={3} />
+                        {marks.visibility[s.slug] && marks.visibility[s.slug].visibility !== 'workspace' && <VisibilityChip v={marks.visibility[s.slug].visibility} />}
+                        {!marks.editors[s.slug] && !marks.visibility[s.slug] && <span className="muted">—</span>}
                       </td>
                       <td><Tag tone={s.source === 'agent' ? 'agent' : undefined}>{ORIGIN_LABEL[s.source] ?? s.source}</Tag></td>
                       <td>{s.securities.join(', ')}<small>{s.timeframe}</small></td>

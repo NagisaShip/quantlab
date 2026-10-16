@@ -136,7 +136,8 @@ def test_hundred_thousand_bars_keeps_runs_row_under_64kb(client):
     # 大数组确实在文件里，而且文件明显比 blob 大
     ref = st.result_ref("run_results", run_id)
     assert ref is not None and ref["rows"] == BARS
-    assert ref["bytes"] > body_bytes // 2
+    # 落盘格式可能是压缩的 parquet（比原始 JSON 小得多），所以和 blob 比，而不是和原始 JSON 比
+    assert ref["bytes"] > 10 * blob_bytes
 
 
 def test_result_file_lands_under_results_workspace_dir(client, tmp_path):

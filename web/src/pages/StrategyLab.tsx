@@ -1,10 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { PythonCodeButton, type PyKind } from '../components/PythonCode'
+import { useDraft } from '../components/draft'
 import { createPortal } from 'react-dom'
-import {
-  lab, labPrefs, mergeBySeq, missions,
-  type ContextView, type Effort, type Executor, type FactorSummary, type GoalSpec, type LabKind, type LabMessage, type LabMeta,
-  type LabPlan, type LabProject, type Metrics, type Permission,
-} from '../apiLab'
+import { lab, labPrefs, mergeBySeq, missions, type ContextView, type Effort, type Executor, type FactorSummary, type GoalSpec, type LabKind, type LabMessage, type LabMeta, type LabPlan, type LabProject, type Metrics, type Permission, APPROVAL_CATEGORIES, type ApprovalCategory } from '../apiLab'
 import { Avatar } from '../components/Avatar'
 import { store } from '../components/prefs'
 import { clearLabDraft, peekLabDraft, type LabDraft } from '../components/handoff'
@@ -24,8 +22,8 @@ import { PortfolioStats } from '../components/portfolioReport'
 import { PortfolioPanel, PortfolioReportCard, PortfolioSpecCard, PortfolioVersionMetrics } from './lab/portfolio'
 import { ExecutionPanel, ExecutionReportCard, ExecutionSpecCard, ExecutionVersionMetrics } from './lab/execution'
 import { ExecStats } from '../components/executionReport'
-import { domainUI, kindOfType, libraryIdOf, pickExamples, RESEARCH_TYPES, workflowOfType, type ResearchType } from './lab/domains'
-import { labChanged, onNewChat, takeNewChat } from './lab/bus'
+import { domainUI, kindOfType, libraryIdOf, pickExamples, RESEARCH_TYPES, WORKFLOW_LABEL, workflowOfType, type ResearchType } from './lab/domains'
+import { labChanged, onChatAsk, onNewChat, takeNewChat } from './lab/bus'
 import { QuantBot, useBotFlash } from '../components/QuantBot'
 import { StepSlider } from '../components/StepSlider'
 import { ReportCard, SubagentsCard, DataCheckBadge, ExperimentNote, MarketSwitcher } from './lab/research'
@@ -33,6 +31,7 @@ import { DiscussionCard } from '../components/chat/Discussion'
 import { rd } from '../apiRd'
 import type { PageProps } from './types'
 import { appConfirm, appPrompt } from '../components/dialog'
+import { ShareButton } from '../components/Share'
 
 export const SYMBOL_PICKS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT', 'DOGE/USDT', 'ADA/USDT', 'AVAX/USDT', 'LINK/USDT', 'TON/USDT']
 /** 设置 · 模型 里的「AI 生成简短建议」开关（本机偏好，默认开） */
@@ -223,7 +222,7 @@ function Welcome({ meta, notify, onCreated, folder }: {
 }) {
   const [draft, setDraft] = useState<LabDraft | null>(peekLabDraft)   // 从别的页面带过来的想法 / 代码
   // 研究类型：五个研究室 + 完整流程 + 调研报告（流程类走策略对话）
-  const [rtype, setRtypeState] = useState<ResearchType>(() => (draft?.kind ?? (store.get('qa.lab.rtype', store.get('qa.lab.kind', 'strategy')) as ResearchType)))
+  const [rtype, setRtypeState] = useState<ResearchType>(() => (draft?.kind ?? (store.get('qa.lab.rtype', 'auto') as ResearchType)))
   const kind = kindOfType(rtype)
   const workflow = workflowOfType(rtype)
   const setRtype = (t: ResearchType) => { setRtypeState(t); store.set('qa.lab.rtype', t); store.set('qa.lab.kind', kindOfType(t)); setSeed(Math.random()) }
@@ -242,7 +241,7 @@ function Welcome({ meta, notify, onCreated, folder }: {
   const defaults = useDefaultSpec(meta, kind)
   const [executor, setExecutor] = useState<Executor>(() => store.get('qa.lab.executor', 'solo') as Executor)
   const [universe, setUniverse] = useState('major10')
-  const [idea, setIdea] = useState(() => draft?.idea ?? '')
+  const [idea, setIdea] = useDraft('lab:new', draft?.idea)
   const [spec, setSpec] = useState<GoalSpec>(defaults)
   const [model, setModel] = useState(() => store.get('qa.lab.model', ''))
   const [effort, setEffort] = useState<Effort>(() => store.get('qa.lab.effort', 'medium') as Effort)
@@ -250,6 +249,8 @@ function Welcome({ meta, notify, onCreated, folder }: {
   const [source, setSource] = useState<'auto' | 'exchange'>('auto')
   const [permission, setPermissionState] = useState<Permission>(() => store.get('qa.lab.permission', 'auto') as Permission)
   const setPermission = (p: Permission) => { setPermissionState(p); store.set('qa.lab.permission', p) }
+  const [approvals, setApprovalsState] = useState<ApprovalCategory[]>(() => { try { return JSON.parse(store.get('qa.lab.approvals', '["delete"]')) } catch { return ['delete'] } })
+  const setApprovals = (a: ApprovalCategory[]) => { setApprovalsState(a); store.set('qa.lab.approvals', JSON.stringify(a)) }
   // 标的：默认交给 AI 根据对话决定（带了标的过来、或手动选过时用手动）
   const [marketAuto, setMarketAuto] = useState(() => !draft?.securities?.length)
   const [files, setFiles] = useState<{ title: string; text: string; kind?: 'file' | 'note' }[]>([])
@@ -279,7 +280,7 @@ function Welcome({ meta, notify, onCreated, folder }: {
 
   const onFiles = useCallback(async (list: File[]) => {
     const texts = list.filter((f) => !f.type.startsWith('image/') && f.size <= 2_000_000)
-    const read = await Promise.all(texts.map(async (f) => ({ title: f.name.slice(0, 60), text: (await f.text()).slice(0, 4000) })))
+    const read = await Promise.all(texts.map(async (f) => ({ title: f.name.slice(0, 60), text: (await f.text()).slice(0, 400_000), kind: 'file' as const })))
     if (read.length) { setFiles((prev) => [...prev, ...read]); notify(`已附带 ${read.length} 个文件，会钉进新对话的上下文`) }
     if (list.some((f) => f.type.startsWith('image/'))) notify('图片请在对话创建后再发送', true)
   }, [notify])
@@ -288,7 +289,8 @@ function Welcome({ meta, notify, onCreated, folder }: {
   const create = async () => {
     const goal = spec
     const startAuto = auto && goalSet
-    const text = idea.trim()
+    // 只附带了文件（例如超长内容自动转成的 txt）也能开始：默认请 AI 先读材料
+    const text = idea.trim() || (files.length ? `请阅读我附带的「${files[0].title}」，概括要点并告诉我可以怎么研究` : '')
     if (busy || !text) return
     const [head, ...restParts] = text.split(/\s+/)
     const local = welcomeCommands.find((c) => c.cmd === head)
@@ -331,7 +333,7 @@ function Welcome({ meta, notify, onCreated, folder }: {
       const ideaText = discuss ? topic : planned ? planTask : reportCmd ? reportTopic : text.replace(/^\/(team|parallel)\s*/, '') || text
       const v = await lab.create({
         kind: reportCmd ? 'strategy' : kind, idea: ideaText, securities: goal.symbols, timeframe: goal.timeframe, model, effort, max_rounds: goal.max_rounds,
-        bars_limit: goal.bars_limit, data_source: source, permission, market_auto: marketAuto && !goalSet, suggest: suggestOn(),
+        bars_limit: goal.bars_limit, data_source: source, permission, approvals, market_auto: marketAuto && !goalSet, suggest: suggestOn(),
         workflow: wf, ...labPrefs(),
         ...(isFactor && !reportCmd ? { horizon: goal.horizon ?? 1, executor, universe } : {}),
         ...(draft?.title ? { title: draft.title } : {}), ...(draft?.code ? { code: draft.code } : {}), ...(pins.length ? { pins } : {}),
@@ -344,6 +346,7 @@ function Welcome({ meta, notify, onCreated, folder }: {
       else if (wf === 'report') await lab.report(id, reportCmd ? reportTopic : text)
       else if (wf === 'pipeline' && !startAuto) await lab.plan(id, `完整流程：${text}`)
       else if (!startAuto) await lab.send(id, text, { suggest: suggestOn() })
+      setIdea('')
       onCreated(id)
     } catch (e) {
       notify((e as Error).message, true)
@@ -390,9 +393,10 @@ function Welcome({ meta, notify, onCreated, folder }: {
       <div className="lab2-scroll lab2-welcome-scroll">
         <div className="lab2-welcome">
           <QuantBot size={52} state={busy ? 'strain' : idea.trim() ? 'thinking' : 'idle'} flash={botFx.flash} className="lab2-welcome-bot" />
-          <h1>{rtype === 'report' ? '想调研什么？' : rtype === 'pipeline' ? '从选标的到执行，研究什么？' : ui ? ui.welcome : '今天研究什么？'}</h1>
+          {/* 问候语与 Logo 固定不变：拖动研究类型滑条只换下面的说明与建议，页面主体不跳动 */}
+          <h1>今天研究什么？</h1>
           <div className="lab2-type" aria-label="研究类型">
-            <StepSlider options={RESEARCH_TYPES} value={rtype} onChange={(t) => { botFx.fire('tap'); setRtype(t) }} label="研究类型" compact />
+            <StepSlider options={RESEARCH_TYPES} value={rtype} onChange={(t) => setRtype(t)} label="研究类型" compact />
             <small className="lab2-type-hint anim-fade" key={rtype}>{RESEARCH_TYPES.find((t) => t.id === rtype)?.hint}</small>
           </div>
           <div className="lab2-examples stagger" key={`${rtype}-${seed}`} onMouseEnter={() => setHoverEx(true)} onMouseLeave={() => setHoverEx(false)}>
@@ -409,7 +413,7 @@ function Welcome({ meta, notify, onCreated, folder }: {
               onSubmit={(g, start) => { setSpec(g); setGoalSet(true); setMarketAuto(false); setGoalOpen(null); if (start) setAuto(true) }} />
           </div>
         )}
-        <Composer value={idea} onChange={setIdea} onSend={() => create()} disabled={busy} autoFocus commands={welcomeCommands}
+        <Composer value={idea} onChange={setIdea} onSend={() => create()} disabled={busy} autoFocus commands={welcomeCommands} onLongText={(f) => onFiles([f])} hasAttachments={files.length > 0}
           placeholder={ui ? ui.placeholder : '描述一个想法，例如：BTC 4 小时突破 55 根新高做多，ATR 止损'}
           sendLabel={auto && goalSet ? '开始自动迭代' : '发送'}
           above={(draft?.attached || files.length || goalSet || (auto && goalSet)) ? <>
@@ -435,7 +439,7 @@ function Welcome({ meta, notify, onCreated, folder }: {
           </> : undefined}
           left={<>
             <ActionMenu items={plusItems} />
-            <PermissionMenu value={permission} onChange={setPermission} />
+            <PermissionMenu value={permission} onChange={setPermission} approvals={approvals} onApprovals={setApprovals} />
           </>}
           right={<>
             <div className="cmp-pop-anchor" ref={market.ref}>
@@ -472,7 +476,7 @@ function Welcome({ meta, notify, onCreated, folder }: {
                       </label>
                       <label>周期
                         <select value={spec.timeframe} onChange={(e) => setSpec({ ...spec, timeframe: e.target.value })}>
-                          {['5m', '15m', '1h', '4h', '1d'].map((t) => <option key={t}>{t}</option>)}
+                          {['250ms', '1s', '5s', '1m', '5m', '15m', '1h', '4h', '1d'].map((t) => <option key={t}>{t}</option>)}
                         </select>
                       </label>
                       {isFactor && (
@@ -518,7 +522,7 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
   const [project, setProject] = useState<LabProject | null>(null)
   const [messages, setMessages] = useState<LabMessage[]>([])
   const [context, setContext] = useState<ContextView | null>(null)
-  const [input, setInput] = useState('')
+  const [input, setInput] = useDraft(`lab:${id}`)
   const [panel, setPanel] = useState<PanelTab | null>(null)
   const [compacting, setCompacting] = useState(false)
   const [goalOpen, setGoalOpen] = useState<{ initial: GoalSpec; unparsed?: string } | null>(null)
@@ -608,6 +612,10 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
     const el = scroller.current
     if (el && stick.current) el.scrollTop = el.scrollHeight
   }, [messages])
+
+  // 结构化内容块里的按钮（选项、确认、表单、「让 AI 解读」）把一句话发回这段对话
+  const askRef = useRef<((text: string) => void) | null>(null)
+  useEffect(() => onChatAsk((text) => askRef.current?.(text)), [])
 
   const openPanel = (t: PanelTab | null) => { setPanel(t); store.set('qa.lab.panel', t ?? 'none') }
   const openEditor = () => setEditorOpen(true)
@@ -704,8 +712,8 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
       if (f.size > 2_000_000) { notify(`${f.name} 太大（超过 2 MB），已跳过`, true); continue }
       const text = await f.text()
       try {
-        await lab.pin(id, { kind: 'file', title: f.name.slice(0, 60), text: text.slice(0, 4000) })
-        notify(text.length > 4000 ? `已钉住 ${f.name}（只保留前 4000 字）` : `已钉住 ${f.name}`)
+        await lab.pin(id, { kind: 'file', title: f.name.slice(0, 60), text: text.slice(0, 400_000) })
+        notify(text.length > 2000 ? `已附带 ${f.name}（${text.length.toLocaleString()} 字，AI 会按需分段读取全文）` : `已钉住 ${f.name}`)
       } catch (e) { notify((e as Error).message, true) }
     }
     if (images.length) await onImages(images)
@@ -737,7 +745,8 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
     if (n !== project.max_rounds) await lab.update(id, { max_rounds: n })
     await lab.autopilot(id, { rounds: n })
   })
-  const setPermission = (p: Permission) => { patch({ permission: p }); notify(`权限模式：${({ auto: '自动', manual: '手动', accept_edits: '接受编辑', plan: '计划', bypass: '跳过权限确认' } as Record<Permission, string>)[p]}`) }
+  const setPermission = (p: Permission) => { patch({ permission: p }); notify(`权限模式：${({ auto: '自动', manual: '手动', accept_edits: '接受编辑', plan: '计划', bypass: '完全权限' } as Record<Permission, string>)[p]}`) }
+  const setApprovals = (a: ApprovalCategory[]) => patch({ approvals: a })
   const noCode = !project.code
   const startDiscussion = (topic: string) => act(async () => {
     await startDiscussionIn(project, topic)
@@ -807,6 +816,8 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
     onPin: (m) => act(async () => { await lab.pin(id, { kind: 'note', title: m.content.replace(/\s+/g, ' ').slice(0, 24), text: m.content.slice(0, 4000) }); notify('已钉进上下文') }),
     onCopy: (m) => { navigator.clipboard?.writeText(m.content).then(() => notify('已复制'), () => notify('复制失败', true)) },
   }
+  askRef.current = (text) => { if (running) notify('AI 正在处理，等这一轮结束再点'); else send(text) }
+
   const changes = changeStats(project)
   const lastAsk = [...messages].reverse().find((m) => m.kind === 'ask')
   const streamingNow = messages.some((m) => m.data?.streaming)
@@ -823,7 +834,7 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
             {isFactor
               ? <>{ui!.noun}研究 · {project.securities.length} 个标的 · {project.timeframe} · 持有 {project.horizon ?? 1} 期 · {project.executor === 'team' ? '研究小组' : '单个 AI'}</>
               : null}
-            {project.workflow && <span className="cb-badge">{project.workflow === 'pipeline' ? '完整流程' : '调研报告'}</span>}
+            {project.workflow && <span className="cb-badge">{WORKFLOW_LABEL[project.workflow] || project.workflow}</span>}
             {project.subagent_of && <> · <a href={`#/lab/${project.subagent_of}`}>子 Agent · 返回主对话</a></>}
             {project.slug && <> · <a href={`#/editor/${project.slug}`}>已存为策略</a></>}
             {ui && libId && <> · <a href={`#/${ui.libraryRoute(libId)}`}>已存入{ui.libraryName}</a></>}
@@ -832,6 +843,7 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
           <MarketSwitcher symbols={project.securities} timeframe={project.timeframe} disabled={running} multi
             onChange={(securities, timeframe) => { patch({ securities, timeframe }); notify(`标的改为 ${securities.join(', ')} · ${timeframe}`) }}
             notify={notify} />
+          <ShareButton type="project" id={id} notify={notify} compact />
           <button type="button" className={`lab2-sessbtn${panel ? ' on' : ''}`} aria-pressed={!!panel} onClick={() => openPanel(panel ? null : 'code')}
             title="会话栏：更改、迭代、上下文、目标">
             <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" aria-hidden><rect x="2" y="2.5" width="12" height="11" rx="2" /><path d="M10 2.5v11" /></svg>
@@ -869,10 +881,10 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
                 submitting={goalBusy || running} onCancel={() => setGoalOpen(null)} onSubmit={saveGoal} />
             </div>
           )}
-          <Composer value={input} onChange={setInput} onSend={() => send()} running={running} onStop={() => act(() => lab.stop(id))}
+          <Composer value={input} onChange={setInput} onSend={() => send()} running={running} onStop={() => act(() => lab.stop(id))} onLongText={(f) => onFiles([f])}
             commands={commands} placeholder={running ? '正在处理，可随时停止' : ui ? ui.replyPlaceholder : '回复…'}
             hasAttachments={attachments.length > 0}
-            onPasteFiles={(files) => { const imgs = files.filter((f) => f.type.startsWith('image/')); if (imgs.length) onImages(imgs) }}
+            onPasteFiles={(files) => onFiles(files)}
             above={(goalOpen || (running && project.job?.kind === 'autopilot') || attachments.length) ? (<>
               {attachments.length > 0 && (
                 <AttachTray items={attachments} warning={imageBlock}
@@ -885,7 +897,7 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
             </>) : undefined}
             left={<>
               <ActionMenu items={plusItems} />
-              <PermissionMenu value={project.permission} onChange={setPermission} disabled={running} />
+              <PermissionMenu value={project.permission} onChange={setPermission} disabled={running} approvals={project.approvals} onApprovals={setApprovals} />
             </>}
             right={<>
               {meta && (
@@ -943,7 +955,9 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
       )}
 
       {editorOpen && (
-        <Modal title={`${fileNameOf(project.kind)} · v${project.current_v}`} onClose={() => setEditorOpen(false)} width={960}>
+        <Modal title={<>{fileNameOf(project.kind)} · v{project.current_v}{project.kind && project.kind !== 'strategy' && project.code && (
+          <span style={{ marginLeft: 12, fontWeight: 400 }}><PythonCodeButton kind={project.kind as PyKind} artifact={project.code} name={project.title} /></span>)}</>}
+          onClose={() => setEditorOpen(false)} width={960}>
           <div className="lab2-editor-modal">
             {isModel && <ModelPanel project={project} running={running}
               onSave={(code) => act(() => lab.saveCode(id, code, '手动修改训练规格'))} onSaveLibrary={saveOut}
@@ -1122,7 +1136,7 @@ function MessageView({ m, project, meta, active, actions, onDecide, onOpenBackte
   const d = m.data || {}
   switch (m.kind) {
     case 'text':
-      if (m.role === 'event') return <EventLine>{m.content}</EventLine>
+      if (m.role === 'event') return <EventLine>{m.content}{typeof d.link === 'string' && <> · <a href={`#/${d.link}`}>打开</a></>}</EventLine>
       // 只调用了工具、没有正文也没有思考的那一步：不占一块空白
       if (!d.streaming && !m.content && !d.thinking) return null
       return (
@@ -1180,6 +1194,8 @@ function MessageView({ m, project, meta, active, actions, onDecide, onOpenBackte
       return <GoalEvent m={m} metrics={metricsOf(meta)} />
     case 'walkforward':
       return <WalkForwardCard m={m} />
+    case 'stability':
+      return <StabilityCard m={m} />
     case 'plan':
       return <PlanCard plan={d.plan as LabPlan} live={project.plan?.seq === m.seq ? project.plan : null} />
     case 'report':
@@ -1294,6 +1310,7 @@ function BacktestCard({ m, onOpen, metrics }: { m: LabMessage; onOpen: (id: stri
         </div>
       )}
       {d.fee_check && <FeeCheck c={d.fee_check} />}
+      {d.cost_audit && <CostAudit a={d.cost_audit} />}
       {(d.warnings || []).length > 0 && <div className="lab2-faint">{d.warnings.join('；')}</div>}
       {d.data_check && <DataCheckBadge check={d.data_check} definitions={d.definitions} consistency={d.consistency} zero={d.zero_trade_diagnosis} />}
     </div>
@@ -1457,17 +1474,23 @@ function AskCard({ m, active, onDecide }: { m: LabMessage; active: boolean; onDe
     </div>
   )
   const answered = m.data.answered
-  const approval = m.data.approval as { tool: string; label: string; args: Record<string, unknown> }[] | undefined
+  const approval = m.data.approval as { tool: string; label: string; args: Record<string, unknown>; category?: string }[] | undefined
   if (approval) {
+    const catLabel = (c?: string) => APPROVAL_CATEGORIES.find((x) => x.id === c)?.label
     return (
       <div className={`lab2-ask approval${active ? ' active' : ''}`}>
+        <div className="approval-mark" aria-hidden>
+          <QuantBot size={30} state={active ? 'thinking' : 'idle'} title="QuantLab Bot" />
+          {active && <span className="approval-q">?</span>}
+        </div>
+        <div className="approval-body">
         <div className="approval-head">
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" aria-hidden><path d="M8 2 3 4v3.6c0 3 2.1 5.4 5 6.4 2.9-1 5-3.4 5-6.4V4Z" /></svg>
-          <b>需要你批准</b><span className="lab2-faint">权限模式要求先确认</span>
+          <b>需要你批准</b><span className="lab2-faint">{active ? '权限规则要求这些操作先由你确认' : '审批已处理'}</span>
         </div>
         <ul className="approval-list">
           {approval.map((a, i) => (
             <li key={i}>
+              {catLabel(a.category) && <span className={`approval-cat ${a.category}`}>{catLabel(a.category)}</span>}
               <span>{a.label}</span>
               {typeof a.args.code === 'string' && a.args.code && (
                 <details><summary>查看代码</summary><pre className="approval-code">{a.args.code}</pre></details>
@@ -1483,6 +1506,7 @@ function AskCard({ m, active, onDecide }: { m: LabMessage; active: boolean; onDe
         </div>
         {active && noteBox('或者写下你的要求后直接发送，例如“先别回测，改一下止损”')}
         {answered && <div className="lab2-faint">已选择：{answered}</div>}
+        </div>
       </div>
     )
   }
@@ -1581,7 +1605,7 @@ function ContextTab({ context, updatedAt, onUnpin, onPin, onCompact, compacting,
   return (
     <div className="lab2-ctx">
       <ContextStats context={context} updatedAt={updatedAt} />
-      <div className="side-toggle">
+      <div className="side-switch-row">
         <div>
           <b>自动压缩</b>
           <small>{autoCompact
@@ -1791,10 +1815,33 @@ function GoalEvent({ m, metrics }: { m: LabMessage; metrics: ReturnType<typeof m
   )
 }
 
+interface Semantics {
+  mode: string; label: string; continuous_compounding: boolean; reset_capital: boolean
+  cross_segment_positions: string; trade_attribution_label: string; reconstructs_full: boolean; reconstruct_note: string
+}
+
+/** 回测口径：是否连续复利、是否重置资金、跨段持仓、交易归段、能否复原全区间收益 */
+function SemanticsBox({ s }: { s: Semantics }) {
+  const yes = (v: boolean) => <b className={v ? 'ok' : 'no'}>{v ? '是' : '否'}</b>
+  return (
+    <details className="lab2-sem">
+      <summary>口径：{s.label}</summary>
+      <dl>
+        <dt>连续复利</dt><dd>{yes(s.continuous_compounding)}</dd>
+        <dt>每段重置初始资金</dt><dd>{yes(s.reset_capital)}</dd>
+        <dt>跨段持仓</dt><dd>{s.cross_segment_positions}</dd>
+        <dt>交易归段</dt><dd>{s.trade_attribution_label}</dd>
+        <dt>各段收益能否复原全区间</dt><dd>{yes(s.reconstructs_full)}　<span className="lab2-faint">{s.reconstruct_note}</span></dd>
+      </dl>
+    </details>
+  )
+}
+
 function WalkForwardCard({ m }: { m: LabMessage }) {
   const d = m.data
-  const rows = (d.segments || []) as { segment: number; start: number; end: number; ok: boolean; error?: string; metrics: Metrics }[]
+  const rows = (d.segments || []) as { segment: number; start: number; end: number; ok: boolean; error?: string; metrics: Metrics; data_role?: string; data_role_label?: string; carried_position_in?: boolean }[]
   const day = (ms: number) => new Date(ms).toISOString().slice(0, 10)
+  const rec = d.reconcile as { chained_return?: number | null; full_return?: number | null; reconstructs?: boolean; issues?: string[] } | undefined
   return (
     <div className="lab2-card">
       <div className="lab2-card-head">
@@ -1803,20 +1850,100 @@ function WalkForwardCard({ m }: { m: LabMessage }) {
         <span className={`cb-badge ${d.verdict === '稳定' ? 'ok' : 'warn'}`}>{d.verdict}</span>
       </div>
       {d.note && <div className="lab2-faint" style={{ marginTop: 4 }}>{d.note}</div>}
+      {d.semantics && <SemanticsBox s={d.semantics as Semantics} />}
       <table className="lab2-wf">
-        <thead><tr><th>区间</th><th>收益</th><th>夏普</th><th>回撤</th><th>交易</th></tr></thead>
+        <thead><tr><th>区间</th><th>收益</th><th>夏普</th><th>回撤</th><th>交易</th><th>数据角色</th></tr></thead>
         <tbody>
           {rows.map((r) => (
             <tr key={r.segment}>
-              <td>{day(r.start)} – {day(r.end)}</td>
+              <td>{day(r.start)} – {day(r.end)}{r.carried_position_in && <span className="lab2-faint" title="段首带着上一段未平仓的持仓"> ↪</span>}</td>
               {r.ok ? <>
                 <td className={(r.metrics.total_return ?? 0) >= 0 ? 'up' : 'down'}>{pct(r.metrics.total_return)}</td>
                 <td>{num(r.metrics.sharpe)}</td><td>{pct(r.metrics.max_drawdown)}</td><td>{r.metrics.trades ?? 0}</td>
               </> : <td colSpan={4} className="lab2-faint">{r.error || '失败'}</td>}
+              <td>{r.data_role && <span className={`wf-role ${r.data_role}`} title={r.data_role_label}>{r.data_role === 'development' ? '已参与开发' : '开发中未见'}</span>}</td>
             </tr>
           ))}
         </tbody>
       </table>
+      {rec && (
+        <div className={`wf-rec${rec.issues?.length ? ' warn' : ''}`}>
+          {rec.chained_return != null && rec.full_return != null && <span>各段连乘 {pct(rec.chained_return)} · 全区间 {pct(rec.full_return)} · {rec.reconstructs ? '可复原 ✓' : '不可复原'}</span>}
+          {rec.issues?.map((x) => <div key={x}>⚠ {x}</div>)}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** 成本一致性：基础成本与压力成本的实际扣费、费率、滑点与净值变化是否对得上 */
+function CostAudit({ a }: { a: { consistent: boolean; checks?: { name: string; ok: boolean; detail: string }[]; anomalies?: string[]; rule?: string; conclusion_allowed?: { cost_not_binding?: boolean } } }) {
+  return (
+    <details className={`lab2-sem cost-audit${a.consistent ? '' : ' bad'}`} open={!a.consistent}>
+      <summary>{a.consistent ? '成本核对通过' : '成本口径异常'}{a.conclusion_allowed?.cost_not_binding === false && ' · 不能下「成本不是约束」的结论'}</summary>
+      <ul>
+        {(a.checks ?? []).map((c) => <li key={c.name} className={c.ok ? 'ok' : 'no'}>{c.ok ? '✓' : '✗'} {c.name}：{c.detail}</li>)}
+        {!a.checks?.length && (a.anomalies ?? []).map((x) => <li key={x} className="no">✗ {x}</li>)}
+      </ul>
+    </details>
+  )
+}
+
+/** 稳定性报告：滚动窗口、收益分布、基准对照、参数敏感性 */
+function StabilityCard({ m }: { m: LabMessage }) {
+  const d = m.data as {
+    v?: number; flags: string[]; note?: string
+    windows: { window: number; start?: number; end?: number; return: number; benchmark_return?: number | null; excess?: number | null; sharpe?: number | null }[]
+    distribution: Record<string, number | null>
+    sensitivity?: { note?: string; fragile?: boolean; runs?: { param: string; value: unknown; sharpe?: number | null; total_return?: number | null; ok?: boolean }[] }
+  }
+  const day = (ms?: number) => (ms ? new Date(ms).toISOString().slice(0, 10) : '—')
+  const dist = d.distribution || {}
+  return (
+    <div className="lab2-card">
+      <div className="lab2-card-head">
+        {d.v != null && <span className="lab2-ver">v{d.v}</span>}
+        <b>稳定性报告</b>
+        <span className={`cb-badge ${d.flags.length ? 'warn' : 'ok'}`}>{d.flags.length ? `${d.flags.length} 处需注意` : '稳定'}</span>
+      </div>
+      {d.flags.map((f) => <div key={f} className="wf-rec warn">⚠ {f}</div>)}
+      <table className="lab2-wf">
+        <thead><tr><th>滚动窗口</th><th>收益</th><th>基准</th><th>超额</th><th>夏普</th></tr></thead>
+        <tbody>
+          {d.windows.map((w) => (
+            <tr key={w.window}>
+              <td>{day(w.start)} – {day(w.end)}</td>
+              <td className={w.return >= 0 ? 'up' : 'down'}>{pct(w.return)}</td>
+              <td>{pct(w.benchmark_return ?? undefined)}</td>
+              <td className={(w.excess ?? 0) >= 0 ? 'up' : 'down'}>{pct(w.excess ?? undefined)}</td>
+              <td>{num(w.sharpe ?? undefined)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div className="stab-dist">
+        <span>单根收益 P5 <b>{pct(dist.p05 ?? undefined)}</b></span>
+        <span>P50 <b>{pct(dist.p50 ?? undefined)}</b></span>
+        <span>P95 <b>{pct(dist.p95 ?? undefined)}</b></span>
+        <span>偏度 <b>{num(dist.skew ?? undefined)}</b></span>
+        <span>超额峰度 <b>{num(dist.excess_kurtosis ?? undefined)}</b></span>
+        <span>最好 5% 贡献 <b>{pct(dist.top5pct_share_of_gains ?? undefined)}</b></span>
+      </div>
+      {d.sensitivity?.runs?.length ? (
+        <details className="lab2-sem">
+          <summary>参数敏感性：{d.sensitivity.note}</summary>
+          <table className="lab2-wf">
+            <thead><tr><th>参数</th><th>取值</th><th>夏普</th><th>收益</th></tr></thead>
+            <tbody>
+              {d.sensitivity.runs.map((r, i) => (
+                <tr key={i}><td>{r.param}</td><td>{String(r.value)}</td><td>{num(r.sharpe ?? undefined)}</td>
+                  <td className={(r.total_return ?? 0) >= 0 ? 'up' : 'down'}>{pct(r.total_return ?? undefined)}</td></tr>
+              ))}
+            </tbody>
+          </table>
+        </details>
+      ) : null}
+      {d.note && <div className="lab2-faint" style={{ marginTop: 6 }}>{d.note}</div>}
     </div>
   )
 }

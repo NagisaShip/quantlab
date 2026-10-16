@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { directBars } from '../marketDirect'
 import { get } from '../http'
 import { ago, fmtNum, fmtPct, tone, v3, type BacktestRow, type LlmStatus, type PaperSessionView, type StrategyFile } from '../api2'
 import { HomeAsk, Watchlist } from './home/HomeAsk'
@@ -31,9 +32,12 @@ export default function HomePage({ onNavigate, notify }: PageProps) {
     missions.list().then((r) => setRecentMissions(r.missions)).catch(() => undefined)
     rd.pipeline().then(setPipe).catch(() => undefined)
     validation.board().then((r) => setBoard({ rows: r.board, cfg: r.config })).catch(() => undefined)
-    get<{ quotes: { connected: boolean; source?: string; t?: number[]; c?: number[] }[] }>('/api/market/quotes?symbols=BTC%2FUSDT&timeframe=1h&limit=168')
-      .then((r) => { const q = r.quotes[0]; if (q?.connected && q.t && q.c) setMarket({ t: q.t, c: q.c, source: q.source || 'exchange' }) })
-      .catch(() => undefined)
+    directBars('BTC/USDT', '1h', 168).then((d) => {
+      if (d) { setMarket({ t: d.map((b) => b.t), c: d.map((b) => b.c), source: 'exchange' }); return }
+      get<{ quotes: { connected: boolean; source?: string; t?: number[]; c?: number[] }[] }>('/api/market/quotes?symbols=BTC%2FUSDT&timeframe=1h&limit=168')
+        .then((r) => { const q = r.quotes[0]; if (q?.connected && q.t && q.c) setMarket({ t: q.t, c: q.c, source: q.source || 'exchange' }) })
+        .catch(() => undefined)
+    })
   }, [])
 
   const running = sessions.filter((s) => s.status === 'running')

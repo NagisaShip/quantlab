@@ -20,6 +20,7 @@ from typing import Any
 from ..llm.base import LLMError, Message
 from ..research.goals import GoalDomain
 from .strategy_lab import (
+    NO_GOAL_TEXT,
     StopRequested,
     StrategyLab,
     _json_object,
@@ -136,7 +137,7 @@ class DomainLab(StrategyLab):
         )
 
     def goal_text(self, project: dict[str, Any]) -> str:
-        return self.domain.items_text(self.project_spec(project)["items"])
+        return self.domain.items_text(self.project_spec(project)["items"]) if self.has_goal(project) else NO_GOAL_TEXT
 
     def extra_checks(self, project: dict[str, Any], spec: dict[str, Any]) -> list[dict[str, Any]]:
         n = len(spec.get("symbols") or [])

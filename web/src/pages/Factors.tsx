@@ -3,6 +3,7 @@
  * 路由：#/factors（列表）· #/factors/new（评估器）· #/factors/trials · #/factors/syntax · #/factors/<id>
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { PythonCodeButton } from '../components/PythonCode'
 import { factors, type EvalParams, type Factor, type FactorMeta, type FactorReport, type FactorStatus } from '../apiFactors'
 import { openInLab } from '../components/handoff'
 import { f3, fp, FullReport, STATUS_TONE } from '../components/factorReport'
@@ -133,6 +134,7 @@ function FactorDetail({ id, meta, notify, onDeleted }: { id: string; meta: Facto
           kind: 'factor', idea: `改进因子「${f.name}」`, code: f.expression, title: `改进：${f.name}`, securities: f.universe, timeframe: f.timeframe,
           attached: `因子 ${f.expression}`, pins: f.hypothesis?.rationale ? [{ kind: 'note', title: '原假设', text: `${f.hypothesis.rationale}\n预期：${f.hypothesis.direction ?? ''}\n证伪：${f.hypothesis.falsify ?? ''}` }] : [],
         })}>在 AI 研究室中改进</button>
+        <PythonCodeButton kind="factor" artifact={f.expression} name={f.name} />
         <button className="button small danger" onClick={async () => { if (await appConfirm(`删除因子「${f.name}」？试验台账会保留。`)) { await factors.remove(id); onDeleted() } }}>删除</button>
       </>}>
         <code className="fr-expr big">{f.expression}</code>

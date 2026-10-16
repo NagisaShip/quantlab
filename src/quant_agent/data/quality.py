@@ -24,15 +24,13 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from ..exchanges.base import Bar
+from ..timeframes import TimeframeTable
 
-TIMEFRAME_MS = {
-    "1m": 60_000,
-    "5m": 300_000,
-    "15m": 900_000,
-    "1h": 3_600_000,
-    "4h": 14_400_000,
-    "1d": 86_400_000,
-}
+# 常用周期预先列出；其余任意合法写法（100ms、1s、30m、2h…）由 TimeframeTable 现算
+TIMEFRAME_MS = TimeframeTable(
+    {"1m": 60_000, "5m": 300_000, "15m": 900_000, "30m": 1_800_000, "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000},
+    lambda ms: ms,
+)
 
 MIN_BARS = 102  # 100 根预热 + 至少 2 根计分
 MAX_BARS = 5000

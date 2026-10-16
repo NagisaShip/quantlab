@@ -63,8 +63,9 @@ export const DOMAIN_UI: Partial<Record<LabKind, DomainUI>> = {
 /**
  * 研究类型滑块：五个研究室 + 两种研究流程。流程类（完整流程、调研报告）走策略对话，附加对应的工作方式。
  */
-export type ResearchType = LabKind | 'pipeline' | 'report'
+export type ResearchType = 'auto' | LabKind | 'pipeline' | 'report'
 export const RESEARCH_TYPES: { id: ResearchType; label: string; hint: string }[] = [
+  { id: 'auto', label: '自动', hint: 'AI 根据对话的实际内容判断研究类型，自行调用对应工具' },
   { id: 'strategy', label: '策略', hint: '写策略代码并回测' },
   { id: 'factor', label: '因子', hint: '挖掘因子，按 IC 与样本外评估' },
   { id: 'model', label: '模型', hint: '用因子训练预测模型' },
@@ -73,11 +74,20 @@ export const RESEARCH_TYPES: { id: ResearchType; label: string; hint: string }[]
   { id: 'pipeline', label: '完整流程', hint: '选标的 → 因子 → 策略 → 模型 → 组合 → 执行，一次走完并出报告' },
   { id: 'report', label: '调研报告', hint: '联网 + 平台数据调研，最后生成可导出 PDF 的报告' },
 ]
-export const kindOfType = (t: ResearchType): LabKind => (t === 'pipeline' || t === 'report' ? 'strategy' : t)
-export const workflowOfType = (t: ResearchType): '' | 'pipeline' | 'report' => (t === 'pipeline' || t === 'report' ? t : '')
+export const kindOfType = (t: ResearchType): LabKind => (t === 'pipeline' || t === 'report' || t === 'auto' ? 'strategy' : t)
+export const workflowOfType = (t: ResearchType): '' | 'auto' | 'pipeline' | 'report' => (t === 'pipeline' || t === 'report' || t === 'auto' ? t : '')
+export const WORKFLOW_LABEL: Record<string, string> = { auto: '自动', pipeline: '完整流程', report: '调研报告' }
 
 /** 每种研究的建议（新对话页随机展示几条，可换一批）。 */
 export const EXAMPLE_POOL: Record<ResearchType, string[]> = {
+  auto: [
+    '最近 BTC 波动变大了吗？和过去一年比处在什么水平',
+    '资金费率极端时反向开仓，做个策略回测看看',
+    '成交量放大但价格不涨，算不算有效的因子',
+    '解释一下夏普比率和索提诺比率的区别',
+    '帮我调研最近一个月影响加密市场的主要事件',
+    'BTC、ETH、SOL 怎么分配仓位，回撤控制在 20% 以内',
+  ],
   strategy: [
     'BTC 1 小时，20 和 60 均线金叉做多，止损 5%',
     'ETH 4 小时 RSI 均值回归，回撤控制在 15% 以内',

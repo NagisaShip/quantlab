@@ -125,6 +125,33 @@ def sync(payload: SyncIn) -> dict:
         raise HTTPException(400, str(exc)) from exc
 
 
+class AutoSyncIn(BaseModel):
+    enabled: bool
+    interval_hours: float = Field(6, ge=0.5, le=168)
+
+
+@router.get("/auto", summary="研究数据自动同步：是否开启、间隔、上次运行结果")
+def auto_status() -> dict:
+    hub = _hub()
+    return {**hub.auto_settings(), "due": hub.auto_due()}
+
+
+@router.post("/auto", summary="开启 / 关闭研究数据自动同步（worker 按间隔把已有数据集补到最新）")
+def auto_set(payload: AutoSyncIn) -> dict:
+    return _hub().set_auto(enabled=payload.enabled, interval_hours=payload.interval_hours)
+
+
+@router.post("/auto/run", summary="立即把已有数据集补到最新（后台执行）")
+def auto_run() -> dict:
+    import contextvars
+    import threading
+
+    hub = _hub()
+    ctx = contextvars.copy_context()
+    threading.Thread(target=ctx.run, args=(lambda: hub.auto_sync(force=True),), daemon=True, name="datahub-auto").start()
+    return {"ok": True, "queued": True}
+
+
 @router.get("/events", summary="事件流：交易所公告、新闻（含标注器与回看偏差标记）、宏观日程，按发布时间倒序")
 def list_events(kind: str | None = None, coin: str | None = None, limit: int = 200) -> dict:
     from ..research.events import EventHub

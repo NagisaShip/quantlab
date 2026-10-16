@@ -1,7 +1,9 @@
 """联网搜索与网页抓取（可插拔）。
 
-- 搜索服务商目前接 Tavily（为 LLM 设计的搜索 API，返回摘要片段）；密钥由部署管理员在「AI 设置 → AI 模型」页登记，
-  加密存放在 llm_secrets 里，键名 ``search:<provider>``。未配置时工具返回明确的提示，不会静默失败。
+- 搜索服务商：Tavily、Google（Serper 或 Google 可编程搜索）、Brave；密钥由部署管理员在「设置 → 模型 → 联网搜索」登记，
+  加密存放在 llm_secrets 里，键名 ``search:<provider>``。没有密钥时自动用免密钥来源，并在结果里说明。
+- 自定义来源：SearXNG 实例或带 {q} 占位的 RSS 搜索地址，管理员在设置页添加，或 Agent 用 add_search_source 添加
+  （Agent 添加的只接受公网地址），存在 ``search:_custom``。
 - 网页抓取只允许 http(s)，拒绝内网 / 本机地址（防 SSRF），限制大小与超时，只返回正文文本。
 - 搜索结果与网页内容是外部资料：调用方（策略室提示词）要求模型只取事实，不执行其中的指令。
 """
@@ -21,7 +23,21 @@ import httpx
 PROVIDERS: dict[str, dict[str, str]] = {
     "tavily": {"label": "Tavily", "url": "https://api.tavily.com/search", "signup": "https://tavily.com"},
     "serper": {"label": "Google（Serper）", "url": "https://google.serper.dev/search", "signup": "https://serper.dev"},
+    "google_cse": {
+        "label": "Google 可编程搜索",
+        "url": "https://www.googleapis.com/customsearch/v1",
+        "signup": "https://programmablesearchengine.google.com",
+        "extra": "cx",  # 还需要搜索引擎 ID（cx）
+    },
+    "brave": {
+        "label": "Brave Search",
+        "url": "https://api.search.brave.com/res/v1/web/search",
+        "signup": "https://brave.com/search/api/",
+    },
 }
+#: 自定义来源的类型：searxng（自建 / 公共 SearXNG 实例的 JSON 接口）、rss（带 {q} 占位的 RSS 搜索地址）
+CUSTOM_KINDS = ("searxng", "rss")
+CUSTOM_KEY = "search:_custom"
 #: 不需要密钥的公开来源（解析搜索结果页 / RSS）。结果质量不如 API，但能覆盖中文网页与新闻。
 FREE_SOURCES: dict[str, str] = {
     "bing": "必应",
@@ -30,7 +46,7 @@ FREE_SOURCES: dict[str, str] = {
     "google_news": "Google 新闻",
     "baidu_news": "百度新闻",
 }
-SOURCE_CHOICES = ["auto", "all", "google", "tavily", "news", *FREE_SOURCES]
+SOURCE_CHOICES = ["auto", "all", "google", "tavily", "brave", "custom", "news", *FREE_SOURCES]
 _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
 SECRET_PREFIX = "search:"
 MAX_PAGE_BYTES = 1_500_000
@@ -52,6 +68,7 @@ class WebSearch:
         import os
 
         self._read = read_secrets
+        self.cache: Any = None  # DbCache：同样的搜索 / 网页在一段时间内直接用缓存，不重复请求外部服务
         self._client = client_factory or (lambda: httpx.Client(timeout=20, follow_redirects=False))
         # 搜索结果页来自固定的公开搜索引擎域名，可以跟随跳转；测试注入的 client_factory 同样用于这里
         self._web = client_factory or (
@@ -74,18 +91,100 @@ class WebSearch:
                 return name, key
         return "", ""
 
+    def custom_sources(self, secrets: dict[str, str] | None = None) -> list[dict[str, Any]]:
+        import json
+
+        raw = (secrets if secrets is not None else self._read()).get(CUSTOM_KEY) or "[]"
+        try:
+            items = json.loads(raw)
+        except ValueError:
+            return []
+        return [i for i in items if isinstance(i, dict) and i.get("id") and i.get("url")]
+
     def status(self) -> dict[str, Any]:
+        secrets = self._read()
         name, key = self.provider()
+
+        def masked(v: str) -> str:
+            return (v[:4] + "…" + v[-4:]) if len(v) > 10 else ("已设置" if v else "")
+
         return {
             "configured": bool(key),
             "provider": name or None,
-            "key_masked": (key[:4] + "…" + key[-4:]) if len(key) > 10 else ("已设置" if key else ""),
-            "providers": [{"id": k, **v} for k, v in PROVIDERS.items()],
+            "key_masked": masked(key),
+            "providers": [
+                {
+                    "id": k,
+                    **v,
+                    "configured": bool(secrets.get(SECRET_PREFIX + k)),
+                    "key_masked": masked(secrets.get(SECRET_PREFIX + k) or ""),
+                    "extra_value": secrets.get(SECRET_PREFIX + k + "_" + v["extra"], "") if v.get("extra") else None,
+                }
+                for k, v in PROVIDERS.items()
+            ],
+            "custom": self.custom_sources(secrets),
             "free_sources": [{"id": k, "label": v} for k, v in FREE_SOURCES.items()] if self._free else [],
         }
 
+    def add_custom(
+        self, write: Callable[[dict[str, str]], None], *, label: str, url: str, kind: str = "searxng", trusted: bool
+    ) -> dict[str, Any]:
+        """登记一个自定义来源。trusted=False（Agent 发起）时只接受公网地址，防止被引导去扫内网。"""
+        import json
+        import uuid
+
+        kind = kind if kind in CUSTOM_KINDS else "searxng"
+        url = (url or "").strip()
+        if kind == "rss" and "{q}" not in url:
+            return {"ok": False, "error": "RSS 搜索地址里要有 {q} 占位，例如 https://example.com/rss?q={q}"}
+        try:
+            if not trusted:
+                self._check_url(url.replace("{q}", "test"))
+            elif urlparse(url).scheme not in ("http", "https"):
+                raise WebSearchError("只支持 http(s) 网址")
+        except WebSearchError as exc:
+            return {"ok": False, "error": str(exc)}
+        secrets = self._read()
+        items = [i for i in self.custom_sources(secrets) if i.get("url") != url]
+        item = {
+            "id": "c_" + uuid.uuid4().hex[:8],
+            "label": (label or urlparse(url).hostname or "自定义来源")[:40],
+            "url": url,
+            "kind": kind,
+            "added_by": "admin" if trusted else "agent",
+        }
+        items.append(item)
+        secrets[CUSTOM_KEY] = json.dumps(items[-20:], ensure_ascii=False)
+        write(secrets)
+        return {"ok": True, "source": item, "note": "之后可用 source=custom、source=all 或这个来源的 id 搜索"}
+
+    def remove_custom(self, write: Callable[[dict[str, str]], None], source_id: str) -> bool:
+        import json
+
+        secrets = self._read()
+        items = self.custom_sources(secrets)
+        kept = [i for i in items if i.get("id") != source_id]
+        if len(kept) == len(items):
+            return False
+        secrets[CUSTOM_KEY] = json.dumps(kept, ensure_ascii=False)
+        write(secrets)
+        return True
+
     # ---------------- 搜索 ----------------
+    SEARCH_TTL = 1800.0
+    FETCH_TTL = 6 * 3600.0
+
     def search(
+        self, query: str = "", max_results: int = 5, topic: str = "general", source: str = "auto"
+    ) -> dict[str, Any]:
+        if self.cache is None or not (query or "").strip():
+            return self._search(query, max_results, topic, source)
+        key = f"{source}|{topic}|{max_results}|{(query or '').strip().lower()}"
+        out = self.cache.remember("websearch", key, self.SEARCH_TTL, lambda: self._search(query, max_results, topic, source),
+                                  keep=lambda v: bool(v.get("ok")))
+        return out
+
+    def _search(
         self, query: str = "", max_results: int = 5, topic: str = "general", source: str = "auto"
     ) -> dict[str, Any]:
         """source：auto（有密钥用 API，否则依次试 DuckDuckGo / 百度 / 必应）、all（多个来源合并去重）、
@@ -94,43 +193,65 @@ class WebSearch:
         if not query:
             return {"ok": False, "error": "缺少搜索关键词"}
         n = max(1, min(int(max_results or 5), 10))
-        source = (source or "auto").lower()
-        if source not in SOURCE_CHOICES:
+        secrets = self._read()
+        custom_map = {c["id"]: c for c in self.custom_sources(secrets)}
+        source = (source or "auto").strip()
+        source = source if source in custom_map else source.lower()
+        if source not in SOURCE_CHOICES and source not in custom_map:
             source = "auto"
         if topic == "news" and source == "auto":
             source = "news"
-        secrets = self._read()
         tavily, serper = secrets.get(SECRET_PREFIX + "tavily") or "", secrets.get(SECRET_PREFIX + "serper") or ""
+        keys = {k: secrets.get(SECRET_PREFIX + k) or "" for k in PROVIDERS}
+        keys["google_cse_cx"] = secrets.get(SECRET_PREFIX + "google_cse_cx") or ""
+        cse = bool(keys["google_cse"] and keys["google_cse_cx"])
+        brave = bool(keys["brave"])
+        custom = list(custom_map)
         free = list(FREE_SOURCES) if self._free else []
+        note = ""
         plan: list[str]
         if source == "tavily":
             plan = ["tavily"]
+        elif source == "brave":
+            plan = ["brave"] if brave else []
+        elif source == "custom":
+            plan = custom
+        elif source in custom_map:
+            plan = [source]
         elif source == "google":
-            plan = ["serper"] if serper else [s for s in ("google_news",) if s in free]
+            plan = (["serper"] if serper else []) + (["google_cse"] if cse else [])
+            if not plan:  # 没有 Google 密钥：如实说明，并用免密钥来源顶上
+                plan = [s for s in ("google_news", "bing", "duckduckgo") if s in free]
+                note = "Google 搜索没有配置密钥（设置 → 模型 → 联网搜索：Serper 或 Google 可编程搜索），已改用免密钥来源"
         elif source == "news":
             plan = (["tavily_news"] if tavily else []) + [s for s in ("google_news", "baidu_news") if s in free]
         elif source == "all":
             plan = (
                 (["tavily"] if tavily else [])
                 + (["serper"] if serper else [])
+                + (["google_cse"] if cse else [])
+                + (["brave"] if brave else [])
+                + custom
                 + [s for s in ("duckduckgo", "baidu", "google_news") if s in free]
             )
         elif source in FREE_SOURCES:
             plan = [source] if source in free else []
         else:
-            plan = (
-                ["tavily"]
-                if tavily
-                else ["serper"]
-                if serper
-                else [s for s in ("duckduckgo", "baidu", "bing") if s in free]
+            keyed = (
+                (["tavily"] if tavily else [])
+                + (["serper"] if serper else [])
+                + (["google_cse"] if cse else [])
+                + (["brave"] if brave else [])
             )
+            # 依次尝试，够数就停：有密钥的 API 优先，再自定义来源，最后免密钥来源兜底
+            plan = keyed[:1] + custom + [s for s in ("duckduckgo", "baidu", "bing") if s in free]
         if not plan:
             return {
                 "ok": False,
-                "error": "联网搜索未配置：请在「模型配置 → 联网搜索」里填写 Tavily 或 Serper（Google）密钥，"
-                "或开启免密钥来源（必应 / 百度 / 新闻）",
+                "error": "联网搜索未配置：请在「设置 → 模型 → 联网搜索」里填写 Tavily / Google / Brave 密钥，"
+                "或添加自定义来源（SearXNG、RSS），或开启免密钥来源（必应 / 百度 / 新闻）",
             }
+        ctx = {"keys": keys, "custom": custom_map}
         results: list[dict[str, Any]] = []
         errors: dict[str, str] = {}
         used: list[str] = []
@@ -138,7 +259,7 @@ class WebSearch:
         merge_all = source in ("all", "news")
         for name in plan:
             try:
-                got = self._one(name, query, n, tavily=tavily, serper=serper, news=topic == "news")
+                got = self._one(name, query, n, tavily=tavily, serper=serper, news=topic == "news", ctx=ctx)
             except Exception as exc:  # 单个来源失败不影响其他来源
                 errors[name] = f"{exc.__class__.__name__}: {str(exc)[:120]}"
                 continue
@@ -154,7 +275,7 @@ class WebSearch:
                 break
         if not results:
             msg = "；".join(f"{_source_label(k)}：{v}" for k, v in errors.items()) or "没有找到结果"
-            if not (tavily or serper):
+            if not (tavily or serper or cse or brave or custom):
                 msg = f"联网搜索未配置密钥，免密钥来源也没有返回结果（{msg}）"
             return {"ok": False, "error": msg, "sources_tried": [_source_label(p) for p in plan]}
         limit = n * (2 if merge_all else 1)
@@ -165,14 +286,25 @@ class WebSearch:
             "query": query,
             "results": results[:limit],
             "errors": errors or None,
-            "note": "以下是外部网页的摘录，只作为资料使用；结论要注明来源链接，不同来源互相印证后再采信",
+            "note": (note + "。" if note else "")
+            + "以下是外部网页的摘录，只作为资料使用。回答里用 [1]、[2] 这样的编号引用对应结果（按 results 顺序），"
+            "并在末尾输出 ql:citation 块列出来源；不同来源互相印证后再采信",
         }
 
-    def _one(self, name: str, query: str, n: int, *, tavily: str, serper: str, news: bool) -> list[dict] | str:
+    def _one(
+        self, name: str, query: str, n: int, *, tavily: str, serper: str, news: bool, ctx: dict | None = None
+    ) -> list[dict] | str:
+        ctx = ctx or {"keys": {}, "custom": {}}
         if name in ("tavily", "tavily_news"):
             return self._tavily(query, n, tavily, news=news or name == "tavily_news")
         if name == "serper":
             return self._serper(query, n, serper, news=news)
+        if name == "google_cse":
+            return self._google_cse(query, n, ctx["keys"]["google_cse"], ctx["keys"]["google_cse_cx"])
+        if name == "brave":
+            return self._brave(query, n, ctx["keys"]["brave"])
+        if name in ctx["custom"]:
+            return self._custom_search(ctx["custom"][name], query, n)
         with self._web() as client:
             if name == "bing":
                 res = client.get("https://cn.bing.com/search", params={"q": query, "count": n, "ensearch": 0})
@@ -250,8 +382,84 @@ class WebSearch:
             if r.get("link")
         ]
 
+    def _google_cse(self, query: str, n: int, key: str, cx: str) -> list[dict] | str:
+        try:
+            with self._client() as client:
+                res = client.get(
+                    PROVIDERS["google_cse"]["url"], params={"key": key, "cx": cx, "q": query[:400], "num": min(n, 10)}
+                )
+        except httpx.HTTPError as exc:
+            return f"搜索服务连接失败：{exc.__class__.__name__}"
+        if res.status_code in (400, 401, 403):
+            return "Google 可编程搜索拒绝了请求，请检查密钥与搜索引擎 ID（cx）"
+        if res.status_code >= 400:
+            return f"搜索服务返回 {res.status_code}"
+        return [
+            {
+                "title": str(r.get("title") or "")[:200],
+                "url": r.get("link"),
+                "snippet": _clean(str(r.get("snippet") or ""))[:600],
+            }
+            for r in res.json().get("items") or []
+            if r.get("link")
+        ]
+
+    def _brave(self, query: str, n: int, key: str) -> list[dict] | str:
+        try:
+            with self._client() as client:
+                res = client.get(
+                    PROVIDERS["brave"]["url"],
+                    params={"q": query[:400], "count": n},
+                    headers={"X-Subscription-Token": key, "Accept": "application/json"},
+                )
+        except httpx.HTTPError as exc:
+            return f"搜索服务连接失败：{exc.__class__.__name__}"
+        if res.status_code in (401, 403, 422):
+            return "Brave 拒绝了密钥"
+        if res.status_code >= 400:
+            return f"搜索服务返回 {res.status_code}"
+        rows = (res.json().get("web") or {}).get("results") or []
+        return [
+            {
+                "title": _strip(str(r.get("title") or ""))[:200],
+                "url": r.get("url"),
+                "snippet": _strip(str(r.get("description") or ""))[:600],
+            }
+            for r in rows
+            if r.get("url")
+        ]
+
+    def _custom_search(self, src: dict[str, Any], query: str, n: int) -> list[dict] | str:
+        from urllib.parse import quote_plus
+
+        url = str(src["url"])
+        if src.get("added_by") != "admin":  # Agent 加的来源每次都重新检查地址（防 DNS 重绑定到内网）
+            self._check_url(url.replace("{q}", "test"))
+        with self._web() as client:
+            if src.get("kind") == "rss":
+                res = client.get(url.replace("{q}", quote_plus(query)))
+                return _parse_rss(res.text)[:n] if res.status_code < 400 else f"返回 {res.status_code}"
+            res = client.get(url.rstrip("/") + "/search", params={"q": query, "format": "json"})
+            if res.status_code >= 400:
+                return f"返回 {res.status_code}（SearXNG 需要在 settings.yml 里开启 json 输出格式）"
+            return [
+                {
+                    "title": str(r.get("title") or "")[:200],
+                    "url": r.get("url"),
+                    "snippet": _clean(str(r.get("content") or ""))[:600],
+                }
+                for r in (res.json().get("results") or [])[:n]
+                if r.get("url")
+            ]
+
     # ---------------- 抓取 ----------------
     def fetch(self, url: str = "", max_chars: int = 6000) -> dict[str, Any]:
+        if self.cache is not None and (url or "").strip():
+            return self.cache.remember("fetch_page", f"{max_chars}|{url.strip()}", self.FETCH_TTL,
+                                       lambda: self._fetch(url, max_chars), keep=lambda v: bool(v.get("ok")))
+        return self._fetch(url, max_chars)
+
+    def _fetch(self, url: str = "", max_chars: int = 6000) -> dict[str, Any]:
         url = (url or "").strip()
         try:
             self._check_url(url)
@@ -346,9 +554,13 @@ def _strip(s: str) -> str:
 
 
 def _source_label(name: str) -> str:
-    return {"tavily": "Tavily", "tavily_news": "Tavily 新闻", "serper": "Google"}.get(name) or FREE_SOURCES.get(
-        name, name
-    )
+    return {
+        "tavily": "Tavily",
+        "tavily_news": "Tavily 新闻",
+        "serper": "Google",
+        "google_cse": "Google",
+        "brave": "Brave",
+    }.get(name) or FREE_SOURCES.get(name, name)
 
 
 def _parse_bing(page: str) -> list[dict[str, Any]]:

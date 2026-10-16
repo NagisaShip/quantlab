@@ -346,7 +346,7 @@ export interface LlmStatus {
 
 export type ProviderScope = 'workspace' | 'personal'
 export type LimitMetric = 'tokens' | 'cost'
-export type LimitWindow = '1h' | '5h' | '1d' | '7d' | '30d'
+export type LimitWindow = '1h' | '5h' | '1d' | '7d' | '30d' | 'day' | 'week' | 'month' | 'total'
 export interface LimitRule { metric: LimitMetric; window: LimitWindow; limit: string }
 export interface LimitStatus extends LimitRule { used: string; percent: number; exceeded: boolean; label: string }
 
@@ -437,6 +437,10 @@ export interface PostSummary {
   featured: boolean
   last_reply_at: number | null
   accepted_comment: string | null
+  author_id?: string
+  /** 来源：成员手写 / Agent 代发 / 平台 */
+  source?: { kind: 'human' | 'agent' | 'system'; label?: string; on_behalf_of?: string; conversation?: string }
+  refs?: import('./apiCollab').Ref[]
   strategy?: { name: string; securities: string[]; timeframe: string; version: string; code?: string; code_sha256?: string; params?: Params; origin?: string }
   backtest?: {
     id?: string
@@ -470,6 +474,8 @@ export interface CommentRow {
   liked: boolean
   is_ai: boolean
   meta: { mode?: string; model?: string }
+  author_id?: string
+  muted?: boolean
 }
 
 export interface PaperSessionView {
@@ -638,13 +644,13 @@ export const v3 = {
   /* 策略广场 */
   profile: () => get<{ profile: { name: string; bio: string } }>('/api/community/profile'),
   saveProfile: (p: { name: string; bio: string }) => put<{ profile: { name: string; bio: string } }>('/api/community/profile', p),
-  posts: (p: { type?: string; tag?: string; q?: string; sort?: string; featured?: boolean; mine?: boolean; favorited?: boolean; page?: number; size?: number }) =>
+  posts: (p: { type?: string; tag?: string; q?: string; sort?: string; featured?: boolean; mine?: boolean; favorited?: boolean; source?: string; page?: number; size?: number }) =>
     get<{ items: PostSummary[]; total: number; page: number; size: number; viewer: string }>(`/api/community/posts?${qs(p)}`),
   post: (id: string) =>
-    get<{ post: Post; comments: CommentRow[]; related: PostSummary[]; viewer: string }>(`/api/community/posts/${id}`),
-  createPost: (p: { type: string; title: string; body: string; tags: string[]; strategy_slug?: string | null; backtest_id?: string | null; ai_review?: boolean }) =>
+    get<{ post: Post; comments: CommentRow[]; related: PostSummary[]; viewer: string; viewer_id: string; can_moderate: boolean; post_muted: boolean; author_muted: boolean }>(`/api/community/posts/${id}`),
+  createPost: (p: { type: string; title: string; body: string; tags: string[]; strategy_slug?: string | null; backtest_id?: string | null; ai_review?: boolean; refs?: import('./apiCollab').Ref[] }) =>
     post<{ post: Post }>('/api/community/posts', p),
-  updatePost: (id: string, p: { title?: string; body?: string; tags?: string[] }) => put<{ post: Post }>(`/api/community/posts/${id}`, p),
+  updatePost: (id: string, p: { title?: string; body?: string; tags?: string[]; refs?: import('./apiCollab').Ref[] }) => put<{ post: Post }>(`/api/community/posts/${id}`, p),
   deletePost: (id: string) => del<{ ok: boolean }>(`/api/community/posts/${id}`),
   likePost: (id: string) => post<{ on: boolean; count: number }>(`/api/community/posts/${id}/like`),
   favoritePost: (id: string) => post<{ on: boolean; count: number }>(`/api/community/posts/${id}/favorite`),

@@ -10,16 +10,35 @@ import { NewTab } from './backtests/NewTab'
 import type { PageProps } from './types'
 import { appConfirm } from '../components/dialog'
 import { store } from '../components/prefs'
+import { lab } from '../apiLab'
 
-type Group = 'chat' | 'strategy' | 'none'
+type Group = 'chat' | 'project' | 'source' | 'strategy' | 'none'
 interface RowGroup { key: string; title: string; link?: string; rows: BacktestRow[]; best: number | null }
 
-/** 按对话 / 策略分组：AI 研究室的回测按来源对话归在一起，其他回测按策略名。组按最近一次回测排序。 */
-function groupRows(rows: BacktestRow[], by: Group): RowGroup[] {
+const fromAI = (r: BacktestRow) => !!r.lab_project_id || /^策略室|^分段回测|^敏感性|^完整流程/.test(r.label || '')
+
+/**
+ * 分组：按对话（AI 研究室的回测按来源对话归在一起）、按项目（对话所属的项目文件夹）、按来源（AI / 用户）、按策略。
+ * 组按最近一次回测排序。folders：对话 id → 项目名。
+ */
+function groupRows(rows: BacktestRow[], by: Group, folders: Record<string, string> = {}): RowGroup[] {
   if (by === 'none') return [{ key: 'all', title: '全部', rows, best: null }]
   const map = new Map<string, RowGroup>()
   for (const r of rows) {
-    const fromLab = !!r.lab_project_id || /^策略室|^分段回测/.test(r.label || '')
+    const fromLab = fromAI(r)
+    if (by === 'project' || by === 'source') {
+      const folder = r.lab_project_id ? folders[r.lab_project_id] : ''
+      const key = by === 'source' ? (fromLab ? 'src:ai' : 'src:user') : folder ? `f:${folder}` : fromLab ? 'f:-ai' : 'f:-user'
+      const title = by === 'source'
+        ? (fromLab ? 'AI 生成（AI 研究室、完整流程、子 Agent）' : '用户发起（编辑器、新建回测、模板）')
+        : folder ? `项目 · ${folder}` : fromLab ? '未归入项目的对话' : '不属于对话（编辑器 / 新建回测）'
+      const g = map.get(key) ?? { key, title, rows: [], best: null }
+      g.rows.push(r)
+      const sh = r.metrics.sharpe
+      if (sh !== null && sh !== undefined && (g.best === null || sh > g.best)) g.best = sh
+      map.set(key, g)
+      continue
+    }
     const key = by === 'chat'
       ? (r.lab_project_id ? `lab:${r.lab_project_id}` : fromLab ? 'lab:?' : `other:${r.slug || r.strategy_name}`)
       : `s:${r.slug || r.strategy_name}`
@@ -69,6 +88,11 @@ function Records({ slug, onNavigate, notify, tabs }: Pick<PageProps, 'onNavigate
   const [manage, setManage] = useState(false)
   const [picked, setPicked] = useState<string[]>([])
   const [folded, setFolded] = useState<string[]>([])
+  const [folders, setFolders] = useState<Record<string, string>>({})
+  useEffect(() => {
+    if (group !== 'project') return
+    lab.projects().then((r) => setFolders(Object.fromEntries(r.projects.filter((p) => p.folder).map((p) => [p.id, p.folder as string])))).catch(() => undefined)
+  }, [group])
 
   const load = useCallback(() => {
     v3.backtests(slug, 300).then((r) => setRows(r.backtests)).catch((e) => setError(e.message))
@@ -112,7 +136,7 @@ function Records({ slug, onNavigate, notify, tabs }: Pick<PageProps, 'onNavigate
       setSelected(next); writeCompare(next); setPicked([]); setManage(false); load()
     } catch (e) { notify((e as Error).message, true) }
   }
-  const groups = groupRows(rows ?? [], group)
+  const groups = groupRows(rows ?? [], group, folders)
   const toggleOff = (id: string) => {
     const next = selected.filter((x) => x !== id)
     setSelected(next)
@@ -144,7 +168,7 @@ function Records({ slug, onNavigate, notify, tabs }: Pick<PageProps, 'onNavigate
         <div className="button-row bt-manage">
           <label className="bt-group">分组
             <select value={group} onChange={(e) => { setGroup(e.target.value as Group); store.set('qa.bt.group', e.target.value) }}>
-              <option value="chat">按对话</option><option value="strategy">按策略</option><option value="none">不分组</option>
+              <option value="chat">按对话</option><option value="project">按项目</option><option value="source">按来源（AI / 用户）</option><option value="strategy">按策略</option><option value="none">不分组</option>
             </select>
           </label>
           {manage ? <>

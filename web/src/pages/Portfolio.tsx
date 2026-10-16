@@ -3,6 +3,7 @@
  * 路由：#/portfolio · #/portfolio/design · #/portfolio/risk · #/portfolio/runs · #/portfolio/run/<id> · #/portfolio/<id>
  */
 import { useEffect, useMemo, useState } from 'react'
+import { PythonCodeButton } from '../components/PythonCode'
 import { usageSnippet } from '../apiModels'
 import {
   portfolio, type EvalParams, type PortfolioConfig, type PortfolioMeta, type PortfolioReport, type PortfolioRun, type RiskCheck,
@@ -112,6 +113,7 @@ function SchemeDetail({ id, meta, optLabel, notify, onDeleted }: { id: string; m
         </select>
         <button className="button small" onClick={() => toLab(`改进组合方案「${s.name}」：在不增加回撤的前提下提高夏普`)}>交给 AI 改进</button>
         <button className="button small" onClick={() => toLab(`召集组合小组评审「${s.name}」：风险估计、约束、压力情景`)}>召集团队评审</button>
+        <PythonCodeButton kind="portfolio" artifact={{ ...s.config, symbols: s.symbols, timeframe: s.timeframe }} name={s.name} />
         <button className="button small danger" onClick={async () => { if (await appConfirm(`删除方案「${s.name}」？试验记录会保留。`)) { await portfolio.remove(id); onDeleted() } }}>删除</button>
       </>}>
         <div className="fx-meta">

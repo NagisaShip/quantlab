@@ -15,6 +15,19 @@ type Notify = (msg: string, error?: boolean) => void
 
 const FOLDERS_KEY = 'qa.lab.folders'
 const COLLAPSED_KEY = 'qa.lab.collapsed'
+const GROUP_KEY = 'qa.lab.groupBy'
+
+/** 按研究类型分组：完整流程与调研报告按流程归类，其余按研究室类型 */
+const TYPES: { id: string; label: string }[] = [
+  { id: 'pipeline', label: '完整流程' },
+  { id: 'strategy', label: '策略' },
+  { id: 'factor', label: '因子' },
+  { id: 'model', label: '预测模型' },
+  { id: 'portfolio', label: '组合' },
+  { id: 'execution', label: '执行' },
+  { id: 'report', label: '调研报告' },
+]
+const typeOf = (p: LabProjectBrief) => (p.workflow === 'pipeline' || p.workflow === 'report' ? p.workflow : p.kind || 'strategy')
 
 const readList = (k: string): string[] => { try { return JSON.parse(store.get(k, '[]')) as string[] } catch { return [] } }
 const writeList = (k: string, v: string[]) => store.set(k, JSON.stringify([...new Set(v)]))
@@ -44,6 +57,8 @@ export function Conversations({ projects, activeId, onOpen, onNew, onChanged, no
   const [renaming, setRenaming] = useState<string | null>(null)
   const [folders, setFolders] = useState<string[]>(() => readList(FOLDERS_KEY))
   const [collapsed, setCollapsed] = useState<string[]>(() => readList(COLLAPSED_KEY))
+  const [groupBy, setGroupByState] = useState<'project' | 'type'>(() => (store.get(GROUP_KEY, 'project') === 'type' ? 'type' : 'project'))
+  const setGroupBy = (g: 'project' | 'type') => { setGroupByState(g); store.set(GROUP_KEY, g) }
   const menuRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -132,7 +147,8 @@ export function Conversations({ projects, activeId, onOpen, onNew, onChanged, no
               {p.status !== 'idle' && <i className={`dot ${p.status}`} />}
               {p.pinned && depth === 0 && <span className="conv-pin" aria-label="已置顶">📌</span>}
               <span className="conv-title">{p.title}</span>
-              {ui && <span className="conv-kind">{ui.noun}</span>}
+              {ui && groupBy === 'project' && <span className="conv-kind">{ui.noun}</span>}
+              {groupBy === 'type' && p.folder && <span className="conv-kind">{p.folder}</span>}
             </button>
           )}
           <span className="conv-time">{ago(p.updated_at)}</span>
@@ -160,7 +176,13 @@ export function Conversations({ projects, activeId, onOpen, onNew, onChanged, no
           <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden><path d="M8 3v10M3 8h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>
         </button>
       </div>
-      <input className="conv-search" placeholder="搜索对话" value={q} onChange={(e) => setQ(e.target.value)} aria-label="搜索对话" />
+      <div className="conv-tools">
+        <input className="conv-search" placeholder="搜索对话" value={q} onChange={(e) => setQ(e.target.value)} aria-label="搜索对话" />
+        <div className="conv-groupby" role="group" aria-label="分组方式">
+          <button type="button" aria-pressed={groupBy === 'project'} onClick={() => setGroupBy('project')} title="按你建的项目（文件夹）分组">项目</button>
+          <button type="button" aria-pressed={groupBy === 'type'} onClick={() => setGroupBy('type')} title="按研究类型自动分组">类型</button>
+        </div>
+      </div>
       <div className="conv-list">
         {pinned.length > 0 && (
           <div className="conv-group">
@@ -168,7 +190,26 @@ export function Conversations({ projects, activeId, onOpen, onNew, onChanged, no
             {pinned.map((p) => row(p))}
           </div>
         )}
-        {allFolders.map((f) => {
+        {groupBy === 'type' && TYPES.map((tp) => {
+          const rows = sortRows(roots.filter((p) => !p.pinned && typeOf(p) === tp.id))
+          if (!rows.length) return null
+          const key = `type:${tp.id}`
+          const open = !collapsed.includes(key) || !!needle
+          return (
+            <div key={key} className="conv-group">
+              <div className="conv-folder">
+                <button type="button" className={`conv-caret${open ? ' open' : ''}`} onClick={() => toggle(key)} aria-label={open ? '收起' : '展开'}>
+                  <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden><path d="m3.5 2 3 3-3 3" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                </button>
+                <button type="button" className="conv-folder-name" onClick={() => toggle(key)}>
+                  <span className={`conv-type-dot ${tp.id}`} aria-hidden /><span>{tp.label}</span><em>{rows.length}</em>
+                </button>
+              </div>
+              {open && rows.map((p) => row(p, 1))}
+            </div>
+          )
+        })}
+        {groupBy === 'project' && allFolders.map((f) => {
           const rows = sortRows(roots.filter((p) => !p.pinned && p.folder === f))
           if (needle && !rows.length) return null
           const key = `folder:${f}`
@@ -196,8 +237,8 @@ export function Conversations({ projects, activeId, onOpen, onNew, onChanged, no
           )
         })}
         <div className="conv-group">
-          {(allFolders.length > 0 || pinned.length > 0) && <div className="conv-group-label">对话</div>}
-          {loose.map((p) => row(p))}
+          {groupBy === 'project' && (allFolders.length > 0 || pinned.length > 0) && <div className="conv-group-label">对话</div>}
+          {groupBy === 'project' && loose.map((p) => row(p))}
           {!projects.length && <div className="conv-empty">还没有对话</div>}
           {projects.length > 0 && needle && !pinned.length && !loose.length && !allFolders.some((f) => roots.some((p) => p.folder === f)) && <div className="conv-empty">没有匹配的对话</div>}
         </div>

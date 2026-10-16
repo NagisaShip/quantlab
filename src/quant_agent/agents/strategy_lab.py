@@ -34,6 +34,9 @@ from ..strategies.params_util import ParamsError, rewrite_params
 from . import lab_goal as G
 from .copilot import SYSTEM as COPILOT_SYSTEM
 from .copilot import StrategyCopilot, extract_code, smoke_test, static_explain
+from . import backtest_audit as BA
+from ..timeframes import is_timeframe
+from .blocks_protocol import BLOCKS_GUIDE
 from .rigor import RIGOR_RULES
 
 COLLECTION = "lab_projects"
@@ -218,9 +221,11 @@ def new_project(payload: dict[str, Any]) -> dict[str, Any]:
     goals = {**DEFAULT_GOALS, **{k: v for k, v in (payload.get("goals") or {}).items() if k in DEFAULT_GOALS}}
     idea = (payload.get("idea") or "").strip()
     title = (payload.get("title") or "").strip() or (re.sub(r"\s+", " ", idea)[:24] if idea else "未命名策略项目")
+    title_auto = not (payload.get("title") or "").strip()
     return {
         "id": uuid.uuid4().hex[:12],
         "title": title[:60],
+        "title_auto": title_auto,  # 标题由 AI 在首轮回答后总结；研究者改过标题后不再自动改
         "idea": idea,
         "securities": [s.strip().upper() for s in payload.get("securities") or [] if s.strip()] or ["BTC/USDT"],
         "timeframe": payload.get("timeframe") or "1h",
@@ -252,6 +257,8 @@ def new_project(payload: dict[str, Any]) -> dict[str, Any]:
         # 权限模式：auto 自动 | manual 手动（改动与运行都先问）| accept_edits 自动接受代码改动、运行先问
         # | plan 先出计划再动手 | bypass 跳过一切确认（含开始迭代前的目标检查）
         "permission": payload.get("permission") or "auto",
+        # 完全权限（bypass）下仍要先审批的类别，研究者自选；见 platform_tools.APPROVAL_CATEGORIES
+        "approvals": list(payload.get("approvals") or DEFAULT_BYPASS_APPROVALS),
         "bars_limit": int(payload.get("bars_limit") or 1500),
         "data_source": payload.get("data_source") or "auto",  # auto | exchange | synthetic
         "code": "",
@@ -457,8 +464,18 @@ class LabTools:
     registry: Any = None  # 共享工具注册表（站内搜索、联网搜索、网页抓取）
     discuss: Callable[[dict[str, Any], str], dict[str, Any]] | None = None  # (project, topic) -> {mission_id}
     night: Callable[[dict[str, Any], str], dict[str, Any]] | None = None  # (project, idea) -> {task}
+    # (mission_id, wait_seconds) -> 讨论进度：状态、各阶段、已完成的发言、结论
+    discussion_status: Callable[..., dict[str, Any]] | None = None
+    # 跨对话：{"start": (pid, text) -> None, "create": (payload) -> project}；由 API 层注入（能选对应研究室并在后台开跑）
+    conversations: dict[str, Callable[..., Any]] | None = None
     # (symbols, timeframe, factors=[{name, expr}], horizon, bars_limit) -> 多重共线性诊断
     collinearity: Callable[..., dict[str, Any]] | None = None
+    # (kind, payload) -> (研究室, 新项目)：完整流程里由主 Agent 把因子 / 模型 / 组合 / 执行阶段交给对应研究室真正执行
+    stage: Callable[[str, dict[str, Any]], tuple[Any, dict[str, Any]]] | None = None
+    # 是否把平台工具目录（策略库、回测、因子库、模拟交易、上线验证、台账、删除…）开放给研究室里的 Agent
+    platform_tools: bool = False
+    # bt_id -> 完整回测结果（净值、成交明细、完整交易），用于分段切片、成本核对与稳定性报告
+    load_result: Callable[[str], dict[str, Any] | None] | None = None
 
 
 class _PinnedRouter:
@@ -491,6 +508,20 @@ def _accepted_kwargs(fn: Callable[..., Any]) -> set[str] | None:
     if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params):
         return None
     return {p.name for p in params}
+
+
+_TAIL_TAGS = ("<suggestions", "<title")
+
+
+def _visible(text: str) -> str:
+    """流式输出时藏起回答末尾的 <suggestions> / <title> 标记（包括还没写完的半个标签）。"""
+    cut = min((i for i in (text.find(t) for t in _TAIL_TAGS) if i >= 0), default=-1)
+    if cut >= 0:
+        return text[:cut].rstrip()
+    lt = text.rfind("<")
+    if lt >= 0 and len(text) - lt <= 12 and any(t.startswith(text[lt:]) for t in _TAIL_TAGS):
+        return text[:lt].rstrip()
+    return text
 
 
 class _Streamer:
@@ -529,10 +560,10 @@ class _Streamer:
         if self.seq is None:
             if not (self.text or self.thinking):
                 return
-            row = self.lab._post(self.pid, role="assistant", kind="text", content=self.text, mode="llm", data=data)
+            row = self.lab._post(self.pid, role="assistant", kind="text", content=_visible(self.text), mode="llm", data=data)
             self.seq = row["seq"]
         else:
-            self.lab.store.update(self.pid, self.seq, content=self.text, data=data)
+            self.lab.store.update(self.pid, self.seq, content=_visible(self.text), data=data)
 
     def finish(self, content: str, *, model: str, thinking: str = "") -> None:
         """模型一步结束：定稿（content 可能被改写过，例如把贴出的代码替换成提示）。"""
@@ -579,6 +610,7 @@ RUN_TOOLS = frozenset(
         "run_backtest",
         "cost_sweep",
         "walk_forward",
+        "stability_report",
         "evaluate_factor",
         "train_model",
         "evaluate_portfolio",
@@ -590,6 +622,36 @@ RUN_TOOLS = frozenset(
     }
 )
 PERMISSIONS = ("auto", "manual", "accept_edits", "plan", "bypass")
+
+#: QuantLab Bot 的身份：所有研究室共用，放在每轮附加规则的最前面
+IDENTITY = (
+    "【你的身份】你是 QuantLab Bot —— QuantLab 量化研究平台内置的 AI 研究员（标志是一根长着眼睛的 K 线）。"
+    "研究者问你是谁、是什么模型时：说明你是 QuantLab Bot，当前由研究者在「设置 → 模型」里配置的「{model}」驱动；"
+    "不要自称其它产品或公司的助手。你能调用平台上的全部研究功能（行情与数据、因子、预测模型、策略、组合与执行、"
+    "回测、上线验证、试验台账、纸面模拟、交易所模拟盘、微实盘与实盘对照），但不能实盘下单。\n"
+    "【语言】用研究者最近一条消息的语言回答（中文消息用简体中文，英文消息用英文）；数字、代码与价格保持原样。"
+)
+
+#: 研究室工具的审批类别（平台工具自带类别，见 platform_tools.APPROVAL_CATEGORIES）
+TOOL_CATEGORY: dict[str, str] = {
+    **{n: "edit" for n in EDIT_TOOLS},
+    **{n: "run" for n in RUN_TOOLS},
+    "save_work": "save",
+    "save_strategy": "save",
+    "save_factor": "save",
+    "save_model": "save",
+    "run_stage": "run",
+}
+#: 各权限模式下需要先审批的类别；bypass（完全权限）由研究者在项目里自选（approvals），默认只审批删除
+MODE_APPROVALS: dict[str, frozenset[str]] = {
+    "manual": frozenset({"edit", "run", "save", "delete", "trading", "config"}),
+    "accept_edits": frozenset({"run", "save", "delete", "trading", "config"}),
+    "auto": frozenset({"delete", "trading", "config"}),
+    "plan": frozenset({"delete", "trading", "config"}),
+}
+DEFAULT_BYPASS_APPROVALS = ("delete",)
+
+
 APPROVE, REJECT = "批准", "拒绝"
 PLAN_GO, PLAN_EDIT = "按计划执行", "修改计划"
 PLAN_HINT = (
@@ -609,10 +671,21 @@ TOOL_GUIDE = (
     "- start_autopilot（/auto）：已有目标、研究者要求连续自动改进时\n"
     "- 回测 / 评估工具（/backtest、/eval），run_backtest(cost_scale=N) 做 N 倍成本压力测试（/stress N），"
     "walk_forward 分段回测（/walkforward）：验证结果与稳健性\n"
+    "- walk_forward 的 mode：sliced（一次全区间回测按时间切段，连续复利、可复原全区间收益，默认）/ "
+    "independent（每段重置资金，只比较稳定性，不能复原全区间）；attribution 选交易按平仓 close 还是开仓 open 归段。"
+    "结果里的 semantics 是口径说明，报告引用分段结果时必须照抄这些字段；data_role=development 的段已参与开发，"
+    "不得称为样本外验证\n"
+    "- stability_report：滚动窗口、收益分布、基准对照、参数敏感性；准备下结论或保存前做一次\n"
+    "- run_backtest(cost_scale=N) 返回 cost_audit：conclusion_allowed.cost_not_binding=false 时不得说「成本不是约束」，"
+    "consistent=false 时报告必须写明「成本口径异常」\n"
     "- cost_sweep（/sweep）：并行跑多档成本倍数，找出不再满足目标的成本极限；策略接近达标、准备保存或上线前，"
     "或者研究者问「成本再高一点还行不行」时用。倍数按情况自己定（例如交易频繁时多测 1.2–2 倍之间）\n"
     "- convene_team（/team）：要一份快速的团队评审结论时；"
-    "start_discussion（/discuss）：需要多个角色充分辩论、相互质疑时（发言以气泡显示在对话里，讨论在后台进行）\n"
+    "start_discussion（/discuss）：需要多个角色充分辩论、相互质疑时（发言以气泡显示在对话里，讨论在后台进行；"
+    "之后用 discussion_status 查进度或等结论，不要说自己没法查看讨论状态）\n"
+    "- list_conversations / read_conversation / send_to_conversation / create_conversation：跨对话协作——"
+    "研究者提到「之前那个对话」「另一个因子研究」时先查找并阅读；需要另一个对话复现、补充或并行研究时直接调起它，"
+    "或新建对话把子问题拆出去；引用别的对话的结论要注明出处\n"
     "- queue_night（/night）：耗时长、可以无人值守的研究，放进夜班队列，结果写进晨报\n"
     "- pin_note（/pin）：研究者给的长期约束、重要结论，钉进上下文每轮都带着\n"
     "- context_usage（/context）、compact_history（/compact）：对话很长时先看用量，吃紧再压缩\n"
@@ -624,7 +697,9 @@ TOOL_GUIDE = (
     "- sync_market_data / data_coverage：数据不足或不新鲜时主动同步真实行情；平台没有合成行情，"
     "取不到数据时如实说明「未接入数据」，不要编造\n"
     "- web_search 的 source：中文资料用 baidu，英文与综合用 google / bing，新闻事件用 news，需要交叉印证用 all；"
-    "研究者提到不熟悉的名词、事件、新闻时先搜索了解再回答\n"
+    "研究者提到不熟悉的名词、事件、新闻时先搜索了解再回答；回答里用 [1]、[2] 标注引用并附 ql:citation 来源块。"
+    "研究者给了新的搜索源（SearXNG 实例、RSS 搜索地址）时用 add_search_source 登记；"
+    "需要 API 密钥的来源（Google、Brave、Tavily）请研究者到 设置 → 模型 → 联网搜索 填写，不要索要密钥\n"
     "【多标的 / 多因子】策略可以同时交易多个标的（项目的标的列表）：说明选标的依据、仓位分配与相关性；"
     "多因子时说明每个因子的经济含义，先做 factor_correlation，再决定剔除、合成、正交化或用正则化模型，"
     "不要把高度相关的因子当作多份独立证据。\n"
@@ -658,6 +733,18 @@ def _trim_tool_outputs(messages: list[Message]) -> None:
 
 #: 研究流程模板：对话框里「研究类型」滑块选中「完整流程」或「调研报告」时附加给模型的工作方式
 WORKFLOWS: dict[str, dict[str, str]] = {
+    "auto": {
+        "label": "自动",
+        "rules": (
+            "【研究类型：自动】研究者没有指定研究类型。先根据对话的实际内容判断要做什么，再调用对应的平台工具：\n"
+            "- 闲聊、概念解释、平台用法、看行情 / 新闻：直接回答，需要时用 market_summary、web_search，不要写策略代码；\n"
+            "- 交易规则与回测：写策略并回测（策略工具）；\n"
+            "- 找信号、因子有效性：用 run_stage(stage=\"factor\") 或因子相关的平台工具；\n"
+            "- 预测模型、组合权重、拆单执行：分别用 run_stage(stage=\"model\" / \"portfolio\" / \"execution\")；\n"
+            "- 要调研报告：按调研流程收集资料，最后 write_report；多步任务先 set_plan；\n"
+            "判断不了就用 ask_user 给 2-4 个选项让研究者选。回答开头用一句话说明你把这个问题当成了哪类研究、为什么。"
+        ),
+    },
     "pipeline": {
         "label": "完整流程",
         "rules": (
@@ -666,10 +753,13 @@ WORKFLOWS: dict[str, dict[str, str]] = {
             "2. 选标的：说明候选池与筛选依据（流动性、数据覆盖），数据不足先 sync_market_data；\n"
             "3. 因子：给出 3-10 个候选因子并说明经济含义，用 factor_correlation 检查多重共线性（相关系数 / VIF），"
             "对高度相关的因子做取舍、正交化或合成；\n"
+            "   因子阶段用 run_stage(stage=\"factor\") 交给因子研究室真正写表达式并做 IC / 分层 / 样本外评估；\n"
             "4. 策略：把通过检查的因子写成平台策略并回测（单变量迭代、样本外检查、2 倍成本）；\n"
-            "5. 模型 / 组合 / 执行：说明如何用模型合成信号、如何定权重与风险预算、如何拆单与估计成本；"
-            "平台对应的研究室可以接手时，说明下一步在哪里做；\n"
-            "6. 最后用 write_report 写一份完整的研究报告。"
+            "5. 模型 / 组合 / 执行**必须真正执行，不能只写说明**：依次调用 run_stage(stage=\"model\")、"
+            "run_stage(stage=\"portfolio\")、run_stage(stage=\"execution\")，brief 里写清这一阶段的输入（因子、标的、周期、"
+            "上一阶段的结论）与完成标准；每个阶段结束后读它返回的成绩与结论，再决定下一阶段；"
+            "某阶段数据不足或不适用时，如实写原因并在计划里标记 skipped，不要假装完成；\n"
+            "6. 最后用 write_report 写一份完整的研究报告，逐阶段引用各研究室的真实成绩。"
         ),
     },
     "report": {
@@ -724,6 +814,20 @@ SUGGEST_RULE = (
     "提问、等待审批或没有合适建议时不要写。"
 )
 _SUGGEST_RE = re.compile(r"\s*<suggestions>(.*?)(?:</suggestions>|$)", re.S)
+TITLE_RULE = (
+    "这是对话的第一轮：在回答最末尾另起一行写 <title>对话标题</title>，概括研究对象与方向，"
+    "中文不超过 14 个字（英文不超过 6 个单词），不要引号和句号。它只用来命名对话，不会显示在回答里。"
+)
+_TITLE_RE = re.compile(r"\s*<title>(.*?)(?:</title>|$)", re.S)
+
+
+def split_title(text: str) -> tuple[str, str]:
+    """去掉回答里的 <title>…</title>，返回 (正文, 标题)。"""
+    m = _TITLE_RE.search(text or "")
+    if not m:
+        return text, ""
+    title = re.sub(r"[\s\"'「」《》“”。]+", " ", m.group(1)).strip()[:30]
+    return (text[: m.start()] + text[m.end() :]).rstrip(), title
 
 
 def split_suggestions(text: str) -> tuple[str, list[str]]:
@@ -754,16 +858,25 @@ TOOL_PHASE = {
     "convene_team": "团队评审",
     "search_platform": "平台检索",
     "web_search": "联网搜索",
+    "add_search_source": "添加搜索来源",
+    "list_search_sources": "搜索来源",
     "fetch_page": "读网页",
     "set_goal": "设定目标",
     "check_goals": "目标检查",
     "walk_forward": "分段回测",
+    "stability_report": "稳定性报告",
     "set_market": "设定标的",
     "ask_user": "提问",
     "cost_sweep": "成本压力扫描",
     "set_plan": "列计划",
     "update_plan_step": "更新计划进度",
     "start_discussion": "团队讨论",
+    "list_conversations": "查找对话",
+    "read_conversation": "阅读对话",
+    "send_to_conversation": "调起对话",
+    "create_conversation": "新建对话",
+    "discussion_status": "讨论进度",
+    "read_pinned_file": "读取附件",
     "queue_night": "夜班队列",
     "context_usage": "上下文用量",
     "pin_note": "钉材料",
@@ -809,7 +922,7 @@ class StrategyLab:
     metrics_label = "最近一次回测成绩"
 
     def goal_text(self, project: dict[str, Any]) -> str:
-        return G.items_text(G.project_items(project))
+        return goal_line(project)
 
     def __init__(self, router: Any, store: LabStore, tools: LabTools) -> None:
         self.router = router
@@ -972,8 +1085,11 @@ class StrategyLab:
         if not out.get("ok"):
             self._post(pid, role="event", kind="error", content=f"{title}没有完成：{out.get('error', '未知原因')}")
             return out
-        evaluation = G.evaluate_items(out.get("metrics"), G.project_items(project))
+        # 没设目标时不拿出厂默认阈值去评判（否则卡片和模型都会以为「项目挂着夏普 ≥ 1 的目标」）
+        evaluation = G.evaluate_items(out.get("metrics"), G.project_items(project)) if self.has_goal(project) else None
         out["evaluation"] = evaluation
+        if evaluation is None:
+            out["goal"] = "未设定验收目标：只汇报实测结果，不要说达标或未达标"
         check = out.get("data_check") or {}
         formal = check.get("formal", True)
         row = next((r for r in project.get("versions") or [] if r.get("v") == v), {}) or {}
@@ -987,6 +1103,11 @@ class StrategyLab:
             fee_check = cost_fee_check(row.get("metrics"), out.get("metrics"), cost_scale)
             if fee_check:
                 out["fee_check"] = fee_check
+            audit = self._cost_audit(row.get("bt_id"), out.get("bt_id"), cost_scale)
+            if audit is not None:
+                out["cost_audit"] = audit
+        out["semantics"] = BA.segment_semantics("full")
+        self._mark_seen(pid, out.get("datasets") or [], "全区间回测")
         prefix = "" if formal else "【非正式回测】"
         self._post(
             pid,
@@ -996,6 +1117,52 @@ class StrategyLab:
             data={"v": v, "cost_scale": cost_scale, **out},
         )
         return out
+
+    # ---------------- 口径核验辅助 ----------------
+    def _load(self, bt_id: str | None) -> dict[str, Any] | None:
+        if not bt_id or self.tools.load_result is None:
+            return None
+        try:
+            return self.tools.load_result(bt_id)
+        except Exception:
+            return None
+
+    def _cost_audit(self, base_id: str | None, stressed_id: str | None, scale: float) -> dict[str, Any] | None:
+        base, stressed = self._load(base_id), self._load(stressed_id)
+        if base is None or stressed is None:
+            if self.tools.load_result is None:
+                return None
+            return {
+                "consistent": False,
+                "anomalies": ["缺少基础成本（1×）的回测明细：先 run_backtest 跑一次基础成本，再做压力测试才能核对扣费"],
+                "conclusion_allowed": {"cost_not_binding": False},
+                "rule": "成本核对无法完成：不得下「成本不是约束」的结论",
+            }
+        out = BA.cost_audit(base, stressed, scale)
+        out.pop("base", None)
+        out.pop("stressed", None)
+        return out
+
+    def _mark_seen(
+        self, pid: str, datasets: list[dict[str, Any]], source: str, start: int | None = None, end: int | None = None
+    ) -> None:
+        """记下当前版本看过哪段数据的结果；之后再改代码，这段就算「已参与开发」。"""
+        if start is None or end is None:
+            def ms(v: Any) -> int | None:
+                try:
+                    return int(v)
+                except (TypeError, ValueError):
+                    return None
+
+            starts = [x for x in (ms(d.get("start_ts")) for d in datasets or []) if x]
+            ends = [x for x in (ms(d.get("end_ts")) for d in datasets or []) if x]
+            start, end = (min(starts) if starts else None), (max(ends) if ends else None)
+        if not start or not end:
+            return
+        with _lock(f"p:{pid}"):
+            p = self.store.get(pid) or {}
+            p["seen_ranges"] = BA.record_seen(p, int(start), int(end), source)
+            self.store.save(p)
 
     # ---------------- 成本压力扫描 ----------------
     def cost_sweep(self, pid: str, scales: list[float] | None = None, *, refine: bool = True) -> dict[str, Any]:
@@ -1055,6 +1222,10 @@ class StrategyLab:
         base = next((r for r in rows if r["scale"] == 1.0 and r["ok"]), None)
         for r in rows:
             r["fee_check"] = cost_fee_check((base or {}).get("metrics"), r["metrics"], r["scale"]) if base else None
+            if base and r["ok"] and r["scale"] != 1.0:
+                audit = self._cost_audit(base.get("bt_id"), r.get("bt_id"), r["scale"])
+                if audit is not None:
+                    r["cost_audit"] = {k: audit.get(k) for k in ("consistent", "anomalies", "conclusion_allowed")}
         criterion = f"目标（{G.items_text(items)}）" if has_goal else "总收益 > 0（还没设目标）"
         summary = sweep_summary(limit, criterion)
         self.store.update(
@@ -1062,7 +1233,11 @@ class StrategyLab:
             card["seq"],
             data={"status": "ok", "elapsed_ms": int((time.perf_counter() - t0) * 1000), "preview": summary},
         )
-        result = {"ok": True, "v": v, "criterion": criterion, "rows": rows, "limit": limit, "summary": summary}
+        bad = [r["scale"] for r in rows if (r.get("cost_audit") or {}).get("consistent") is False]
+        if bad:
+            summary += f"【成本口径异常】{'、'.join(f'{x:g}×' for x in bad)} 的扣费与倍数对不上，不能据此判断成本是否构成约束。"
+        result = {"ok": True, "v": v, "criterion": criterion, "rows": rows, "limit": limit, "summary": summary,
+                  "cost_consistent": not bad}
         self._post(pid, role="tool", kind="cost_sweep", content=summary, data=result)
         return result
 
@@ -1134,7 +1309,11 @@ class StrategyLab:
                 "研究者没有指定标的与周期（当前只是占位的默认值）：根据对话判断合适的标的和 K 线周期，"
                 "用 set_market 设置后再写代码或回测；如果对话里看不出来，就直接问。"
             )
+        extra_rules.insert(0, IDENTITY.format(model=self.model_target(project) or "默认模型"))
         extra_rules.append(TOOL_GUIDE)
+        extra_rules.append(BLOCKS_GUIDE)
+        if self.tools.platform_tools:
+            extra_rules.append(self._platform_prompt(project, mode))
         extra_rules.append(RIGOR_RULES)
         if (wf := WORKFLOWS.get(project.get("workflow") or "")) is not None:
             extra_rules.append(wf["rules"])
@@ -1142,6 +1321,9 @@ class StrategyLab:
             extra_rules.append(plan_text(project.get("plan")))
         if project.get("suggest", True) is not False:
             extra_rules.append(SUGGEST_RULE)
+        want_title = self._needs_title(project)
+        if want_title:
+            extra_rules.append(TITLE_RULE)
         if extra_rules:
             messages.append(Message(role="system", content="\n".join(extra_rules)))
         if images and not text:
@@ -1151,7 +1333,7 @@ class StrategyLab:
                 role="user", content=f"{PLAN_HINT}\n\n{text}" if mode == "plan" else text, images=list(images or [])
             )
         )
-        tools = {**self._slash_tools(pid), **self._chat_tools(pid)}
+        tools = self._all_tools(pid)
         if mode == "plan":
             tools = {k: t for k, t in tools.items() if k not in EDIT_TOOLS and k not in RUN_TOOLS}
         asked = False
@@ -1196,6 +1378,10 @@ class StrategyLab:
                 self._submit_code(pid, code, note="模型在回答中给出的代码", model=model)
                 content = re.sub(r"```(?:python|py)?\s*\n.*?```", "（代码已提交到编辑器）", content, flags=re.S)
             content, suggestions = split_suggestions(content)
+            content, title = split_title(content)
+            if title and want_title and len(title) >= 2:
+                self.store.patch(pid, title=title, title_auto=False)
+                want_title = False
             seq_before = stream.seq
             stream.finish(content, model=model, thinking=getattr(result, "thinking", "") or "")
             if suggestions and not result.tool_calls:
@@ -1226,9 +1412,11 @@ class StrategyLab:
             for call in result.tool_calls:
                 tool = tools.get(call.name)
                 used.append(TOOL_PHASE.get(call.name, call.name))
-                if tool is not None and _gated(mode, call.name):
+                if tool is not None and (cat := self._approval_category(project, mode, call.name)):
                     args = dict(call.arguments or {})
-                    pending.append({"tool": call.name, "args": args, "label": _describe_call(call.name, args)})
+                    pending.append(
+                        {"tool": call.name, "args": args, "label": self._describe(call.name, args), "category": cat}
+                    )
                     output = json.dumps(
                         {"pending_approval": True, "message": "已提交给研究者审批，批准后才会执行；本轮先停在这里"},
                         ensure_ascii=False,
@@ -1261,6 +1449,194 @@ class StrategyLab:
             content=f"已达到单轮工具调用上限（{max_calls} 次，可在 设置 → AI 研究室 里修改），"
             f"先停在这里。你可以继续追问。",
         )
+
+    # ---------------- 全部工具与审批 ----------------
+    def _all_tools(self, pid: str) -> dict[str, Tool]:
+        """本研究室的工具 + 斜杠命令工具 + 平台工具目录（重名时研究室自己的优先，平台的加 platform_ 前缀）。"""
+        own = {**self._slash_tools(pid), **self._chat_tools(pid)}
+        if self.tools.stage is not None and self.kind == "strategy":
+            own["run_stage"] = self._stage_tool(pid)
+        if not self.tools.platform_tools:
+            return own
+        return {**self._platform_bridge(pid, set(own)), **own}
+
+    def _platform_bridge(self, pid: str, taken: set[str]) -> dict[str, Tool]:
+        from . import platform_tools as PT
+
+        out: dict[str, Tool] = {}
+        for name, t in PT.registry().items():
+            alias = f"platform_{name}" if name in taken else name
+
+            def handler(_t: Any = t, _alias: str = alias, **kw: Any) -> Any:
+                args = {k: v for k, v in kw.items() if k in _t.params}
+                missing = [k for k in _t.required if not args.get(k)]
+                if missing:
+                    return {"error": f"缺少参数：{'、'.join(missing)}"}
+                shown = {k: str(v)[:60] for k, v in args.items() if v not in (None, "")}
+                return self._tool(pid, _alias, _t.title, shown, lambda: _t.handler(**args))
+
+            desc = f"{t.description} 可用时机：{t.when}。" + ("（执行前需研究者审批）" if t.risk == "confirm" else "")
+            out[alias] = Tool(alias, desc, t.schema(), handler)
+        return out
+
+    def _platform_prompt(self, project: dict[str, Any], mode: str) -> str:
+        from . import platform_tools as PT
+
+        need = self._approval_set(project, mode)
+        labels = "、".join(PT.APPROVAL_CATEGORIES[c]["label"] for c in PT.APPROVAL_CATEGORIES if c in need) or "无"
+        groups: dict[str, list[str]] = {}
+        for name, t in PT.registry().items():
+            groups.setdefault(PT.SCENES.get(t.scene, {}).get("label", t.scene), []).append(name)
+        lines = [
+            "【平台功能全集】除了研究室工具，你还能直接调用平台各页面的功能（同名的加了 platform_ 前缀）：",
+            *[f"- {g}：{'、'.join(ns)}" for g, ns in groups.items()],
+            f"【审批】当前权限模式下，这些类别的操作会先弹审批卡片，研究者批准后才执行：{labels}。"
+            "其余操作直接执行，不要再口头征求同意；删除记录前先列出要删的具体对象。",
+        ]
+        return "\n".join(lines)
+
+    def _approval_set(self, project: dict[str, Any], mode: str) -> frozenset[str]:
+        if mode == "bypass":
+            chosen = project.get("approvals")
+            return frozenset(chosen if isinstance(chosen, list) else DEFAULT_BYPASS_APPROVALS)
+        return MODE_APPROVALS.get(mode, MODE_APPROVALS["auto"])
+
+    def _approval_category(self, project: dict[str, Any], mode: str, name: str) -> str:
+        """这个工具在当前权限模式下要不要先审批：要就返回它的类别，不要返回空串。"""
+        cat = TOOL_CATEGORY.get(name, "")
+        if not cat and self.tools.platform_tools:
+            from . import platform_tools as PT
+
+            t = PT.registry().get(name[len("platform_") :] if name.startswith("platform_") else name)
+            cat = t.approval if t is not None else ""
+        return cat if cat and cat in self._approval_set(project, mode) else ""
+
+    def _describe(self, name: str, args: dict[str, Any]) -> str:
+        if name in TOOL_CATEGORY or not self.tools.platform_tools:
+            return _describe_call(name, args)
+        from . import platform_tools as PT
+
+        t = PT.registry().get(name[len("platform_") :] if name.startswith("platform_") else name)
+        if t is None:
+            return name
+        return t.summary(args) if t.summary else f"{t.title}：" + "，".join(f"{k}={v}" for k, v in args.items())[:120]
+
+    # ---------------- 完整流程：把一个阶段交给对应研究室 ----------------
+    def _stage_tool(self, pid: str) -> Tool:
+        return Tool(
+            "run_stage",
+            "完整流程专用：把「因子 / 模型 / 组合 / 执行」中的一个阶段交给对应研究室真正执行"
+            "（写表达式或规格 → 评估 / 训练 / 仿真 → 结论），等它做完再返回成绩与结论。"
+            "brief 写清输入（标的、周期、候选因子或上一阶段结论）与完成标准。",
+            {
+                "type": "object",
+                "properties": {
+                    "stage": {"type": "string", "enum": ["factor", "model", "portfolio", "execution"]},
+                    "brief": {"type": "string", "description": "交给该研究室的任务说明"},
+                    "max_tool_calls": {"type": "integer", "minimum": 5, "maximum": 200},
+                },
+                "required": ["stage", "brief"],
+            },
+            lambda stage="", brief="", max_tool_calls=60: self.run_stage(
+                pid, stage=stage, brief=brief, max_tool_calls=int(max_tool_calls or 60)
+            ),
+        )
+
+    def run_stage(self, pid: str, *, stage: str, brief: str, max_tool_calls: int = 60) -> dict[str, Any]:
+        """新建一个对应类型的子对话，由那个研究室的 Agent 在后台完整跑一轮，返回它的成绩与结论。"""
+        if self.tools.stage is None:
+            return {"ok": False, "error": "这个部署没有开启分阶段研究"}
+        if stage not in ("factor", "model", "portfolio", "execution"):
+            return {"ok": False, "error": f"不支持的阶段 {stage}"}
+        parent = self.store.get(pid) or {}
+        if parent.get("subagent_of"):
+            return {"ok": False, "error": "子 Agent 不能再分派阶段"}
+        names = {"factor": "因子", "model": "模型", "portfolio": "组合", "execution": "执行"}
+        payload = {
+            "idea": brief[:2000],
+            "title": f"完整流程 · {names[stage]}：{(parent.get('title') or '')[:24]}",
+            "securities": parent.get("securities") or ["BTC/USDT"],
+            "symbols": parent.get("securities") or ["BTC/USDT"],
+            "timeframe": parent.get("timeframe") or "1h",
+            "model": parent.get("model") or "",
+            "effort": parent.get("effort") or "medium",
+            "folder": parent.get("folder") or "",
+            "data_source": parent.get("data_source") or "auto",
+        }
+        try:
+            lab, child = self.tools.stage(stage, payload)
+        except Exception as exc:
+            return {"ok": False, "error": f"无法创建{names[stage]}研究：{exc}"}
+        cid = child["id"]
+        limit = max(5, min(int(max_tool_calls or 60), 200))
+        self.store.patch(
+            cid,
+            parent_id=pid,
+            subagent_of=pid,
+            title_auto=False,
+            permission="auto",
+            max_tool_calls=limit,
+            suggest=False,
+            status="running",
+            job={"kind": "stage", "started_at": _now(), "phase": f"{names[stage]}研究进行中"},
+        )
+        card = self._post(
+            pid,
+            role="tool",
+            kind="subagents",
+            content=f"{names[stage]}阶段",
+            data={
+                "topic": f"完整流程 · {names[stage]}阶段",
+                "stage": stage,
+                "children": [{"id": cid, "variant": brief[:120], "title": child.get("title")}],
+                "status": "running",
+            },
+        )
+        self._phase(pid, f"{names[stage]}研究室正在执行", brief[:160])
+        instruction = (
+            "你是完整流程里的阶段执行者，由主研究员分派，独立完成，不要向研究者提问。\n"
+            f"阶段任务：{brief}\n"
+            "要求：用本研究室的工具真正写出表达式 / 规格并完成评估、训练或仿真（数据不足先同步真实数据）；"
+            "最后用 5 行以内总结：【事实】关键成绩与数据范围、【结论】是否可用、【交给下一阶段】需要传递的信息。"
+        )
+        try:
+            lab._chat_llm(cid, instruction)
+        except Exception as exc:
+            self._post(cid, role="event", kind="error", content=f"阶段执行出错：{type(exc).__name__}: {exc}")
+        finally:
+            self.store.patch(cid, status="idle", job=None)
+        cp = self.store.get(cid) or {}
+        cur = next((r for r in cp.get("versions") or [] if r.get("v") == cp.get("current_v")), {}) or {}
+        last = next(
+            (
+                m["content"]
+                for m in reversed(self.store.messages(cid))
+                if m["role"] == "assistant" and m["kind"] == "text" and m.get("content")
+            ),
+            "",
+        )
+        row = {
+            "id": cid,
+            "variant": brief[:120],
+            "title": cp.get("title"),
+            "v": cp.get("current_v"),
+            "passed": (cur.get("evaluation") or {}).get("passed"),
+            "metrics": {k: v for k, v in (cur.get("metrics") or cur.get("summary") or {}).items() if not isinstance(v, (list, dict))},
+            "summary": last[-800:],
+        }
+        self.store.update(pid, card["seq"], data={"children": [row], "status": "done"})
+        self.pin(pid, kind="note", title=f"{names[stage]}阶段结论", text=(last or "（没有结论）")[-1500:])
+        return {"ok": bool(cp.get("current_v")), "stage": stage, "project_id": cid, **row}
+
+    # ---------------- 标题：首轮回答时由 AI 顺带总结 ----------------
+    def _needs_title(self, project: dict[str, Any]) -> bool:
+        if project.get("subagent_of"):
+            return False
+        auto = project.get("title_auto")
+        if auto is None:  # 旧项目：标题还是想法前 24 字时视为自动标题
+            idea = re.sub(r"\s+", " ", project.get("idea") or "").strip()
+            auto = bool(idea) and (project.get("title") or "") == idea[:24]
+        return bool(auto)
 
     def _chat_tools(self, pid: str) -> dict[str, Tool]:
         def market(symbol: str = "", timeframe: str = "") -> Any:
@@ -1350,14 +1726,18 @@ class StrategyLab:
             ev = _latest_eval(p)
             spec = G.project_spec(p)
             return {
-                "goal": G.items_text(items),
+                "goal": G.items_text(items) if project_has_goal(p) else goal_line(p),
+                "goal_set": project_has_goal(p),
                 "range": _range_text(spec),
                 "latest": ev and {"passed": ev["passed"], "items": ev["items"], "gaps": G.gap_report(ev)},
                 "reasonableness": G.check_spec(spec, history=_history_metrics(p)),
             }
 
-        def walk_forward(segments: int = 3) -> Any:
-            return self.walk_forward(pid, segments=int(segments or 3))
+        def walk_forward(segments: int = 3, mode: str = "sliced", attribution: str = "close") -> Any:
+            return self.walk_forward(pid, segments=int(segments or 3), mode=mode, attribution=attribution)
+
+        def stability(windows: int = 6, sensitivity: bool = True) -> Any:
+            return self.stability(pid, windows=int(windows or 6), sensitivity=bool(sensitivity))
 
         def team(topic: str = "", team_id: str = "") -> Any:
             return self._convene(pid, topic or "评审当前策略", team_id=team_id or None)
@@ -1467,9 +1847,38 @@ class StrategyLab:
             ),
             "walk_forward": Tool(
                 "walk_forward",
-                "分段回测：把回测区间切成几段分别回测，检查策略是否只在某一段有效",
-                {**obj, "properties": {"segments": {"type": "integer", "minimum": 2, "maximum": 6}}},
+                "分段回测：把回测区间切成几段，检查策略是否只在某一段有效。返回 semantics（是否连续复利、是否重置资金、"
+                "跨段持仓、交易归段方式、能否复原全区间收益）、reconcile（复原核对）与每段的 data_role（是否已参与开发）",
+                {
+                    **obj,
+                    "properties": {
+                        "segments": {"type": "integer", "minimum": 2, "maximum": 6},
+                        "mode": {
+                            "type": "string",
+                            "enum": ["sliced", "independent"],
+                            "description": "sliced 连续切片（默认）；independent 每段重置资金单独回测",
+                        },
+                        "attribution": {
+                            "type": "string",
+                            "enum": ["close", "open"],
+                            "description": "完整交易按平仓（默认）还是开仓时间归段，只对 sliced 生效",
+                        },
+                    },
+                },
                 walk_forward,
+            ),
+            "stability_report": Tool(
+                "stability_report",
+                "稳定性报告：滚动窗口收益 / 夏普 / 超额、收益分布（偏度、峰度、分位数、极端收益占比）、基准对照，"
+                "以及参数上下挪 20% 的敏感性（并行回测）。下结论或保存前做一次",
+                {
+                    **obj,
+                    "properties": {
+                        "windows": {"type": "integer", "minimum": 3, "maximum": 12},
+                        "sensitivity": {"type": "boolean", "description": "是否做参数敏感性（多跑若干次回测）"},
+                    },
+                },
+                stability,
             ),
             "convene_team": Tool(
                 "convene_team",
@@ -1489,6 +1898,219 @@ class StrategyLab:
                     "required": ["question"],
                 },
                 ask,
+            ),
+        }
+
+    # ---------------- 跨对话：像研究者一样查找、阅读、调起其他对话 ----------------
+    #: 对话之间互相转发的最大跳数：A→B→C→D 之后不再转发，防止两个 Agent 来回喊话停不下来
+    MAX_RELAY_HOPS = 3
+
+    def _relay_hops(self, pid: str) -> int:
+        last = next((m for m in reversed(self.store.messages(pid)) if m.get("role") == "user"), None)
+        return int(((last or {}).get("data") or {}).get("relay_hops") or 0)
+
+    def _conversation_tools(self, pid: str, obj: dict[str, Any]) -> dict[str, Tool]:
+        conv = self.tools.conversations
+
+        def visible(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            # 只看研究者有权看到的对话（协作空间里别人的私有对话不可见）
+            return conv["visible"](rows) if conv and conv.get("visible") else rows
+
+        def find(cid: str) -> dict[str, Any] | None:
+            p = self.store.get(cid)
+            return p if p is not None and visible([p]) else None
+
+        def brief(p: dict[str, Any]) -> dict[str, Any]:
+            last = next(
+                (m for m in reversed(self.store.messages(p["id"])) if m.get("role") == "assistant" and m.get("content")),
+                None,
+            )
+            return {
+                "id": p["id"],
+                "title": p.get("title"),
+                "kind": p.get("kind") or "strategy",
+                "status": p.get("status"),
+                "folder": p.get("folder") or "",
+                "securities": p.get("securities"),
+                "timeframe": p.get("timeframe"),
+                "versions": len(p.get("versions") or []),
+                "updated_at": p.get("updated_at"),
+                "current": p["id"] == pid,
+                "last_reply": " ".join((last or {}).get("content", "").split())[:200],
+            }
+
+        def list_conversations(query: str = "", kind: str = "", limit: int = 20, search_messages: bool = False) -> Any:
+            q = (query or "").strip().lower()
+            rows = [p for p in visible(self.store.list()) if not p.get("archived") and (not kind or (p.get("kind") or "strategy") == kind)]
+            hits = []
+            for p in rows:
+                text = f"{p.get('title') or ''} {p.get('idea') or ''} {p.get('folder') or ''}".lower()
+                matched = not q or q in text
+                snippet = ""
+                if q and not matched and search_messages:
+                    for m in self.store.messages(p["id"]):
+                        c = str(m.get("content") or "")
+                        i = c.lower().find(q)
+                        if i >= 0:
+                            matched, snippet = True, c[max(0, i - 60) : i + 120]
+                            break
+                if matched:
+                    hits.append({**brief(p), **({"match": snippet} if snippet else {})})
+            hits.sort(key=lambda x: x.get("updated_at") or 0, reverse=True)
+            return {"total": len(hits), "conversations": hits[: max(1, min(int(limit or 20), 50))]}
+
+        def read_conversation(conversation_id: str, last_n: int = 20) -> Any:
+            p = find(conversation_id)
+            if p is None:
+                return {"ok": False, "error": f"找不到对话 {conversation_id}，先用 list_conversations 查找"}
+            msgs = [
+                {
+                    "seq": m.get("seq"),
+                    "role": m.get("role"),
+                    "kind": m.get("kind"),
+                    "content": str(m.get("content") or "")[:1200],
+                }
+                for m in self.store.messages(conversation_id)
+                if m.get("kind") in ("text", "ask", "team", "backtest", "round", "error") and m.get("content")
+            ][-max(1, min(int(last_n or 20), 60)) :]
+            return {
+                "ok": True,
+                **brief(p),
+                "idea": (p.get("idea") or "")[:600],
+                "goal": goal_line(p),
+                "latest_metrics": _latest_metrics(p),
+                "messages": msgs,
+                "link": f"#/lab/{conversation_id}",
+            }
+
+        def send_to_conversation(conversation_id: str, message: str, wait_seconds: int = 0) -> Any:
+            if conv is None:
+                return {"ok": False, "error": "当前环境不能调起其他对话"}
+            if conversation_id == pid:
+                return {"ok": False, "error": "不能给自己发消息"}
+            target = find(conversation_id)
+            if target is None:
+                return {"ok": False, "error": f"找不到对话 {conversation_id}"}
+            if target.get("status") == "running":
+                return {"ok": False, "error": "那个对话正在运行，稍后再试，或先 read_conversation 看它在做什么"}
+            hops = self._relay_hops(pid) + 1
+            if hops > self.MAX_RELAY_HOPS:
+                return {"ok": False, "error": f"对话之间已经转发了 {hops - 1} 次，为避免来回喊话不再继续转发；请在本对话里直接回答"}
+            here = self.store.get(pid) or {}
+            text = (message or "").strip()[:4000]
+            if not text:
+                return {"ok": False, "error": "message 不能为空"}
+            self.store.append(
+                conversation_id,
+                {
+                    "role": "user",
+                    "kind": "text",
+                    "content": f"【来自对话「{here.get('title') or pid}」的 Agent】{text}",
+                    "data": {"from_conversation": pid, "from_title": here.get("title"), "relay_hops": hops},
+                },
+            )
+            conv["start"](conversation_id, text)
+            self._post(
+                pid,
+                role="event",
+                kind="text",
+                content=f"已把消息发到对话「{target.get('title')}」，它在后台开始处理",
+                data={"link": f"lab/{conversation_id}"},
+            )
+            out: dict[str, Any] = {"ok": True, "conversation_id": conversation_id, "link": f"#/lab/{conversation_id}"}
+            deadline = time.time() + max(0, min(int(wait_seconds or 0), 180))
+            if deadline > time.time():
+                seq0 = max((m.get("seq") or 0) for m in self.store.messages(conversation_id))
+                time.sleep(1.0)
+                while time.time() < deadline and (self.store.get(conversation_id) or {}).get("status") == "running":
+                    self._check_stop(pid)
+                    time.sleep(1.5)
+                reply = [
+                    m for m in self.store.messages(conversation_id)
+                    if (m.get("seq") or 0) > seq0 and m.get("role") == "assistant" and m.get("content")
+                ]
+                out["finished"] = (self.store.get(conversation_id) or {}).get("status") != "running"
+                out["reply"] = reply[-1]["content"][:3000] if reply else ""
+            else:
+                out["note"] = "对方在后台处理；需要结果时用 read_conversation 查看，或 wait_seconds>0 等它回复"
+            return out
+
+        def create_conversation(idea: str, kind: str = "strategy", message: str = "", workflow: str = "") -> Any:
+            if conv is None:
+                return {"ok": False, "error": "当前环境不能新建对话"}
+            here = self.store.get(pid) or {}
+            p = conv["create"](
+                {
+                    "kind": kind if kind in ("strategy", "factor", "model", "portfolio", "execution") else "strategy",
+                    "idea": (idea or "").strip()[:600],
+                    "workflow": workflow if workflow in ("", "auto", "pipeline", "report") else "",
+                    "folder": here.get("folder") or "",
+                    "market_auto": True,
+                    "model": here.get("model") or "",
+                }
+            )
+            cid = p["id"]
+            first = (message or "").strip()
+            self._post(pid, role="event", kind="text", content=f"已新建对话「{p.get('title')}」", data={"link": f"lab/{cid}"})
+            if first:
+                return {**send_to_conversation(cid, first), "created": True}
+            return {"ok": True, "conversation_id": cid, "title": p.get("title"), "link": f"#/lab/{cid}"}
+
+        return {
+            "list_conversations": Tool(
+                "list_conversations",
+                "查找研究者的其他对话（AI 研究室里的全部对话）：按关键词匹配标题 / 想法 / 文件夹，"
+                "search_messages=true 时连消息正文一起搜；返回 id、类型、状态、版本数、最后一条回复摘要",
+                {
+                    **obj,
+                    "properties": {
+                        "query": {"type": "string"},
+                        "kind": {"type": "string", "enum": ["", "strategy", "factor", "model", "portfolio", "execution"]},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+                        "search_messages": {"type": "boolean"},
+                    },
+                },
+                list_conversations,
+            ),
+            "read_conversation": Tool(
+                "read_conversation",
+                "阅读另一个对话：项目信息、目标、最近成绩与最近 last_n 条消息。引用其中的结论时注明来自哪个对话",
+                {
+                    **obj,
+                    "properties": {"conversation_id": {"type": "string"}, "last_n": {"type": "integer", "minimum": 1, "maximum": 60}},
+                    "required": ["conversation_id"],
+                },
+                read_conversation,
+            ),
+            "send_to_conversation": Tool(
+                "send_to_conversation",
+                "调起另一个对话：把一条消息发过去，让那个对话的 Agent 在后台处理（例如请因子对话验证一个想法、"
+                "让另一个策略对话用同一数据复现结果）。wait_seconds>0（≤180）时等它回复并带回结果",
+                {
+                    **obj,
+                    "properties": {
+                        "conversation_id": {"type": "string"},
+                        "message": {"type": "string"},
+                        "wait_seconds": {"type": "integer", "minimum": 0, "maximum": 180},
+                    },
+                    "required": ["conversation_id", "message"],
+                },
+                send_to_conversation,
+            ),
+            "create_conversation": Tool(
+                "create_conversation",
+                "新建一个对话（可选研究类型），可附第一条消息让它立即开始；适合把一个子问题拆出去单独研究",
+                {
+                    **obj,
+                    "properties": {
+                        "idea": {"type": "string"},
+                        "kind": {"type": "string", "enum": ["strategy", "factor", "model", "portfolio", "execution"]},
+                        "message": {"type": "string"},
+                        "workflow": {"type": "string", "enum": ["", "auto", "pipeline", "report"]},
+                    },
+                    "required": ["idea"],
+                },
+                create_conversation,
             ),
         }
 
@@ -1576,13 +2198,21 @@ class StrategyLab:
                 ]
         return merged
 
-    def walk_forward(self, pid: str, *, segments: int = 3) -> dict[str, Any]:
-        """把回测区间等分成几段分别回测：只在某一段赚钱的策略多半是运气。"""
+    def walk_forward(
+        self, pid: str, *, segments: int = 3, mode: str = "sliced", attribution: str = "close"
+    ) -> dict[str, Any]:
+        """分段回测。两种口径（结果里的 semantics 写清楚）：
+        - sliced：一次全区间回测按时间切段，连续复利、不重置资金、持仓跨段延续，各段收益连乘可复原全区间；
+        - independent：每段单独回测，段首重置资金、空仓起步，只能比较稳定性。
+        没有完整回测明细（load_result 不可用）时退回 independent。"""
         project = self.store.get(pid) or {}
         code = project.get("code") or ""
         if not code:
             return {"ok": False, "error": "当前还没有代码"}
         segments = max(2, min(int(segments), 6))
+        mode = mode if mode in BA.SEGMENT_MODES else "sliced"
+        if mode == "sliced" and self.tools.load_result is None:
+            mode = "independent"
         tf_ms = G.TF_MS.get(project.get("timeframe") or "1h", 3_600_000)
         end = project.get("end") or int(time.time() * 1000)
         start = project.get("start") or end - int(project.get("bars_limit") or 1500) * tf_ms
@@ -1591,40 +2221,130 @@ class StrategyLab:
             return {"ok": False, "error": "区间太短，切段后每段不足 150 根 K 线"}
         rows: list[dict[str, Any]] = []
         sources: set[str] = set()
-        for k in range(segments):
-            self._check_stop(pid)
-            a, b = start + k * span, start + (k + 1) * span
-            sub = {**project, "start": a, "end": b, "bars_limit": max(200, int(span / tf_ms) + 10)}
-            out = self.tools.backtest(sub, code, cost_scale=1.0, label=f"分段回测 {k + 1}/{segments}")
+        full_metrics: dict[str, Any] = {}
+        recon: dict[str, Any] = {}
+        if mode == "sliced":
+            self._phase(pid, f"连续切片分段回测 · {segments} 段", "一次全区间回测，按时间切段")
+            out = self.tools.backtest(project, code, cost_scale=1.0, label=f"分段回测（连续切片 {segments} 段）")
+            if not out.get("ok"):
+                return {"ok": False, "error": out.get("error") or "全区间回测失败"}
             sources.update(out.get("data_sources") or [])
-            rows.append(
-                {
-                    "segment": k + 1,
-                    "start": a,
-                    "end": b,
-                    "ok": out.get("ok"),
-                    "error": out.get("error"),
-                    "metrics": {
-                        m: (out.get("metrics") or {}).get(m)
-                        for m in ("total_return", "sharpe", "max_drawdown", "trades", "excess_return")
-                    },
-                }
-            )
-        good = [r for r in rows if r["ok"] and (r["metrics"].get("total_return") or 0) > 0]
+            full = self._load(out.get("bt_id")) or {}
+            sliced = BA.slice_full(full, segments, attribution=attribution)
+            if not sliced.get("ok"):
+                return {"ok": False, "error": sliced.get("error")}
+            rows, recon = sliced["segments"], sliced["reconcile"]
+            full_metrics = out.get("metrics") or {}
+        else:
+            for k in range(segments):
+                self._check_stop(pid)
+                a, b = start + k * span, start + (k + 1) * span
+                sub = {**project, "start": a, "end": b, "bars_limit": max(200, int(span / tf_ms) + 10)}
+                out = self.tools.backtest(sub, code, cost_scale=1.0, label=f"分段回测 {k + 1}/{segments}")
+                sources.update(out.get("data_sources") or [])
+                rows.append(
+                    {
+                        "segment": k + 1,
+                        "start": a,
+                        "end": b,
+                        "ok": out.get("ok"),
+                        "error": out.get("error"),
+                        "metrics": {
+                            m: (out.get("metrics") or {}).get(m)
+                            for m in ("total_return", "sharpe", "max_drawdown", "trades", "excess_return")
+                        },
+                    }
+                )
+            cur = next((r for r in project.get("versions") or [] if r.get("v") == project.get("current_v")), {}) or {}
+            full_metrics = cur.get("metrics") or {}
+            recon = BA.reconcile(rows, full_metrics, "independent") if full_metrics else {
+                "reconstructs": False,
+                "issues": ["独立分段口径：各段收益不能复原全区间收益"],
+            }
+        rows = BA.tag_development(project, rows)
+        good = [r for r in rows if r["ok"] and ((r.get("metrics") or {}).get("total_return") or 0) > 0]
         verdict = "稳定" if len(good) == len(rows) else ("部分有效" if good else "各段都不赚钱")
         note = ""
-        if any("合成" in s or "synthetic" in s.lower() for s in sources):
-            # 合成行情按标的固定种子从区间终点往回生成，每一段其实是同一条随机序列，分段对比没有意义
+        if any("合成" in x or "synthetic" in x.lower() for x in sources):
             verdict, note = "无法判断", "当前用的是合成行情，各段数据相同；分段回测需要真实行情"
+        dev = [r["segment"] for r in rows if r.get("data_role") == "development"]
+        if dev:
+            note = (note + "；" if note else "") + (
+                f"第 {'、'.join(map(str, dev))} 段已参与开发（看过结果后改过代码），只能算样本内检查，不能称为独立验证"
+            )
+        for r in rows:
+            if r.get("ok"):
+                self._mark_seen(pid, [], f"分段回测第 {r['segment']} 段", int(r["start"]), int(r["end"]))
         data = {
             "segments": rows,
             "verdict": verdict,
             "note": note,
             "v": project.get("current_v"),
             "data_sources": sorted(sources),
+            "semantics": BA.segment_semantics(mode, attribution),
+            "reconcile": recon,
         }
         self._post(pid, role="tool", kind="walkforward", content=f"分段回测：{verdict}", data=data)
         return {"ok": True, **data}
+
+    # ---------------- 稳定性报告 ----------------
+    def stability(self, pid: str, *, windows: int = 6, sensitivity: bool = True) -> dict[str, Any]:
+        """滚动窗口、收益分布、基准对照 + 参数上下挪 20% 的敏感性。"""
+        project = self.store.get(pid) or {}
+        code = project.get("code") or ""
+        if not code:
+            return {"ok": False, "error": "当前还没有代码"}
+        if self.tools.load_result is None:
+            return {"ok": False, "error": "这个部署拿不到完整回测明细，不能做稳定性报告"}
+        v = project.get("current_v") or 0
+        row = next((r for r in project.get("versions") or [] if r.get("v") == v), {}) or {}
+        full = self._load(row.get("bt_id"))
+        if full is None:
+            out = self.backtest_current(pid)
+            if not out.get("ok"):
+                return {"ok": False, "error": out.get("error")}
+            full = self._load(out.get("bt_id")) or {}
+        rep = BA.stability_report(full, windows=max(3, min(int(windows or 6), 12)))
+        if not rep.get("ok"):
+            return rep
+        if sensitivity:
+            from ..sdk.runner import declared_params
+            from ..strategies.params_util import rewrite_params
+
+            try:
+                params = declared_params(code)
+            except Exception:
+                params = {}
+            grid = BA.sensitivity_grid(params)
+            if grid:
+                self._phase(pid, f"参数敏感性 · {len(grid)} 组并行", "、".join(f"{k}={val}" for k, val in grid)[:160])
+
+                def one(i: float) -> dict[str, Any]:
+                    k, val = grid[int(i)]
+                    try:
+                        variant = rewrite_params(code, {k: val})
+                    except Exception as exc:
+                        return {"param": k, "value": val, "error": str(exc)[:120]}
+                    out = self.tools.backtest(project, variant, cost_scale=1.0, label=f"敏感性 {k}={val}")
+                    m = out.get("metrics") or {}
+                    return {"param": k, "value": val, "ok": bool(out.get("ok")), "sharpe": m.get("sharpe"),
+                            "total_return": m.get("total_return"), "max_drawdown": m.get("max_drawdown"), "trades": m.get("trades")}
+
+                runs = self._parallel(pid, one, [float(i) for i in range(len(grid))])
+                base = (full.get("metrics") or {}).get("sharpe")
+                rep["sensitivity"] = {"runs": runs, **BA.sensitivity_summary(base, [r for r in runs if r.get("ok")])}
+                if rep["sensitivity"].get("fragile"):
+                    rep["flags"].append(rep["sensitivity"]["note"])
+        rep["v"] = v
+        rep["note"] = "单段历史表现不足以评价策略；结论以滚动窗口、分布、基准与参数敏感性共同为准"
+        self._post(
+            pid,
+            role="tool",
+            kind="stability",
+            content="稳定性报告：" + ("；".join(rep["flags"]) if rep["flags"] else "未发现明显的不稳定迹象"),
+            data=rep,
+        )
+        return rep
 
     def _submit_code(
         self,
@@ -1771,15 +2491,20 @@ class StrategyLab:
         if run.get("synthesis") and (self.store.get(pid) or {}).get("auto_team_context", True) is not False:
             self.pin(pid, kind="team", title=f"团队结论 · {topic[:20]}", text=run["synthesis"][:3000])
             self._post(pid, role="event", kind="text", content="团队结论已自动加入上下文（可在 设置 里关闭）")
-        return {"ok": run.get("status") == "done", "synthesis": (run.get("synthesis") or "")[:3000]}
+        out: dict[str, Any] = {"ok": run.get("status") == "done", "synthesis": (run.get("synthesis") or "")[:3000]}
+        failed = [s for s in run.get("steps", []) if s.get("status") != "ok"]
+        if failed:  # 把失败原因交给模型，别让它对着空结论重试同样的调用
+            out["failed_roles"] = [{"role": s.get("role_name"), "error": (s.get("error") or "")[:200]} for s in failed]
+        if not out["synthesis"]:
+            out["error"] = "所有角色都没有产出（多半是模型服务不可用或额度用完），请检查 设置 → 模型 后再试，不要立即重复召集"
+        return out
 
     # ---------------- 对话管理：自动压缩、分叉、回到某条消息 ----------------
     AUTO_COMPACT_RATIO = 1.25
 
     def has_goal(self, project: dict[str, Any]) -> bool:
         """设过目标（研究者 /goal、AI set_goal、或建项目时给了目标）才能自动迭代；没有目标就正常对话。"""
-        goal = project.get("goal") or {}
-        return bool(goal.get("items")) or bool(project.get("goal_set"))
+        return project_has_goal(project)
 
     def _maybe_autocompact(self, pid: str) -> bool:
         """对话原文超过预算的 1.25 倍时，先把较早的对话压成摘要（与 /compact 相同），再开始这一回合。"""
@@ -1892,6 +2617,49 @@ class StrategyLab:
             self.store.save(p)
         self._post(pid, role="tool", kind="report", content=rep["title"], data={**brief, "chars": len(markdown)})
         return rep
+
+    def audit_report(self, pid: str, markdown: str = "") -> dict[str, Any]:
+        """报告与代码、平台记录逐项核对：移动止损方向、因子公式与入场条件、交易数 / K 线数 / 分段收益。"""
+        project = self.store.get(pid) or {}
+        msgs = self.store.messages(pid)
+        cur = next((r for r in project.get("versions") or [] if r.get("v") == project.get("current_v")), {}) or {}
+        trades = {int(r["metrics"]["trades"]) for r in project.get("versions") or [] if (r.get("metrics") or {}).get("trades") is not None}
+        bars = set()
+        for m in msgs:
+            if m.get("kind") == "backtest":
+                for a in ((m.get("data") or {}).get("data_check") or {}).get("actual") or []:
+                    if a.get("bars"):
+                        bars.add(int(a["bars"]))
+        wf = next((m for m in reversed(msgs) if m.get("kind") == "walkforward"), None)
+        segs = [
+            {"segment": r["segment"], "total_return": (r.get("metrics") or {}).get("total_return")}
+            for r in ((wf or {}).get("data") or {}).get("segments") or []
+        ]
+        # 因子：完整流程里因子阶段的表达式，或项目里记下的因子
+        exprs = [str(project.get("factor_expr") or "")]
+        for p in self.store.list():
+            if p.get("subagent_of") == pid and p.get("kind") == "factor" and p.get("code"):
+                exprs.append(str(p["code"]))
+        out = BA.code_report_check(
+            code=project.get("code") or "",
+            report=markdown,
+            factor_expr=" ".join(e for e in exprs if e),
+            facts={"trades": trades or ({cur["metrics"]["trades"]} if (cur.get("metrics") or {}).get("trades") is not None else None),
+                   "bars": bars or None, "segments": segs},
+        )
+        if wf and (wf.get("data") or {}).get("semantics", {}).get("reconstructs_full") is False and re.search(r"(分段|各段).{0,20}(合计|累计|加总|相加)", markdown or ""):
+            out["issues"].append("分段回测是独立口径（每段重置资金），各段收益不能加总或连乘成全区间收益")
+            out["ok"] = False
+        dev = [r["segment"] for r in ((wf or {}).get("data") or {}).get("segments") or [] if r.get("data_role") == "development"]
+        if dev and re.search(r"样本外|out[- ]of[- ]sample|独立验证", markdown or "", re.I):
+            out["issues"].append(f"分段回测第 {'、'.join(map(str, dev))} 段已参与开发，报告不能把它称为样本外 / 独立验证")
+            out["ok"] = False
+        bt = next((m for m in reversed(msgs) if m.get("kind") == "backtest" and (m.get("data") or {}).get("cost_audit")), None)
+        ca = ((bt or {}).get("data") or {}).get("cost_audit") or {}
+        if ca and not (ca.get("conclusion_allowed") or {}).get("cost_not_binding") and re.search(r"成本(不是|并非|不构成)(主要)?约束|cost is not (a )?(binding|constraint)", markdown or "", re.I):
+            out["issues"].append("成本核对" + ("未通过" if not ca.get("consistent") else "显示收益随成本明显下降") + "，报告不能下「成本不是约束」的结论")
+            out["ok"] = False
+        return out
 
     def get_report(self, pid: str, rid: str) -> dict[str, Any] | None:
         return self.store.store.get_blob(REPORTS, f"{pid}-{rid}")
@@ -2025,7 +2793,7 @@ class StrategyLab:
             if isinstance(symbols, str):
                 symbols = [x for x in re.split(r"[,，\s]+", symbols) if x]
             syms = [s.strip().upper() for s in symbols or [] if s.strip()][:20]
-            tf = timeframe if timeframe in ("1m", "5m", "15m", "30m", "1h", "4h", "1d") else ""
+            tf = timeframe if is_timeframe(timeframe) else ""
             if not syms and not tf:
                 return {"ok": False, "error": "至少给出标的或周期"}
             project = self.store.get(pid) or {}
@@ -2065,7 +2833,46 @@ class StrategyLab:
             )[:600]
             out = self.tools.discuss(project, topic)
             self._post(pid, role="event", kind="discussion", content=topic, data={"mission_id": out["mission_id"]})
-            return {"ok": True, "mission_id": out["mission_id"], "note": "讨论在后台进行，发言会显示在对话里"}
+            return {
+                "ok": True,
+                "mission_id": out["mission_id"],
+                "note": "讨论在后台进行，发言会显示在对话里；用 discussion_status(mission_id, wait_seconds) 查看进度或等结论",
+            }
+
+        def read_pinned_file(pin_id: str, offset: int = 0, length: int = 6000) -> Any:
+            pin = next((p for p in (self.store.get(pid) or {}).get("pins") or [] if p.get("id") == pin_id), None)
+            if pin is None:
+                return {"ok": False, "error": f"没有钉住材料 {pin_id}"}
+            text = pin.get("text") or ""
+            start = max(0, int(offset or 0))
+            size = max(500, min(int(length or 6000), 8000))
+            chunk = text[start : start + size]
+            return {
+                "ok": True,
+                "title": pin.get("title"),
+                "total_chars": len(text),
+                "offset": start,
+                "text": chunk,
+                "next_offset": start + len(chunk) if start + len(chunk) < len(text) else None,
+            }
+
+        def discussion_status(mission_id: str = "", wait_seconds: int = 0) -> Any:
+            if self.tools.discussion_status is None:
+                return {"ok": False, "error": "当前环境不能查询团队讨论"}
+            if not mission_id:  # 没给 id 就查本对话最近一次发起的讨论
+                ev = next(
+                    (
+                        m
+                        for m in reversed(self.store.messages(pid))
+                        if m.get("kind") == "discussion" and (m.get("data") or {}).get("mission_id")
+                    ),
+                    None,
+                )
+                if ev is None:
+                    return {"ok": False, "error": "本对话还没有发起过团队讨论"}
+                mission_id = ev["data"]["mission_id"]
+            self._check_stop(pid)
+            return self.tools.discussion_status(mission_id, max(0, min(120, int(wait_seconds or 0))))
 
         def queue_night(idea: str = "") -> Any:
             if self.tools.night is None:
@@ -2126,6 +2933,35 @@ class StrategyLab:
                 {**obj, "properties": {"topic": {"type": "string", "description": "讨论议题"}}},
                 start_discussion,
             ),
+            **self._conversation_tools(pid, obj),
+            "read_pinned_file": Tool(
+                "read_pinned_file",
+                "分段读取钉住的长材料（上传的 txt、超长消息自动转成的文件）：上下文里只有开头 2000 字，"
+                "需要全文时按 offset 逐段读，每段最多 8000 字",
+                {
+                    **obj,
+                    "properties": {
+                        "pin_id": {"type": "string"},
+                        "offset": {"type": "integer", "minimum": 0},
+                        "length": {"type": "integer", "minimum": 500, "maximum": 8000},
+                    },
+                    "required": ["pin_id"],
+                },
+                read_pinned_file,
+            ),
+            "discussion_status": Tool(
+                "discussion_status",
+                "查询团队讨论（start_discussion / /discuss）的进度：状态、阶段、已完成的发言要点与最终结论。"
+                "mission_id 省略时查本对话最近一次讨论；wait_seconds（≤120）> 0 时最多等这么久直到讨论结束",
+                {
+                    **obj,
+                    "properties": {
+                        "mission_id": {"type": "string"},
+                        "wait_seconds": {"type": "integer", "minimum": 0, "maximum": 120},
+                    },
+                },
+                discussion_status,
+            ),
             "queue_night": Tool(
                 "queue_night",
                 "把一个研究想法放进夜班队列（等同 /night）：无人值守地自动研究，结果写进晨报",
@@ -2145,8 +2981,17 @@ class StrategyLab:
         ) -> Any:
             if len((markdown or "").strip()) < 80:
                 return {"ok": False, "error": "markdown 太短：请提交完整报告正文（Markdown）"}
+            audit = self.audit_report(pid, markdown)
+            if audit["issues"]:
+                markdown = markdown.rstrip() + "\n\n## 平台核验\n\n" + "\n".join(f"- ⚠ {x}" for x in audit["issues"])
             rep = self.write_report(pid, title=title, markdown=markdown, summary=summary, sources=sources or [])
-            return {"ok": True, "report_id": rep["id"], "note": "报告已生成，研究者可以在对话里查看并导出 PDF"}
+            return {
+                "ok": True,
+                "report_id": rep["id"],
+                "audit": audit,
+                "note": "报告已生成，研究者可以在对话里查看并导出 PDF"
+                + ("；平台核验发现问题，已附在报告末尾，请在回答里说明并修正" if audit["issues"] else ""),
+            }
 
         def spawn_subagents(topic: str = "", variants: list[str] | None = None, max_tool_calls: int = 40) -> Any:
             return self.spawn_subagents(pid, topic=topic, variants=variants or [], max_tool_calls=max_tool_calls)
@@ -2264,7 +3109,7 @@ class StrategyLab:
                     **obj,
                     "properties": {
                         "symbols": {"type": "array", "items": {"type": "string"}, "description": '如 ["BTC/USDT"]'},
-                        "timeframe": {"type": "string", "enum": ["1m", "5m", "15m", "30m", "1h", "4h", "1d"]},
+                        "timeframe": {"type": "string", "description": "周期：数字+单位，例如 100ms、250ms、1s、5s、1m、15m、1h、4h、1d（秒级 / 毫秒级只有 Binance 现货，由 1s K 线或逐笔成交聚合）"},
                     },
                 },
                 set_market,
@@ -2456,7 +3301,10 @@ class StrategyLab:
                 "options": [APPROVE, REJECT],
                 "decision": True,
                 "answered": None,
-                "approval": [{"tool": p["tool"], "label": p["label"], "args": p["args"]} for p in pending],
+                "approval": [
+                    {"tool": p["tool"], "label": p["label"], "args": p["args"], "category": p.get("category", "")}
+                    for p in pending
+                ],
             },
         )
         self.store.patch(pid, status="awaiting_user")
@@ -2479,7 +3327,7 @@ class StrategyLab:
                     labels = "；".join(a["label"] for a in data["approval"])
                     self._chat_or_note_llm(pid, f"我没有批准刚才的操作（{labels}）。{note}")
                 return True
-            tools = self._chat_tools(pid)
+            tools = self._all_tools(pid)
             done = []
             for a in data["approval"]:
                 tool = tools.get(a["tool"])
@@ -2531,12 +3379,15 @@ class StrategyLab:
         self.store.patch(pid, status="awaiting_user")
 
     # ---------------- 上下文 ----------------
+    #: 文件类钉住材料保留全文（上下文里只放开头，Agent 用 read_pinned_file 分段读取）；其余钉住材料 4000 字
+    FILE_PIN_MAX = 400_000
+
     def pin(self, pid: str, *, kind: str, title: str, text: str) -> dict[str, Any]:
         item = {
             "id": uuid.uuid4().hex[:8],
             "kind": kind,
             "title": title[:60],
-            "text": text[:4000],
+            "text": text[: self.FILE_PIN_MAX if kind == "file" else 4000],
             "created_at": _now(),
         }
         with _lock(f"p:{pid}"):
@@ -2648,10 +3499,15 @@ class StrategyLab:
         parts = [
             f"【项目】{project.get('title')}　标的 {','.join(project['securities'])}　周期 {project['timeframe']}",
             f"【想法】{project.get('idea') or '—'}",
-            f"【目标】{G.items_text(G.project_items(project))}　回测范围：{_range_text(G.project_spec(project))}",
+            f"【目标】{goal_line(project)}　回测范围：{_range_text(G.project_spec(project))}",
         ]
         for p in project.get("pins") or []:
-            parts.append(f"【{p['title']}】\n{p['text'][:2000]}")
+            more = (
+                f"\n……（共 {len(p['text'])} 字，只显示开头；完整内容用 read_pinned_file(pin_id=\"{p['id']}\", offset) 分段读取）"
+                if len(p["text"]) > 2000
+                else ""
+            )
+            parts.append(f"【{p['title']}】\n{p['text'][:2000]}{more}")
         if project.get("code"):
             parts.append(f"【当前代码 v{project.get('current_v')}】\n```python\n{project['code'][:8000]}\n```")
         parts.append(f"【最近回测】{metrics_text(_latest_metrics(project))}")
@@ -3167,6 +4023,23 @@ def research_brief(
     )
 
 
+def project_has_goal(project: dict[str, Any]) -> bool:
+    """研究者 /goal、AI set_goal 或建项目时给过目标才算设定；旧字段 goals 里的出厂默认值不算。"""
+    goal = project.get("goal") or {}
+    return bool(goal.get("items")) or bool(project.get("goal_set"))
+
+
+#: 没设目标时给模型看的说明：出厂默认阈值只用于界面占位，不能当成研究者的要求
+NO_GOAL_TEXT = (
+    "未设定（研究者还没有给出验收目标。不要把任何默认阈值当成研究者的要求，也不要说「项目里挂着某个目标」；"
+    "需要目标时先问研究者，或提出建议目标请其确认后再 set_goal）"
+)
+
+
+def goal_line(project: dict[str, Any]) -> str:
+    return G.items_text(G.project_items(project)) if project_has_goal(project) else NO_GOAL_TEXT
+
+
 def _call_market(fn: Callable[..., dict[str, Any]], symbol: str, timeframe: str, bars: int) -> dict[str, Any]:
     """行情摘要带上回测窗口；旧的 (symbol, timeframe) 实现（测试替身、插件）不认识 bars 时退回两参数。"""
     try:
@@ -3192,7 +4065,15 @@ def _latest_eval(project: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
-SHARED_TOOLS = ("search_platform", "web_search", "fetch_page", "sync_market_data", "data_coverage")
+SHARED_TOOLS = (
+    "search_platform",
+    "web_search",
+    "fetch_page",
+    "add_search_source",
+    "list_search_sources",
+    "sync_market_data",
+    "data_coverage",
+)
 
 
 def _hopeless(ev: dict[str, Any], scores: list[float], round_no: int) -> str:

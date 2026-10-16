@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { directBars } from '../marketDirect'
 import { get } from '../http'
 import { LogoMark, Icon } from './icons'
 import { getTheme, getUpDown, resolvedTheme, setTheme, setUpDown, type UpDown } from './prefs'
@@ -10,10 +11,15 @@ const SYMBOLS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT']
 async function fetchQuote(symbol: string): Promise<Quote | null> {
   try {
     let body: { source: string; bars: { c: number }[] }
-    try {
-      body = await get(`/api/market/bars?symbol=${encodeURIComponent(symbol)}&timeframe=1h&limit=25`)
-    } catch {
-      return null
+    // 行情带每分钟刷新：由浏览器直连交易所，不经服务器转发
+    const direct = await directBars(symbol, '1h', 25)
+    if (direct) body = { source: 'exchange', bars: direct }
+    else {
+      try {
+        body = await get(`/api/market/bars?symbol=${encodeURIComponent(symbol)}&timeframe=1h&limit=25`)
+      } catch {
+        return null
+      }
     }
     const bars = body.bars
     if (bars.length < 2) return null

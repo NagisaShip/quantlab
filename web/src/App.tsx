@@ -40,6 +40,12 @@ import DslEditorPage from './pages/DslEditor'
 import RunBanner from './components/RunBanner'
 import MicroLivePage from './pages/MicroLive'
 import AskAIPanel from './components/AskAI'
+import GroupsPage from './pages/Groups'
+import InboxPage from './pages/Inbox'
+import IssuesPage, { NewIssueModal } from './pages/Issues'
+import AdminPage from './pages/Admin'
+import LineagePage from './pages/LineagePage'
+import { InboxBell, PlatformBanner } from './components/Inbox'
 import { v4, type Me } from './api3'
 import { ApiError, currentWorkspace, setWorkspace } from './http'
 import { Loading } from './components/ui'
@@ -49,6 +55,7 @@ import { SearchButton } from './components/SearchPalette'
 import { SettingsShell, settingsKeyOf } from './components/SettingsShell'
 import { SidebarConversations } from './pages/lab/Conversations'
 import { SideToggle, SideResizer, useSidebar } from './components/sidebar'
+import { lang, setLang, t } from './i18n'
 
 type PageKey =
   | 'home'
@@ -78,6 +85,11 @@ type PageKey =
   | 'demo'
   | 'microlive'
   | 'settings'
+  | 'groups'
+  | 'inbox'
+  | 'issues'
+  | 'admin'
+  | 'lineage'
   // 带参数的详情页（不出现在导航里）
   | 'dsl'
   | 'editor'
@@ -87,10 +99,10 @@ type PageKey =
   | 'report'
 
 /** 这些页面在全屏「设置」里打开，不显示主侧栏。 */
-const SETTINGS_PAGES = new Set<PageKey>(['settings', 'models', 'roles', 'prompts', 'long-running', 'docs', 'brand'])
+const SETTINGS_PAGES = new Set<PageKey>(['settings', 'models', 'roles', 'prompts', 'long-running', 'docs', 'brand', 'admin'])
 
 /** 对话类页面铺满主区域，不要页边距与页脚。 */
-const FULL_BLEED = new Set<PageKey>(['lab', 'teams'])
+const FULL_BLEED = new Set<PageKey>(['lab', 'teams', 'groups'])
 
 /**
  * 导航按使用顺序排：先研究素材，再做策略，再验证，最后运行。
@@ -137,9 +149,11 @@ const NAV: { group: string; step?: number; items: { key: PageKey; label: string 
     ],
   },
   {
-    group: '更多',
+    group: '协作',
     items: [
+      { key: 'groups', label: '群组与任务' },
       { key: 'square', label: '策略广场' },
+      { key: 'issues', label: '问题反馈' },
     ],
   },
 ]
@@ -149,7 +163,7 @@ const NAV: { group: string; step?: number; items: { key: PageKey; label: string 
  * 第一个是入口本身。
  */
 const HUBS: Partial<Record<PageKey, { key: PageKey; label: string }[]>> = {
-  strategies: [{ key: 'strategies', label: '策略列表' }, { key: 'assemble', label: '积木搭建' }],
+  strategies: [{ key: 'strategies', label: '策略列表' }, { key: 'lineage', label: '血缘与协作' }, { key: 'assemble', label: '积木搭建' }],
   portfolio: [{ key: 'portfolio', label: '组合与风控' }, { key: 'execution', label: '下单执行' }],
   live: [{ key: 'live', label: '实盘对照' }, { key: 'accounts', label: '只读账户' }],
 }
@@ -191,6 +205,11 @@ const PAGE_TITLES: Record<PageKey, string> = {
   optimize: '参数优化',
   post: '帖子',
   report: '调研报告',
+  groups: '群组与任务',
+  inbox: '通知中心',
+  issues: '问题反馈',
+  admin: '运维控制台',
+  lineage: '策略血缘',
 }
 
 /** 详情页在导航里高亮哪个入口。 */
@@ -202,6 +221,7 @@ const PARENT: Partial<Record<PageKey, PageKey>> = {
   post: 'square',
   dsl: 'strategies',
   report: 'lab',
+  inbox: 'groups',
 }
 
 const NAV_LABEL: Partial<Record<PageKey, string>> = Object.fromEntries(NAV.flatMap((g) => g.items.map((i) => [i.key, i.label])))
@@ -241,7 +261,11 @@ const PURPOSE: Partial<Record<PageKey, string>> = {
   microlive: '用很小的真实资金运行已毕业的策略',
   live: '用真实成交核对模拟结果',
   accounts: '只读 Key 读取余额和成交，不能下单',
-  square: '分享思路、复核别人的回测、一键克隆策略',
+  square: '分享思路、复核别人的回测、一键克隆策略；成员与 Agent 发的帖子分开标注',
+  groups: '自由组建群组：讨论、@ 成员、引用回测，摊派任务，共享策略，单独配模型与额度',
+  inbox: '所有通知集中在这里，可以按人、群组、类型屏蔽',
+  issues: '遇到问题或有建议，提交给管理员处理，支持附截图与文件',
+  lineage: '每个策略的版本链与克隆分支：谁改的、跑过哪些回测',
   roles: 'AI 研究室里的角色和团队',
   models: '配置 AI 研究室用的大模型',
   prompts: '各角色的提示词，可以改写',
@@ -313,7 +337,7 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
   }, [refreshStatus, page])
 
   useEffect(() => {
-    document.title = `${PAGE_TITLES[page]} · QuantLab`
+    document.title = `${t(PAGE_TITLES[page])} · QuantLab`
   }, [page])
 
   const reachable = health ? Object.entries(health.adapters).filter(([, v]) => v.reachable).map(([k]) => k) : []
@@ -336,6 +360,33 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
   const stageOf = NAV.find((g) => g.step && g.items.some((i) => i.key === nav))
   const flowOpen = flowPref ?? false
   const side = useSidebar()
+  // 手机：侧栏变成从左侧拉出的抽屉（顶栏「≡」按钮或从屏幕左缘右滑打开），换页自动收起
+  const [drawer, setDrawer] = useState(false)
+  useEffect(() => { setDrawer(false) }, [page, route.arg])
+  useEffect(() => {
+    document.documentElement.classList.toggle('drawer-open', drawer)
+    if (!drawer) return
+    const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') setDrawer(false) }
+    document.addEventListener('keydown', esc)
+    return () => document.removeEventListener('keydown', esc)
+  }, [drawer])
+  useEffect(() => {
+    let start: { x: number; y: number } | null = null
+    const down = (e: TouchEvent) => {
+      const t = e.touches[0]
+      start = window.innerWidth <= 720 && (t.clientX < 24 || document.documentElement.classList.contains('drawer-open')) ? { x: t.clientX, y: t.clientY } : null
+    }
+    const up = (e: TouchEvent) => {
+      if (!start) return
+      const t = e.changedTouches[0]
+      const dx = t.clientX - start.x
+      if (Math.abs(dx) > 60 && Math.abs(t.clientY - start.y) < 50) setDrawer(dx > 0)
+      start = null
+    }
+    window.addEventListener('touchstart', down, { passive: true })
+    window.addEventListener('touchend', up, { passive: true })
+    return () => { window.removeEventListener('touchstart', down); window.removeEventListener('touchend', up) }
+  }, [])
 
   const render = () => {
     const arg = route.arg
@@ -376,6 +427,16 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
         return <PaperPage key={arg || 'list'} id={arg || undefined} {...pageProps} />
       case 'square':
         return <CommunityPage {...pageProps} />
+      case 'groups':
+        return <GroupsPage arg={arg || undefined} me={me} {...pageProps} />
+      case 'inbox':
+        return <InboxPage {...pageProps} />
+      case 'issues':
+        return <IssuesPage key={arg || 'list'} arg={arg || undefined} me={me} {...pageProps} />
+      case 'admin':
+        return <AdminPage key={arg || 'overview'} tab={arg || undefined} me={me} {...pageProps} />
+      case 'lineage':
+        return <LineagePage arg={arg || undefined} {...pageProps} />
       case 'post':
         return <PostPage key={arg} id={arg} {...pageProps} />
       case 'docs':
@@ -422,7 +483,7 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
   if (SETTINGS_PAGES.has(page)) {
     return (
       <>
-        <SettingsShell current={settingsKeyOf(page, route.arg)} onNavigate={go} onClose={() => go(lastMain.current)} badges={llmReady ? undefined : { models: '未配置' }}>
+        <SettingsShell current={settingsKeyOf(page, route.arg)} onNavigate={go} onClose={() => go(lastMain.current)} badges={llmReady ? undefined : { models: '未配置' }} isAdmin={me.user.is_admin}>
           {render()}
         </SettingsShell>
         {busy && <BusyOverlay title={busy.title} note={busy.note} />}
@@ -435,11 +496,15 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
 
   return (
     <>
-      <aside className="sidebar" aria-hidden={side.collapsed || undefined}>
+      {drawer && <div className="drawer-backdrop" onClick={() => setDrawer(false)} aria-hidden />}
+      <aside className={`sidebar${drawer ? ' open' : ''}`} aria-hidden={side.collapsed || undefined}>
         <div className="side-top">
           <a className="side-brand" href="#/home"><LogoMark size={20} />QuantLab</a>
           <SearchButton onNavigate={go} />
           <SideToggle collapsed={false} onToggle={side.toggle} />
+          <button type="button" className="drawer-close" onClick={() => setDrawer(false)} aria-label={t('关闭导航')}>
+            <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden><path d="m4 4 8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>
+          </button>
         </div>
 
         <nav aria-label="主导航">
@@ -492,13 +557,16 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
           <div id="sidebar-slot" className="sidebar-slot-extra" />
         </div>
 
-        <AccountMenu me={me} reachable={reachable} llmReady={llmReady} onNavigate={go} />
+        <AccountMenu me={me} reachable={reachable} llmReady={llmReady} onNavigate={go} notify={notify} />
         <SideResizer width={side.width} onWidth={side.setWidth} />
       </aside>
 
       <div className="shell">
         <header className="topbar">
           <div>
+            <button type="button" className="drawer-open-btn" onClick={() => setDrawer(true)} aria-label={t('打开导航')} aria-expanded={drawer}>
+              <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden><path d="M3 5h12M3 9h12M3 13h8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>
+            </button>
             {side.collapsed && <SideToggle collapsed onToggle={side.toggle} />}
             <span className="breadcrumb">{me.workspace?.name ?? '工作区'}</span>
             <span className="separator">/</span>
@@ -511,11 +579,13 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
             <span>{PAGE_TITLES[page]}</span>
           </div>
           <div className="topbar-right">
+            <InboxBell onNavigate={go} />
             <Tape />
             <RunBanner onNavigate={go} llmReady={keyedProviders > 0} />
           </div>
         </header>
 
+        <PlatformBanner />
         <main className={FULL_BLEED.has(page) ? 'full' : undefined}>
           {me.workspace?.role === 'reviewer' && <div className="callout warn" style={{ marginBottom: 14 }}>你在此工作区是<b>审阅者</b>：可以查看全部内容，但不能修改或发起运行。</div>}
           {showHead && <PageHead key={nav} title={NAV_LABEL[nav] ?? PAGE_TITLES[page]} purpose={PURPOSE[page]} page={page} onSlot={setSlot} onNavigate={go} />}
@@ -539,7 +609,7 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
 const ROLE_NAME: Record<string, string> = { admin: '管理员', member: '成员', reviewer: '审阅者' }
 
 /** 侧栏底部账号菜单：账号、工作区切换、成员与邀请、退出合在一处。 */
-function AccountMenu({ me, reachable, llmReady, onNavigate }: { me: Me; reachable: string[]; llmReady: boolean; onNavigate: (k: string) => void }) {
+function AccountMenu({ me, reachable, llmReady, onNavigate, notify }: { me: Me; reachable: string[]; llmReady: boolean; onNavigate: (k: string) => void; notify: (m: string, e?: boolean) => void }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
   const ws = me.workspace
@@ -553,8 +623,10 @@ function AccountMenu({ me, reachable, llmReady, onNavigate }: { me: Me; reachabl
     return () => { document.removeEventListener('mousedown', close); document.removeEventListener('keydown', esc) }
   }, [open])
   const pick = (k: string) => { setOpen(false); onNavigate(k) }
+  const [reporting, setReporting] = useState(false)
   return (
     <div className="user-row acct" ref={ref}>
+      {reporting && <NewIssueModal onClose={() => setReporting(false)} notify={notify} onDone={(id) => { setReporting(false); onNavigate(`issues/${id}`) }} />}
       <button className="acct-trigger" onClick={() => setOpen(!open)} aria-expanded={open} aria-haspopup="menu">
         <span className="avatar">{name.slice(0, 1).toUpperCase()}</span>
         <div className="acct-text">
@@ -582,6 +654,16 @@ function AccountMenu({ me, reachable, llmReady, onNavigate }: { me: Me; reachabl
           ))}
           <button role="menuitem" onClick={() => pick('settings/workspace')}>新建 / 加入工作区…</button>
           <button role="menuitem" onClick={() => pick('settings/members')}>成员与邀请…</button>
+          <hr />
+          <button role="menuitem" onClick={() => pick('inbox')}>通知中心与屏蔽…</button>
+          <button role="menuitem" onClick={() => { setOpen(false); setReporting(true) }}>报告问题…</button>
+          {me.user.is_admin && <button role="menuitem" onClick={() => pick('admin/overview')}><span>运维控制台</span><span className="role-chip admin">部署管理员</span></button>}
+          <hr />
+          <div className="acct-label">语言</div>
+          <div className="acct-lang" role="group" aria-label="界面语言">
+            <button type="button" aria-pressed={lang === 'zh'} onClick={() => lang !== 'zh' && setLang('zh')}>简体中文</button>
+            <button type="button" aria-pressed={lang === 'en'} onClick={() => lang !== 'en' && setLang('en')}>English</button>
+          </div>
           <hr />
           <button role="menuitem" onClick={() => pick(llmReady ? 'settings/account' : 'models')}>
             <span>设置</span>{!llmReady && <span className="role-chip warn">模型未配置</span>}

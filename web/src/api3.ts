@@ -207,6 +207,8 @@ export const v4 = {
   updateSettings: (p: { name?: string; timezone?: string; quotas?: Partial<WorkspaceSettings['quotas']> }) => put<{ workspace: unknown }>('/api/workspace/settings', p),
   // T07：用量面板。所有数值都是十进制字符串，前端只展示、不做浮点运算。
   usage: (days = 30) => get<UsagePanel>(`/api/workspace/usage?days=${days}`),
+  /** 管理员自定义每日 / 存量上限；值为 null 表示不限制（单位与用量面板一致） */
+  setUsageLimits: (p: Record<string, string | number | null>) => put<{ workspace_id: string; limits: Record<string, string | null> }>('/api/workspace/usage/limits', p),
   audit: (action?: string, before_id?: number) => get<{ items: AuditItem[] }>(`/api/workspace/audit?limit=200${action ? `&action=${encodeURIComponent(action)}` : ''}${before_id ? `&before_id=${before_id}` : ''}`),
   // ---- 运行 ----
   runs: (q: { kind?: string; mode?: string; state?: string } = {}) =>

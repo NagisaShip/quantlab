@@ -2,7 +2,9 @@
  * 首页：「今天研究什么？」——直接和 AI 对话；预测、策略、因子、组合、执行、完整流程、调研报告都是斜杠命令。
  * 右侧是可编辑的关注列表（多个标的），没有真实行情的标的如实显示「未接入数据」，可以一键同步。
  */
+import { directBars } from '../../marketDirect'
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useDraft } from '../../components/draft'
 import { get } from '../../http'
 import { lab, labPrefs, type LabKind } from '../../apiLab'
 import { models } from '../../apiModels'
@@ -37,8 +39,10 @@ function parse(text: string): { type: ResearchType | null; rest: string; head: s
 }
 
 export function HomeAsk({ onNavigate, notify, brief }: { onNavigate: (k: string) => void; notify: (m: string, e?: boolean) => void; brief?: ReactNode }) {
-  const [text, setText] = useState('')
+  const [text, setText] = useDraft('home')
   const [busy, setBusy] = useState(false)
+  // 超过 2 万字的内容自动转成 txt：作为钉住材料随新对话一起创建（AI 按需分段读取全文）
+  const [longFiles, setLongFiles] = useState<{ title: string; text: string }[]>([])
   const [seed, setSeed] = useState(() => Math.random())
   const [hover, setHover] = useState(false)
   const fx = useBotFlash()
@@ -60,25 +64,28 @@ export function HomeAsk({ onNavigate, notify, brief }: { onNavigate: (k: string)
 
   const start = async () => {
     const t = text.trim()
-    if (!t || busy) return
+    if ((!t && !longFiles.length) || busy) return
     const { type: rt, rest, head } = parse(t)
     const body = rest || t
-    const kind: LabKind = rt && rt !== 'pipeline' && rt !== 'report' ? rt : 'strategy'
-    const workflow = rt === 'pipeline' || rt === 'report' ? rt : ''
+    const kind: LabKind = rt && rt !== 'pipeline' && rt !== 'report' && rt !== 'auto' ? rt : 'strategy'
+    const workflow = rt === 'pipeline' || rt === 'report' ? rt : rt ? '' : 'auto'
     if (rt && !rest) { setText(`${head} `); notify(`在 ${head} 后面写上想研究的内容`); return }
     setBusy(true)
     fx.fire('start')
     try {
       const v = await lab.create({
-        kind, idea: body.replace(/^\/\S+\s*/, ''), market_auto: true, workflow, suggest: store.get('qa.lab.suggest', '1') === '1',
+        kind, idea: body.replace(/^\/\S+\s*/, '') || longFiles[0]?.title || '长文本', market_auto: true, workflow, suggest: store.get('qa.lab.suggest', '1') === '1',
+        ...(longFiles.length ? { pins: longFiles.map((f) => ({ kind: 'file' as const, title: f.title, text: f.text })) } : {}),
         model: store.get('qa.lab.model', ''), effort: (store.get('qa.lab.effort', 'medium') as 'medium'), ...labPrefs(),
       })
       const id = v.project.id
       if (workflow === 'report') await lab.report(id, body)
       else if (workflow === 'pipeline') await lab.plan(id, `完整流程：${body}`)
       else if (/^\/plan\b/.test(t)) await lab.plan(id, body.replace(/^\/plan\s*/, ''))
-      else await lab.send(id, rt ? body : t)
+      else await lab.send(id, (rt ? body : t) || `请阅读我附带的「${longFiles[0]?.title}」，概括要点并告诉我可以怎么研究`)
+      setLongFiles([])
       labChanged()
+      setText('')
       onNavigate(`lab/${id}`)
     } catch (e) {
       notify((e as Error).message, true)
@@ -95,7 +102,8 @@ export function HomeAsk({ onNavigate, notify, brief }: { onNavigate: (k: string)
           {brief}
         </div>
       </div>
-      <Composer value={text} onChange={setText} onSend={start} disabled={busy} commands={commands} sendLabel="开始"
+      <Composer value={text} onChange={setText} onSend={start} disabled={busy} commands={commands} sendLabel="开始" hasAttachments={longFiles.length > 0}
+        onLongText={async (f) => { const text = await f.text(); setLongFiles((x) => [...x, { title: f.name, text }]) }}
         placeholder="和 AI 聊聊你的想法；输入 / 选择 预测、策略、因子、完整流程、调研报告…"
         above={type ? <div className="cmp-attached on"><span>{RESEARCH_TYPES.find((x) => x.id === type)?.label} · {RESEARCH_TYPES.find((x) => x.id === type)?.hint}</span></div> : undefined}
         left={<div className="home-types">
@@ -159,8 +167,25 @@ export function Watchlist({ notify, onNavigate }: { notify: (m: string, e?: bool
   const [quotes, setQuotes] = useState<Quote[] | null>(null)
   const [syncing, setSyncing] = useState('')
   const views = useModelViews()
-  const load = () => get<{ quotes: Quote[] }>(`/api/market/quotes?symbols=${encodeURIComponent(symbols.join(','))}&timeframe=${tf}&limit=${tf === '1d' ? 90 : 168}`)
-    .then((r) => setQuotes(r.quotes)).catch((e: Error) => { setQuotes([]); notify(e.message, true) })
+  const load = async () => {
+    const limit = tf === '1d' ? 90 : 168
+    // 关注列表：浏览器直连交易所取行情；直连失败的标的再交给服务器（服务器有本地缓存与「未接入数据」说明）
+    const direct = await Promise.all(symbols.map((s) => directBars(s, tf, limit)))
+    const missing = symbols.filter((_, i) => !direct[i])
+    let server: Quote[] = []
+    if (missing.length) {
+      try {
+        server = (await get<{ quotes: Quote[] }>(`/api/market/quotes?symbols=${encodeURIComponent(missing.join(','))}&timeframe=${tf}&limit=${limit}`)).quotes
+      } catch (e) {
+        notify((e as Error).message, true)
+      }
+    }
+    setQuotes(symbols.map((s, i) => {
+      const d = direct[i]
+      if (d) return { symbol: s, connected: true, source: 'exchange', t: d.map((b) => b.t), c: d.map((b) => b.c) }
+      return server.find((q) => q.symbol === s.toUpperCase()) ?? { symbol: s, connected: false, error: '未接入数据' }
+    }))
+  }
   useEffect(() => { setQuotes(null); load() }, [symbols.join(','), tf]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const sync = async (sym: string) => {

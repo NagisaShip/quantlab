@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
+import { TF_MS } from '../timeframes'
 import { api, dateOnly, shortTime, SOURCE_LABEL, type BarDTO, type Quality } from '../api'
 import {
   Callout,
@@ -14,10 +15,24 @@ import {
 } from '../components/ui'
 import DatahubSection from './data/Datahub'
 import { LocalLibrary } from './data/LocalLibrary'
-import { PriceChart } from '../components/charts'
+import KlineChart from '../components/KlineChart'
 import type { PageProps } from './types'
 
 const BARS_PER_YEAR: Record<string, number> = { '1m': 525_600, '5m': 105_120, '15m': 35_040, '30m': 17_520, '1h': 8760, '4h': 2190, '1d': 365 }
+const DAY = 86_400_000
+/** 时间段：按周期换算成要取的 K 线根数（接口单次最多 5000 根） */
+const RANGES: { key: string; label: string; ms: number }[] = [
+  { key: '1d', label: '1天', ms: DAY }, { key: '1w', label: '1周', ms: 7 * DAY }, { key: '1m', label: '1月', ms: 30 * DAY },
+  { key: '3m', label: '3月', ms: 91 * DAY }, { key: '6m', label: '6月', ms: 182 * DAY }, { key: '1y', label: '1年', ms: 365 * DAY },
+  { key: 'max', label: '最长', ms: Infinity },
+]
+const MAX_BARS = 5000
+const barsFor = (range: string, tf: string) => {
+  const r = RANGES.find((x) => x.key === range) ?? RANGES[2]
+  return Number.isFinite(r.ms) ? Math.min(MAX_BARS, Math.max(30, Math.ceil(r.ms / (TF_MS[tf] ?? 3_600_000)))) : MAX_BARS
+}
+/** 周期切换时自动挑一个合适的时间段，避免 1 分钟线配 1 年 */
+const DEFAULT_RANGE: Record<string, string> = { '1m': '1d', '5m': '1w', '15m': '1w', '30m': '1m', '1h': '1m', '4h': '6m', '1d': '1y' }
 const fmtPx = (v: number) => v.toLocaleString('en-US', { maximumFractionDigits: v >= 100 ? 2 : 5 })
 
 export default function DataCenterPage({ notify, onNavigate, arg }: PageProps & { arg?: string }) {
@@ -45,9 +60,18 @@ function BarsView({ notify, heading }: Pick<PageProps, 'notify'> & { heading: Re
   const [symbol, setSymbol] = useState('BTC/USDT')
   const [timeframe, setTimeframe] = useState('1h')
   const [exchange, setExchange] = useState('binance')
+  const [range, setRange] = useState(() => { try { return localStorage.getItem('qa.kline.range') || '1m' } catch { return '1m' } })
+  const [ma, setMa] = useState<number[]>(() => { try { return JSON.parse(localStorage.getItem('qa.kline.ma') || '[20,60]') } catch { return [20, 60] } })
+  const pickRange = (r: string) => { setRange(r); try { localStorage.setItem('qa.kline.range', r) } catch { /* 私密模式 */ } }
+  const pickTf = (tf: string) => { setTimeframe(tf); pickRange(DEFAULT_RANGE[tf] ?? range) }
+  const toggleMa = (n: number) => {
+    const next = ma.includes(n) ? ma.filter((x) => x !== n) : [...ma, n].sort((a, b) => a - b)
+    setMa(next); try { localStorage.setItem('qa.kline.ma', JSON.stringify(next)) } catch { /* 私密模式 */ }
+  }
   const [bars, setBars] = useState<BarDTO[]>([])
   const [source, setSource] = useState('')
   const [quality, setQuality] = useState<Quality | null>(null)
+  const [staleNote, setStaleNote] = useState('')
   const [summary, setSummary] = useState<Record<string, number | string> | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -78,21 +102,25 @@ function BarsView({ notify, heading }: Pick<PageProps, 'notify'> & { heading: Re
     setLoading(true)
     setError('')
     try {
-      const [b, q, s] = await Promise.all([
-        api.bars(symbol, timeframe, 300, exchange),
+      // 三个请求互不依赖：任何一个失败（例如交易所超时）都不让其他两块一起空白
+      const [b, q, s] = await Promise.allSettled([
+        api.bars(symbol, timeframe, barsFor(range, timeframe), exchange),
         api.quality(symbol, timeframe, 1500, exchange),
         api.marketSummary(symbol, timeframe),
       ])
-      setBars(b.bars)
-      setSource(b.source)
-      setQuality(q)
-      setSummary(s)
+      if (b.status === 'fulfilled') { setBars(b.value.bars); setSource(b.value.source) }
+      if (q.status === 'fulfilled') setQuality(q.value)
+      if (s.status === 'fulfilled') setSummary(s.value)
+      const failed = [b, q, s].filter((r): r is PromiseRejectedResult => r.status === 'rejected')
+      const stale = (b.status === 'fulfilled' && b.value.warning) || (q.status === 'fulfilled' && q.value.warning) || ''
+      if (failed.length) setError(`${failed.length === 3 ? '行情刷新失败' : '部分数据没刷新'}：${(failed[0].reason as Error).message}`)
+      setStaleNote(stale ? `${stale}。稍后再刷新即可补齐最新 K 线。` : '')
     } catch (e) {
       setError((e as Error).message)
     } finally {
       setLoading(false)
     }
-  }, [symbol, timeframe, exchange])
+  }, [symbol, timeframe, exchange, range])
 
   useEffect(() => {
     load()
@@ -156,11 +184,6 @@ function BarsView({ notify, heading }: Pick<PageProps, 'notify'> & { heading: Re
             {(symbols.length ? symbols : [symbol]).map((s) => <option key={s}>{s}</option>)}
           </select>
         </Field>
-        <Field label="周期">
-          <select value={timeframe} onChange={(e) => setTimeframe(e.target.value)}>
-            {(timeframes.length ? timeframes : [timeframe]).map((t) => <option key={t}>{t}</option>)}
-          </select>
-        </Field>
         <Field label="交易所">
           <select value={exchange} onChange={(e) => setExchange(e.target.value)}>
             <option value="binance">Binance</option>
@@ -175,6 +198,7 @@ function BarsView({ notify, heading }: Pick<PageProps, 'notify'> & { heading: Re
       </div>
 
       {error && <Callout tone="fail" title="读取失败">{error}</Callout>}
+      {!error && staleNote && <Callout tone="warn" title="数据可能不是最新">{staleNote}</Callout>}
       {loading && !bars.length && <Loading label="正在读取行情" />}
 
       {bars.length > 0 && (
@@ -207,8 +231,29 @@ function BarsView({ notify, heading }: Pick<PageProps, 'notify'> & { heading: Re
             />
           </div>
 
-          <Panel title={`价格走势（${symbol} · ${timeframe}）`} subtitle="简化 K 线：影线为高低价，实体为开盘到收盘">
-            <PriceChart bars={bars} />
+          <Panel title={`价格走势（${symbol} · ${timeframe}）`} subtitle="鼠标移到 K 线上看开高低收、涨跌、振幅和成交量；滚轮缩放、拖动平移、双击回到最新">
+            <div className="kline-toolbar">
+              <div className="kt-group" role="group" aria-label="周期">
+                {(timeframes.length ? timeframes : Object.keys(TF_MS)).map((tf) => (
+                  <button key={tf} type="button" aria-pressed={tf === timeframe} onClick={() => pickTf(tf)}>{tf}</button>
+                ))}
+              </div>
+              <div className="kt-group" role="group" aria-label="时间段">
+                {RANGES.map((r) => (
+                  <button key={r.key} type="button" aria-pressed={r.key === range} onClick={() => pickRange(r.key)}>{r.label}</button>
+                ))}
+              </div>
+              <div className="kt-group" role="group" aria-label="均线">
+                {[7, 20, 60, 120].map((n) => (
+                  <button key={n} type="button" aria-pressed={ma.includes(n)} onClick={() => toggleMa(n)}>MA{n}</button>
+                ))}
+              </div>
+              <span className="kt-span">
+                {dateOnly(bars[0].t)} → {dateOnly(bars[bars.length - 1].t)} · {bars.length.toLocaleString()} 根
+                {bars.length < barsFor(range, timeframe) && barsFor(range, timeframe) < MAX_BARS ? ' · 数据源只有这么多' : barsFor(range, timeframe) >= MAX_BARS && range !== 'max' ? ' · 已到单次上限 5000 根' : ''}
+              </span>
+            </div>
+            <KlineChart bars={bars} stepMs={TF_MS[timeframe] ?? 3_600_000} height={420} ma={ma} legend ariaLabel={`${symbol} ${timeframe} K 线`} />
           </Panel>
 
           <div className="two-columns">

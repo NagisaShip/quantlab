@@ -3,6 +3,7 @@
  * 路由：#/modellib（模型）· #/modellib/train（训练台）· #/modellib/runs（实验记录）· #/modellib/run/<id> · #/modellib/<id>
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { PythonCodeButton } from '../components/PythonCode'
 import { factors, type Factor } from '../apiFactors'
 import {
   models, usageSnippet,
@@ -138,6 +139,7 @@ function ModelDetail({ id, meta, notify, onDeleted }: { id: string; meta: ModelM
         <button className="button small" onClick={() => update({ frozen: !m.frozen })} title="冻结后，再次保存同名模型会另存一个新模型，不会覆盖">{m.frozen ? '取消冻结' : '冻结'}</button>
         <button className="button small" disabled={busy} onClick={refresh}>{busy ? <><span className="spinner" /> 检查中</> : '检查健康度'}</button>
         <button className="button small" onClick={() => toLab(`改进模型「${m.name}」：针对已知弱点调整特征或结构，必须跑赢基线`)}>交给 AI 改进</button>
+        <PythonCodeButton kind="model" artifact={m.spec} name={m.name} />
         <button className="button small" onClick={() => toLab(`召集模型小组评审「${m.name}」：检查泄漏、过拟合和上线风险`)}>召集团队评审</button>
         <button className="button small danger" onClick={async () => { if (await appConfirm(`删除模型「${m.name}」？实验记录会保留。`)) { await models.remove(id); onDeleted() } }}>删除</button>
       </>}>

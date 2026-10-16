@@ -41,6 +41,7 @@ class ProviderConfig:
     # 价格币种与汇率、限额规则用于计量与超额判定；配置文件里的 provider 保持默认值。
     scope: str = "file"
     owner_id: str = ""
+    group_id: str = ""
     currency: str = "CNY"
     fx_rate: str = "1"
     limits: list[dict[str, Any]] = field(default_factory=list)

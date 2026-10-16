@@ -1,7 +1,11 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
+import { ImageViewerHost } from './components/ImageViewer'
 import App from './App'
+import { loadLang, startDomTranslator } from './i18n'
 import { applyPrefs, watchSystemTheme } from './components/prefs'
+import '@fontsource-variable/inter'
+import '@fontsource-variable/jetbrains-mono'
 import './styles.css'
 import './styles2.css'
 import './styles3.css'
@@ -10,11 +14,14 @@ import './stylesChat.css'
 import './stylesClaude.css'
 import './stylesAskAI.css'
 import './stylesRuleCode.css'
+import './stylesBlocks.css'
 import './stylesFactor.css'
 import './stylesTerminal.css'
 import './stylesConv.css'
 import './stylesBot.css'
 import './stylesResearch.css'
+import './stylesLayout.css'
+import './stylesCollab.css'
 import './stylesMotion.css'
 
 applyPrefs()
@@ -25,8 +32,13 @@ if (!['localhost', '127.0.0.1'].includes(location.hostname) && location.port !==
   window.addEventListener('load', () => { navigator.serviceWorker.register('/sw.js').catch(() => undefined) })
 }
 
-createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    <App />
-  </StrictMode>,
-)
+// 英文界面：先加载词典并开始翻译，再渲染（避免先闪一下中文）
+loadLang().catch(() => undefined).finally(() => {
+  startDomTranslator()
+  createRoot(document.getElementById('root')!).render(
+    <StrictMode>
+      <App />
+      <ImageViewerHost />
+    </StrictMode>,
+  )
+})

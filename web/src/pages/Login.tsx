@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { v4 } from '../api3'
-import { LogoMark } from '../components/icons'
+import Landing from './landing/Landing'
 import { ApiError } from '../http'
 
 type Mode = 'login' | 'register'
@@ -50,22 +50,8 @@ export default function LoginPage({ onDone }: { onDone: () => void }) {
   const bootstrap = status && !status.bootstrapped
   const canRegister = status && (bootstrap || status.open_registration || invite)
 
-  return (
-    <div className="auth-screen">
-      <section className="auth-aside">
-        <div className="auth-brand"><LogoMark size={20} /> QuantLab 量化研究台</div>
-        <div>
-          <h1>先在纸面上<em>证明</em>，<br />再谈真金白银。</h1>
-          <ul>
-            <li><span>01</span><div><b>规则 DSL 或 Python 策略</b>：DSL 不执行任何代码；Python 在隔离进程中运行。</div></li>
-            <li><span>02</span><div><b>Decimal 复式账本</b>：每一分钱都能逐笔核对，回测、模拟、实盘同一口径。</div></li>
-            <li><span>03</span><div><b>独立 worker 执行</b>：租约、检查点、断点恢复，重启不重复买卖。</div></li>
-            <li><span>04</span><div><b>实盘只读对照</b>：导入或只读连接真实成交，逐笔归因；平台没有真实下单路径。</div></li>
-          </ul>
-        </div>
-        <footer>私有部署 · 多用户工作区隔离 · 审计留痕 · 仅用于研究，不构成投资建议</footer>
-      </section>
-      <section className="auth-panel">
+  // 登录 / 注册卡片放在介绍页右侧的抽屉里；第一次部署（要初始化管理员）或带邀请链接时自动打开
+  const card = (
         <div className="auth-card">
           {bootstrap ? (
             <>
@@ -139,7 +125,6 @@ export default function LoginPage({ onDone }: { onDone: () => void }) {
             </div>
           )}
         </div>
-      </section>
-    </div>
   )
+  return <Landing auth={() => card} autoOpen={!!bootstrap || !!invite} />
 }

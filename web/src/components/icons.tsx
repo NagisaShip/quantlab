@@ -34,6 +34,10 @@ const P: Record<string, ReactNode> = {
   settings: <><path d="M3 4h10M3 8h10M3 12h10" /><path d="M5.5 2.8v2.4M10.5 6.8v2.4M7 10.8v2.4" /></>,
   sun: <><circle cx="8" cy="8" r="2.6" /><path d="M8 1.8v1.4M8 12.8v1.4M1.8 8h1.4M12.8 8h1.4M3.6 3.6l1 1M11.4 11.4l1 1M3.6 12.4l1-1M11.4 4.6l1-1" /></>,
   moon: <path d="M12.8 9.6A5.2 5.2 0 0 1 6.4 3.2a5.2 5.2 0 1 0 6.4 6.4z" />,
+  groups: <><circle cx="5" cy="5.5" r="1.8" /><circle cx="11" cy="5.5" r="1.8" /><path d="M1.8 12.5c.3-1.8 1.6-3 3.2-3s2.9 1.2 3.2 3M7.8 12.5c.3-1.8 1.6-3 3.2-3s2.9 1.2 3.2 3" /></>,
+  issues: <><circle cx="8" cy="8" r="5.5" /><path d="M8 5v3.5M8 10.8v.2" /></>,
+  inbox: <><path d="M4 11.5V7a4 4 0 0 1 8 0v4.5l1 1.2H3z" /><path d="M6.6 14a1.5 1.5 0 0 0 2.8 0" /></>,
+  lineage: <><circle cx="3.5" cy="8" r="1.5" /><circle cx="12.5" cy="4" r="1.5" /><circle cx="12.5" cy="12" r="1.5" /><path d="M5 8h2.5c1.5 0 1.5-4 3.5-4M7.5 8c1.5 0 1.5 4 3.5 4" /></>,
 }
 
 export function Icon({ name, size = 16 }: { name: string; size?: number }) {

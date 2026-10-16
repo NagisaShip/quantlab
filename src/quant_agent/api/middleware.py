@@ -39,7 +39,7 @@ PUBLIC_PATHS = {
 }
 UNSAFE = {"POST", "PUT", "PATCH", "DELETE"}
 # 审阅者也允许的写操作（只涉及自己的账号）
-REVIEWER_WRITABLE = ("/api/auth/", "/api/workspaces/join")
+REVIEWER_WRITABLE = ("/api/auth/", "/api/workspaces/join", "/api/inbox", "/api/issues", "/api/uploads")
 IDEMPOTENCY_TTL_MS = 24 * 3600 * 1000
 MAX_BODY = 25 * 1024 * 1024
 

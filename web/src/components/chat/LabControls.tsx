@@ -1,3 +1,4 @@
+import { APPROVAL_CATEGORIES, type ApprovalCategory } from '../../apiLab'
 /**
  * 对话底栏与侧栏的控件：上下文用量统计（模板化：分段条 + 分类明细 + 剩余空间）、
  * ＋ 菜单（附件、斜杠命令、插件子菜单、自动迭代轮数滑块）、权限模式菜单。
@@ -202,18 +203,25 @@ export function useFilePicker(onFiles: (files: File[]) => void) {
 /* 权限模式                                                            */
 /* ------------------------------------------------------------------ */
 const MODES: { id: Exclude<Permission, 'bypass'>; label: string; hint: string }[] = [
-  { id: 'auto', label: '自动', hint: '由 AI 处理权限决定' },
-  { id: 'manual', label: '手动', hint: '改代码、跑回测前始终询问' },
-  { id: 'accept_edits', label: '接受编辑', hint: '自动接受代码改动，运行前询问' },
+  { id: 'auto', label: '自动', hint: '只有规则要求的操作才审批：删除记录、模拟交易与晋级、改平台配置' },
+  { id: 'manual', label: '手动', hint: '改代码、跑回测、保存、删除前始终询问' },
+  { id: 'accept_edits', label: '接受编辑', hint: '自动接受代码改动，运行与其余操作前询问' },
   { id: 'plan', label: '计划', hint: '先出计划，确认后再动手' },
 ]
-export const permissionLabel = (p?: Permission) => (p === 'bypass' ? '跳过确认' : MODES.find((m) => m.id === (p ?? 'auto'))?.label ?? '自动')
+export const permissionLabel = (p?: Permission) => (p === 'bypass' ? '完全权限' : MODES.find((m) => m.id === (p ?? 'auto'))?.label ?? '自动')
+const DEFAULT_BYPASS: ApprovalCategory[] = ['delete']
 
 const ShieldIcon = <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round"><path d="M8 2 3 4v3.6c0 3 2.1 5.4 5 6.4 2.9-1 5-3.4 5-6.4V4Z" /></svg>
 
-export function PermissionMenu({ value, onChange, disabled }: { value?: Permission; onChange: (p: Permission) => void; disabled?: boolean }) {
+export function PermissionMenu({ value, onChange, disabled, approvals, onApprovals }: {
+  value?: Permission; onChange: (p: Permission) => void; disabled?: boolean
+  /** 完全权限下仍要审批的类别；不传 onApprovals 时不显示选择 */
+  approvals?: ApprovalCategory[]; onApprovals?: (a: ApprovalCategory[]) => void
+}) {
   const pop = usePopover()
   const cur = value ?? 'auto'
+  const chosen = approvals ?? DEFAULT_BYPASS
+  const flip = (id: ApprovalCategory) => onApprovals?.(chosen.includes(id) ? chosen.filter((x) => x !== id) : [...chosen, id])
   return (
     <div className="cmp-pop-anchor" ref={pop.ref}>
       <button type="button" className={`cmp-perm ${cur}`} disabled={disabled} aria-haspopup="menu" aria-expanded={pop.open}
@@ -232,10 +240,21 @@ export function PermissionMenu({ value, onChange, disabled }: { value?: Permissi
           ))}
           <div className="cmp-menu-sep" />
           <div className="perm-bypass">
-            <span className="act-text"><span className="act-label">跳过权限确认</span><span className="act-hint">不再询问，开始迭代前也不检查目标</span></span>
+            <span className="act-text"><span className="act-label">完全权限</span><span className="act-hint">除了下面勾选的类别，其余操作 Agent 直接执行</span></span>
             <button type="button" className={`button small${cur === 'bypass' ? ' primary' : ''}`}
-              onClick={() => { onChange(cur === 'bypass' ? 'auto' : 'bypass'); pop.setOpen(false) }}>{cur === 'bypass' ? '已启用' : '启用'}</button>
+              onClick={() => { onChange(cur === 'bypass' ? 'auto' : 'bypass'); if (cur === 'bypass') pop.setOpen(false) }}>{cur === 'bypass' ? '已启用' : '启用'}</button>
           </div>
+          {cur === 'bypass' && onApprovals && (
+            <div className="perm-cats anim-expand">
+              <div className="cmp-menu-label">仍要我审批的操作</div>
+              {APPROVAL_CATEGORIES.map((c) => (
+                <label key={c.id} className="perm-cat">
+                  <input type="checkbox" checked={chosen.includes(c.id)} onChange={() => flip(c.id)} />
+                  <span className="act-text"><span className="act-label">{c.label}</span><span className="act-hint">{c.hint}</span></span>
+                </label>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>

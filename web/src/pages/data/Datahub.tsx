@@ -3,7 +3,7 @@
  * 每条数据按「发布可用时间」对齐，研究时不会用到当时还没发布的数据。
  */
 import { useCallback, useEffect, useState } from 'react'
-import { datahub, type Connector, type Dataset } from '../../apiFactors'
+import { datahub, type AutoSync, type Connector, type Dataset } from '../../apiFactors'
 import { LineChart } from '../../components/charts2'
 import { Callout, EmptyState, Field, Loading, Panel, Tag } from '../../components/ui'
 import type { PageProps } from '../types'
@@ -55,6 +55,7 @@ export default function DatahubSection({ notify }: Pick<PageProps, 'notify'>) {
         研究数据都按「当时能不能拿到」对齐：日频数据按次日可用处理，资金费率按结算时刻可用。因子里直接用字段名引用，例如 <code>funding</code>、<code>fng</code>；
         自定义数据用 <code>x_名字</code>。没有同步过的字段，评估时会如实报「未接入数据」，先在这里同步。
       </Callout>
+      <AutoSyncBar notify={notify} onSynced={load} />
       <div className="dh-grid">
         {conns.map((c) => <ConnectorCard key={c.id} c={c} canKeys={canKeys} busy={syncing === c.id} onSync={(x) => sync(c, x)}
           onKey={async (k) => { try { await datahub.setKey(c.id, k); notify(k ? '密钥已保存' : '密钥已清除'); load() } catch (e) { notify((e as Error).message, true) } }}
@@ -179,6 +180,53 @@ function ConnectorCard({ c, canKeys, busy, onSync, onKey, onImported, notify }: 
         </button>
         <span className="muted">{c.datasets} 个数据集 · {ago(c.last_sync)}{c.errors ? ` · ${c.errors} 个失败` : ''}</span>
       </div>
+    </div>
+  )
+}
+
+const INTERVALS = [1, 3, 6, 12, 24]
+
+/** 自动同步：开启后 worker 按间隔把已有数据集补到最新；打开本页时如果已经到期，也会立即补一次。 */
+function AutoSyncBar({ notify, onSynced }: Pick<PageProps, 'notify'> & { onSynced: () => void }) {
+  const [st, setSt] = useState<AutoSync | null>(null)
+  const [running, setRunning] = useState(false)
+  const refresh = useCallback(() => datahub.auto().then(setSt).catch(() => undefined), [])
+  useEffect(() => {
+    datahub.auto().then((a) => {
+      setSt(a)
+      if (a.enabled && a.due) { setRunning(true); datahub.autoRun().catch(() => undefined) }
+    }).catch(() => undefined)
+  }, [])
+  // 后台补数据时轮询，完成后刷新数据集列表
+  useEffect(() => {
+    if (!running) return
+    const since = st?.last_run ?? 0
+    const t = window.setInterval(async () => {
+      const a = await datahub.auto().catch(() => null)
+      if (a && (a.last_run ?? 0) > since) { setSt(a); setRunning(false); onSynced() }
+    }, 3000)
+    const stop = window.setTimeout(() => setRunning(false), 180_000)
+    return () => { window.clearInterval(t); window.clearTimeout(stop) }
+  }, [running]) // eslint-disable-line react-hooks/exhaustive-deps
+  if (!st) return null
+  const save = async (enabled: boolean, hours: number) => {
+    try { setSt(await datahub.setAuto(enabled, hours)); notify(enabled ? `已开启自动同步：每 ${hours} 小时把已有数据集补到最新` : '已关闭自动同步') } catch (e) { notify((e as Error).message, true) }
+  }
+  const r = st.last_result
+  return (
+    <div className="dh-auto">
+      <button type="button" role="switch" aria-checked={st.enabled} aria-label="自动同步" className={`switch${st.enabled ? ' on' : ''}`} onClick={() => save(!st.enabled, st.interval_hours)}><i /></button>
+      <div className="dh-auto-text">
+        <b>自动同步</b>
+        <small>
+          {st.enabled ? <>每 <select value={st.interval_hours} onChange={(e) => save(true, Number(e.target.value))}>
+            {INTERVALS.map((h) => <option key={h} value={h}>{h} 小时</option>)}</select> 把已同步过的数据集补到最新</> : '关闭：数据只在你点「同步」时更新'}
+          {st.last_run ? ` · 上次 ${ago(st.last_run)}${r ? `：${r.datasets} 个数据集${r.errors.length ? `，${r.errors.length} 个失败` : ''}` : ''}` : ''}
+        </small>
+      </div>
+      <button type="button" className="button small" disabled={running} onClick={async () => { setRunning(true); try { await datahub.autoRun(); refresh() } catch (e) { setRunning(false); notify((e as Error).message, true) } }}>
+        {running ? <><span className="spinner" /> 同步中</> : '立即补到最新'}
+      </button>
     </div>
   )
 }

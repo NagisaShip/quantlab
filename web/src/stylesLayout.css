@@ -1,0 +1,127 @@
+/* ==========================================================================
+   屏幕比例适配：宽屏多用横向空间、手机端侧栏改抽屉、文字不再被挤成一字一行。
+   放在其它样式之后、动效之前引入，同优先级下覆盖旧的响应式规则。
+   ========================================================================== */
+
+/* ---------- 宽屏：内容区跟着屏幕变宽，不再固定 1480px 把右侧留空 ---------- */
+main { max-width: var(--page-max, 1480px); }
+@media (min-width: 1680px) { :root { --page-max: 1880px; } }
+@media (min-width: 2200px) { :root { --page-max: 2280px; } }
+@media (min-width: 2800px) { :root { --page-max: 2600px; } main { margin-inline: auto; } }
+
+@media (min-width: 1680px) {
+  .home-hero2 { grid-template-columns: minmax(0, 1fr) minmax(360px, 560px); }
+  .watch-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .two-columns { grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr); }
+  .overview-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+}
+@media (min-width: 2200px) {
+  .home-hero2 { grid-template-columns: minmax(0, 1fr) minmax(420px, 720px); }
+  .watch-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+
+/* ---------- 抽屉按钮：只在手机上出现 ---------- */
+.drawer-open-btn, .drawer-close {
+  display: none; width: 32px; height: 32px; flex: none; border: 0; border-radius: 8px; background: none; color: var(--ink-2);
+  place-items: center; cursor: pointer;
+}
+.drawer-open-btn:hover, .drawer-close:hover { background: var(--hover); color: var(--ink); }
+.drawer-backdrop { display: none; }
+
+/* ---------- 不该折行的小部件 ---------- */
+.button, .chip, .tag, .table-pill, .role-chip, .segments button, .tabs button, .hub-tabs a, .nav-item, .pill, th { white-space: nowrap; }
+.button, .chip { flex-shrink: 0; }
+
+/* ---------- 手机：侧栏 = 左侧抽屉，内容与电脑端一致；顶栏只留按钮与面包屑 ---------- */
+@media (max-width: 720px) {
+  .drawer-open-btn, .drawer-close { display: inline-grid; }
+  .drawer-close { margin-left: 2px; }
+  .side-top .sp-trigger { margin-left: auto; }
+
+  html .sidebar {
+    position: fixed; top: 0; bottom: 0; left: 0; z-index: 1000;
+    width: min(86vw, 320px); height: auto; max-height: none;
+    display: flex; flex-direction: column; align-items: stretch; grid-template-columns: none; row-gap: 0;
+    padding: max(12px, env(safe-area-inset-top)) 10px max(12px, env(safe-area-inset-bottom));
+    border-right: 1px solid var(--line); border-bottom: 0; overflow-y: auto; overscroll-behavior: contain;
+    background: var(--rail);
+    transform: translateX(-104%); pointer-events: none; box-shadow: none;
+    transition: transform var(--dur-3, 260ms) var(--ease-out, ease), box-shadow var(--dur-3, 260ms);
+  }
+  html .sidebar.open { transform: none; pointer-events: auto; box-shadow: 12px 0 40px rgba(0, 0, 0, .18); }
+  html.side-collapsed .sidebar:not(.open) { transform: translateX(-104%); pointer-events: none; }
+  .drawer-backdrop {
+    display: block; position: fixed; inset: 0; z-index: 999; background: rgba(14, 20, 36, .36);
+    animation: drawer-fade var(--dur-2, 180ms) var(--ease-out, ease);
+  }
+  @keyframes drawer-fade { from { opacity: 0; } to { opacity: 1; } }
+  html.drawer-open, html.drawer-open body { overflow: hidden; }
+
+  /* 抽屉里恢复电脑端的竖排导航 */
+  html .sidebar > nav { display: block; grid-column: auto; grid-row: auto; overflow: visible; }
+  html .sidebar nav > div { display: block; }
+  html .sidebar .nav-label { display: block; }
+  html .sidebar .nav-item { width: 100%; flex: none; padding: 9px 10px; font-size: 14px; }
+  html .sidebar .nav-item[aria-current="page"]::before { left: -10px; right: auto; top: 9px; bottom: 9px; width: 3px; height: auto; }
+  html .sidebar .nav-count { display: inline-block; }
+  html .sidebar .sidebar-slot { display: flex; }
+  html .sidebar .side-toggle, html .sidebar .side-resizer { display: none; }
+
+  /* 账号：抽屉底部一行，菜单从下往上弹出，整块可见 */
+  html .sidebar .user-row { grid-column: auto; grid-row: auto; margin-top: auto; padding: 10px 0 0; border-top: 1px solid var(--line); }
+  html .sidebar .acct-text, html .sidebar .acct-caret { display: block; }
+  html .sidebar .acct-trigger { padding: 6px 8px; }
+  html .sidebar .avatar { width: 30px; height: 30px; }
+  html .sidebar .acct-menu {
+    position: fixed; top: auto; left: 8px; right: 8px; bottom: max(8px, env(safe-area-inset-bottom)); width: auto;
+    max-height: min(78vh, 560px); overflow-y: auto; z-index: 1002; padding: 8px;
+  }
+  html .sidebar .acct-menu button { padding: 10px 10px; font-size: 14px; }
+
+  /* 顶栏：抽屉按钮 + 面包屑一行，右侧状态收成图标 */
+  .shell { margin-left: 0; padding-top: 0; }
+  .topbar { position: sticky; top: 0; height: 48px; padding: 0 10px; flex-wrap: nowrap; gap: 8px; z-index: 40; }
+  .topbar > div:first-child { gap: 2px; overflow: hidden; }
+  .topbar > div:first-child .breadcrumb, .topbar > div:first-child .separator { display: none; }
+  .topbar > div:first-child > span:last-child { font-size: 14.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .topbar-right { gap: 6px; flex-shrink: 0; }
+  .topbar-right .tape-btn span:not(.swatch) { display: none; }
+
+  /* 文字被挤成一字一行：弹性子项允许收缩但标题不竖排，按钮组换行而不是压扁 */
+  .panel-heading > div:first-child, .row-between > *:first-child { min-width: 0; }
+  .panel-heading h2, .panel-title, .heading h1 { word-break: normal; overflow-wrap: anywhere; }
+  .editor-toolbar, .button-row, .panel-actions, .segments, .toolbar { flex-wrap: wrap; }
+  .tabs, .tabs.wide, .hub-tabs, .segments { overflow-x: auto; scrollbar-width: none; flex-wrap: nowrap; }
+  .tabs::-webkit-scrollbar, .hub-tabs::-webkit-scrollbar, .segments::-webkit-scrollbar { display: none; }
+  .table-wrap, .panel-body:has(> table), .panel.flush .panel-body { overflow-x: auto; }
+  td { word-break: keep-all; }
+  .overview-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .metric-card b, .overview-grid b { white-space: nowrap; }
+}
+
+/* ---------- 字体：英文用 Inter；代码、价格与数值用 JetBrains Mono（等宽、表格对齐） ---------- */
+:root {
+  --sans: "Inter Variable", "IBM Plex Sans", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
+  --num: "JetBrains Mono Variable", "IBM Plex Mono", "PingFang SC", "Microsoft YaHei", monospace;
+  --mono: "JetBrains Mono Variable", "IBM Plex Mono", "Cascadia Mono", Consolas, "Noto Sans Mono", monospace;
+}
+:root[data-lang="en"] body { font-feature-settings: "cv11", "ss01"; letter-spacing: -0.005em; }
+/* 等宽数字比窄体宽：大号指标稍微收一点，避免换行 */
+.metric-number, .watch-price, .hero-price { letter-spacing: -0.04em; }
+.num, td.right, .metric-number, .watch-price { font-variant-numeric: tabular-nums; }
+
+/* 账号菜单：语言切换 */
+.acct-lang { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 2px 4px 4px; }
+.ws-menu .acct-lang button { justify-content: center; border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; }
+.ws-menu .acct-lang button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); font-weight: 600; }
+
+/* 手机顶栏：左边抽屉按钮与标题不让位；右边的配色 / 夜间 / 状态收成图标 */
+@media (max-width: 720px) {
+  .topbar > div:first-child { flex: 1 1 auto; min-width: 0; }
+  .topbar-right { flex: 0 1 auto; min-width: 0; overflow: hidden; }
+  .topbar .tape-tools .tape-btn { font-size: 0; gap: 0; padding: 0 7px; }
+  .topbar .tape-tools .tape-btn > :not(.swatch):not(svg) { display: none; }
+  .topbar .tape-tools .tape-btn svg, .topbar .tape-tools .tape-btn .swatch { font-size: 12px; }
+  .topbar .status-chip { font-size: 0; gap: 0; padding: 0 8px; min-width: 26px; }
+  .topbar .status-chip > *:not(i):not(.dot):not(svg) { display: none; }
+}

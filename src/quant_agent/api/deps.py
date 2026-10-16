@@ -69,6 +69,8 @@ class AppServices:
     quota: Any = None  # QuotaService：按工作区计量用量并判定配额（T07）
     websearch: Any = None  # WebSearch：联网搜索与网页抓取（密钥在模型配置页登记）
     model_hub: Any = None  # ModelHub：工作区 / 个人模型服务商、成员模型权限与限额、用量计量
+    collab: Any = None  # CollabService：群组、任务、可见性、编辑标记、通知中心、问题报告
+    dbcache: Any = None  # DbCache：外部接口结果的数据库缓存（行情摘要、搜索结果、网页正文）
 
     @classmethod
     def build(
@@ -121,11 +123,51 @@ class AppServices:
 
         services.demo = DemoConnectionService(services.store, services.secrets, home)
         services.quota = QuotaService(db)
+        from ..platform.collab import CollabService
+
+        services.collab = CollabService(db, home)
+        services.auth.settings_reader = lambda: global_store.get(Collections.SETTINGS, "platform_settings")
+        services._register_collab_hooks()
         store.initializer = services._init_workspace_store
         services._register_tools(tools)
         services._migrate_plain_secrets()
         services.apply_runtime_config()
         return services
+
+    def _register_collab_hooks(self) -> None:
+        """策略每存出一个新版本，登记一笔编辑人员标记；新策略登记作者（默认工作区内公开）。"""
+        from ..platform import context as _context
+        from ..strategies import repo as _repo
+
+        home = self.home.resolve()
+
+        def on_save(repo: Any, rec: Any, previous_version: str, origin: str) -> None:
+            ctx = _context.current()
+            ws = ctx.workspace_id
+            if not ws:
+                return
+            if Path(repo.root).resolve() != (home / "workspaces" / ws / "store" / "strategies").resolve():
+                return
+            user_id = ctx.user_id or "system"
+            agent = origin in ("agent", "lab") or ctx.user_name.startswith("agent:")
+            self.collab.mark_edit(
+                ws,
+                "strategy",
+                rec.meta.slug,
+                user_id=user_id,
+                user_name=ctx.user_name or ("平台" if user_id == "system" else ""),
+                action="edit" if previous_version else "create",
+                version=rec.meta.version,
+                parent_version=previous_version,
+                actor_kind="agent" if agent else "human",
+                note=origin,
+            )
+            if not previous_version:
+                self.collab.claim(ws, "strategy", rec.meta.slug, user_id)
+
+        on_save._quantlab = True  # type: ignore[attr-defined]
+        _repo.SAVE_HOOKS[:] = [h for h in _repo.SAVE_HOOKS if not getattr(h, "_quantlab", False)]
+        _repo.SAVE_HOOKS.append(on_save)
 
     def _init_workspace_store(self, workspace_id: str, store: JsonStore) -> None:
         """新工作区第一次被访问：写入内置角色与预设团队。"""
@@ -256,7 +298,7 @@ class AppServices:
                 "type": "object",
                 "properties": {
                     "symbol": {"type": "string", "description": "如 BTC/USDT"},
-                    "timeframe": {"type": "string", "enum": ["1m", "5m", "15m", "30m", "1h", "4h", "1d"]},
+                    "timeframe": {"type": "string", "description": "周期：数字+单位，例如 100ms、250ms、1s、5s、1m、15m、1h、4h、1d（秒级 / 毫秒级只有 Binance 现货，由 1s K 线或逐笔成交聚合）"},
                     "bars": {"type": "integer", "description": f"K 线根数 100-5000，默认 {MARKET_WINDOW}"},
                 },
                 "required": ["symbol"],
@@ -278,6 +320,11 @@ class AppServices:
         from ..llm.websearch import SOURCE_CHOICES, WebSearch
 
         self.websearch = WebSearch(self.read_secrets)
+        if self.dbcache is None:
+            from ..data.dbcache import DbCache
+
+            self.dbcache = DbCache(self.home / "cache" / "api_cache.sqlite3")
+        self.websearch.cache = self.dbcache
         obj = {"type": "object"}
         tools.register(
             "search_platform",
@@ -299,7 +346,8 @@ class AppServices:
             label="联网搜索",
             description=(
                 "联网搜索公开资料（研报、指标定义、市场事件、用户提到的新闻与名词），返回标题、链接与摘要。"
-                "source：auto 自动；google（谷歌）；baidu（百度，中文资料优先）；bing（必应）；duckduckgo；"
+                "source：auto 自动；google（谷歌，需密钥，没有时自动改用免密钥来源并说明）；brave；custom（自定义来源）；"
+                "baidu（百度，中文资料优先）；bing（必应）；duckduckgo；"
                 "news（新闻：多个新闻源合并）；google_news / baidu_news；all（多个来源合并去重，适合交叉印证）"
             ),
             parameters={
@@ -314,6 +362,36 @@ class AppServices:
             },
         )
         tools.register(
+            "add_search_source",
+            lambda url="", label="", kind="searxng": self.websearch.add_custom(
+                self.write_secrets, label=label, url=url, kind=kind, trusted=False
+            ),
+            label="添加搜索来源",
+            description=(
+                "登记一个自定义联网搜索来源，之后 web_search 的 source=custom / all 会用到它。"
+                "kind=searxng：SearXNG 实例根地址（需开启 JSON 输出）；kind=rss：带 {q} 占位的 RSS 搜索地址。"
+                "只接受公网 http(s) 地址；密钥类服务（Google、Brave、Tavily）请研究者在 设置 → 模型 → 联网搜索 里填"
+            ),
+            parameters={
+                **obj,
+                "properties": {
+                    "url": {"type": "string"},
+                    "label": {"type": "string"},
+                    "kind": {"type": "string", "enum": ["searxng", "rss"]},
+                },
+                "required": ["url"],
+            },
+        )
+        tools.register(
+            "list_search_sources",
+            lambda: {
+                k: v for k, v in self.websearch.status().items() if k in ("providers", "custom", "free_sources")
+            },
+            label="搜索来源",
+            description="查看联网搜索可用的来源：哪些付费 API 已配置密钥、自定义来源、免密钥来源",
+            parameters={**obj, "properties": {}},
+        )
+        tools.register(
             "sync_market_data",
             self.sync_market_data,
             label="同步行情",
@@ -325,7 +403,7 @@ class AppServices:
                 **obj,
                 "properties": {
                     "symbols": {"type": "array", "items": {"type": "string"}, "description": '如 ["BTC/USDT"]'},
-                    "timeframe": {"type": "string", "enum": ["1m", "5m", "15m", "30m", "1h", "4h", "1d"]},
+                    "timeframe": {"type": "string", "description": "周期：数字+单位，例如 100ms、250ms、1s、5s、1m、15m、1h、4h、1d（秒级 / 毫秒级只有 Binance 现货，由 1s K 线或逐笔成交聚合）"},
                     "days": {"type": "integer", "minimum": 1, "maximum": 1500},
                     "exchange": {"type": "string", "enum": ["binance", "okx", "bybit"]},
                 },
@@ -391,6 +469,23 @@ class AppServices:
         from ..data.service import DataUnavailable
 
         limit = max(100, min(int(bars or MARKET_WINDOW), 5000))
+        # 同一标的 / 周期 / 窗口的摘要在一根 K 线内不会变：放进数据库缓存，多个对话、多个角色反复看行情时不再重算、不再请求交易所
+        from ..data.quality import TIMEFRAME_MS
+
+        if self.dbcache is not None:
+            ttl = max(2.0, min(TIMEFRAME_MS.get(timeframe, 3_600_000) / 1000, 300.0))
+            return self.dbcache.remember(
+                "market_summary",
+                f"{symbol}|{timeframe}|{limit}",
+                ttl,
+                lambda: self._market_summary(symbol, timeframe, limit),
+                keep=lambda v: bool(v) and not v.get("error"),
+            )
+        return self._market_summary(symbol, timeframe, limit)
+
+    def _market_summary(self, symbol: str, timeframe: str, limit: int) -> dict:
+        from ..data.service import DataUnavailable
+
         try:
             bars, source = self.market.get_bars(symbol, timeframe, limit=limit)
         except DataUnavailable as exc:

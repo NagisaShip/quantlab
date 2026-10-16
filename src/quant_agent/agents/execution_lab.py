@@ -207,7 +207,8 @@ class ExecutionLab(DomainLab):
             self._post(pid, role="event", kind="error", content=f"仿真没有完成：{exc}")
             return {"ok": False, "error": str(exc)}
         s = report["summary"]
-        evaluation = EXECUTION.evaluate(s, self.project_spec(project)["items"])
+        # 没设目标时不拿出厂默认阈值评判，只汇报实测结果
+        evaluation = EXECUTION.evaluate(s, self.project_spec(project)["items"]) if self.has_goal(project) else None
         run_id = None
         if not stress:
             run = self.deps.library().record_run(
@@ -272,7 +273,11 @@ class ExecutionLab(DomainLab):
             "frontier": report["frontier"],
             "cost_curve": {k: report["cost_curve"][k] for k in ("a_bps", "b_bps", "r2")},
             "checks": [{"label": c["label"], "ok": c["ok"], "detail": c["detail"]} for c in report["checks"]],
-            "goal": {"passed": evaluation["passed"], "gaps": EXECUTION.gap_report(evaluation)},
+            "goal": (
+                {"passed": evaluation["passed"], "gaps": EXECUTION.gap_report(evaluation)}
+                if evaluation
+                else "未设定验收目标：只汇报实测结果，不要说达标或未达标"
+            ),
             "warnings": report["tape"]["warnings"][:3],
         }
 

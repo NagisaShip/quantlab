@@ -31,6 +31,8 @@ class DataQuality:
     source: str
     coverage_start: int
     coverage_end: int
+    stale: bool = False  # 交易所这次没连上，展示的是本地缓存（可能不含最新几根）
+    warning: str = ""
 
     def to_dict(self) -> dict:
         return self.__dict__
@@ -339,6 +341,8 @@ class MarketDataService:
         self.cache = BarCache(cache_root) if cache_root else None
         self.funding_cache = FundingCache(cache_root) if cache_root else None
         self.last_error: dict[str, str] = {}
+        #: (exchange, symbol, timeframe) -> 最近一次补拉失败的原因；用缓存顶上时界面据此提示「数据可能不是最新」
+        self.stale: dict[tuple[str, str, str], str] = {}
 
     def get_bars(
         self,
@@ -393,9 +397,12 @@ class MarketDataService:
             raw_ref=f"synthetic:{symbol}:{timeframe}:end={end}",
         ), "synthetic"
 
+    #: 临时性网络错误（连接池等待超时、连接 / 读超时、断连）的重试间隔（秒）
+    PULL_RETRY_DELAYS = (0.6, 1.8)
+
     def _pull(self, adapter: Any, exchange: str, symbol: str, timeframe: str, start: int, end: int) -> list[Bar]:
-        """向交易所拉一段 K 线，并给每根 bar 打上事件审计字段。"""
-        bars = adapter.fetch_bars(symbol, timeframe, start, end)
+        """向交易所拉一段 K 线，并给每根 bar 打上事件审计字段。临时性网络错误自动重试两次。"""
+        bars = _with_retry(lambda: adapter.fetch_bars(symbol, timeframe, start, end), self.PULL_RETRY_DELAYS)
         return stamp(
             bars,
             source=f"{exchange}:rest",
@@ -412,14 +419,23 @@ class MarketDataService:
             return self._pull(adapter, exchange, symbol, timeframe, start, end)
         cached = self.cache.load(exchange, symbol, timeframe)
         fresh: list[Bar] = []
+        key = (exchange, symbol, timeframe)
         if not cached:
             fresh = self._pull(adapter, exchange, symbol, timeframe, start, end)
         else:
             first, last = cached[0].open_time, cached[-1].close_time
-            if start < first - step // 2:
-                fresh += self._pull(adapter, exchange, symbol, timeframe, start, first)
-            if end > last + step // 2:
-                fresh += self._pull(adapter, exchange, symbol, timeframe, last, end)
+            try:
+                if start < first - step // 2:
+                    fresh += self._pull(adapter, exchange, symbol, timeframe, start, first)
+                # 下一根 K 线要到 last + step 才收盘：在那之前去交易所拉只会拿到未收盘的半根（随后被过滤），
+                # 白白多一次请求。多个页面 / 对话同时刷新同一标的时，这一条能省掉绝大部分外部请求
+                if end > last + step:
+                    fresh += self._pull(adapter, exchange, symbol, timeframe, last, end)
+                self.stale.pop(key, None)
+            except Exception as exc:  # 交易所暂时连不上：先用本地缓存顶上，并记下原因（不是合成数据）
+                self.stale[key] = f"{type(exc).__name__}: {exc}"[:300]
+                if not fresh:
+                    return cached
         if fresh:
             merged = self.cache.merge(exchange, symbol, timeframe, fresh)
             # 未收盘的最新一根不进缓存，但本次调用可以看到它（随后会被过滤）
@@ -594,11 +610,44 @@ class MarketDataService:
         return ds
 
     def quality(self, symbol: str, timeframe: str, *, limit: int = 1500, exchange: str = "binance") -> DataQuality:
-        bars, source = self.get_bars(symbol, timeframe, limit=limit, exchange=exchange)
-        return check_quality(
-            bars,
-            symbol=symbol,
-            timeframe=timeframe,
-            source=source,
-            step_ms=TIMEFRAME_MS.get(timeframe, 3_600_000),
-        )
+        """数据质量检查。交易所连不上但本地有缓存时，按缓存出报告并标 stale，而不是整页报 502。"""
+        step = TIMEFRAME_MS.get(timeframe, 3_600_000)
+        warning = ""
+        try:
+            bars, source = self.get_bars(symbol, timeframe, limit=limit, exchange=exchange)
+        except DataUnavailable as exc:
+            cached = self.cache.load(exchange, symbol, timeframe) if self.cache else []
+            if not cached:
+                raise
+            bars, source = [b for b in cached if b.closed][-limit:], "exchange"
+            warning = f"交易所暂时连不上，以下为本地缓存（{len(bars)} 根）：{exc}"[:400]
+        q = check_quality(bars, symbol=symbol, timeframe=timeframe, source=source, step_ms=step)
+        stale = self.stale.get((exchange, symbol, timeframe))
+        if warning or stale:
+            q.stale = True
+            q.warning = warning or f"交易所这次没连上（{stale}），展示的是本地缓存，可能缺最新几根 K 线"
+        return q
+
+
+def _transient(exc: BaseException) -> bool:
+    """连接池等待超时、连接 / 读超时、断连这类临时性网络错误才值得重试；4xx 等确定性错误不重试。"""
+    try:
+        import httpx
+    except ImportError:  # pragma: no cover
+        return False
+    if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError)):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code >= 500
+    return False
+
+
+def _with_retry(fn: Any, delays: tuple[float, ...]) -> Any:
+    for delay in (*delays, None):
+        try:
+            return fn()
+        except Exception as exc:
+            if delay is None or not _transient(exc):
+                raise
+            time.sleep(delay)
+    return None  # pragma: no cover

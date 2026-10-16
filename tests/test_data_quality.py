@@ -167,7 +167,7 @@ def test_unknown_timeframe_rejected():
     with pytest.raises(DataError, match="不支持的周期"):
         validate_bars(
             [{"timestamp": i * 60_000, "open": 1, "high": 1, "low": 1, "close": 1} for i in range(200)],
-            timeframe="7s",
+            timeframe="7q",  # 7s 这类秒级周期现在是合法的；写法本身不合法才拒绝
         )
 
 
