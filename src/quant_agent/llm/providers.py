@@ -19,7 +19,7 @@ from typing import Any
 
 import httpx
 
-from .base import ChatResult, LLMError, Message, Tool, ToolCall, split_data_url
+from .base import ChatResult, LLMError, Message, Tool, ToolCall, http_error, split_data_url
 
 
 def _resolve_env(value: str) -> str:
@@ -135,8 +135,8 @@ class OpenAICompatibleProvider:
                 json=payload,
             )
             resp.raise_for_status()
-        except httpx.HTTPError as e:  # 网络/限流/超时统一包装
-            raise LLMError(f"[{self.name}] request failed: {e}") from e
+        except httpx.HTTPError as e:  # 网络/限流/超时统一包装（标出能否重试）
+            raise http_error(self.name, e) from e
         return self._parse(resp, model, None)
 
     def _parse(self, resp: httpx.Response, model: str, on_delta) -> ChatResult:
@@ -320,7 +320,7 @@ class OpenAIResponsesProvider(OpenAICompatibleProvider):
             resp = self._client.post(url, headers=headers, json=payload)
             resp.raise_for_status()
         except httpx.HTTPError as e:
-            raise LLMError(f"[{self.name}] request failed: {e}") from e
+            raise http_error(self.name, e) from e
         try:
             data = resp.json()
         except ValueError as e:
@@ -391,7 +391,7 @@ class OpenAIResponsesProvider(OpenAICompatibleProvider):
                 final = ev.get("response")
             elif kind in ("response.failed", "error"):
                 err = (ev.get("response") or {}).get("error") or ev.get("error") or ev.get("message") or ev
-                raise LLMError(f"[{self.name}] {err}")
+                raise LLMError(f"[{self.name}] {err}", retryable=True)  # 流式中途出错：多为过载 / 中断
         if final is not None:
             return self._parse_response(final, model, None)
         return ChatResult(content="".join(text), model=model, provider=self.name)
@@ -515,9 +515,9 @@ class AnthropicProvider:
                 detail = e.response.text[:300]
             except Exception:  # 流式响应未读完时拿不到正文
                 pass
-            raise LLMError(f"[{self.name}] request failed: {e} {detail}".strip()) from e
+            raise http_error(self.name, e, detail) from e
         except httpx.HTTPError as e:
-            raise LLMError(f"[{self.name}] request failed: {e}") from e
+            raise http_error(self.name, e) from e
         return self._parse(resp.json(), model, None)
 
     def _parse(self, data: dict[str, Any], model: str, on_delta) -> ChatResult:
@@ -590,7 +590,9 @@ class AnthropicProvider:
                 stop_reason = (ev.get("delta") or {}).get("stop_reason") or stop_reason
                 usage.update(ev.get("usage") or {})
             elif kind == "error":
-                raise LLMError(f"[{self.name}] 流式输出中断：{(ev.get('error') or {}).get('message', '')}")
+                raise LLMError(
+                    f"[{self.name}] 流式输出中断：{(ev.get('error') or {}).get('message', '')}", retryable=True
+                )
         for idx, raw in partial_json.items():
             if blocks.get(idx, {}).get("type") == "tool_use":
                 blocks[idx]["input"] = _safe_json(raw or "{}")

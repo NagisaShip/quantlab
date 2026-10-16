@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import random
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -143,6 +145,10 @@ def _deep_merge(base: dict, override: dict) -> None:
             base[k] = v
 
 
+#: 同一个模型调用失败后默认自动重试的次数
+DEFAULT_RETRIES = 2
+
+
 class ModelRouter:
     """按角色选模型；失败按 fallback 链降级。参考 codex/cc 的 provider 抽象。"""
 
@@ -154,6 +160,7 @@ class ModelRouter:
         # 调用前的限额检查（返回原因则跳过该服务商）与调用后的用量记账
         self.guard: Any = None
         self.on_usage: Any = None
+        self.sleep = time.sleep  # 重试等待（测试里替换掉，不真的睡）
 
     @property
     def config(self) -> AgentConfig:
@@ -220,12 +227,15 @@ class ModelRouter:
         max_tokens: int | None = None,
         effort: str | None = None,
         on_delta: Any = None,
+        on_retry: Any = None,
     ) -> ChatResult:
         """model 形如 "provider/model"；给定则优先，失败仍按 fallback 链降级。
 
         effort：low / medium / high / max，按模型映射成原生参数（不支持的模型忽略）。
         on_delta(kind, text)：流式回调；换到下一个候选模型前会先回调 ("reset", "")，
         让界面清掉上一个模型没说完的半句话。
+        on_retry(info)：同一个模型遇到临时性错误（限流、5xx、超时、断流）准备重试前回调，
+        info 含 provider、model、attempt、retries、delay（秒）、status、error。
         """
         errors: list[str] = []
         emitted = {"any": False}
@@ -235,6 +245,7 @@ class ModelRouter:
             on_delta(kind, text)
 
         cfg = self.config
+        retries = self.retries_for(cfg)
         for provider_name, model_name in self._targets_for(role, override=model or None, cfg=cfg):
             pc = cfg.providers.get(provider_name)
             if pc is None:
@@ -249,34 +260,72 @@ class ModelRouter:
                 continue
             target_effort = effort or (pc.setting(model_name).get("effort") if pc else None) or None
             for candidate in self._effort_variants(provider_name, model_name, target_effort, pc):
-                if emitted["any"] and on_delta:
-                    on_delta("reset", "")
-                    emitted["any"] = False
-                try:
-                    client = self._client(provider_name, pc)
-                    extra: dict[str, Any] = {}
-                    if target_effort:
-                        extra["effort"] = target_effort
-                    if on_delta:
-                        extra["on_delta"] = relay
-                    result = client.chat(
-                        messages,
-                        model=pc.request_model(candidate),
-                        temperature=temperature,
-                        tools=tools,
-                        max_tokens=max_tokens,
-                        **extra,
-                    )
-                    if self.on_usage:
-                        try:
-                            self.on_usage(pc, candidate, result.usage)
-                        except Exception:
-                            pass
-                    return result
-                except LLMError as e:
-                    errors.append(str(e))
-                    continue
+                for attempt in range(retries + 1):
+                    if emitted["any"] and on_delta:
+                        on_delta("reset", "")
+                        emitted["any"] = False
+                    try:
+                        client = self._client(provider_name, pc)
+                        extra: dict[str, Any] = {}
+                        if target_effort:
+                            extra["effort"] = target_effort
+                        if on_delta:
+                            extra["on_delta"] = relay
+                        result = client.chat(
+                            messages,
+                            model=pc.request_model(candidate),
+                            temperature=temperature,
+                            tools=tools,
+                            max_tokens=max_tokens,
+                            **extra,
+                        )
+                        if self.on_usage:
+                            try:
+                                self.on_usage(pc, candidate, result.usage)
+                            except Exception:
+                                pass
+                        return result
+                    except LLMError as e:
+                        delay = self._retry_delay(e, attempt) if attempt < retries else None
+                        if delay is None:  # 不可重试、次数用完或要等太久：换下一个候选模型
+                            errors.append(str(e) + (f"（已重试 {attempt} 次）" if attempt else ""))
+                            break
+                        if on_retry:
+                            # 回调可以抛出异常（例如研究者按了停止）来放弃重试
+                            on_retry(
+                                {
+                                    "provider": provider_name,
+                                    "model": candidate,
+                                    "attempt": attempt + 1,
+                                    "retries": retries,
+                                    "delay": round(delay, 1),
+                                    "status": e.status,
+                                    "error": str(e)[:200],
+                                }
+                            )
+                        self.sleep(delay)
         raise LLMError("所有模型均失败:\n" + "\n".join(errors))
+
+    #: 单次重试最长等待；服务端要求等更久（Retry-After）时不等，直接换下一个模型
+    RETRY_MAX_WAIT = 30.0
+
+    def _retry_delay(self, e: LLMError, attempt: int) -> float | None:
+        """第 attempt 次失败后等多久再试：指数退避 1s、2s、4s…（上限 20s）加 ±20% 抖动；
+        服务端给了 Retry-After 就按它来。不可重试的错误返回 None。"""
+        if not getattr(e, "retryable", False):
+            return None
+        if e.retry_after is not None:
+            return e.retry_after if e.retry_after <= self.RETRY_MAX_WAIT else None
+        base = min(20.0, 1.0 * (2**attempt))
+        return base * random.uniform(0.8, 1.2)
+
+    def retries_for(self, cfg: AgentConfig | None = None) -> int:
+        """同一个模型失败后的自动重试次数（不含第一次），路由设置里可改，默认 2。"""
+        raw = (cfg or self.config).routing.get("retries")
+        try:
+            return max(0, min(5, int(raw)))
+        except (TypeError, ValueError):
+            return DEFAULT_RETRIES
 
     def _effort_variants(
         self, provider_name: str, model_name: str, effort: str | None, pc: ProviderConfig | None = None

@@ -401,7 +401,7 @@ def rule_revise(code: str, evaluation: dict[str, Any], round_no: int) -> tuple[s
 @dataclass
 class LabTools:
     backtest: Callable[..., dict[str, Any]]  # (project, code, *, cost_scale, label) -> dict
-    market: Callable[[str, str], dict[str, Any]]  # (symbol, timeframe) -> dict
+    market: Callable[..., dict[str, Any]]  # (symbol, timeframe, bars) -> dict；bars 与回测窗口一致
     templates: Callable[[str], list[dict[str, Any]]]  # (query) -> list
     team: Callable[..., dict[str, Any]] | None = None  # (topic, *, team_id, context) -> TeamRun dict
     save_strategy: Callable[[dict[str, Any]], dict[str, Any]] | None = None
@@ -427,7 +427,7 @@ class _PinnedRouter:
             kw["effort"] = self.effort
         accepted = _accepted_kwargs(self.router.chat)
         if accepted is not None:  # 不认识 effort / on_delta 的路由（测试替身、旧插件）就不传
-            kw = {k: v for k, v in kw.items() if k in accepted or k not in ("effort", "on_delta")}
+            kw = {k: v for k, v in kw.items() if k in accepted or k not in ("effort", "on_delta", "on_retry")}
         return self.router.chat(messages, **kw)
 
 
@@ -822,6 +822,18 @@ class StrategyLab:
         cur = self.store.get(pid) or {}
         self.store.patch(pid, status="running" if cur.get("job") else "idle")
 
+    def _on_model_retry(self, pid: str, info: dict[str, Any]) -> None:
+        """模型调用遇到临时性错误、准备自动重试：进度行写清原因与等待时间；研究者按了停止就不再重试。"""
+        self._check_stop(pid)
+        why = {429: "限流", 408: "超时", 529: "服务过载"}.get(info.get("status") or 0) or (
+            f"服务端错误 {info['status']}" if info.get("status") else "网络中断或超时"
+        )
+        self._phase(
+            pid,
+            f"模型调用失败（{why}），{info['delay']:g} 秒后第 {info['attempt']}/{info['retries']} 次重试",
+            f"{info['provider']}/{info['model']} · {info.get('error', '')}"[:160],
+        )
+
     def _post(self, pid: str, **msg: Any) -> dict[str, Any]:
         return self.store.append(pid, msg)
 
@@ -1022,7 +1034,13 @@ class StrategyLab:
                     f"第 {step + 1} 步 · 本回合已调用 {len(used)} 个工具（上限 {max_calls}）",
                 )
             result = router.chat(
-                messages, role="code_gen", temperature=0.2, tools=list(tools.values()), max_tokens=8192, on_delta=stream
+                messages,
+                role="code_gen",
+                temperature=0.2,
+                tools=list(tools.values()),
+                max_tokens=8192,
+                on_delta=stream,
+                on_retry=lambda info: self._on_model_retry(pid, info),
             )
             model = f"{result.provider}/{result.model}"
             raw_content = result.content or ""
@@ -1103,8 +1121,13 @@ class StrategyLab:
             p = self.store.get(pid) or {}
             sym = symbol or p["securities"][0]
             tf = timeframe or p["timeframe"]
+            n = int(p.get("bars_limit") or 1500)  # 与回测同一个窗口
             return self._tool(
-                pid, "get_market_summary", "查看行情摘要", {"标的": sym, "周期": tf}, lambda: self.tools.market(sym, tf)
+                pid,
+                "get_market_summary",
+                "查看行情摘要",
+                {"标的": sym, "周期": tf, "K 线": n},
+                lambda: _call_market(self.tools.market, sym, tf, n),
             )
 
         def templates(query: str = "") -> Any:
@@ -1549,13 +1572,8 @@ class StrategyLab:
         if self.tools.team is None:
             return {"ok": False, "error": "团队功能不可用"}
         project = self.store.get(pid) or {}
-        latest = _latest_metrics(project)
-        context = (
-            f"策略项目：{project.get('title')}\n想法：{project.get('idea') or '—'}\n"
-            f"标的：{','.join(project['securities'])}，周期：{project['timeframe']}\n"
-            f"最近回测：{metrics_text(latest)}\n验收目标：{G.items_text(G.project_items(project))}\n\n"
-            f"当前代码：\n```python\n{(project.get('code') or '（尚无）')[:5000]}\n```"
-        )
+        # 与单 Agent 共享同一份状态：数据窗口、全部版本的改动说明与回测成绩、研究者最近的要求
+        context = research_brief(project, self.store.messages(pid))
         self._phase(pid, "团队讨论中")
         run = self._tool(
             pid,
@@ -2604,8 +2622,8 @@ class StrategyLab:
                 pid,
                 "get_market_summary",
                 "调研：行情摘要",
-                {"标的": sym, "周期": tf},
-                lambda: self.tools.market(sym, tf),
+                {"标的": sym, "周期": tf, "K 线": int(project.get("bars_limit") or 1500)},
+                lambda: _call_market(self.tools.market, sym, tf, int(project.get("bars_limit") or 1500)),
             )
             research_notes += f"行情摘要：{json.dumps(summary, ensure_ascii=False, default=str)[:1500]}\n"
         if research == "team" and self.tools.team is not None:
@@ -2915,6 +2933,85 @@ class StrategyLab:
 
 
 # ---------------------------------------------------------------------------
+_TF_MINUTES = {"1m": 1, "5m": 5, "15m": 15, "30m": 30, "1h": 60, "4h": 240, "1d": 1440}
+
+
+def data_window_text(project: dict[str, Any]) -> str:
+    """回测用的数据窗口，例如「最近 1500 根 1h K 线（约 62.5 天）」；给了起止日期就写日期。"""
+    if project.get("start") or project.get("end"):
+        return f"{project.get('start') or '最早'} 至 {project.get('end') or '最新'}（{project.get('timeframe')} K 线）"
+    n = int(project.get("bars_limit") or 1500)
+    tf = project.get("timeframe") or "1h"
+    days = n * _TF_MINUTES.get(tf, 60) / 1440
+    return f"最近 {n} 根 {tf} K 线（约 {days:.1f} 天）"
+
+
+def version_history_text(
+    project: dict[str, Any], limit: int = 10, fmt: Callable[[dict[str, Any] | None], str] | None = None
+) -> str:
+    """版本演进：每一版的来源、改动说明、改了哪些参数、回测成绩与是否达标（最近 limit 版）。
+    fmt：成绩的写法（因子 / 模型等研究用各自的 summary_text），默认按策略回测指标。"""
+    fmt = fmt or metrics_text
+    rows = project.get("versions") or []
+    if not rows:
+        return "（还没有版本）"
+    src = {"ai": "AI", "user": "研究者手动", "fallback": "规则", "template": "模板", "autopilot": "自动迭代"}
+    lines, prev = [], None
+    for r in rows:
+        params = r.get("params") or {}
+        if prev is None:
+            diff = ""
+        else:
+            changed = [
+                f"{k} {prev.get(k)}→{params.get(k)}" for k in sorted({*prev, *params}) if prev.get(k) != params.get(k)
+            ]
+            diff = f"；参数改动：{', '.join(changed[:8])}" if changed else "；参数未变（改的是逻辑）"
+        ev = r.get("evaluation") or {}
+        verdict = "" if not ev else ("，达标" if ev.get("passed") else "，未达标")
+        cur = "（当前）" if r.get("v") == project.get("current_v") else ""
+        score = fmt(r.get("metrics")) if r.get("metrics") else "（未回测 / 未评估）"
+        lines.append(
+            f"- v{r['v']}{cur}［{src.get(r.get('source') or '', r.get('source') or '—')}］"
+            f"{(r.get('note') or '（无说明）')[:160]}{diff}\n  成绩：{score}{verdict}"
+        )
+        prev = params
+    skipped = len(lines) - limit
+    return (f"（更早的 {skipped} 版略）\n" if skipped > 0 else "") + "\n".join(lines[-limit:])
+
+
+def research_brief(
+    project: dict[str, Any], messages: list[dict[str, Any]] | None = None, *, code_chars: int = 5000
+) -> str:
+    """交给团队评审 / 团队讨论的完整前情：和单 Agent 看到的是同一份状态（同一数据窗口、全部版本与成绩）。"""
+    asks = [
+        m["content"].strip()
+        for m in messages or []
+        if m.get("role") == "user" and m.get("kind") == "text" and (m.get("content") or "/")[0] != "/"
+    ]
+    recent = "\n".join(f"- {t[:200]}" for t in asks[-4:]) or "（无）"
+    symbols = ",".join(project.get("securities") or [])
+    return (
+        f"【项目】{project.get('title')}　标的 {symbols}　周期 {project.get('timeframe')}\n"
+        f"【数据窗口】{data_window_text(project)}；数据源 {project.get('data_source') or 'auto'}。"
+        "查看行情时请用同一标的、周期与 K 线根数，和回测看同一段数据。\n"
+        f"【初始想法】{project.get('idea') or '—'}\n"
+        f"【研究者最近的要求】\n{recent}\n"
+        f"【验收目标】{G.items_text(G.project_items(project))}\n"
+        f"【版本演进（按时间）】\n{version_history_text(project)}\n"
+        "说明：后续版本相对初始想法的改动，是研究过程中根据回测结果有意做的迭代（见每版的改动说明与成绩），"
+        "评审时请据此判断改动是否有效，不要把它当成「代码与想法不一致」的错误。\n\n"
+        f"【当前代码 v{project.get('current_v')}】\n```python\n{(project.get('code') or '（尚无）')[:code_chars]}\n```"
+    )
+
+
+def _call_market(fn: Callable[..., dict[str, Any]], symbol: str, timeframe: str, bars: int) -> dict[str, Any]:
+    """行情摘要带上回测窗口；旧的 (symbol, timeframe) 实现（测试替身、插件）不认识 bars 时退回两参数。"""
+    try:
+        return fn(symbol, timeframe, bars)
+    except TypeError:
+        return fn(symbol, timeframe)
+
+
 def _latest_metrics(project: dict[str, Any]) -> dict[str, Any] | None:
     for r in reversed(project.get("versions") or []):
         if r.get("v") == project.get("current_v") and r.get("metrics"):

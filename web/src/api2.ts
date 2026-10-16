@@ -387,8 +387,8 @@ export interface ModelSetting {
 
 export interface ModelConfigView {
   providers: ProviderView[]
-  routing: Record<string, string | string[]>
-  routing_layers: { workspace: Record<string, string | string[]>; personal: Record<string, string | string[]> }
+  routing: Record<string, string | string[] | number>
+  routing_layers: { workspace: Record<string, string | string[] | number>; personal: Record<string, string | string[] | number> }
   me: { role: string; is_ws_admin: boolean; use_workspace_models: boolean; allow_personal_models: boolean }
   config_path: string | null
 }
@@ -606,7 +606,7 @@ export const v3 = {
   quotaRequests: () => get<{ requests: QuotaRequest[] }>('/api/config/quota-requests'),
   requestQuota: (p: LimitRule & { reason: string }) => post<{ ok: boolean; request: QuotaRequest }>('/api/config/quota-requests', p),
   decideQuota: (id: string, approve: boolean, note = '') => post<{ ok: boolean }>(`/api/config/quota-requests/${id}/decide`, { approve, note }),
-  saveRouting: (p: { default: string; code_gen: string; reasoning: string; report: string; fallback: string[] }, scope?: ProviderScope) =>
+  saveRouting: (p: { default: string; code_gen: string; reasoning: string; report: string; fallback: string[]; retries?: number | null }, scope?: ProviderScope) =>
     put<{ ok: boolean }>(`/api/config/routing${scope ? `?scope=${scope}` : ''}`, p),
 
   /* 纸面模拟 */

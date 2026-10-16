@@ -98,7 +98,40 @@ class ChatResult:
 
 
 class LLMError(RuntimeError):
-    pass
+    """模型调用失败。retryable：临时性错误（限流、服务端 5xx、超时、网络中断、流式中断），
+    同一个模型稍后重试大概率能成功；否则（密钥错、参数错、格式无法解析）重试没有意义，直接换下一个模型。"""
+
+    def __init__(
+        self, message: str = "", *, retryable: bool = False, status: int | None = None, retry_after: float | None = None
+    ) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+        self.status = status
+        self.retry_after = retry_after
+
+
+#: 值得重试的 HTTP 状态码：超时、冲突、限流、服务端错误、过载（Anthropic 529）
+RETRYABLE_STATUS = frozenset({408, 409, 425, 429, 500, 502, 503, 504, 520, 522, 524, 529})
+
+
+def http_error(name: str, exc: Exception, detail: str = "") -> LLMError:
+    """把 httpx 异常包装成 LLMError，并标出能否重试、服务端要求的等待时间（Retry-After）。"""
+    import httpx
+
+    status = None
+    retry_after = None
+    retryable = isinstance(exc, (httpx.TimeoutException, httpx.TransportError))
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        retryable = status in RETRYABLE_STATUS
+        raw = exc.response.headers.get("retry-after")
+        if raw:
+            try:
+                retry_after = max(0.0, float(raw))
+            except ValueError:
+                retry_after = None
+    msg = f"[{name}] request failed: {exc}" + (f" {detail}" if detail else "")
+    return LLMError(msg.strip(), retryable=retryable, status=status, retry_after=retry_after)
 
 
 # 思考努力程度：平台统一的四档，由各 provider 映射到自己的参数

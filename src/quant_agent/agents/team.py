@@ -42,6 +42,12 @@ TEAM_SAFETY_PREFIX = (
     "5. 汇总时以证据质量而不是共识数量或措辞流畅度为准。\n\n"
 )
 
+#: 并行评审时附在任务后：各角色同时、独立发言，只写本领域的核心洞察，交给组长消解冲突
+PARALLEL_BRIEF = (
+    "\n\n【并行评审】各角色同时独立发言，互相看不到。只写你职责范围内最重要的洞察，≤150 字（要点 + 数字），"
+    "其他领域留给对应角色，不要铺垫、不要复述材料；研究组长会汇总并消解分歧。"
+)
+
 
 @dataclass
 class TeamRunStep:
@@ -269,8 +275,10 @@ class TeamRunner:
         return steps
 
     def _run_parallel(self, roles: list[Role], material: str) -> list[TeamRunStep]:
+        task = material + PARALLEL_BRIEF
+
         def one(role: Role) -> TeamRunStep:
-            return self._invoke(role, material)
+            return self._invoke(role, task)
 
         with ThreadPoolExecutor(max_workers=min(self.max_workers, len(roles))) as pool:
             return list(pool.map(one, roles))
@@ -457,9 +465,44 @@ def builtin_teams() -> list[Team]:
         Team(
             id="execution_team",
             name="执行小组",
-            description="市场分析师判断盘口状态 → 执行与成本专家比较拆单算法 → 研究审计员复核成本模型 → 组长拍板。",
-            mode="sequential",
+            description="市场分析师、执行与成本专家、研究审计员并行给出各自领域的结论，研究组长消解冲突后拍板。",
+            mode="parallel",
+            role_ids=["market_analyst", "execution_specialist", "research_auditor"],
+            synthesizer_id="research_lead",
+        ),
+        Team(
+            id=LAB_REVIEW_TEAM,
+            name="研究评审组",
+            description="AI 研究室默认的评审组：市场、成本执行、代码审计三个角色互不依赖，并行各写 ≤150 字的核心洞察，"
+            "研究组长消解冲突并汇总。比串行接力快，也不会后发言的人复述前面的观点。",
+            mode="parallel",
             role_ids=["market_analyst", "execution_specialist", "research_auditor"],
             synthesizer_id="research_lead",
         ),
     ]
+
+
+#: AI 研究室 /team、/discuss 默认使用的团队
+LAB_REVIEW_TEAM = "lab_review"
+
+#: 出厂团队改过编排时旧出厂版本的样子：库里的团队还是这个样子（用户没改过）就升级到新版
+_LEGACY_TEAMS: dict[str, list[dict[str, Any]]] = {
+    "execution_team": [
+        {"mode": "sequential", "role_ids": ["market_analyst", "execution_specialist", "research_auditor"]},
+    ],
+}
+
+
+def sync_builtin_teams(store: Any) -> None:
+    """把预设团队写进工作区：缺的补上；还是旧出厂编排的升级到新版（用户改过的不动）。"""
+    existing = {t["id"]: t for t in store.list(Collections.TEAMS)}
+    for team in builtin_teams():
+        new = team.to_dict()
+        cur = existing.get(team.id)
+        if cur is None:
+            store.upsert(Collections.TEAMS, new)
+            continue
+        for old in _LEGACY_TEAMS.get(team.id, []):
+            if all(cur.get(k) == v for k, v in old.items()):
+                store.upsert(Collections.TEAMS, {**cur, **{k: new[k] for k in ("mode", "description", "role_ids")}})
+                break

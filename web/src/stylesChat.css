@@ -4,6 +4,9 @@
    - 用户消息是右侧浅灰气泡；AI 正文直接排版，不加头像和气泡。
    ========================================================================== */
 
+/* 对话区宽度：消息、输入框、目标弹层、进度行共用，保持左右对齐 */
+:root { --chat-w: 920px; }
+
 main.full { padding: 0; max-width: none; flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .shell:has(main.full) { height: 100vh; min-height: 0; }
 
@@ -239,10 +242,10 @@ main.full { padding: 0; max-width: none; flex: 1; min-height: 0; display: flex; 
 .lab2-tabs button.on { background: var(--sunken); color: var(--ink); }
 
 .lab2-scroll { flex: 1; overflow-y: auto; min-height: 0; }
-.lab2-thread { max-width: 760px; margin: 0 auto; padding: 8px 24px 24px; }
+.lab2-thread { max-width: var(--chat-w); margin: 0 auto; padding: 8px 24px 24px; }
 .lab2-empty { color: var(--faint); text-align: center; padding: 60px 0; font-size: 13.5px; }
 .lab2-dock { flex: none; padding: 0 24px 18px; }
-.lab2-dock .cmp { max-width: 760px; margin: 0 auto; }
+.lab2-dock .cmp { max-width: var(--chat-w); margin: 0 auto; }
 
 /* 新对话 */
 .lab2-welcome-scroll { display: flex; flex-direction: column; }
@@ -359,7 +362,7 @@ main.full { padding: 0; max-width: none; flex: 1; min-height: 0; display: flex; 
 .goal-chip.empty, .goal-chip.plain { color: var(--faint); background: transparent; }
 button.goal-chips:hover .goal-chip { border-color: var(--line); }
 
-.lab2-goal-pop { max-width: 760px; margin: 0 auto 10px; width: 100%; }
+.lab2-goal-pop { max-width: var(--chat-w); margin: 0 auto 10px; width: 100%; }
 .lab2-welcome .lab2-goal-pop { max-width: 680px; }
 .goal-form {
   background: var(--sheet); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px;
@@ -525,7 +528,7 @@ button.goal-chips:hover .goal-chip { border-color: var(--line); }
 .cc-at { color: var(--accent, #2e45c8); }
 .cc-gate-card { margin: 18px 0; border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; font-size: 13.5px; color: var(--ink-2); display: flex; flex-direction: column; gap: 10px; background: var(--sheet); }
 .cc-gate-actions { display: flex; gap: 8px; }
-.lab2-dock .cb-working { max-width: 760px; margin: 0 auto 6px; }
+.lab2-dock .cb-working { max-width: var(--chat-w); margin: 0 auto 6px; }
 @container (max-width: 560px) { .cc-roster-mini, .lab2-head .lab2-sub { display: none; } }
 .cc-pill, .cc-add, .cc-stage-head select, .cc-synth select { width: auto; margin-top: 0; display: inline-block; padding-right: 24px; }
 .cc-stage-name { width: auto; margin-top: 0; }

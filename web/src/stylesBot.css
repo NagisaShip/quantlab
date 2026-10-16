@@ -19,7 +19,7 @@
 .qbot .qbot-visor { fill: var(--qb-visor); opacity: .55; }
 .qbot .qbot-eye { transform-box: fill-box; transform-origin: center; transition: transform var(--dur-3, 240ms) var(--ease-spring, ease); }
 .qbot .qbot-eyes { transform-box: fill-box; transform-origin: center; }
-.qbot .qbot-wick { stroke: var(--qb-eye); stroke-width: 1.1; stroke-linecap: round; opacity: .9; transition: opacity var(--dur-2, 180ms), stroke var(--dur-3, 240ms); }
+.qbot .qbot-wick { stroke: var(--qb-eye); stroke-width: .7; stroke-linecap: round; opacity: .9; transition: opacity var(--dur-2, 180ms), stroke var(--dur-3, 240ms); }
 .qbot .qbot-body {
   fill: var(--qb-eye); stroke: var(--qb-eye); stroke-width: 0; transform-box: fill-box; transform-origin: center;
   transition: transform 90ms ease-out, fill var(--dur-3, 240ms) var(--ease-out, ease), stroke var(--dur-3, 240ms);
@@ -108,7 +108,7 @@
 .qbot.calm.qbot-thinking .qbot-eye.r { transform: translateY(.9px); }
 
 /* ---- 简化静态：图标、小头像（≤18px）——平涂，无面罩，线条略粗 ---- */
-.qbot.simple .qbot-wick { stroke-width: 1.4; opacity: 1; }
+.qbot.simple .qbot-wick { stroke-width: 1; opacity: 1; }
 
 .qbot.still *, .qbot.still { animation: none !important; transition: none !important; }
 

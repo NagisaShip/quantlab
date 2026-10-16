@@ -105,12 +105,35 @@ def _view(r: MissionRunner, mid: str, after: int = 0, since: float = 0.0) -> dic
     return {"mission": _or_404(r, mid), "feed": r.store.feed(mid, after=after, since=since), "server_time": now}
 
 
+def _lab_project(payload: MissionIn) -> dict[str, Any] | None:
+    if not payload.lab_project_id:
+        return None
+    from ..agents.strategy_lab import LabStore
+
+    return LabStore(get_services().store).get(payload.lab_project_id)
+
+
+def lab_context(payload: MissionIn) -> str:
+    """讨论 AI 研究室里的项目时，把和单 Agent 同一份的研究简报（数据窗口、版本演进与每版成绩、研究者最近的要求、
+    当前代码）放进【背景】。比塞进 JSON 的平台数据完整，不会被截断成只剩代码。"""
+    p = _lab_project(payload)
+    if not p:
+        return payload.context
+    from ..agents.strategy_lab import LabStore, research_brief
+
+    brief = research_brief(p, LabStore(get_services().store).messages(p["id"]), code_chars=3000)
+    return f"{payload.context}\n\n{brief}".strip()
+
+
 def _materials(payload: MissionIn) -> dict[str, Any]:
     s = get_services()
     out: dict[str, Any] = {}
+    lab_p = _lab_project(payload)
     if payload.include_market_data:
         try:
-            out["market"] = s.market_summary(payload.symbol, payload.timeframe)
+            # 讨论研究项目时用项目自己的数据窗口（与回测相同），而不是另取一段更短的
+            bars = int((lab_p or {}).get("bars_limit") or 1500)
+            out["market"] = s.market_summary(payload.symbol, payload.timeframe, bars)
         except Exception as exc:  # 行情失败不阻塞讨论
             out["market_error"] = str(exc)[:200]
     if payload.strategy:
@@ -121,18 +144,17 @@ def _materials(payload: MissionIn) -> dict[str, Any]:
             out["backtest"] = {"strategy": payload.strategy, "metrics": res.metrics.to_dict()}
         except Exception as exc:
             out["backtest_error"] = str(exc)[:200]
-    if payload.lab_project_id:
-        from ..agents.strategy_lab import LabStore, _latest_metrics
+    if lab_p:
+        from ..agents.strategy_lab import _latest_metrics
 
-        p = LabStore(s.store).get(payload.lab_project_id)
-        if p:
-            out["lab"] = {
-                "title": p.get("title"),
-                "idea": p.get("idea"),
-                "version": p.get("current_v"),
-                "metrics": _latest_metrics(p),
-                "code": (p.get("code") or "")[:4000],
-            }
+        # 代码、版本演进放在【背景】（lab_context）；这里只留结构化的要点，供结论提取用
+        out["lab"] = {
+            "title": lab_p.get("title"),
+            "version": lab_p.get("current_v"),
+            "versions": len(lab_p.get("versions") or []),
+            "metrics": _latest_metrics(lab_p),
+            "bars_limit": lab_p.get("bars_limit") or 1500,
+        }
     return out
 
 
@@ -231,6 +253,7 @@ def create_mission(payload: MissionIn) -> dict:
     if saved:  # 已保存的模板：展开成阶段，组长取模板里的
         data["stages"] = data.get("stages") or saved["stages"]
         data["synthesizer_id"] = data.get("synthesizer_id") or saved.get("synthesizer_id")
+    data["context"] = lab_context(payload)
     m = r.create(data, _materials(payload))
     if not m["stages"]:
         raise HTTPException(400, "任务没有任何有效角色")

@@ -52,6 +52,9 @@ class RoutingIn(BaseModel):
     reasoning: str = ""
     report: str = ""
     fallback: list[str] = Field(default_factory=list)
+    retries: int | None = Field(
+        None, ge=0, le=5, description="同一个模型调用失败后的自动重试次数；不填则沿用上一层（默认 2）"
+    )
 
 
 class ConfigIn(BaseModel):

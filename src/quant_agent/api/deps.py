@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from ..agents.roles import RoleStore
-from ..agents.team import TeamRunner, ToolRegistry, builtin_teams
+from ..agents.team import TeamRunner, ToolRegistry, sync_builtin_teams
 from ..data.service import MarketDataService
 from ..engine.backtest import BacktestEngine, BacktestResult, CostModel, stress_scenarios
 from ..exchanges.binance import BinanceAdapter
@@ -30,6 +30,9 @@ from ..platform.versions import VersionService
 from ..platform.wake import build as wake_build
 from ..store import Collections, JsonStore, WorkspaceStore
 from ..strategies.templates import build_strategy
+
+#: 行情摘要默认取多少根 K 线：与 AI 研究室回测默认窗口（项目 bars_limit，默认 1500）一致
+MARKET_WINDOW = 1500
 
 
 def default_home() -> Path:
@@ -127,10 +130,7 @@ class AppServices:
     def _init_workspace_store(self, workspace_id: str, store: JsonStore) -> None:
         """新工作区第一次被访问：写入内置角色与预设团队。"""
         self.roles._seed_builtin(store)
-        existing = {t["id"] for t in store.list(Collections.TEAMS)}
-        for team in builtin_teams():
-            if team.id not in existing:
-                store.upsert(Collections.TEAMS, team.to_dict())
+        sync_builtin_teams(store)
 
     # ---------------- 大模型密钥（部署级，加密存放） ----------------
     @property
@@ -242,15 +242,25 @@ class AppServices:
         return adapters
 
     def _seed_teams(self) -> None:
-        existing = {t.id for t in self.teams.list_teams()}
-        for team in builtin_teams():
-            if team.id not in existing:
-                self.teams.save_team(team)
+        sync_builtin_teams(self.teams.store)
 
     def _register_tools(self, tools: ToolRegistry) -> None:
         """把平台能力暴露给角色（角色卡里的 tools 字段引用这些名字）。"""
         tools.register(
-            "market_summary", self.market_summary, label="行情概览", description="标的近期价格结构、波动与成交量摘要"
+            "market_summary",
+            self.market_summary,
+            label="行情概览",
+            description=f"标的近期价格结构、波动与成交量摘要。bars 默认 {MARKET_WINDOW} 根，与 AI 研究室回测窗口一致；"
+            "评审某个研究项目时，请用材料里给出的标的、周期与 K 线根数，保证和回测看的是同一段数据",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "symbol": {"type": "string", "description": "如 BTC/USDT"},
+                    "timeframe": {"type": "string", "enum": ["1m", "5m", "15m", "30m", "1h", "4h", "1d"]},
+                    "bars": {"type": "integer", "description": f"K 线根数 100-5000，默认 {MARKET_WINDOW}"},
+                },
+                "required": ["symbol"],
+            },
         )
         tools.register("query_runs", self.query_runs, label="查询回测记录", description="按策略或标的查历史回测成绩")
         tools.register(
@@ -376,11 +386,13 @@ class AppServices:
         ]
         return {"entries": rows[:60], "total": len(rows), "last_errors": self.market.last_error}
 
-    def market_summary(self, symbol: str = "BTC/USDT", timeframe: str = "1h") -> dict:
+    def market_summary(self, symbol: str = "BTC/USDT", timeframe: str = "1h", bars: int = MARKET_WINDOW) -> dict:
+        """bars：取最近多少根 K 线。默认与 AI 研究室回测窗口一致（1500），单 Agent 与团队看到的是同一段数据。"""
         from ..data.service import DataUnavailable
 
+        limit = max(100, min(int(bars or MARKET_WINDOW), 5000))
         try:
-            bars, source = self.market.get_bars(symbol, timeframe, limit=500)
+            bars, source = self.market.get_bars(symbol, timeframe, limit=limit)
         except DataUnavailable as exc:
             return {"symbol": symbol, "timeframe": timeframe, "error": str(exc), "connected": False}
         if not bars:

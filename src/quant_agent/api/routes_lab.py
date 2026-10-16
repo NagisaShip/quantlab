@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from ..agents import lab_goal as G
 from ..agents.strategy_lab import DEFAULT_GOALS, LabStore, LabTools, StrategyLab, new_project
+from ..agents.team import LAB_REVIEW_TEAM
 from ..engine.research import summarize_metrics
 from ..llm.base import split_data_url
 from ..platform.errors import AppError
@@ -297,26 +298,27 @@ def _rest(out: dict, result: dict, eq: list, step: int, metrics: dict) -> dict:
 
 def _team(topic: str, *, team_id: str | None = None, context: str = "") -> dict:
     s = get_services()
-    team = s.teams.get_team(team_id or "review_board") or s.teams.default_team()
+    team = s.teams.get_team(team_id or LAB_REVIEW_TEAM) or s.teams.get_team("review_board") or s.teams.default_team()
     return s.teams.run(team, topic, context=context).to_dict()
 
 
 def _discuss(project: dict[str, Any], topic: str) -> dict:
     """AI 发起 /discuss：建一场团队讨论（后台进行），发言挂在对话里。"""
-    from .routes_missions import MissionIn, _materials, _runner
+    from .routes_missions import MissionIn, _materials, _runner, lab_context
 
     s = get_services()
     teams = s.teams.list_teams()
     payload = MissionIn(
         directive=topic,
         mode="single",
-        team_id=project.get("team_id") or (teams[0].id if teams else None),
+        team_id=project.get("team_id")
+        or (LAB_REVIEW_TEAM if any(t.id == LAB_REVIEW_TEAM for t in teams) else (teams[0].id if teams else None)),
         lab_project_id=project["id"],
         symbol=(project.get("securities") or ["BTC/USDT"])[0],
         timeframe=project.get("timeframe") or "1h",
     )
     r = _runner()
-    m = r.create(payload.model_dump(), _materials(payload))
+    m = r.create({**payload.model_dump(), "context": lab_context(payload)}, _materials(payload))
     r.start(m["id"], wait=False)
     return {"mission_id": m["id"]}
 
@@ -367,7 +369,7 @@ def _lab() -> StrategyLab:
     s = get_services()
     tools = LabTools(
         backtest=_platform_backtest,
-        market=lambda sym, tf: s.market_summary(sym, tf),
+        market=lambda sym, tf, bars=1500: s.market_summary(sym, tf, bars),
         templates=s.search_templates,
         team=_team,
         save_strategy=_save_strategy,

@@ -113,6 +113,7 @@ export default function ModelConfigPage({ notify, onNavigate }: PageProps) {
   const [layer, setLayer] = useState<ProviderScope>('personal')
   const [routing, setRouting] = useState<Record<string, string>>({})
   const [fallback, setFallback] = useState<string[]>([])
+  const [retries, setRetries] = useState('')   // '' = 沿用上一层（默认 2 次）
 
   const loadRouting = useCallback((c: ModelConfigView, which: ProviderScope) => {
     const src = c.routing_layers[which === 'workspace' ? 'workspace' : 'personal'] ?? {}
@@ -120,6 +121,7 @@ export default function ModelConfigPage({ notify, onNavigate }: PageProps) {
     for (const [k] of ROLES) r[k] = String(src[k] ?? '')
     setRouting(r)
     setFallback(Array.isArray(src.fallback) ? (src.fallback as string[]) : [])
+    setRetries(typeof src.retries === 'number' ? String(src.retries) : '')
   }, [])
 
   const refresh = useCallback(async () => {
@@ -179,7 +181,7 @@ export default function ModelConfigPage({ notify, onNavigate }: PageProps) {
 
   const saveRouting = async () => {
     try {
-      await v3.saveRouting({ default: routing.default, code_gen: routing.code_gen, reasoning: routing.reasoning, report: routing.report, fallback }, layer)
+      await v3.saveRouting({ default: routing.default, code_gen: routing.code_gen, reasoning: routing.reasoning, report: routing.report, fallback, retries: retries === '' ? null : Number(retries) }, layer)
       await refresh()
       notify(layer === 'workspace' ? '工作区默认路由已保存' : '你的路由已保存')
     } catch (e) {
@@ -304,6 +306,16 @@ export default function ModelConfigPage({ notify, onNavigate }: PageProps) {
             })}
             {!allModels.length && <small className="muted">先添加一个服务商</small>}
           </div>
+        </div>
+        <div className="set-row">
+          <div>
+            <b>失败自动重试</b>
+            <small>同一个模型遇到限流、服务端错误、超时或断流时，等一会儿（1、2、4 秒…，或按服务商要求的时间）再试；仍失败才换降级链里的下一个</small>
+          </div>
+          <select value={retries} onChange={(e) => setRetries(e.target.value)} aria-label="失败自动重试次数">
+            <option value="">{layer === 'personal' && typeof effective.retries === 'number' ? `（工作区默认：${effective.retries} 次）` : '（默认：2 次）'}</option>
+            {[0, 1, 2, 3, 4, 5].map((n) => <option key={n} value={n}>{n === 0 ? '不重试' : `${n} 次`}</option>)}
+          </select>
         </div>
       </section>
 

@@ -24,7 +24,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from .roles import Role
-from .team import TeamRunner
+from .team import PARALLEL_BRIEF, TeamRunner
 
 COLLECTION = "missions"
 FEEDS = "mission_feeds"
@@ -514,7 +514,11 @@ class MissionRunner:
     def _speak_parallel(self, mid: str, stage: int, roles: list[Role]) -> None:
         if not roles:
             return
-        task = self._transcript(mid) + "\n\n【你的任务】按你的角色职责独立给出观点（不要等别人），简洁、有依据。"
+        task = (
+            self._transcript(mid)
+            + "\n\n【你的任务】按你的角色职责独立给出观点（不要等别人），简洁、有依据。"
+            + PARALLEL_BRIEF
+        )
         holders = {r.id: self.store.post(mid, self._placeholder(stage, r, "speech", None)) for r in roles}
         with ThreadPoolExecutor(max_workers=min(4, len(roles))) as pool:
             futures = {pool.submit(self.teams._invoke, r, task): r for r in roles}

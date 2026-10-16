@@ -25,7 +25,18 @@ from ..research.factor_eval import evaluate_factor
 from ..research.factor_lib import CATEGORIES, FactorLibrary, expr_hash, mutate, pick_seeds
 from ..research.goals import FACTOR
 from ..research.panel import UNIVERSES, Panel, PanelError
-from .strategy_lab import LabStore, LabTools, StopRequested, StrategyLab, _json_object, _lock, _now, _short
+from .strategy_lab import (
+    LabStore,
+    LabTools,
+    StopRequested,
+    StrategyLab,
+    _json_object,
+    _lock,
+    _now,
+    _short,
+    data_window_text,
+    version_history_text,
+)
 
 FACTOR_SYSTEM = """你是 QuantLab 平台的资深因子研究员，和研究者一起在加密货币市场里挖掘有信息量的因子。
 
@@ -727,6 +738,9 @@ class FactorLab(StrategyLab):
             f"目标：{self.goal_text(project)}\n当前因子：{project.get('code') or '（尚无）'}\n"
             f"假设：{json.dumps(project.get('hypothesis') or {}, ensure_ascii=False)}\n"
             f"最近评估：{summary_text((cur or {}).get('metrics'))}\n"
+            f"数据窗口：{data_window_text(project)}\n"
+            f"版本演进（每版的改动与评估，后续版本的改动是有意的迭代）：\n"
+            f"{version_history_text(project, fmt=summary_text)}\n"
             f"已试验次数：{lib.trial_count()}；库内因子："
             f"{', '.join(f['name'] for f in lib.list('active')[:12]) or '无'}\n\n"
             f"因子表达式语法：字段 {', '.join(FX.FIELDS)}；算子 {', '.join(FX.OPERATORS)}。"

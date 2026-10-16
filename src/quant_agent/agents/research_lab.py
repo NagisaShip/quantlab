@@ -19,7 +19,15 @@ from typing import Any
 
 from ..llm.base import LLMError, Message
 from ..research.goals import GoalDomain
-from .strategy_lab import StopRequested, StrategyLab, _json_object, _lock, _now
+from .strategy_lab import (
+    StopRequested,
+    StrategyLab,
+    _json_object,
+    _lock,
+    _now,
+    data_window_text,
+    version_history_text,
+)
 
 
 def dumps_spec(spec: dict[str, Any]) -> str:
@@ -274,7 +282,10 @@ class DomainLab(StrategyLab):
             f"{self.domain.label}研究项目：{project.get('title')}\n想法：{project.get('idea') or '—'}\n"
             f"标的：{','.join(project['securities'][:20])}，周期 {project['timeframe']}\n"
             f"目标：{self.goal_text(project)}\n当前{self.noun}：\n{(project.get('code') or '（尚无）')[:3000]}\n"
-            f"最近评估：{self.summary_text((cur or {}).get('metrics'))}"
+            f"最近评估：{self.summary_text((cur or {}).get('metrics'))}\n"
+            f"数据窗口：{data_window_text(project)}\n"
+            f"版本演进（每版的改动与评估，后续版本的改动是有意的迭代）：\n"
+            f"{version_history_text(project, fmt=self.summary_text)}"
         )
 
     def finish_warnings(self, project: dict[str, Any], best: dict[str, Any]) -> list[str]:

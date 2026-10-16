@@ -97,7 +97,9 @@ def test_mission_with_lab_project_materials(client):
         "/api/missions",
         json={"directive": "评审策略室项目", "lab_project_id": p["id"], "include_market_data": False, "wait": True},
     ).json()
-    assert (
-        r["mission"]["materials"]["lab"]["code"].startswith(('"""', "PARAMS", "#"))
-        or "def initialize" in r["mission"]["materials"]["lab"]["code"]
-    )
+    # 代码、版本演进与数据窗口放在【背景】里的研究简报（和单 Agent 同一份状态），平台数据里只留结构化要点
+    ctx = r["mission"]["context"]
+    assert "def initialize" in ctx and "【版本演进" in ctx and "v1（当前）" in ctx
+    assert "最近 1500 根" in ctx
+    lab = r["mission"]["materials"]["lab"]
+    assert lab["version"] == 1 and lab["versions"] == 1 and lab["bars_limit"] == 1500

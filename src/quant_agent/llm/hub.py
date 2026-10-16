@@ -363,11 +363,16 @@ class ModelHub:
             if isinstance(mine.get("fallback"), list) and mine.get("fallback")
             else (base.get("fallback") if isinstance(base.get("fallback"), list) else [])
         )
+        # 自动重试次数：个人设置优先，其次工作区，都没设由路由器用默认值
+        for layer in (mine, base):
+            if isinstance(layer.get("retries"), int):
+                out["retries"] = layer["retries"]
+                break
         return out
 
     def routing_layers(self, ws: str, user_id: str | None) -> dict[str, dict[str, Any]]:
         store = self._ws(ws)
-        strip = lambda d: {k: v for k, v in (d or {}).items() if k in (*ROUTING_KEYS, "fallback")}  # noqa: E731
+        strip = lambda d: {k: v for k, v in (d or {}).items() if k in (*ROUTING_KEYS, "fallback", "retries")}  # noqa: E731
         return {
             "workspace": strip(store.get(Collections.SETTINGS, "llm_routing")),
             "personal": strip(store.get(Collections.SETTINGS, f"llm_routing:{user_id}")) if user_id else {},
@@ -384,6 +389,8 @@ class ModelHub:
             **{k: str(payload.get(k) or "") for k in ROUTING_KEYS},
             "fallback": list(payload.get("fallback") or []),
         }
+        if isinstance(payload.get("retries"), int):
+            rec["retries"] = max(0, min(5, payload["retries"]))
         self._ws(ws).upsert(Collections.SETTINGS, rec)
 
     # ------------------------------------------------------------------ 给路由器的配置

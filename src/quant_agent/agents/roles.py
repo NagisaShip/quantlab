@@ -276,27 +276,34 @@ _BUILTIN_SPECS: list[dict[str, Any]] = [
     {
         "key": "execution_specialist",
         "name": "执行与成本专家",
-        "title": "撮合、滑点、手续费与容量",
-        "description": "从执行视角评估策略的真实成本与容量约束。",
-        "temperature": 0.3,
-        "tools": ["market_summary"],
+        "title": "保本线、手续费磨损、滑点与资金利用率",
+        "description": "只从成本与执行角度，用回测数字算出策略被成本吃掉多少、还能承受多少滑点。",
+        "temperature": 0.2,
+        "tools": ["get_metrics", "query_runs"],
         "system_prompt": textwrap.dedent(
             """
-            你是交易执行专家。你关心的是"这个策略在真实市场里能不能按预期成交"。
+            你是交易执行与成本专家。只从「成本与执行」角度评估，用材料里已有的回测指标与代码参数做计算，不做行情判断。
 
-            你要评估：
-            - 撮合假设：K 线级近似的局限（价格触及 ≠ 全部成交）。
-            - 成本：maker/taker 费率、费用币种、滑点、半价差。
-            - 容量：单根 bar 成交量占比限制、大额订单的市场冲击。
-            - 延迟：信号到下单到成交的时间，对高频/短周期策略的影响。
-            - 交易所差异：限流权重、最小下单额、精度步长。
+            只做这四件事，每项都写出用到的数字：
+            1. 盈亏比临界点：用平均盈亏比 R 算保本胜率 = 1/(1+R)（计入往返手续费与滑点），
+               对比实际胜率还差多少。
+            2. 交易频率与手续费磨损（Fee Drag）：平均每天 / 每周几笔；
+               手续费占毛利润（毛利为负时占初始资金）的比例；换手倍数。
+            3. 滑点敏感度：有 2 倍成本压力测试就对比两者的收益与夏普；
+               没有就用每笔平均盈利 ÷ 单边成本，估算还能承受多少 bps 额外滑点。
+            4. 资金利用率与 Beta：持仓时间占比、平均仓位、相对基准的 Beta 或超额收益来源。
 
             硬性约束：
-            - 明确区分"保守 / 基准 / 乐观"三档假设下的结论区间。
-            - 不得把价格触及等同于全部成交。
+            - 只用材料与工具返回的数字；缺数据就写「缺少 X，无法计算」。
+              没有回测支撑时，不估算年化收益、回撤，也不给"保守 / 基准 / 乐观"区间。
+            - 不重复其他角色的内容：行情走势、数据窗口够不够长、未来函数与代码问题由市场分析师和审计员负责，你不评论。
+            - 不把价格触及等同于全部成交。
+            - 团队并行评审时只写最重要的结论，≤150 字。
             """
         ).strip(),
-        "output_format": "①撮合假设与局限 ②成本拆解 ③容量与延迟 ④三档假设下的结论区间",
+        "output_format": (
+            "①保本胜率 vs 实际胜率 ②交易频率与手续费磨损 ③滑点敏感度 ④资金利用率与 Beta（每项一句，带数字）"
+        ),
         "tags": ["执行", "成本"],
     },
 ]
@@ -483,6 +490,19 @@ def builtin_roles() -> list[Role]:
     return out
 
 
+#: 出厂角色改过提示词时，旧出厂版本的标志（system_prompt 与 output_format 里各一句）。
+#: 库里的角色两处都还是旧出厂原文，说明用户没改过，启动时升级到新版。
+_LEGACY_FACTORY: dict[str, list[tuple[str, str]]] = {
+    "execution_specialist": [('明确区分"保守 / 基准 / 乐观"三档假设下的结论区间', "④三档假设下的结论区间")],
+}
+
+
+def _is_legacy_factory(role_id: str, stored: dict[str, Any]) -> bool:
+    prompt_now = stored.get("system_prompt") or ""
+    format_now = stored.get("output_format") or ""
+    return any(prompt in prompt_now and format_now.endswith(fmt) for prompt, fmt in _LEGACY_FACTORY.get(role_id, []))
+
+
 class RoleStore:
     """角色仓库：内置角色常驻，自定义/AI 起草角色持久化。"""
 
@@ -493,12 +513,18 @@ class RoleStore:
             self._seed_builtin()
 
     def _seed_builtin(self, target: JsonStore | None = None) -> None:
-        """内置角色也写入存储，便于前端统一展示与"另存为自定义"。多工作区时对每个新工作区各写一份。"""
+        """内置角色也写入存储，便于前端统一展示与"另存为自定义"。多工作区时对每个新工作区各写一份。
+        出厂提示词改版时：库里仍是旧出厂原样（用户没改过）的角色升级到新版；改过的保留用户的版本。"""
         store = target or self.store
-        existing = {r["id"] for r in store.list(Collections.ROLES)}
+        existing = {r["id"]: r for r in store.list(Collections.ROLES)}
         for role in self._builtin.values():
-            if role.id not in existing:
+            cur = existing.get(role.id)
+            if cur is None:
                 store.upsert(Collections.ROLES, role.to_dict())
+            elif _is_legacy_factory(role.id, cur):
+                new = role.to_dict()
+                keep = {k: cur[k] for k in ("created_at", "model", "effort", "avatar") if k in cur}
+                store.upsert(Collections.ROLES, {**new, **keep})
 
     def list(self, *, tag: str | None = None, source: str | None = None) -> list[Role]:
         roles = [Role.from_dict(d) for d in self.store.list(Collections.ROLES)]

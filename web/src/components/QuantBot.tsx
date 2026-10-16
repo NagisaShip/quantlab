@@ -139,12 +139,12 @@ function Eyes() {
     <g className="qbot-eyes">
       <g className="qbot-eye l">
         <path className="qbot-wick" d="M8.6 6.9v8.6" />
-        <rect className="qbot-body" x="7.1" y="8.8" width="3" height="4.8" rx=".7" />
+        <rect className="qbot-body" x="6.7" y="8.8" width="3.8" height="4.8" rx=".8" />
         <path className="qbot-squint" d="M7.2 8.9 10 11.2 7.2 13.5" />
       </g>
       <g className="qbot-eye r">
         <path className="qbot-wick" d="M15.4 6.9v8.6" />
-        <rect className="qbot-body" x="13.9" y="9.5" width="3" height="3.6" rx=".7" />
+        <rect className="qbot-body" x="13.5" y="9.5" width="3.8" height="3.6" rx=".8" />
         <path className="qbot-squint" d="M16.8 8.9 14 11.2 16.8 13.5" />
       </g>
     </g>

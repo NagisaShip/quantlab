@@ -203,3 +203,16 @@ def test_provider_key_from_ui_is_persisted_and_masked(client, tmp_path):
 def test_routing_rejects_unknown_model(client):
     r = client.put("/api/config/routing", json={"default": "nope/x"})
     assert r.status_code == 400
+
+
+def test_routing_retries_saved_per_layer(client):
+    """失败自动重试次数：工作区设默认，个人可覆盖；路由器读 routing["retries"]。"""
+    assert client.put("/api/config/routing?scope=workspace", json={"retries": 4}).status_code == 200
+    cfg = client.get("/api/config").json()
+    assert cfg["routing"]["retries"] == 4 and cfg["routing_layers"]["workspace"]["retries"] == 4
+    assert client.put("/api/config/routing?scope=personal", json={"retries": 0}).status_code == 200
+    assert client.get("/api/config").json()["routing"]["retries"] == 0
+    # 不填则沿用上一层
+    assert client.put("/api/config/routing?scope=personal", json={}).status_code == 200
+    assert client.get("/api/config").json()["routing"]["retries"] == 4
+    assert client.put("/api/config/routing", json={"retries": 9}).status_code == 422
