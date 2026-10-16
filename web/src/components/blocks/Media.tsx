@@ -2,6 +2,7 @@ import { useEffect, useId, useState, type ReactNode } from 'react'
 import { viewImages } from '../ImageViewer'
 import { withWs } from '../../http'
 import { downloadBlob, safeImageSrc } from './protocol'
+import { useReportRenderError } from './renderErrors'
 
 /**
  * 公式、Mermaid 与图片。KaTeX / Mermaid 都按需加载（第一次遇到公式或图时才下载对应的包），
@@ -23,16 +24,28 @@ function loadKatex(): Promise<Katex> {
 
 export function MathTex({ tex, display }: { tex: string; display?: boolean }) {
   const [html, setHtml] = useState<string | null>(() => (katexMod ? render(katexMod, tex, display) : null))
+  const [err, setErr] = useState('')
   useEffect(() => {
     let alive = true
-    loadKatex().then((k) => alive && setHtml(render(k, tex, display))).catch(() => alive && setHtml(''))
+    loadKatex().then((k) => { if (alive) { setHtml(render(k, tex, display)); setErr(texError(k, tex, display)) } }).catch(() => alive && setHtml(''))
     return () => { alive = false }
   }, [tex, display])
+  useReportRenderError(err ? { kind: 'math', message: err, source: tex } : null)
   if (!html) return display ? <pre className="qb-math-src">{tex}</pre> : <code className="inline">{tex}</code>
   // KaTeX 输出的是它自己生成的受限 HTML（trust: false，不允许 \href / \htmlClass 等），可以安全插入
   return display
     ? <div className="qb-math display" dangerouslySetInnerHTML={{ __html: html }} />
     : <span className="qb-math" dangerouslySetInnerHTML={{ __html: html }} />
+}
+
+/** 严格模式再解析一次，只为拿到错误信息（显示仍用宽松模式：错的部分标红，其余照常）。 */
+function texError(k: Katex, tex: string, display?: boolean): string {
+  try {
+    k.renderToString(tex, { displayMode: !!display, throwOnError: true, trust: false, strict: 'ignore', output: 'html' })
+    return ''
+  } catch (e) {
+    return String((e as Error).message || e).slice(0, 200)
+  }
 }
 
 function render(k: Katex, tex: string, display?: boolean): string {
@@ -72,6 +85,7 @@ export function Mermaid({ code }: { code: string }) {
     }, 120) // 流式输出时等内容稳定一下再画
     return () => { alive = false; window.clearTimeout(t) }
   }, [code, id])
+  useReportRenderError(err ? { kind: 'mermaid', message: err, source: code } : null)
   return (
     <figure className="qb-mermaid">
       <figcaption className="qb-code-head">

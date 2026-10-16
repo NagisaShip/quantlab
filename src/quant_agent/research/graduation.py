@@ -97,7 +97,29 @@ def _backtest_checks(store: Any, slug: str, cfg: dict[str, Any]) -> tuple[list[d
     ]
     ck, ck_ev = _checkup_check(store, slug)
     checks.append(ck)
-    return checks, {"backtest_id": last.get("id"), "sharpe": m.get("sharpe"), "dsr": dsr, **ck_ev}
+    return checks, {
+        "backtest_id": last.get("id"),
+        "sharpe": m.get("sharpe"),
+        "dsr": dsr,
+        # 关卡只看「最近一次成功回测」这一段样本；体检跑的是自己的样本，两者成绩不能直接对比
+        "backtest_sample": sample_window(last.get("start_ts"), last.get("end_ts"), last.get("timeframe")),
+        **ck_ev,
+    }
+
+
+def sample_window(start_ts: Any, end_ts: Any, timeframe: Any = None) -> str:
+    """样本区间的一句话描述，如「2026-01-03 → 2026-10-16 · 1h」。"""
+    import datetime as _dt
+
+    def day(ts: Any) -> str:
+        try:
+            v = float(ts or 0)
+            v = v / 1000 if v > 1e11 else v
+            return _dt.datetime.fromtimestamp(v, _dt.timezone.utc).strftime("%Y-%m-%d") if v > 0 else "?"
+        except (TypeError, ValueError, OSError):
+            return "?"
+
+    return f"{day(start_ts)} → {day(end_ts)}" + (f" · {timeframe}" if timeframe else "")
 
 
 def _checkup_check(store: Any, slug: str) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -117,7 +139,7 @@ def _checkup_check(store: Any, slug: str) -> tuple[dict[str, Any], dict[str, Any
         cur = None
     items = (last.get("report") or {}).get("items") or []
     bad = [i["title"] for i in items if i.get("verdict") == "bad"]
-    ev = {"checkup_id": last["id"]}
+    ev = {"checkup_id": last["id"], "checkup_sample": last.get("sample") or (last.get("report") or {}).get("sample")}
     if cur and last.get("source_hash") and cur != last["source_hash"]:
         return _check("策略体检没有严重问题", False, "代码改过了，体检结果已过期", "对当前代码重新体检"), ev
     if bad:

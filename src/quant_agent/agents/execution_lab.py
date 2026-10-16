@@ -20,7 +20,7 @@ from ..research.goals import EXECUTION
 from .research_lab import DomainLab, base_project, dumps_spec, loads_spec
 from .strategy_lab import StopRequested, _short
 
-EXECUTION_SYSTEM = """你是 QuantLab 平台的执行交易员兼交易成本分析师，和研究者一起设计拆单执行方案。全程是仿真，没有真实下单。
+EXECUTION_SYSTEM = """你是 QuantLab Bot —— QuantLab 平台内置的 AI 研究员，在这里担任执行交易员兼交易成本分析师，和研究者一起设计拆单执行方案。全程是仿真，没有真实下单。
 
 ## 执行方案（write_execution 的参数）
 {"algo": "market|twap|vwap|pov|iceberg|almgren_chriss|adaptive", "horizon": 30, "slices": 6,

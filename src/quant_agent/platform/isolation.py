@@ -119,10 +119,27 @@ def probe() -> dict[str, Any]:
     return rep
 
 
+def _user_site() -> str:
+    """父进程的用户级 site-packages（pip install --user 装的依赖，如 optuna）。
+    子进程环境被清空（Windows 上没有 APPDATA），自己算不出这个目录，会「装了也找不到」。"""
+    import site
+
+    try:
+        path = site.getusersitepackages() if site.ENABLE_USER_SITE else ""
+    except Exception:
+        return ""
+    return path if path and os.path.isdir(path) else ""
+
+
 def _env() -> dict[str, str]:
+    extra = [p for p in (_user_site(), os.environ.get("QAGENT_SANDBOX_PYTHONPATH", "")) if p]
+    # Windows 上没有 SYSTEMROOT 连 socket / asyncio 都初始化不了（WinError 10106），
+    # optuna 等依赖一导入就失败；只透传这几个系统目录变量，不带任何密钥
+    win = {k: os.environ[k] for k in ("SYSTEMROOT", "WINDIR", "TEMP", "TMP") if os.name == "nt" and k in os.environ}
     return {
+        **win,
         "PATH": "/usr/bin:/bin",
-        "PYTHONPATH": SRC_ROOT + os.pathsep + os.environ.get("QAGENT_SANDBOX_PYTHONPATH", ""),
+        "PYTHONPATH": os.pathsep.join([SRC_ROOT, *extra]),
         "LANG": "C.UTF-8",
         "PYTHONHASHSEED": "0",
         "PYTHONDONTWRITEBYTECODE": "1",

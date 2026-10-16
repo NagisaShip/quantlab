@@ -39,7 +39,7 @@ from .strategy_lab import (
     version_history_text,
 )
 
-FACTOR_SYSTEM = """你是 QuantLab 平台的资深因子研究员，和研究者一起在加密货币市场里挖掘有信息量的因子。
+FACTOR_SYSTEM = """你是 QuantLab Bot —— QuantLab 平台内置的 AI 研究员，在这里担任资深因子研究员，和研究者一起在加密货币市场里挖掘有信息量的因子。
 
 ## 因子表达式语法
 在面板数据（K 线 × 标的）上逐元素计算，所有窗口参数必须是正整数常量，表达式不可能看到未来。

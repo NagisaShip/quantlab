@@ -195,7 +195,9 @@ def test_fault_plan_overrides_and_strategy_errors_do_not_crash():
         faults={"disconnects": [], "reject_rate": 1.0, "base_reject_rate": 1.0},
     )
     sc = r["scenarios"][0]
-    assert sc["completed"] and r["summary"]["passed"]
+    # 引擎跑完不崩溃；但全部委托被拒、没有成交，不能判「通过」（没持仓就谈不上扛住）
+    assert sc["completed"] and not r["summary"]["passed"] and r["summary"]["inconclusive"] == 1
+    assert "无法判断" in r["summary"]["verdict"]
     assert sc["disconnects"] == [] and sc["orders"] > 0 and sc["rejections"] == sc["orders"] and sc["fills"] == 0
     assert sc["strategy_errors"] > 0 and "策略报错" in sc["verdict"]
     assert sc["end_equity"] == pytest.approx(10_000)

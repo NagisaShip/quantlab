@@ -1213,6 +1213,9 @@ def _verdict(r: dict[str, Any], threshold: float) -> str:
         parts.append(f"策略报错 {r['strategy_errors']} 次")
     if r.get("liquidation_gaps"):
         parts.append("断线期间强平漏检")
+    if not parts and not r.get("fills"):
+        # 场景里一笔成交都没有：没有持仓就谈不上「扛住」，不能当成抗压成功
+        return f"无法判断：场景内没有成交（下单 {r.get('orders', 0)} 次），策略在这段行情里没有持仓"
     if not parts:
         return f"扛住了：最大回撤 {r['max_drawdown']:.1%}，收益 {r['return_pct']:+.1%}"
     return "；".join(parts) + f"（最大回撤 {r['max_drawdown']:.1%}，收益 {r['return_pct']:+.1%}）"
@@ -1342,8 +1345,14 @@ def run_stress(
                 }
             )
     done = [r for r in reports if r.get("completed")]
+    idle = [r for r in done if not r.get("fills")]
+    for r in idle:
+        flags.append(
+            {"scenario": r["id"], "kind": "no_trades", "message": f"{r['name']}：场景内没有成交，结论无效"}
+        )
     summary = {
-        "passed": completed,
+        "passed": completed and len(idle) < len(done),
+        "inconclusive": len(idle),
         "completed": sum(1 for r in reports if r.get("completed")),
         "total": total,
         "worst_drawdown": max((r["max_drawdown"] for r in done), default=0.0),
@@ -1357,10 +1366,14 @@ def run_stress(
     }
     if not completed:
         summary["verdict"] = f"未通过：{total - summary['completed']} 个场景引擎异常中断"
+    elif done and len(idle) == len(done):
+        summary["verdict"] = "无法判断：所有场景都没有成交，策略在极端行情里没有持仓，不能当成抗压成功"
     elif summary["liquidations"]:
         summary["verdict"] = f"通过（全部场景跑完），但被强平 {summary['liquidations']} 次"
     elif summary["drawdown_breaches"]:
         summary["verdict"] = f"通过（全部场景跑完），{summary['drawdown_breaches']} 个场景回撤超过阈值"
+    elif idle:
+        summary["verdict"] = f"通过（全部场景跑完，回撤在阈值内），但 {len(idle)} 个场景没有成交、那几个场景的结论无效"
     else:
         summary["verdict"] = "通过：全部场景跑完，回撤在阈值内"
     return {

@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import time
 import uuid
 from collections.abc import Callable
@@ -280,8 +281,11 @@ class TeamRunner:
         def one(role: Role) -> TeamRunStep:
             return self._invoke(role, task)
 
+        # 每个线程带上当前请求上下文（工作区 + 成员）：模型服务商按上下文解析，
+        # 不带的话并行角色看不到任何服务商，全部「所有模型均失败」
         with ThreadPoolExecutor(max_workers=min(self.max_workers, len(roles))) as pool:
-            return list(pool.map(one, roles))
+            futures = [pool.submit(contextvars.copy_context().run, one, r) for r in roles]
+            return [f.result() for f in futures]
 
     def _run_debate(self, roles: list[Role], material: str, rounds: int) -> list[TeamRunStep]:
         steps = self._run_parallel(roles, material)

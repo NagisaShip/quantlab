@@ -483,10 +483,17 @@ def start_optimize(payload: OptimizeIn) -> dict:
         )
     space: dict[str, Any] = {}
     if payload.method == "bayes":
-        from ..engine.research import declared_space, normalize_space
+        import importlib.util
+
+        from ..engine.research import auto_space, declared_space, normalize_space
+
+        # 依赖缺失要当场报错：放到后台 worker 里才失败的话，调参会「受理了却永远没有结果」
+        if importlib.util.find_spec("optuna") is None:
+            raise HTTPException(400, "智能调参需要 optuna：在服务器上执行 pip install optuna 后重试；或改用网格优化（method=grid）")
 
         try:
-            space = normalize_space(payload.space or declared_space(rec.source))
+            raw = payload.space or declared_space(rec.source) or auto_space(declared)
+            space = normalize_space(raw)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         payload.grid = {}
@@ -546,7 +553,13 @@ def start_optimize(payload: OptimizeIn) -> dict:
         strategy_version_id=version["id"],
     )
     tasks.dispatch(get_services(), run)
-    return {"job_id": run["id"], "run_id": run["id"], "combinations": len(combos)}
+    out = {"job_id": run["id"], "run_id": run["id"], "combinations": len(combos)}
+    if space:
+        out["space"] = space
+        out["space_source"] = (
+            "request" if payload.space else "PARAM_SPACE" if declared_space(rec.source) else "auto(PARAMS 默认值 ×0.5–2)"
+        )
+    return out
 
 
 @router.get("/jobs/{job_id}")

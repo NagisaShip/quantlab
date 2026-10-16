@@ -343,6 +343,24 @@ def t_start_session(
     if isinstance(body, dict) and body.get("session"):
         s = body["session"]
         return {"ok": True, "session_id": s["id"], "status": s.get("status"), "execution": s.get("execution")}
+    if isinstance(body, dict) and "人工批准" in str(body.get("error") or ""):
+        # 被红线拦下：把晋级关卡里没通过的项一起交回去，研究者和 AI 都能看到卡在哪一步
+        grad = t_graduation(slug)
+        failing = []
+        if isinstance(grad, dict):
+            failing = [
+                {k: c.get(k) for k in ("label", "value", "need")}
+                for c in grad.get("checks") or []
+                if isinstance(c, dict) and c.get("ok") is not True
+            ]
+        return {
+            "ok": False,
+            "error": body["error"],
+            "blocked_at": "策略未人工批准（approved=false）",
+            "graduation_passed": grad.get("passed") if isinstance(grad, dict) else None,
+            "graduation_failing": failing,
+            "hint": "先让晋级关卡全部通过（graduation），再由研究者在策略页批准，之后才能启动实时模拟",
+        }
     return body
 
 
@@ -428,6 +446,8 @@ def t_stress_result(run_id: str = "") -> Any:
                         "max_drawdown",
                         "liquidations",
                         "rejections",
+                        "orders",
+                        "fills",
                         "verdict",
                     )
                 }
@@ -475,7 +495,7 @@ def t_checkup_result(run_id: str = "", slug: str = "") -> Any:
     if not run_id:
         rows = V.checkup_list(slug or None)["runs"][:10]
         return [
-            {k: r.get(k) for k in ("id", "strategy_id", "status", "overall", "progress", "created_at", "items")}
+            {k: r.get(k) for k in ("id", "strategy_id", "status", "overall", "sample", "progress", "created_at", "items")}
             for r in rows
         ]
     got = _call(lambda: V.checkup_get(run_id))
@@ -486,6 +506,9 @@ def t_checkup_result(run_id: str = "", slug: str = "") -> Any:
     return {
         "status": r["status"],
         "overall": r.get("overall"),
+        "sample": r.get("sample"),
+        "sample_note": "体检成绩只对这段样本成立；与 graduation 引用的回测（evidence.backtest_sample）区间不同时不能互相印证",
+        "metrics": _metrics(rep.get("metrics")),
         "stale": got.get("stale"),
         "error": r.get("error"),
         "items": [{k: i.get(k) for k in ("title", "verdict", "summary")} for i in rep.get("items") or []],
@@ -529,20 +552,75 @@ def t_start_tuning(
             "ok": True,
             "run_id": body["run_id"],
             "trials": body.get("combinations"),
-            "note": "调参在后台进行；完成后用 tuning_result 看结果，每一组试验都会记进试验台账",
+            "space": body.get("space"),
+            "space_source": body.get("space_source"),
+            "note": "调参在后台进行；用 tuning_result(opt_id=run_id) 查进度与结果（失败会返回原因），每一组试验都会记进试验台账",
         }
     return body
 
 
+def _tuning_runs(slug: str = "") -> list[dict[str, Any]]:
+    """还没产出优化记录的调参任务（排队 / 运行中 / 失败）：不列出来的话，失败的调参会「静默消失」。"""
+    from ..api.deps import get_services
+    from ..platform import context
+
+    try:
+        runs = get_services().runs.list(context.current_workspace(), kind="optimize") or []
+    except Exception:
+        return []
+    out = []
+    for r in runs[:20]:
+        man = r.get("manifest") or {}
+        if slug and man.get("slug") not in (None, slug):
+            continue
+        if r.get("state") == "COMPLETED" and (r.get("summary") or {}).get("id"):
+            continue  # 已完成的在优化记录里
+        out.append(_run_view(r))
+    return out
+
+
+def _run_view(r: dict[str, Any]) -> dict[str, Any]:
+    state = r.get("state")
+    view = {
+        "run_id": r.get("id"),
+        "state": state,
+        "progress": r.get("progress"),
+        "title": r.get("title"),
+    }
+    if state == "FAILED":
+        view["error"] = r.get("error") or "任务失败（没有错误信息）"
+        view["hint"] = "调参没有产出结果：按 error 修正后重新 start_tuning，不要反复查询"
+    elif state in ("QUEUED", "RUNNING", "PAUSED", "RECOVERING"):
+        view["hint"] = "仍在进行，稍后再查；不要重复发起"
+    elif state == "CANCELED":
+        view["hint"] = "任务已取消"
+    return view
+
+
 def t_tuning_result(opt_id: str = "", slug: str = "") -> Any:
     from ..api import routes_research as R
+    from ..api.deps import get_services
+    from ..platform import context
 
+    if opt_id.startswith("run-") or (opt_id and not opt_id.startswith("opt-")):
+        # 传的是 start_tuning 返回的 run_id：任务完成就换成优化记录，否则如实返回任务状态 / 失败原因
+        run = get_services().runs.get(opt_id, workspace_id=context.current_workspace())
+        if run is None:
+            return {"error": f"找不到调参任务 {opt_id}"}
+        done_id = (run.get("summary") or {}).get("id")
+        if run.get("state") != "COMPLETED" or not done_id:
+            return _run_view(run)
+        opt_id = done_id
     if not opt_id:
         rows = sorted(R.list_optimizations(slug or None)["optimizations"], key=lambda r: -(r.get("created_at") or 0))
-        return [
-            {k: r.get(k) for k in ("id", "slug", "method", "objective", "combinations", "best_params", "created_at")}
+        done = [
+            {k: r.get(k) for k in ("id", "run_id", "slug", "method", "objective", "combinations", "best_params", "created_at")}
             for r in rows[:10]
         ]
+        pending = _tuning_runs(slug)
+        if not done and not pending:
+            return {"results": [], "note": "还没有任何调参记录：先用 start_tuning 发起"}
+        return {"results": done, "unfinished": pending}
     body = _call(lambda: R.get_optimization(opt_id))
     if not isinstance(body, dict) or body.get("error"):
         return body
@@ -564,9 +642,15 @@ def t_trade_breakdown(backtest_id: str, by: str = "") -> Any:
     rec = _svc().store.get(Collections.BACKTESTS, backtest_id)
     if rec is None:
         return {"error": "回测记录不存在"}
+    # 索引行里的 metrics 是摘要（不含分解），完整指标在回测详情 blob 里
     bd = (rec.get("metrics") or {}).get("breakdown")
-    if not bd:
-        return {"error": "这次回测没有交易分解（旧版本生成的，重新运行即可）"}
+    if bd is None:
+        blob = _svc().store.get_blob("backtests", backtest_id) or {}
+        bd = (blob.get("metrics") or {}).get("breakdown")
+    if bd is None:
+        return {"error": "这次回测的详情里没有交易分解：请用当前平台重新回测一次后再查（返回的新 backtest_id）"}
+    if not any(bd.values()):
+        return {"backtest_id": backtest_id, "note": "这次回测没有完成的往返交易（开仓后平仓），没有可分解的出场原因"}
     if by:
         if by not in bd:
             return {"error": f"by 只能是 {', '.join(bd)}"}
@@ -581,7 +665,9 @@ def t_guards_report(backtest_id: str) -> Any:
     rec = _svc().store.get(Collections.BACKTESTS, backtest_id)
     if rec is None:
         return {"error": "回测记录不存在"}
-    g = (rec.get("metrics") or {}).get("guards")
+    g = (rec.get("metrics") or {}).get("guards") or (
+        (_svc().store.get_blob("backtests", backtest_id) or {}).get("metrics") or {}
+    ).get("guards")
     if not g:
         return {"backtest_id": backtest_id, "note": "这个策略没有设置 PROTECTIONS 或 PAIRLIST"}
     return {

@@ -478,7 +478,7 @@ def _versions(pid: str) -> int:
 
 
 def _stop_project(pid: str) -> None:
-    _lab().store.patch(pid, stop_requested=True)
+    _lab().request_stop(pid)
 
 
 def _summarize(pid: str) -> dict[str, Any]:

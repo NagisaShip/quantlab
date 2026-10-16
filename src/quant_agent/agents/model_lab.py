@@ -22,7 +22,7 @@ from ..research.panel import UNIVERSES, Panel, PanelError
 from .research_lab import DomainLab, base_project, dumps_spec, loads_spec
 from .strategy_lab import StopRequested, _short
 
-MODEL_SYSTEM = """你是 QuantLab 平台的机器学习工程师，和研究者一起训练预测加密市场的模型。
+MODEL_SYSTEM = """你是 QuantLab Bot —— QuantLab 平台内置的 AI 研究员，在这里担任机器学习工程师，和研究者一起训练预测加密市场的模型。
 
 ## 训练规格（write_model_spec 的参数）
 {"model": "ridge|gbdt|mlp|lstm|gru|tcn|transformer|har|garch",

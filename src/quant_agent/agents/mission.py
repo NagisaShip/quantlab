@@ -521,7 +521,7 @@ class MissionRunner:
         )
         holders = {r.id: self.store.post(mid, self._placeholder(stage, r, "speech", None)) for r in roles}
         with ThreadPoolExecutor(max_workers=min(4, len(roles))) as pool:
-            futures = {pool.submit(self.teams._invoke, r, task): r for r in roles}
+            futures = {pool.submit(contextvars.copy_context().run, self.teams._invoke, r, task): r for r in roles}
             for fut in as_completed(futures):
                 role = futures[fut]
                 self._finish_speech(mid, holders[role.id]["seq"], role, fut.result(), "speech")
@@ -545,7 +545,12 @@ class MissionRunner:
             )
             return
         m = self.store.get(mid) or {}
-        text = fallback_speech(role, m, kind, self.store.feed(mid))
+        # 降级发言醒目标注：模板输出不能被当成「多角色独立意见」
+        reason = _first_line(step.error or "模型不可用")
+        text = (
+            f"> **规则模板输出，不是 {role.name} 的真实模型意见**（模型调用失败：{reason}）\n\n"
+            + fallback_speech(role, m, kind, self.store.feed(mid))
+        )
         self.store.update(
             mid,
             seq,
@@ -604,6 +609,12 @@ class MissionRunner:
     def approve(self, mid: str) -> None:
         self.store.post(mid, {"kind": "system", "content": "指挥官批准，进入下一阶段。"})
         self._run_from_cursor(mid)
+
+
+def _first_line(err: str) -> str:
+    """降级原因只留最有用的一行（路由器的「所有模型均失败:」后面那行才是真正原因）。"""
+    lines = [ln.strip() for ln in err.splitlines() if ln.strip() and not ln.strip().endswith("均失败:")]
+    return (lines[0] if lines else err.strip())[:160]
 
 
 # ---------------------------------------------------------------------------

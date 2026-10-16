@@ -259,6 +259,9 @@ export const lab = {
     post<LabView>(`/api/lab/projects/${id}/autopilot`, p),
   decide: (id: string, choice: string, note = '') => post<LabView>(`/api/lab/projects/${id}/decision`, { choice, note }),
   stop: (id: string) => post<{ ok: boolean }>(`/api/lab/projects/${id}/stop`),
+  /** 回答里的内容块渲染失败：交回 AI 自动修正（服务端保证每条消息只修一次） */
+  renderErrors: (id: string, seq: number, errors: { kind: string; message: string; source: string }[]) =>
+    post<{ ok?: boolean; skipped?: boolean }>(`/api/lab/projects/${id}/render-errors`, { seq, errors }),
   backtest: (id: string, cost_scale = 1) => post<LabView>(`/api/lab/projects/${id}/backtest`, { cost_scale }),
   /** 成本压力扫描：并行回测多档成本倍数，找出不再满足目标的极限 */
   costSweep: (id: string, scales: number[] = []) => post<LabView>(`/api/lab/projects/${id}/cost-sweep`, { scales }),

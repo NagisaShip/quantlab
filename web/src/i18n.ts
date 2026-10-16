@@ -51,7 +51,7 @@ export function t(zh: string): string {
 
 const CJK = /[一-鿿]/
 // AI 输出（.md）只跳过正文（段落、列表、引用、标题、表格单元格）；结构化内容块的按钮与标签照常翻译
-const SKIP = 'script,style,textarea,code,pre,.md > p,.md > ul,.md > ol,.md > blockquote,.md > h2,.md > h3,.md > h4,.md td,.qb-claims li > span,.qb-snippet,.qb-note,.cm-editor,.code-editor,[data-no-i18n],[contenteditable="true"]'
+const SKIP = 'script,style,textarea,code,pre,.md > p,.md > ul,.md > ol,.md > blockquote,.md .md-h,.md td,.md th,.md-details,.md-html,.md-alert,.md-footnotes,.qb-claims li > span,.qb-snippet,.qb-note,.cm-editor,.code-editor,[data-no-i18n],[contenteditable="true"]'
 const ATTRS = ['placeholder', 'title', 'aria-label'] as const
 // 属性（占位符、提示）只在代码编辑器等区域里不翻译；输入框本身的占位符要翻译
 const SKIP_ATTR = '.cm-editor,.code-editor,[data-no-i18n],[contenteditable="true"]'

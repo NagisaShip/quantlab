@@ -7,6 +7,7 @@ import { Chart, HeatmapChart, type ChartSpec } from './Chart'
 import { CodeBlock, RunResult } from './CodeBlock'
 import { DataTable, tableFromBlock } from './DataTable'
 import { ImageView } from './Media'
+import { useReportRenderError } from './renderErrors'
 import {
   BLOCK_LABEL, askChat, copyText, downloadBlob, fmtTs, fmtValue, hostOf, safeHref, sourceText,
   type BlockBase, type Evidence, type ParsedBlock,
@@ -101,15 +102,20 @@ function Frame({ type, data, children, actions, wide }: { type: string; data: Bl
 
 // ---------------------------------------------------------------- 入口
 
+function BadBlock({ block }: { block: Extract<ParsedBlock, { error: string }> }) {
+  useReportRenderError({ kind: 'block', message: `ql:${block.type} ${block.error}`, source: block.raw.slice(0, 1200) })
+  return (
+    <div className="qb-block qb-bad">
+      <div className="qb-muted">「{BLOCK_LABEL[block.type] || block.type}」内容块解析失败：{block.error}</div>
+      <CodeBlock code={block.raw} info="json" />
+    </div>
+  )
+}
+
 export function RichBlock({ block, streaming }: { block: ParsedBlock; streaming?: boolean }) {
   if ('error' in block) {
     if (block.partial || streaming) return <div className="qb-block qb-pending"><span className="cb-spin" /> 正在生成{BLOCK_LABEL[block.type] || '内容块'}…</div>
-    return (
-      <div className="qb-block qb-bad">
-        <div className="qb-muted">「{BLOCK_LABEL[block.type] || block.type}」内容块解析失败：{block.error}</div>
-        <CodeBlock code={block.raw} info="json" />
-      </div>
-    )
+    return <BadBlock block={block} />
   }
   const d = block.data as Record<string, unknown> & BlockBase
   try {

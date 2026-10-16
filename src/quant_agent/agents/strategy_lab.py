@@ -510,7 +510,7 @@ def _accepted_kwargs(fn: Callable[..., Any]) -> set[str] | None:
     return {p.name for p in params}
 
 
-_TAIL_TAGS = ("<suggestions", "<title")
+_TAIL_TAGS = ("<suggestion", "<建议", "<title")
 
 
 def _visible(text: str) -> str:
@@ -538,8 +538,12 @@ class _Streamer:
         self.started = time.perf_counter()
         self.thinking_ms = 0
         self._last = 0.0
+        self.dead = False
 
     def __call__(self, kind: str, chunk: str) -> None:
+        # 研究者按了停止：被放弃的模型调用再来一个字就抛出，连接随之关闭，不再往对话里写
+        if self.dead or stop_event(self.pid).is_set():
+            raise StopRequested()
         if kind == "reset":  # 换了候选模型重来：清掉半句话
             self.text, self.thinking = "", ""
             self._flush(force=True)
@@ -556,6 +560,8 @@ class _Streamer:
         if not force and now - self._last < self.INTERVAL:
             return
         self._last = now
+        if self.dead:
+            return
         data = {"streaming": True, "thinking": self.thinking[-6000:], "thinking_ms": self.thinking_ms}
         if self.seq is None:
             if not (self.text or self.thinking):
@@ -580,9 +586,36 @@ class _Streamer:
         self.started = time.perf_counter()
         self.thinking_ms = 0
 
+    def abort(self) -> None:
+        """停止：把已经输出的半段回答定稿（标明已停止），之后的输出一律丢弃。"""
+        if self.dead:
+            return
+        self.dead = True
+        if self.seq is not None:
+            text = _visible(self.text).rstrip()
+            data = {"streaming": False, "stopped": True, "thinking": self.thinking[-6000:], "thinking_ms": self.thinking_ms}
+            self.lab.store.update(self.pid, self.seq, content=text, data=data)
+            self.seq = None
+
 
 class StopRequested(Exception):
     pass
+
+
+#: 路由器跳过服务商时写的额度类原因（hub.guard / 工作区配额）：命中时不降级成模板回复
+QUOTA_MARKERS = ("配额已耗尽", "限额", "额度已用完")
+
+#: 每个对话的停止信号（进程内）：按下停止立刻置位，正在等模型输出的回合不必等到下一个检查点
+_STOP_EVENTS: dict[str, threading.Event] = {}
+_STOP_GUARD = threading.Lock()
+
+
+def stop_event(pid: str) -> threading.Event:
+    with _STOP_GUARD:
+        ev = _STOP_EVENTS.get(pid)
+        if ev is None:
+            ev = _STOP_EVENTS[pid] = threading.Event()
+        return ev
 
 
 # ---------------------------------------------------------------------------
@@ -813,7 +846,8 @@ SUGGEST_RULE = (
     "2-3 条研究者可能接着发给你的话，用研究者的口吻，每条不超过 16 个字，可以是斜杠命令（如 /backtest）。"
     "提问、等待审批或没有合适建议时不要写。"
 )
-_SUGGEST_RE = re.compile(r"\s*<suggestions>(.*?)(?:</suggestions>|$)", re.S)
+# 标签名写错 / 不成对（<建议>…</suggestions>、<suggestion>…）也照样识别，不让整段退化成正文
+_SUGGEST_RE = re.compile(r"\s*<(?:suggestions?|建议)>(.*?)(?:</(?:suggestions?|建议)>|$)", re.S | re.I)
 TITLE_RULE = (
     "这是对话的第一轮：在回答最末尾另起一行写 <title>对话标题</title>，概括研究对象与方向，"
     "中文不超过 14 个字（英文不超过 6 个单词），不要引号和句号。它只用来命名对话，不会显示在回答里。"
@@ -942,6 +976,7 @@ class StrategyLab:
         self.store.patch(
             pid, status="running", stop_requested=False, job={"kind": kind, "started_at": _now(), "phase": "准备中"}
         )
+        stop_event(pid).clear()
 
         def body() -> None:
             final = "idle"
@@ -970,9 +1005,45 @@ class StrategyLab:
         return self.store.get(pid) or {}
 
     def _check_stop(self, pid: str) -> None:
+        if stop_event(pid).is_set():
+            raise StopRequested()
         cur = self.store.get(pid) or {}
         if cur.get("stop_requested"):
             raise StopRequested()
+
+    def request_stop(self, pid: str) -> None:
+        """按下停止：进程内信号立刻生效（正在输出的模型调用马上中断），同时落库给其他检查点看。"""
+        stop_event(pid).set()
+        self.store.patch(pid, stop_requested=True)
+
+    def _interruptible(self, pid: str, fn: Callable[[], Any], stream: _Streamer | None = None) -> Any:
+        """在旁路线程里调用模型，主线程每 50ms 看一次停止信号：按下停止立刻返回，
+        不必等模型吐出下一个字（首字前的长时间思考、网络卡住时也能即点即停）。
+        被放弃的调用在下一个流式片段到达时自行中断（_Streamer 抛 StopRequested）。"""
+        ev = stop_event(pid)
+        done = threading.Event()
+        box: dict[str, Any] = {}
+
+        def run() -> None:
+            try:
+                box["result"] = fn()
+            except BaseException as exc:  # noqa: BLE001 - 原样交回主线程
+                box["error"] = exc
+            finally:
+                done.set()
+
+        ctx = contextvars.copy_context()
+        threading.Thread(target=ctx.run, args=(run,), daemon=True, name=f"lab-llm-{pid}").start()
+        while not done.wait(0.05):
+            if ev.is_set():
+                if stream is not None:
+                    stream.abort()
+                raise StopRequested()
+        if "error" in box:
+            if isinstance(box["error"], StopRequested) and stream is not None:
+                stream.abort()
+            raise box["error"]
+        return box["result"]
 
     def _phase(self, pid: str, phase: str, detail: str | None = None) -> None:
         """回合进度：phase 是一句话的「正在做什么」，detail 是补充说明（参数、步数、上一步结果）。"""
@@ -1294,6 +1365,10 @@ class StrategyLab:
         try:
             self._chat_llm(pid, text, images=images)
         except LLMError as exc:
+            if any(k in str(exc) for k in QUOTA_MARKERS):
+                # 额度用完不是「模型暂时不可用」：不降级成模板回复，如实告诉研究者
+                self._post(pid, role="event", kind="error", content=f"模型额度已用完，本轮没有调用模型。{_short(str(exc))}")
+                return
             self._chat_fallback(pid, text, str(exc))
 
     # ---------------- 带工具的模型回合 ----------------
@@ -1361,14 +1436,18 @@ class StrategyLab:
                     f"根据「{'、'.join(last)}」的结果继续推理" if last else "继续推理",
                     f"第 {step + 1} 步 · 本回合已调用 {len(used)} 个工具（上限 {max_calls}）",
                 )
-            result = router.chat(
-                messages,
-                role="code_gen",
-                temperature=0.2,
-                tools=list(tools.values()),
-                max_tokens=8192,
-                on_delta=stream,
-                on_retry=lambda info: self._on_model_retry(pid, info),
+            result = self._interruptible(
+                pid,
+                lambda: router.chat(
+                    messages,
+                    role="code_gen",
+                    temperature=0.2,
+                    tools=list(tools.values()),
+                    max_tokens=8192,
+                    on_delta=stream,
+                    on_retry=lambda info: self._on_model_retry(pid, info),
+                ),
+                stream,
             )
             model = f"{result.provider}/{result.model}"
             raw_content = result.content or ""
@@ -2651,7 +2730,7 @@ class StrategyLab:
             out["issues"].append("分段回测是独立口径（每段重置资金），各段收益不能加总或连乘成全区间收益")
             out["ok"] = False
         dev = [r["segment"] for r in ((wf or {}).get("data") or {}).get("segments") or [] if r.get("data_role") == "development"]
-        if dev and re.search(r"样本外|out[- ]of[- ]sample|独立验证", markdown or "", re.I):
+        if dev and affirms(markdown or "", r"样本外|out[- ]of[- ]sample|独立验证"):
             out["issues"].append(f"分段回测第 {'、'.join(map(str, dev))} 段已参与开发，报告不能把它称为样本外 / 独立验证")
             out["ok"] = False
         bt = next((m for m in reversed(msgs) if m.get("kind") == "backtest" and (m.get("data") or {}).get("cost_audit")), None)
@@ -3328,21 +3407,29 @@ class StrategyLab:
                     self._chat_or_note_llm(pid, f"我没有批准刚才的操作（{labels}）。{note}")
                 return True
             tools = self._all_tools(pid)
-            done = []
+            done, details = [], []
             for a in data["approval"]:
                 tool = tools.get(a["tool"])
                 if tool is None:
+                    done.append(f"{a['label']}（失败：工具不存在）")
                     continue
                 try:
                     out = tool.handler(**(a.get("args") or {}))
-                    ok = not (isinstance(out, dict) and out.get("ok") is False)
                 except StopRequested:
                     raise
                 except Exception as exc:
-                    out, ok = {"error": str(exc)}, False
-                done.append(f"{a['label']}（{'完成' if ok else '失败'}）")
-            # 让模型接着刚才的思路继续；仍按项目的权限模式，后续操作照样要审批
-            self._chat_or_note_llm(pid, "我批准了，已执行：" + "；".join(done) + "。请看结果后继续。" + (note or ""))
+                    out = {"error": str(exc)}
+                err = tool_failure(out)
+                done.append(f"{a['label']}（{'失败：' + _clip(err, 120) if err else '完成'}）")
+                details.append(f"[{a['tool']}] " + _clip(json.dumps(out, ensure_ascii=False, default=str), 1500))
+                if err:  # 批准了但被平台拦下：在对话里明确写出拦在哪一步，而不是一个「完成」
+                    self._post(pid, role="event", kind="error", content=f"{a['label']} 没有执行成功：{_clip(err, 400)}")
+            # 让模型接着刚才的思路继续（带上真实返回）；仍按项目的权限模式，后续操作照样要审批
+            self._chat_or_note_llm(
+                pid,
+                "我批准了，执行结果：" + "；".join(done) + "。\n工具返回：\n" + "\n".join(details)
+                + "\n请按真实结果继续；失败的要说明被拦在哪一步、怎么解决，不要当成已完成。" + (note or ""),
+            )
             return True
         if data.get("plan") and choice in (PLAN_GO, PLAN_EDIT):
             self.store.update(pid, open_ask["seq"], data={"answered": choice})
@@ -4149,6 +4236,39 @@ def _fmt(v: Any, key: str) -> str:
     if key in ("max_drawdown", "min_excess"):
         return f"{v * 100:.1f}%"
     return f"{v:.2f}" if isinstance(v, float) else str(v)
+
+
+#: 出现在术语前面、表示否定的说法：「这不是样本外验证」「不能算样本外」不算违规声明
+_NEGATION = re.compile(
+    r"(不是|并非|并不是|不算|不能算|不能称为|不能叫|不属于|不构成|算不上|谈不上|而非|非|没有|无|不应称|勿称"
+    r"|not|isn't|is not|no|never)\s*(做|作为|一次|真正的?|严格的?|所谓的?|an?|the|true|real)?\s*$",
+    re.I,
+)
+
+
+def affirms(text: str, term: str) -> bool:
+    """文本里是否「肯定地」用到某个说法：每处命中看前面 12 个字以内有没有否定词，全部被否定就不算。"""
+    for m in re.finditer(term, text, re.I):
+        head = text[max(0, m.start() - 12) : m.start()]
+        head = re.split(r"[。！？；;\n.!?，,]", head)[-1]  # 只看同一分句
+        if not _NEGATION.search(head):
+            return True
+    return False
+
+
+def _clip(text: str, n: int) -> str:
+    text = str(text or "")
+    return text if len(text) <= n else text[: n - 1] + "…"
+
+
+def tool_failure(out: Any) -> str:
+    """工具返回是否表示失败：{"error": ...} 或 {"ok": false, ...} 都算；返回原因，成功返回空串。"""
+    if isinstance(out, dict):
+        if out.get("error"):
+            return str(out["error"])
+        if out.get("ok") is False:
+            return str(out.get("reason") or out.get("message") or out.get("detail") or "工具返回 ok=false")
+    return ""
 
 
 def _short(reason: str) -> str:

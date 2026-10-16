@@ -75,20 +75,74 @@ tr.clickable { cursor: pointer; }
 /* ---------- Markdown ---------- */
 .md { font-size: 13.5px; color: var(--ink-2); line-height: 1.85; word-break: break-word; max-width: 78ch; }
 .md p { margin: 0 0 10px; }
-.md h2 { font-size: 18px; font-weight: 600; margin: 20px 0 8px; color: var(--ink); }
-.md h3 { font-size: 15px; font-weight: 600; margin: 18px 0 6px; color: var(--ink); }
-.md h4 { font-size: 13.5px; font-weight: 600; margin: 14px 0 4px; color: var(--ink); }
+/* 标题层级：md-h1…md-h6 对应 Markdown 的 # 数量，字号逐级递减，h1 / h2 带分隔线 */
+.md .md-h { color: var(--ink); font-weight: 650; line-height: 1.4; letter-spacing: -0.005em; }
+.md .md-h1 { font-size: 22px; margin: 26px 0 10px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+.md .md-h2 { font-size: 18.5px; margin: 22px 0 8px; padding-bottom: 4px; border-bottom: 1px solid var(--line-soft, var(--line)); }
+.md .md-h3 { font-size: 16px; margin: 18px 0 6px; }
+.md .md-h4 { font-size: 14.5px; margin: 14px 0 4px; }
+.md .md-h5 { font-size: 13.5px; margin: 12px 0 4px; }
+.md .md-h6 { font-size: 12.5px; margin: 12px 0 4px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
 .md > :first-child { margin-top: 0; }
 .md ul, .md ol { margin: 0 0 10px; padding-left: 22px; }
+.md ul ul, .md ol ol, .md ul ol, .md ol ul { margin: 2px 0 2px; }
+.md ul ul { list-style-type: circle; }
+.md ul ul ul { list-style-type: square; }
 .md li { margin: 2px 0; }
+.md li > p:last-child { margin-bottom: 0; }
+.md li.loose { margin: 6px 0; }
+.md li.md-task { list-style: none; margin-left: -20px; display: flex; gap: 6px; align-items: flex-start; }
+.md li.md-task > input { margin: 0.45em 0 0; flex: none; width: auto; height: auto; padding: 0; }
+.md .md-task-body { min-width: 0; flex: 1; }
 .md blockquote { margin: 0 0 12px; padding: 6px 14px; border-left: 3px solid var(--accent-line); background: var(--sunken); color: var(--muted); border-radius: 0 var(--r) var(--r) 0; }
+.md blockquote > :last-child { margin-bottom: 0; }
 .md hr { border: 0; border-top: 1px solid var(--line); margin: 16px 0; }
 .md pre.md-code { margin: 0 0 12px; font-size: 12.5px; }
-.md .md-table { margin: 0 0 12px; border: 1px solid var(--line); border-radius: var(--r); }
+.md .md-table { margin: 0 0 12px; border: 1px solid var(--line); border-radius: var(--r); position: relative; }
 .md .md-table th, .md .md-table td { padding: 7px 12px; font-size: 12.5px; }
 .md a { text-decoration: underline; text-underline-offset: 2px; }
+.md mark, .md .md-mark { background: color-mix(in srgb, var(--warn, #f5b400) 28%, transparent); color: inherit; padding: 0 2px; border-radius: 3px; }
+.md kbd { font-family: var(--mono); font-size: 0.86em; padding: 1px 6px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; background: var(--sheet); }
+/* GitHub 风格提示框 */
+.md .md-alert { margin: 0 0 12px; padding: 8px 14px; border-left: 3px solid var(--accent); background: var(--sunken); border-radius: 0 var(--r) var(--r) 0; }
+.md .md-alert > :last-child { margin-bottom: 0; }
+.md .md-alert-title { font-weight: 650; font-size: 12.5px; margin-bottom: 2px; color: var(--accent); }
+.md .md-alert-tip { border-color: var(--up, #1a9e5a); } .md .md-alert-tip .md-alert-title { color: var(--up, #1a9e5a); }
+.md .md-alert-important { border-color: #8250df; } .md .md-alert-important .md-alert-title { color: #8250df; }
+.md .md-alert-warning { border-color: var(--warn, #c98a00); } .md .md-alert-warning .md-alert-title { color: var(--warn, #c98a00); }
+.md .md-alert-caution { border-color: var(--down, #d1242f); } .md .md-alert-caution .md-alert-title { color: var(--down, #d1242f); }
+/* 折叠块 */
+.md .md-details { margin: 0 0 12px; border: 1px solid var(--line); border-radius: var(--r); background: var(--sheet); }
+.md .md-details > summary { cursor: pointer; padding: 8px 12px; font-weight: 600; color: var(--ink); list-style: none; display: flex; gap: 8px; align-items: center; }
+.md .md-details > summary::-webkit-details-marker { display: none; }
+.md .md-details > summary::before { content: ''; width: 0; height: 0; border: 4px solid transparent; border-left: 6px solid var(--muted); transition: transform var(--dur-fast, 0.15s) var(--ease, ease); flex: none; }
+.md .md-details[open] > summary::before { transform: rotate(90deg) translateX(2px); }
+.md .md-details[open] > summary { border-bottom: 1px solid var(--line); }
+.md .md-details-body { padding: 10px 14px 2px; }
+/* 原生 HTML / 内联 SVG：contain 把内容关在容器里，净化后也盖不住页面其他部分 */
+.md .md-html { margin: 0 0 12px; position: relative; contain: layout paint; max-width: 100%; }
+.md .md-html-body { overflow-x: auto; }
+.md .md-html table { border-collapse: collapse; font-size: 12.5px; }
+.md .md-html th, .md .md-html td { border: 1px solid var(--line); padding: 6px 10px; vertical-align: top; }
+.md .md-html th { background: var(--sunken); font-weight: 600; color: var(--ink); }
+.md .md-html img { max-width: 100%; }
+.md .md-html-tools { position: absolute; top: 4px; right: 4px; opacity: 0; transition: opacity var(--dur-fast, 0.15s); z-index: 1; }
+.md .md-html:hover .md-html-tools, .md .md-table:hover .md-html-tools, .md .md-html-tools:focus-within { opacity: 1; }
+.md .md-svg-body { color: var(--ink); contain: layout paint; }
+.md .md-svg-body { display: flex; justify-content: center; padding: 8px; }
+.md .md-svg-body svg { width: auto; max-width: min(100%, 560px); max-height: 360px; height: auto; }
+.md .md-html svg { max-width: 100%; height: auto; }
+/* 脚注 */
+.md .md-fnref a { text-decoration: none; font-size: 0.78em; padding: 0 2px; }
+.md .md-footnotes { margin-top: 18px; padding-top: 8px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+.md .md-footnotes ol { padding-left: 18px; margin: 0; }
 .md.compact { font-size: 13px; line-height: 1.75; max-width: none; }
-.md.compact h2, .md.compact h3 { font-size: 14px; margin: 10px 0 4px; }
+/* 对话里标题小一号，但层级仍然分得清 */
+.md.compact .md-h1 { font-size: 17px; margin: 16px 0 6px; }
+.md.compact .md-h2 { font-size: 15.5px; margin: 14px 0 6px; }
+.md.compact .md-h3 { font-size: 14.5px; margin: 12px 0 4px; }
+.md.compact .md-h4 { font-size: 13.5px; margin: 10px 0 4px; }
+.md.compact .md-h5, .md.compact .md-h6 { font-size: 12.5px; margin: 10px 0 4px; }
 .md-preview { min-height: 200px; }
 .docs-body .md { max-width: 86ch; }
 

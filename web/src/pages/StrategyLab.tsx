@@ -12,6 +12,7 @@ import { ActionMenu, AutoIterateRow, ContextStats, Icons, PermissionMenu, useFil
 import { CodeEditor } from '../components/CodeEditor'
 import { DiffView, lineDiff } from '../components/Diff'
 import { Markdown } from '../components/markdown'
+import { RenderErrorCtx, type RenderError } from '../components/blocks/renderErrors'
 import { Loading, Modal } from '../components/ui'
 import { condText, domainMeta, fmtGoal, GoalChips, GoalForm, metricsOf, projectItems, projectSpec, useDefaultSpec } from './lab/goal'
 import { FactorCodeCard, FactorPanel, FactorReportCard, FactorVersionMetrics } from './lab/factor'
@@ -815,6 +816,7 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
     onFork: forkAt,
     onPin: (m) => act(async () => { await lab.pin(id, { kind: 'note', title: m.content.replace(/\s+/g, ' ').slice(0, 24), text: m.content.slice(0, 4000) }); notify('已钉进上下文') }),
     onCopy: (m) => { navigator.clipboard?.writeText(m.content).then(() => notify('已复制'), () => notify('复制失败', true)) },
+    onRenderErrors: (m, errors) => { stick.current = true; lab.renderErrors(id, m.seq, errors).then(() => pull(false)).catch(() => undefined) },
   }
   askRef.current = (text) => { if (running) notify('AI 正在处理，等这一轮结束再点'); else send(text) }
 
@@ -1048,6 +1050,31 @@ interface MessageActions {
   onFork: (m: LabMessage) => void
   onPin: (m: LabMessage) => void
   onCopy: (m: LabMessage) => void
+  onRenderErrors: (m: LabMessage, errors: RenderError[]) => void
+}
+
+/**
+ * 最新一条已完成的 AI 回答：里面的 Mermaid / 公式 / ql 块 / SVG 渲染失败时，
+ * 收集 1.5 秒内的全部错误一次性交回 AI 修正（服务端再保证每条消息只修一次）。
+ */
+function RenderRepair({ enabled, onErrors, children }: { enabled: boolean; onErrors: (e: RenderError[]) => void; children: ReactNode }) {
+  const bag = useRef<RenderError[]>([])
+  const timer = useRef(0)
+  const sent = useRef(false)
+  const cb = useRef(onErrors)
+  cb.current = onErrors
+  const report = useCallback((e: RenderError) => {
+    if (sent.current || bag.current.some((x) => x.kind === e.kind && x.message === e.message && x.source === e.source)) return
+    bag.current.push(e)
+    window.clearTimeout(timer.current)
+    timer.current = window.setTimeout(() => {
+      if (sent.current || !bag.current.length) return
+      sent.current = true
+      cb.current(bag.current.slice(0, 8))
+    }, 1500)
+  }, [])
+  useEffect(() => () => window.clearTimeout(timer.current), [])
+  return enabled ? <RenderErrorCtx.Provider value={report}>{children}</RenderErrorCtx.Provider> : <>{children}</>
 }
 
 /** 消息完成时间：流式消息按最后一次更新（结束）算。 */
@@ -1141,8 +1168,11 @@ function MessageView({ m, project, meta, active, actions, onDecide, onOpenBackte
       if (!d.streaming && !m.content && !d.thinking) return null
       return (
         <div className="msg-wrap ai">
-          <AssistantText content={m.content} thinking={d.thinking} thinkingMs={d.thinking_ms} streaming={!!d.streaming}
-            model={m.model} fallback={m.mode === 'fallback'} />
+          <RenderRepair enabled={!d.streaming && m.seq === actions.lastSeq && !actions.running && !d.render_repair}
+            onErrors={(errs) => actions.onRenderErrors(m, errs)}>
+            <AssistantText content={m.content} thinking={d.thinking} thinkingMs={d.thinking_ms} streaming={!!d.streaming}
+              model={m.model} fallback={m.mode === 'fallback'} />
+          </RenderRepair>
           {!d.streaming && m.seq === actions.lastSeq && !actions.running && Array.isArray(d.suggestions) && d.suggestions.length > 0 && (
             <div className="msg-suggest anim-in">
               {(d.suggestions as string[]).map((x) => <button key={x} type="button" className="chip" onClick={() => actions.onSuggest(x)}>{x}</button>)}

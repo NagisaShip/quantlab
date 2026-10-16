@@ -25,7 +25,7 @@ from ..agents.strategy_lab import DEFAULT_GOALS, LabStore, LabTools, StrategyLab
 from ..agents.team import LAB_REVIEW_TEAM
 from ..engine.research import summarize_metrics
 from ..llm.base import split_data_url
-from ..platform.errors import AppError
+from ..platform.errors import AppError, ErrorCode
 from ..research import goals as RG
 from ..sdk import declared_params
 from ..strategies.sdk_templates import TEMPLATES, get_template
@@ -265,18 +265,35 @@ def _platform_backtest(project: dict[str, Any], code: str, *, cost_scale: float 
     step = max(1, len(eq) // 80)
     datasets = [d for d in result.get("datasets") or [] if d.get("kind") != "funding"]
     metrics = summarize_metrics(result.get("metrics") or {})
+    # 口径按「这次回测实际用的成本」写：策略 initialize 里 set_order_cost 会覆盖平台默认值，
+    # 只写平台默认值的话，研究者声明的成本看起来像没生效（两边差一倍也没人发现）
+    used = (result.get("assumptions") or {}).get("cost") or {}
+    eff = {
+        k: float(used[k]) if used.get(k) is not None else float(getattr(payload, k))
+        for k in ("taker_fee", "slippage_bps", "spread_bps")
+    }
+    overridden = {
+        k: {"platform_default": float(getattr(payload, k)), "used": v}
+        for k, v in eff.items()
+        if abs(v - float(getattr(payload, k))) > 1e-12
+    }
+    definitions = R.definitions(
+        initial_cash=payload.initial_cash,
+        fill_model=(result.get("assumptions") or {}).get("fill_model") or "",
+        cost_scale=cost_scale,
+        **eff,
+    )
+    definitions["cost_source"] = (
+        "策略代码 set_order_cost 覆盖了平台默认成本：" + "、".join(f"{k} {v['platform_default']:g}→{v['used']:g}" for k, v in overridden.items())
+        if overridden
+        else "平台默认成本（策略没有用 set_order_cost 覆盖）"
+    )
     return {
         "datasets": [
             {k: d.get(k) for k in ("symbol", "source", "source_label", "bars", "start_ts", "end_ts")} for d in datasets
         ],
         "data_check": R.data_check(project, datasets, warmup_bars=payload.warmup_bars),
-        "definitions": R.definitions(
-            initial_cash=payload.initial_cash,
-            taker_fee=payload.taker_fee,
-            slippage_bps=payload.slippage_bps,
-            spread_bps=payload.spread_bps,
-            fill_model=(result.get("assumptions") or {}).get("fill_model") or "",
-        ),
+        "definitions": definitions,
         "consistency": R.consistency(metrics, initial_cash=payload.initial_cash),
         "zero_trade_diagnosis": R.zero_trade_diagnosis({**result, "metrics": metrics}),
         "cost_scale": cost_scale,
@@ -609,6 +626,11 @@ def _view(lab: StrategyLab, p: dict[str, Any], after: int = 0, since: float = 0.
 
 
 def _start(lab: StrategyLab, pid: str, kind: str, fn, wait: bool) -> dict:
+    # 要调用模型的回合：工作区当日 LLM 配额用完就直接拒绝，不再降级成模板回复「假装还能对话」
+    if kind not in ("backtest", "walkforward"):
+        block = getattr(get_services(), "llm_quota_block", None)
+        if callable(block) and (reason := block()):
+            raise AppError(ErrorCode.QUOTA_EXHAUSTED, reason)
     try:
         lab.start(pid, kind, fn, wait=wait)
     except RuntimeError as exc:
@@ -819,6 +841,42 @@ def send_message(pid: str, payload: MessageIn) -> dict:
         urls = [im.data_url for im in payload.images]
         return _start(lab, pid, "chat", lambda: lab.chat(pid, payload.text, images=urls), payload.wait)
     return _start(lab, pid, "chat", lambda: lab.chat(pid, payload.text), payload.wait)
+
+
+class RenderErrorItem(BaseModel):
+    kind: str = Field(..., max_length=20)
+    message: str = Field("", max_length=400)
+    source: str = Field("", max_length=1500)
+
+
+class RenderErrorsIn(BaseModel):
+    seq: int
+    errors: list[RenderErrorItem] = Field(..., min_length=1, max_length=8)
+
+
+@router.post("/projects/{pid}/render-errors", summary="回答里的内容块没能显示：把错误交回 AI 自动修正（每条消息只修一次）")
+def report_render_errors(pid: str, payload: RenderErrorsIn) -> dict:
+    lab = _lab_for(pid)
+    p = _project_or_404(lab, pid)
+    msg = next((m for m in lab.store.messages(pid) if m["seq"] == payload.seq), None)
+    if msg is None or msg.get("role") != "assistant":
+        raise HTTPException(404, "消息不存在")
+    if (msg.get("data") or {}).get("render_repair") or p.get("status") == "running" or p.get("auto_repair") is False:
+        return {"ok": False, "skipped": True}
+    # 先打标记再启动：前端重复上报、多个标签页同时上报都只会触发一次
+    lab.store.update(pid, payload.seq, data={"render_repair": len(payload.errors)})
+    label = {"mermaid": "Mermaid 图", "math": "LaTeX 公式", "block": "ql 内容块", "svg": "SVG", "html": "HTML"}
+    lines = [
+        f"{i}. {label.get(e.kind, e.kind)}：{e.message}\n```\n{e.source[:800]}\n```" for i, e in enumerate(payload.errors, 1)
+    ]
+    text = (
+        f"【渲染失败】你上一条回答里有 {len(payload.errors)} 处内容没能在页面上显示：\n"
+        + "\n".join(lines)
+        + "\n请逐一修正（只重新输出修好的部分并简短说明改了什么），不要重复整段回答。"
+    )
+    lab.store.append(pid, {"role": "event", "kind": "text", "content": f"检测到 {len(payload.errors)} 处内容渲染失败，已交给 AI 自动修正"})
+    lab.store.append(pid, {"role": "user", "kind": "text", "content": text, "data": {"auto": "render_repair"}})
+    return _start(lab, pid, "chat", lambda: lab.chat(pid, text), False)
 
 
 def _check_image_input(lab: StrategyLab, pid: str, model: str | None) -> None:
@@ -1180,12 +1238,19 @@ def get_report(pid: str, rid: str) -> dict:
     return {"report": rep, "project": {k: p.get(k) for k in ("id", "title", "securities", "timeframe")}}
 
 
-@router.post("/projects/{pid}/stop", summary="请求停止正在运行的回合（在下一个检查点停下）")
+@router.post("/projects/{pid}/stop", summary="停止正在运行的回合：模型输出立即中断；工具（回测等）在跑完当前一步后停下")
 def stop_project(pid: str) -> dict:
+    import time
+
     lab = _lab_for(pid)
     _project_or_404(lab, pid)
-    lab.store.patch(pid, stop_requested=True)
-    return {"ok": True}
+    lab.request_stop(pid)
+    # 等回合真正停下（模型输出通常在 0.1 秒内中断），返回停下后的状态，前端不用再等下一次推送
+    deadline = time.monotonic() + 1.5
+    while time.monotonic() < deadline and (lab.store.get(pid) or {}).get("status") == "running":
+        time.sleep(0.05)
+    p = _project_or_404(lab, pid)
+    return {"ok": True, "status": p.get("status")}
 
 
 @router.post("/projects/{pid}/backtest", summary="用平台回测跑当前版本（cost_scale>1 为成本压力测试）")

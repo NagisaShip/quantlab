@@ -395,6 +395,20 @@ def normalize_space(space: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return out
 
 
+def auto_space(params: dict[str, Any]) -> dict[str, Any]:
+    """策略没写 PARAM_SPACE 时，按 PARAMS 的默认值自动给范围：整数取 [默认/2, 默认×2]，
+    小数取 [默认×0.5, 默认×1.5]，布尔取两值；其余（字符串等）不调。"""
+    out: dict[str, Any] = {}
+    for k, v in (params or {}).items():
+        if isinstance(v, bool):
+            out[k] = [True, False]
+        elif isinstance(v, int) and v > 1:
+            out[k] = (max(1, v // 2), v * 2)
+        elif isinstance(v, float) and v > 0:
+            out[k] = (round(v * 0.5, 6), round(v * 1.5, 6))
+    return out
+
+
 def declared_space(source: str) -> dict[str, Any]:
     """读源码顶层的 PARAM_SPACE 字面量（不执行代码）。"""
     import ast

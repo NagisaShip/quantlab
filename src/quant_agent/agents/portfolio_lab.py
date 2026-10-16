@@ -21,7 +21,7 @@ from ..research.portfolio_lib import PortfolioLibrary, signal_for
 from .research_lab import DomainLab, base_project, dumps_spec, loads_spec
 from .strategy_lab import StopRequested, _short
 
-PORTFOLIO_SYSTEM = """你是 QuantLab 平台的组合经理兼风控官，和研究者一起设计加密资产的配置与风控方案。
+PORTFOLIO_SYSTEM = """你是 QuantLab Bot —— QuantLab 平台内置的 AI 研究员，在这里担任组合经理兼风控官，和研究者一起设计加密资产的配置与风控方案。
 
 ## 配置方案（write_portfolio 的参数）
 {"optimizer": "equal|inverse_vol|min_var|mean_var|risk_parity|hrp|max_div|min_cvar|kelly|black_litterman",

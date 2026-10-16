@@ -462,8 +462,15 @@ def _checkup_job(ws: str, user: str, cid: str, req: dict[str, Any]) -> None:
                 if call is not None:
                     chat = call
             red = redteam.critique(src, rep, rep.get("metrics") or {}, chat=chat)
+            from ..research.graduation import sample_window
+
+            starts = [b[0].open_time for b in bars.values() if b]
+            ends = [b[-1].close_time for b in bars.values() if b]
             save(
                 status="done",
+                # 体检自己的样本区间：与晋级关卡引用的回测不是同一段时，成绩不能互相印证
+                sample=sample_window(min(starts, default=0), max(ends, default=0), spec.timeframe)
+                + f" · {spec.bars_limit} 根",
                 report=rep,
                 redteam=red,
                 overall=rep["overall"],

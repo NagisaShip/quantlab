@@ -104,14 +104,22 @@ def data_check(project: dict[str, Any], datasets: list[dict[str, Any]], *, warmu
 
 
 def definitions(
-    *, initial_cash: float, taker_fee: float, slippage_bps: float, spread_bps: float, fill_model: str
+    *,
+    initial_cash: float,
+    taker_fee: float,
+    slippage_bps: float,
+    spread_bps: float,
+    fill_model: str,
+    cost_scale: float = 1.0,
 ) -> dict:
-    """本次回测的指标口径（写给 Agent 和研究者复核用）。"""
-    one_side = taker_fee + (slippage_bps + spread_bps / 2) / 10_000
+    """本次回测的指标口径（写给 Agent 和研究者复核用）。成本按实际生效值 × 压力倍数。"""
+    k = max(0.0, float(cost_scale or 1.0))
+    one_side = (taker_fee + (slippage_bps + spread_bps / 2) / 10_000) * k
+    scale = f"（已乘成本压力倍数 ×{k:g}）" if k != 1 else ""
     return {
         "initial_cash": f"{initial_cash:,.0f} USDT（计价货币）",
-        "fees": f"taker 手续费 {taker_fee:.4%} / 每笔成交（单边），按成交额计，计价货币扣除",
-        "slippage": f"滑点 {slippage_bps:g} bps / 每笔成交（单边），叠加半个价差 {spread_bps / 2:g} bps",
+        "fees": f"taker 手续费 {taker_fee * k:.4%} / 每笔成交（单边）{scale}，按成交额计，计价货币扣除",
+        "slippage": f"滑点 {slippage_bps * k:g} bps / 每笔成交（单边），叠加半个价差 {spread_bps * k / 2:g} bps{scale}",
         "round_trip_cost": f"单边约 {one_side:.4%}，一次开平仓往返约 {2 * one_side:.4%}",
         "fill_model": fill_model or "下一根 bar 开盘价 ±（半价差 + 滑点）",
         "signal_timing": "策略只在 K 线收盘后看到这根 bar，订单在下一根 bar 成交（不会用到未收盘数据）",

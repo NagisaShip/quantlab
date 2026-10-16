@@ -238,7 +238,15 @@ class AppServices:
             self.model_hub.migrate_legacy(self.global_store, self.read_secrets())
         hub = self.model_hub
         self.router.resolver = hub.scoped_config
-        self.router.guard = hub.guard
+
+        def guard(pc, model):
+            """服务商 / 成员限额之外，再查工作区当日配额（LLM 调用次数与 token）：用完就不再调用模型。"""
+            reason = hub.guard(pc, model)
+            if reason:
+                return reason
+            return self.llm_quota_block()
+
+        self.router.guard = guard
 
         def on_usage(pc, model, usage):
             hub.record(pc, model, usage)
@@ -252,6 +260,25 @@ class AppServices:
 
         self.router.on_usage = on_usage
         self.router._clients.clear()
+
+    def llm_quota_block(self) -> str | None:
+        """工作区当日 LLM 配额用完时返回原因（中文），否则 None。只读，不产生用量。
+
+        token 按「已用 ≥ 上限」判定（再要 1 个 token 就超），调用次数按「已用 + 本次 1 次 > 上限」判定。
+        """
+        from ..platform import context
+        from ..platform.errors import AppError
+
+        if self.quota is None or not context.current().workspace_id:
+            return None
+        try:
+            self.quota.check("llm_tokens", 1)
+            self.quota.check("llm_calls", 1)
+        except AppError as exc:
+            return exc.message
+        except Exception:  # 计量表读不到时不拦截对话（计量失败不该让平台不可用）
+            return None
+        return None
 
     @staticmethod
     def _build_adapters(config: AgentConfig) -> dict[str, Any]:
