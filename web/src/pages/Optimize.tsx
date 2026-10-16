@@ -226,7 +226,7 @@ export default function OptimizePage({ slug, onNavigate, notify, setBusy }: Page
               <label>开始<input type="date" value={start} onChange={(e) => setStart(e.target.value)} /></label>
               <label>结束<input type="date" value={end} onChange={(e) => setEnd(e.target.value)} /></label>
               <label>优化目标<select value={objective} onChange={(e) => setObjective(e.target.value)}>{OBJECTIVES.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select></label>
-              <label>行情来源<select value={source} onChange={(e) => setSource(e.target.value as typeof source)}><option value="auto">自动（真实优先）</option><option value="exchange">只用真实行情</option><option value="synthetic">教学合成数据</option></select></label>
+              <label>行情来源<select value={source} onChange={(e) => setSource(e.target.value as typeof source)}><option value="auto">真实行情（缓存优先）</option><option value="exchange">只用真实行情</option></select></label>
             </div>
             {method === 'bayes' && (
               <div className="form-grid" style={{ marginTop: 12 }}>

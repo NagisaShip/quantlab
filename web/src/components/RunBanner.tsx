@@ -59,7 +59,7 @@ export default function RunBanner({ onNavigate, llmReady }: { onNavigate: (k: st
   const m = b.market
   const age = m.last_event_ts ? Math.round((now - m.last_event_ts) / 60_000) : null
   const fresh = age !== null && age <= 75
-  const srcLabel = m.source === 'exchange' ? `${m.exchange} 真实行情` : m.source === 'synthetic' ? '合成行情（演示）' : '行情不可用'
+  const srcLabel = m.source === 'exchange' ? `${m.exchange} 真实行情` : m.source === 'synthetic' ? '合成行情（旧设置）' : '未接入数据'
   const net = b.network.overall
   const workerOk = b.worker.mode === 'inline' || b.worker.online > 0
   const streamBad = stream.status === 'offline' || stream.status === 'error'
@@ -79,7 +79,7 @@ export default function RunBanner({ onNavigate, llmReady }: { onNavigate: (k: st
     <div className="status-anchor" ref={pop.ref}>
       <button type="button" className="status-chip" onClick={() => pop.setOpen(!pop.open)} aria-expanded={pop.open} title="运行状态">
         <span className={`dot ${issues ? 'warn' : 'ok'}`} />
-        {m.source === 'exchange' ? '实时行情' : '合成行情'}{issues ? ` · ${issues} 项提醒` : ''}
+        {m.source === 'exchange' ? '实时行情' : '未接入行情'}{issues ? ` · ${issues} 项提醒` : ''}
         {/* 端到端测试读取事件流状态用；视觉上隐藏 */}
         <span className="sr-only" data-testid="banner-event-stream" data-status={stream.status} data-connects={stream.connects}>
           事件流 {STREAM_LABEL[stream.status]}

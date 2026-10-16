@@ -25,6 +25,7 @@ export const SETTINGS_GROUPS: { group: string; items: SettingsItem[] }[] = [
   {
     group: 'AI',
     items: [
+      { key: 'settings/lab', label: '研究偏好', icon: 'lab', keywords: '默认 研究类型 权限 思考 工具调用 上限 团队 上下文 建议 主题 红涨绿跌 关注 首页' },
       { key: 'models', label: '模型', icon: 'models', keywords: 'AI 模型 密钥 API key 服务商 provider 共享 个人 价格 限额 用量 路由 联网搜索 tavily' },
       { key: 'roles', label: '角色与团队', icon: 'roles', keywords: '角色 团队 agent' },
       { key: 'prompts', label: '提示词', icon: 'prompts', keywords: 'prompt' },

@@ -46,7 +46,7 @@ export function SettingsForm({ value, onChange, hideSecurities }: { value: SpecD
       <label>滑点（bp）<input type="number" min={0} max={500} step={1} value={value.slippage_bps} onChange={(e) => set('slippage_bps', Number(e.target.value))} /></label>
       <label>数据
         <select value={value.source} onChange={(e) => set('source', e.target.value as Spec['source'])}>
-          <option value="auto">自动（真实优先）</option><option value="exchange">只用真实行情</option><option value="synthetic">合成数据</option>
+          <option value="auto">真实行情（缓存优先）</option><option value="exchange">只用真实行情</option>
         </select>
       </label>
     </div>

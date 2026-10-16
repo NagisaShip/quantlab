@@ -134,7 +134,8 @@ def test_api_check_import_export(client):
     out = client.get(f"/api/freqtrade/export/{slug}")
     assert out.status_code == 200 and "class Strategy001" in out.text and "quant_agent" not in out.text
     bad = client.post(
-        "/api/freqtrade/import", json={"source": (SAMPLES / "futures_short.py").read_text(), "checkup": False}
+        "/api/freqtrade/import",
+        json={"source": (SAMPLES / "futures_short.py").read_text(encoding="utf-8"), "checkup": False},
     )
     assert bad.json()["strategy"] is None and bad.json()["report"]["errors"]
     assert client.post("/api/freqtrade/check", json={"source": "x = 1\n"}).status_code == 400

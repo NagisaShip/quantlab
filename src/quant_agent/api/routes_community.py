@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import math
 import re
+import threading
 import time
 from typing import Any
 
@@ -671,10 +672,37 @@ OVERFIT = """参数优化最容易骗到的人是自己。平台的「参数优�
 """
 
 
+_SEED_LOCK = threading.Lock()
+
+
 def seed_if_empty() -> None:
+    """首次访问时写入几篇置顶 / 精华帖。帖子用固定 id：并发的首个请求同时进来也只会写同一份，不会出现重复帖。"""
     store = get_services().store
     if store.get(Collections.SETTINGS, "community_seeded"):
+        if not store.get(Collections.SETTINGS, "community_dedup_v1"):
+            with _SEED_LOCK:
+                _dedup_seed_posts(store)
         return
+    with _SEED_LOCK:
+        if store.get(Collections.SETTINGS, "community_seeded"):
+            return
+        _seed(store)
+
+
+def _dedup_seed_posts(store: Any) -> None:
+    """旧版本并发首访会把系统帖写两遍：同标题、平台作者、没人互动过的重复帖只留最早的一篇。"""
+    seen: set[str] = set()
+    for p in sorted(store.list(Collections.POSTS), key=lambda x: x.get("created_at", 0)):
+        if p.get("author_id") != "system":
+            continue
+        untouched = not (p.get("likes") or p.get("favorites") or p.get("comment_count") or p.get("clones"))
+        if p.get("title") in seen and untouched:
+            store.delete(Collections.POSTS, p["id"])
+        seen.add(p.get("title"))
+    store.upsert(Collections.SETTINGS, {"id": "community_dedup_v1", "at": time.time()})
+
+
+def _seed(store: Any) -> None:
     from ..strategies.sdk_templates import get_template
 
     base = {
@@ -692,6 +720,7 @@ def seed_if_empty() -> None:
         Collections.POSTS,
         {
             **base,
+            "id": "seed-guide",
             "type": "notice",
             "title": "策略广场新手指南",
             "body": GUIDE,
@@ -704,6 +733,7 @@ def seed_if_empty() -> None:
         Collections.POSTS,
         {
             **base,
+            "id": "seed-conventions",
             "type": "article",
             "title": "回测与实时模拟的统一口径（必读）",
             "body": CONVENTIONS,
@@ -717,6 +747,7 @@ def seed_if_empty() -> None:
         Collections.POSTS,
         {
             **base,
+            "id": "seed-overfit",
             "type": "article",
             "title": title,
             "body": OVERFIT,
@@ -731,6 +762,7 @@ def seed_if_empty() -> None:
             Collections.POSTS,
             {
                 **base,
+                "id": "seed-momentum-rotation",
                 "type": "strategy",
                 "title": "模板分享：多币种动量轮动（趋势质量打分）",
                 "body": (

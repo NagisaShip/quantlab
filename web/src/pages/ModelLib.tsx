@@ -289,7 +289,7 @@ function TrainBench({ meta, notify, onSaved }: { meta: ModelMeta | null; notify:
           </Field>
           <Field label="数据">
             <select value={p.source} onChange={(e) => setP({ ...p, source: e.target.value as TrainParams['source'] })}>
-              <option value="auto">自动（真实优先）</option><option value="exchange">只用真实数据</option><option value="synthetic">合成数据</option>
+              <option value="auto">真实行情（缓存优先）</option><option value="exchange">只用真实数据</option>
             </select>
           </Field>
         </div>

@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
 import { get } from '../http'
 import { ago, fmtNum, fmtPct, tone, v3, type BacktestRow, type LlmStatus, type PaperSessionView, type StrategyFile } from '../api2'
-import { LineChart } from '../components/charts2'
-import { EmptyState, Panel, Tag } from '../components/ui'
+import { HomeAsk, Watchlist } from './home/HomeAsk'
+import { EmptyState, Panel } from '../components/ui'
 import { NewStrategyModal } from './MyStrategies'
 import { missions, type Mission } from '../apiLab'
 import { rd, when, type Pipeline } from '../apiRd'
@@ -31,8 +31,8 @@ export default function HomePage({ onNavigate, notify }: PageProps) {
     missions.list().then((r) => setRecentMissions(r.missions)).catch(() => undefined)
     rd.pipeline().then(setPipe).catch(() => undefined)
     validation.board().then((r) => setBoard({ rows: r.board, cfg: r.config })).catch(() => undefined)
-    get<{ source: string; bars: { t: number; c: number }[] }>('/api/market/bars?symbol=BTC%2FUSDT&timeframe=1h&limit=168')
-      .then((b: { source: string; bars: { t: number; c: number }[] }) => setMarket({ t: b.bars.map((x) => x.t), c: b.bars.map((x) => x.c), source: b.source }))
+    get<{ quotes: { connected: boolean; source?: string; t?: number[]; c?: number[] }[] }>('/api/market/quotes?symbols=BTC%2FUSDT&timeframe=1h&limit=168')
+      .then((r) => { const q = r.quotes[0]; if (q?.connected && q.t && q.c) setMarket({ t: q.t, c: q.c, source: q.source || 'exchange' }) })
       .catch(() => undefined)
   }, [])
 
@@ -40,44 +40,16 @@ export default function HomePage({ onNavigate, notify }: PageProps) {
   const pending = strategies.filter((s) => !s.human_approved && s.status !== 'draft')
   const todos: { text: string; note: string; go: string; tone?: string }[] = [
     ...(board?.rows ?? []).filter((r) => r.next && r.passed).map((r) => ({ text: `「${r.name}」可以晋级到${r.next_label}`, note: '检查全部通过，等你确认', go: `validation/gate:${r.strategy}`, tone: 'ok' })),
-    ...pending.slice(0, 4).map((s) => ({ text: `「${s.name}」等你批准`, note: '批准后才能进入纸面模拟', go: `editor/${s.slug}` })),
+    ...pending.slice(0, 4).map((s) => ({ text: `「${s.name}」等你审阅`, note: '回测可信、样本外通过后再批准；批准后才能进纸面模拟', go: `editor/${s.slug}` })),
     ...(llm && !llm.ready ? [{ text: '还没配置 AI 模型', note: 'AI 功能现在是规则降级', go: 'models', tone: 'warn' }] : []),
     ...(!strategies.length ? [{ text: '写第一个策略', note: '从模板开始，或让 AI 研究室来写', go: 'strategies' }] : []),
   ]
 
   return (
     <>
-      <section className="home-hero">
-        <div className="home-ask">
-          <h1>今天研究什么策略？</h1>
-          <Brief market={market} board={board?.rows ?? null} running={running.length} />
-          <button className="button primary home-cta" onClick={() => onNavigate('lab')}>
-            <span aria-hidden="true">✦</span> 与 AI 一起研究策略
-          </button>
-        </div>
-        <div className="hero-market">
-          {market && market.c.length > 1 ? (
-            <>
-              <div>
-                <div className="hero-market-head"><b>BTC / USDT · 近 7 天</b>{market.source !== 'exchange' && <Tag tone="warn">合成行情</Tag>}</div>
-                <div className="hero-price">{market.c[market.c.length - 1].toLocaleString('en-US', { maximumFractionDigits: 2 })}</div>
-                <div className={`hero-change ${tone(market.c[market.c.length - 1] / market.c[0] - 1)}`}>
-                  {fmtPct(market.c[market.c.length - 1] / market.c[0] - 1, 2, true)} <span className="muted" style={{ fontWeight: 400, fontSize: 12 }}>7 日</span>
-                </div>
-              </div>
-              <LineChart
-                timestamps={market.t}
-                series={[{ name: 'BTC 收盘价', values: market.c, color: 'var(--accent)', area: true }]}
-                format="money"
-                zeroLine={false}
-                height={190}
-                width={460}
-                ariaLabel="BTC 近 7 天走势"
-              />
-              <div className="hero-meta">1 小时 K 线 · {market.source === 'exchange' ? '交易所公共行情' : '交易所不可达，显示教学合成数据'}</div>
-            </>
-          ) : <EmptyState title="行情加载中" />}
-        </div>
+      <section className="home-hero home-hero2">
+        <HomeAsk onNavigate={onNavigate} notify={notify} brief={<Brief market={market} board={board?.rows ?? null} running={running.length} />} />
+        <Watchlist notify={notify} onNavigate={onNavigate} />
       </section>
 
       <FlowBoard board={board} onNavigate={onNavigate} />
@@ -93,7 +65,7 @@ export default function HomePage({ onNavigate, notify }: PageProps) {
               <tbody>
                 {backtests.map((b) => (
                   <tr key={b.id} className="clickable" onClick={() => onNavigate(`backtest/${b.id}`)}>
-                    <td><strong>{b.strategy_name}</strong><small>{ago(b.created_at)} · {b.data_sources.includes('synthetic') ? '合成数据' : '真实行情'}</small></td>
+                    <td><strong>{b.strategy_name}</strong><small>{ago(b.created_at)}{b.data_sources.includes('synthetic') ? ' · 合成数据（旧记录）' : ''}</small></td>
                     <td>{b.timeframe}<small>{b.securities.join(', ')}</small></td>
                     <td className={`right ${tone(b.metrics.total_return)}`}>{fmtPct(b.metrics.total_return, 2, true)}</td>
                     <td className={`right ${tone(b.metrics.excess_return)}`}>{fmtPct(b.metrics.excess_return, 2, true)}</td>

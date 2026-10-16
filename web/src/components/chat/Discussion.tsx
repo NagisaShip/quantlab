@@ -8,6 +8,7 @@ import { mergeBySeq, missions, type Mission, type Utterance } from '../../apiLab
 import { Avatar } from '../Avatar'
 import { QuantEyes } from '../QuantBot'
 import { AssistantText, EventLine, UserBubble, Working } from './Blocks'
+import { filterMentions, findMention, MentionList, mentionQuery, type MentionOption } from './Composer'
 
 const MODE_LABEL: Record<string, string> = { sequential: '接力', parallel: '并行', debate: '对抗' }
 const STATUS: Record<string, string> = {
@@ -39,6 +40,46 @@ export function FeedItem({ u, mission }: { u: Utterance; mission: Mission }) {
         <AssistantText content={u.content.replace(/^【规则降级】/, '')} model={u.model} fallback={u.mode === 'fallback'} />
       )}
     </div>
+  )
+}
+
+/** 插话 / 追问输入框：输入 @ 弹出团队角色列表，选中后该角色会单独回应。 */
+function SayBox({ value, onChange, roster, onSubmit }: {
+  value: string; onChange: (v: string) => void; roster: Mission['roster']
+  onSubmit: (text: string, roleId: string | null) => void
+}) {
+  const [active, setActive] = useState(0)
+  const ref = useRef<HTMLInputElement>(null)
+  const options: MentionOption[] = roster.map((r) => ({ id: r.id, name: r.name, hint: r.title, avatar: <Avatar id={r.id} size={16} /> }))
+  const mq = mentionQuery(value)
+  const list = mq ? filterMentions(options, mq[1]) : []
+  const pick = (o: MentionOption) => { if (mq) onChange(`${value.slice(0, mq[0])}@${o.name} `); setActive(0); ref.current?.focus() }
+  const target = findMention(value, options)
+  return (
+    <form className="disc-say" onSubmit={(e) => {
+      e.preventDefault()
+      const t = value.trim()
+      if (!t) return
+      // 点名的角色由气泡前缀显示（@名字），正文里不再重复
+      const body = target ? t.replace(`@${target.name}`, '').trim() : t
+      onSubmit(body || t, target?.id ?? null)
+    }}>
+      {mq && list.length > 0 && <MentionList options={options} query={mq[1]} active={Math.min(active, list.length - 1)} onHover={setActive} onPick={pick} />}
+      <div className="disc-say-row">
+        <button type="button" className="disc-at" title="点名一个角色" aria-label="点名一个角色"
+          onClick={() => { onChange(value && !value.endsWith(' ') ? `${value} @` : `${value}@`); ref.current?.focus() }}>@</button>
+        <input ref={ref} value={value} onChange={(e) => { onChange(e.target.value); setActive(0) }}
+          placeholder="插话或追问团队，输入 @ 选择角色点名"
+          onKeyDown={(e) => {
+            if (!list.length) return
+            if (e.key === 'ArrowDown') { e.preventDefault(); setActive((active + 1) % list.length) }
+            else if (e.key === 'ArrowUp') { e.preventDefault(); setActive((active - 1 + list.length) % list.length) }
+            else if ((e.key === 'Enter' || e.key === 'Tab') && !e.nativeEvent.isComposing) { e.preventDefault(); pick(list[Math.min(active, list.length - 1)]) }
+          }} />
+        {target && <span className="disc-target anim-pop"><Avatar id={target.id} size={16} />{target.name} 会回应</span>}
+        <button type="submit" className="button small" disabled={!value.trim()}>发送</button>
+      </div>
+    </form>
   )
 }
 
@@ -118,10 +159,9 @@ export function DiscussionCard({ missionId, topic, onPin, notify }: {
           )}
           {running && <Working phase={`${spoken} 条发言`} onStop={() => act(() => missions.stop(missionId))} />}
           <div className="disc-foot">
-            {(running || mission.status === 'awaiting_approval' || mission.status === 'done') && (
-              <form className="disc-say" onSubmit={(e) => { e.preventDefault(); const t = say.trim(); if (!t) return; setSay(''); act(() => missions.say(missionId, t)) }}>
-                <input value={say} onChange={(e) => setSay(e.target.value)} placeholder="插话或追问团队（@角色名 点名）" />
-              </form>
+            {(running || mission.status === 'awaiting_approval' || mission.status === 'done' || mission.status === 'idle' || mission.status === 'stopped') && (
+              <SayBox value={say} onChange={setSay} roster={mission.roster}
+                onSubmit={(t, roleId) => { setSay(''); act(() => missions.say(missionId, t, roleId)) }} />
             )}
             {mission.status === 'done' && mission.conclusion && (
               <>

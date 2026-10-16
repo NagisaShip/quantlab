@@ -410,9 +410,8 @@ export default function EditorPage({ slug, onNavigate, notify, setBusy }: PagePr
         <label>初始资金<input type="number" min={100} step={1000} value={settings.initial_cash} onChange={(e) => set('initial_cash', Number(e.target.value))} /></label>
         <label>行情来源
           <select value={settings.source} onChange={(e) => set('source', e.target.value as Spec['source'])}>
-            <option value="auto">自动（真实优先）</option>
+            <option value="auto">真实行情（缓存优先）</option>
             <option value="exchange">只用真实行情</option>
-            <option value="synthetic">教学合成数据</option>
           </select>
         </label>
         <button className="button small ghost" onClick={() => setShowAdvanced(!showAdvanced)}>{showAdvanced ? '收起' : '成本与高级'}</button>

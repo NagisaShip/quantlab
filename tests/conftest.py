@@ -15,6 +15,10 @@ os.environ.setdefault("QAGENT_WORKER", "inline")
 os.environ.setdefault("QAGENT_PAPER_TICK_SECONDS", "0")
 # 测试里不连交易所 WebSocket：实时模拟一律走 REST（被测试替换的）行情
 os.environ.setdefault("QAGENT_STREAM", "0")
+# 平台默认停用合成行情；测试离线运行，需要可复现的合成数据
+os.environ.setdefault("QAGENT_ALLOW_SYNTHETIC", "1")
+# 联网搜索的免密钥来源（必应 / 百度 / 新闻）在测试里关闭，不访问外网
+os.environ.setdefault("QAGENT_FREE_SEARCH", "0")
 
 # 在 PostgreSQL 上跑全套测试：QAGENT_TEST_PG=postgresql://user@host:port/db
 # 每个 AppServices.build() 使用一个全新 schema，测试之间互不影响。

@@ -99,6 +99,22 @@ const PREF_KEY = 'qa.askai.prefs'
 const SYSTEM_TOKENS = 2600                   // 系统提示 + SDK 速查的大致 token 数
 const MAX_TURNS = 12
 
+/** 各页面的起手问题：点一下填进输入框（可以再改） */
+const STARTERS: Record<string, string[]> = {
+  default: ['这个页面怎么用？', '这里的数字应该怎么解读？', '下一步我该做什么？'],
+  home: ['今天市场有什么值得研究的？', '我的策略哪一个最接近能上线？', '帮我规划这周的研究'],
+  backtests: ['这些回测里哪一次最可信？为什么？', '超额收益为负说明了什么？', '哪些回测数据不足、只能算非正式？'],
+  backtest: ['这次回测最大的问题是什么？', '手续费和换手对收益的影响有多大？', '怎么判断是不是过拟合？'],
+  data: ['数据有缺口会影响回测吗？', '我该同步哪些标的、多长的历史？', '波动率怎么解读？'],
+  factors: ['这个因子为什么没通过入库？', '多个因子高度相关时怎么办？', 'IC 和多空夏普哪个更重要？'],
+  modellib: ['模型比线性基线好多少才算有意义？', '怎么检查特征泄漏？', '什么时候该重训？'],
+  portfolio: ['风险平价和等权差在哪？', '目标波动该设多少？', '怎么控制相关性带来的集中风险？'],
+  editor: ['这段代码有没有未来函数？', '止损逻辑在跳空时怎么成交？', '帮我把参数改成可优化的'],
+  validation: ['为什么不能晋级？差在哪里？', 'DSR 是什么意思？', '纸面模拟要观察哪些指标？'],
+  paper: ['模拟和回测差多少算正常？', '怎么判断滑点设得合不合理？'],
+  square: ['怎么判断别人分享的回测靠不靠谱？', '克隆后应该先检查什么？'],
+}
+
 const routeHead = () => window.location.hash.replace(/^#\/?/, '').split('/')[0]
 const estTokens = (s: string) => Math.ceil(s.length / 2)
 
@@ -307,7 +323,16 @@ export function AskAIPanel() {
           </header>
 
           <div className="ask-feed" ref={feed}>
-            {msgs.length === 0 && <div className="ask-empty">关于这个页面，想问什么？</div>}
+            {msgs.length === 0 && (
+              <div className="ask-empty">
+                <span>关于这个页面，想问什么？</span>
+                <div className="ask-starters stagger">
+                  {(STARTERS[route] ?? STARTERS.default).map((q) => (
+                    <button key={q} type="button" className="chip" onClick={() => setInput(q)}>{q}</button>
+                  ))}
+                </div>
+              </div>
+            )}
             {msgs.map((m, i) => m.role === 'user' ? (
               <div key={i}>
                 <UserBubble>{m.text}</UserBubble>

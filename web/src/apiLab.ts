@@ -50,6 +50,11 @@ export interface LabVersion {
 export interface Pin { id: string; kind: string; title: string; text: string; created_at: number }
 
 export type LabKind = 'strategy' | 'factor' | 'model' | 'portfolio' | 'execution'
+export type Workflow = '' | 'pipeline' | 'report'
+export interface ReportBrief { id: string; title: string; summary: string; created_at: number }
+export interface Report extends ReportBrief {
+  project_id: string; markdown: string; sources: string[]; securities: string[]; timeframe?: string; model?: string
+}
 /** 规格类研究（模型、组合、执行）：代码是一份 JSON 规格，提交后由平台训练 / 评估。 */
 export const isSpecKind = (k?: LabKind) => k === 'model' || k === 'portfolio' || k === 'execution'
 export type Executor = 'solo' | 'team'
@@ -90,6 +95,15 @@ export interface LabProject {
   auto_compact?: boolean
   market_auto?: boolean
   suggest?: boolean
+  /** 单轮最多调用工具的次数（设置里可改，默认 1000） */
+  max_tool_calls?: number
+  /** 研究流程：完整流程（选标的→因子→策略→模型→组合→执行）/ 调研报告 */
+  workflow?: Workflow
+  /** 团队讨论结论自动加入上下文（默认开） */
+  auto_team_context?: boolean
+  reports?: ReportBrief[]
+  /** 子 Agent 的子对话：由哪个对话唤起 */
+  subagent_of?: string | null
   goals: Goals
   goal?: (Partial<GoalSpec> & { items: GoalCond[] }) | null
   start?: number | null
@@ -130,7 +144,8 @@ export interface LabMessage {
   seq: number
   role: 'user' | 'assistant' | 'tool' | 'event'
   kind: 'text' | 'tool' | 'code' | 'backtest' | 'round' | 'team' | 'ask' | 'error' | 'saved' | 'goal' | 'walkforward' |
-    'factor_code' | 'factor_report' | 'model_spec' | 'model_report' | 'portfolio_spec' | 'portfolio_report' | 'execution_spec' | 'execution_report' | 'discussion' | 'plan'
+    'factor_code' | 'factor_report' | 'model_spec' | 'model_report' | 'portfolio_spec' | 'portfolio_report' | 'execution_spec' | 'execution_report' | 'discussion' | 'plan' |
+    'report' | 'subagents'
   content: string
   data: Record<string, any>
   mode?: 'llm' | 'fallback'
@@ -186,6 +201,18 @@ export interface FactorSummary {
 
 const patch = <T,>(p: string, body: unknown) => request<T>(p, { method: 'PATCH', body: JSON.stringify(body) })
 
+/** 设置 · AI 研究室 的本机偏好：单轮工具调用上限、团队结论自动进上下文。随每条消息带给服务端。 */
+export const LAB_PREF_KEYS = { maxTools: 'qa.lab.maxTools', teamCtx: 'qa.lab.teamContext' }
+export function labPrefs(): { max_tool_calls: number; auto_team_context: boolean } {
+  let max = 1000
+  let team = true
+  try {
+    max = Math.max(1, Math.min(5000, Number(localStorage.getItem(LAB_PREF_KEYS.maxTools) || 1000) || 1000))
+    team = (localStorage.getItem(LAB_PREF_KEYS.teamCtx) ?? '1') === '1'
+  } catch { /* 存储不可用：用默认值 */ }
+  return { max_tool_calls: max, auto_team_context: team }
+}
+
 export const lab = {
   meta: () => get<LabMeta>('/api/lab/meta'),
   projects: (archived = false) => get<{ projects: LabProjectBrief[] }>(`/api/lab/projects?archived=${archived}`),
@@ -195,7 +222,10 @@ export const lab = {
   update: (id: string, p: Partial<Omit<LabProject, 'goals'>> & { goals?: Partial<Goals> }) => patch<{ project: LabProject }>(`/api/lab/projects/${id}`, p),
   remove: (id: string) => del<{ ok: boolean }>(`/api/lab/projects/${id}`),
   send: (id: string, text: string, opts: { model?: string; effort?: Effort; suggest?: boolean; images?: { data_url: string; name?: string }[] } = {}) =>
-    post<LabView>(`/api/lab/projects/${id}/messages`, { text, ...opts }),
+    post<LabView>(`/api/lab/projects/${id}/messages`, { text, ...labPrefs(), ...opts }),
+  /** /report：调研报告流程（列提纲 → 搜集资料 → 分析 → 生成报告） */
+  report: (id: string, text = '') => post<LabView>(`/api/lab/projects/${id}/report`, { text }),
+  getReport: (id: string, rid: string) => get<{ report: Report; project: Pick<LabProject, 'id' | 'title' | 'securities' | 'timeframe'> }>(`/api/lab/projects/${id}/reports/${rid}`),
   imageUrl: (id: string, imageId: string) => withWs(`/api/lab/projects/${id}/images/${encodeURIComponent(imageId)}`),
   goalParse: (text: string, project_id?: string, domain?: LabKind) =>
     post<{ spec: GoalSpec; parsed_fields: string[]; unparsed: string; check: GoalCheck }>('/api/lab/goal/parse', { text, project_id, domain }),

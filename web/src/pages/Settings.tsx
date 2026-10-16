@@ -8,10 +8,11 @@ import {
 import { LimitBars, LimitEditor, METRICS, UsageSummary, WINDOWS, fmtCost, fmtTokens } from '../components/modelUsage'
 import { Callout, EmptyState, Field, Heading, Loading, Modal, Panel, Tag } from '../components/ui'
 import NodeTab from './NodeTab'
+import LabPrefsTab from './settings/LabPrefs'
 import type { PageProps } from './types'
 import { appConfirm } from '../components/dialog'
 
-type Tab = 'workspace' | 'quota' | 'members' | 'runs' | 'node' | 'audit' | 'system' | 'account'
+type Tab = 'workspace' | 'quota' | 'members' | 'runs' | 'node' | 'audit' | 'system' | 'account' | 'lab'
 const TABS: { key: Tab; label: string }[] = [
   { key: 'workspace', label: '工作区' },
   { key: 'quota', label: '额度与升级' },
@@ -21,6 +22,7 @@ const TABS: { key: Tab; label: string }[] = [
   { key: 'audit', label: '审计日志' },
   { key: 'system', label: '网络与隔离' },
   { key: 'account', label: '我的账号' },
+  { key: 'lab', label: '研究偏好' },
 ]
 const ROLE_LABEL: Record<Role, string> = { admin: '管理员', member: '成员', reviewer: '审阅者（只读）' }
 
@@ -31,7 +33,7 @@ export default function SettingsPage({ tab, me, onNavigate, notify, onMeChanged 
     <>
       <Heading
         title={TABS.find((t) => t.key === current)!.label}
-        description={current === 'account' ? undefined : <>工作区「{me.workspace?.name}」· 你的角色：{ROLE_LABEL[me.workspace?.role ?? 'member']}。权限在服务端校验。</>}
+        description={current === 'account' ? undefined : current === 'lab' ? '只保存在这台设备的浏览器里，和对话框底栏里的开关同步' : <>工作区「{me.workspace?.name}」· 你的角色：{ROLE_LABEL[me.workspace?.role ?? 'member']}。权限在服务端校验。</>}
       />
       {current === 'workspace' && <WorkspaceTab me={me} isAdmin={isAdmin} notify={notify} onSaved={onMeChanged} />}
       {current === 'quota' && <QuotaTab me={me} isAdmin={isAdmin} notify={notify} onSaved={onMeChanged} onNavigate={onNavigate} />}
@@ -41,6 +43,7 @@ export default function SettingsPage({ tab, me, onNavigate, notify, onMeChanged 
       {current === 'audit' && (isAdmin ? <AuditTab notify={notify} /> : <Callout tone="warn">只有工作区管理员可以查看审计日志。</Callout>)}
       {current === 'system' && <SystemTab notify={notify} />}
       {current === 'account' && <AccountTab me={me} notify={notify} />}
+      {current === 'lab' && <LabPrefsTab notify={notify} />}
     </>
   )
 }

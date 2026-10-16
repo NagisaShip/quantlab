@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import {
-  lab, mergeBySeq, missions,
+  lab, labPrefs, mergeBySeq, missions,
   type ContextView, type Effort, type Executor, type FactorSummary, type GoalSpec, type LabKind, type LabMessage, type LabMeta,
   type LabPlan, type LabProject, type Metrics, type Permission,
 } from '../apiLab'
@@ -24,21 +24,17 @@ import { PortfolioStats } from '../components/portfolioReport'
 import { PortfolioPanel, PortfolioReportCard, PortfolioSpecCard, PortfolioVersionMetrics } from './lab/portfolio'
 import { ExecutionPanel, ExecutionReportCard, ExecutionSpecCard, ExecutionVersionMetrics } from './lab/execution'
 import { ExecStats } from '../components/executionReport'
-import { domainUI, libraryIdOf } from './lab/domains'
+import { domainUI, kindOfType, libraryIdOf, pickExamples, RESEARCH_TYPES, workflowOfType, type ResearchType } from './lab/domains'
 import { labChanged, onNewChat, takeNewChat } from './lab/bus'
-import { QuantBot } from '../components/QuantBot'
+import { QuantBot, useBotFlash } from '../components/QuantBot'
+import { StepSlider } from '../components/StepSlider'
+import { ReportCard, SubagentsCard, DataCheckBadge, ExperimentNote, MarketSwitcher } from './lab/research'
 import { DiscussionCard } from '../components/chat/Discussion'
 import { rd } from '../apiRd'
 import type { PageProps } from './types'
 import { appConfirm, appPrompt } from '../components/dialog'
 
-const EXAMPLES = [
-  'BTC 1 小时，20 和 60 均线金叉做多，止损 5%',
-  'ETH 4 小时 RSI 均值回归，回撤控制在 15% 以内',
-  'BTC、ETH、SOL 每周动量轮动，只持有最强的一个',
-]
-
-const SYMBOL_PICKS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT', 'DOGE/USDT', 'ADA/USDT', 'AVAX/USDT', 'LINK/USDT', 'TON/USDT']
+export const SYMBOL_PICKS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT', 'DOGE/USDT', 'ADA/USDT', 'AVAX/USDT', 'LINK/USDT', 'TON/USDT']
 /** 设置 · 模型 里的「AI 生成简短建议」开关（本机偏好，默认开） */
 export const suggestOn = () => store.get('qa.lab.suggest', '1') === '1'
 
@@ -168,6 +164,8 @@ interface CmdOpts {
   context: Handler
   save: Handler
   mode: ArgHandler
+  report: ArgHandler
+  parallel: ArgHandler
 }
 
 /** 没有处理函数的命令（新对话里还用不了）置灰，并注明「开始对话后可用」。 */
@@ -188,6 +186,8 @@ function labCommands(o: CmdOpts): SlashCommand[] {
     { cmd: '/goal', group: '迭代', arg: '[描述]', help: '设定目标：指标条件、回测范围、轮数（设了目标才能自动迭代）' },
     c('/plan', '迭代', 'AI 列分步计划并一步步执行，全部完成且目标达标才停；不带内容时继续当前计划', o.plan, { arg: '[任务]', disabled: !o.plan || run }),
     c('/night', '迭代', '放进夜班队列：无人值守地自动研究，结果写进晨报', o.night, { arg: '[想法]', disabled: !o.night }),
+    c('/report', '研究', '调研报告：列提纲 → 联网与平台数据调研 → 生成可导出 PDF 的报告', o.report, { arg: '[主题]', disabled: !o.report || run }),
+    c('/parallel', '研究', '唤起子 Agent 并行探究多个方向，最后并排对比', o.parallel, { arg: '[方向1 | 方向2 | …]', disabled: !o.parallel || run }),
     c('/explain', '协作', o.ui ? `解释当前${o.ui.noun}的逻辑与风险` : '逐段解释当前策略', o.explain),
     c('/team', '协作', o.ui ? '召集研究小组评审' : '召集团队评审', o.team, { arg: '[议题]' }),
     c('/discuss', '协作', '团队讨论：多个角色依次发言、相互质疑，最后汇总（发言以气泡显示在对话里）', o.discuss, { arg: '[议题]' }),
@@ -204,7 +204,8 @@ function labCommands(o: CmdOpts): SlashCommand[] {
 async function startDiscussionIn(project: Pick<LabProject, 'id' | 'title' | 'idea' | 'team_id' | 'securities' | 'timeframe'>, topic: string) {
   const directive = (topic || `评审「${project.title}」：${project.idea || '当前研究'}；逻辑是否自洽、证据是否可信、最大风险在哪里、下一步怎么做`).slice(0, 600)
   const presets = await missions.presets()
-  const teamId = project.team_id || presets.teams[0]?.id || null
+  // 默认用并行的「研究评审组」：市场、成本执行、代码审计各自独立发言，研究组长汇总
+  const teamId = project.team_id || presets.teams.find((t) => t.id === 'lab_review')?.id || presets.teams[0]?.id || null
   const v = await missions.create({
     directive, mode: 'single', team_id: teamId, lab_project_id: project.id,
     symbol: project.securities[0], timeframe: project.timeframe, include_market_data: true,
@@ -219,8 +220,20 @@ function Welcome({ meta, notify, onCreated, folder }: {
   meta: LabMeta | null; notify: PageProps['notify']; onCreated: (id: string) => void; folder?: string
 }) {
   const [draft, setDraft] = useState<LabDraft | null>(peekLabDraft)   // 从别的页面带过来的想法 / 代码
-  const [kind, setKindState] = useState<LabKind>(() => draft?.kind ?? (store.get('qa.lab.kind', 'strategy') as LabKind))
-  const setKind = (k: LabKind) => { setKindState(k); store.set('qa.lab.kind', k) }
+  // 研究类型：五个研究室 + 完整流程 + 调研报告（流程类走策略对话）
+  const [rtype, setRtypeState] = useState<ResearchType>(() => (draft?.kind ?? (store.get('qa.lab.rtype', store.get('qa.lab.kind', 'strategy')) as ResearchType)))
+  const kind = kindOfType(rtype)
+  const workflow = workflowOfType(rtype)
+  const setRtype = (t: ResearchType) => { setRtypeState(t); store.set('qa.lab.rtype', t); store.set('qa.lab.kind', kindOfType(t)); setSeed(Math.random()) }
+  const [seed, setSeed] = useState(() => Math.random())
+  const [hoverEx, setHoverEx] = useState(false)
+  // 建议每 12 秒随机换一批（鼠标停在上面时不换）
+  useEffect(() => {
+    if (hoverEx) return
+    const t = window.setInterval(() => setSeed(Math.random()), 12_000)
+    return () => window.clearInterval(t)
+  }, [hoverEx])
+  const examples = useMemo(() => pickExamples(rtype, 4, seed), [rtype, seed])
   const ui = domainUI(kind)
   const isFactor = !!ui            // 多标的研究（因子 / 模型 / …）
   const dmeta = domainMeta(meta, kind)
@@ -232,7 +245,7 @@ function Welcome({ meta, notify, onCreated, folder }: {
   const [model, setModel] = useState(() => store.get('qa.lab.model', ''))
   const [effort, setEffort] = useState<Effort>(() => store.get('qa.lab.effort', 'medium') as Effort)
   const [research, setResearch] = useState<'none' | 'market' | 'team'>('market')
-  const [source, setSource] = useState<'auto' | 'exchange' | 'synthetic'>('auto')
+  const [source, setSource] = useState<'auto' | 'exchange'>('auto')
   const [permission, setPermissionState] = useState<Permission>(() => store.get('qa.lab.permission', 'auto') as Permission)
   const setPermission = (p: Permission) => { setPermissionState(p); store.set('qa.lab.permission', p) }
   // 标的：默认交给 AI 根据对话决定（带了标的过来、或手动选过时用手动）
@@ -244,6 +257,7 @@ function Welcome({ meta, notify, onCreated, folder }: {
   const [goalSet, setGoalSet] = useState(false)   // 用 /goal 设过目标才能自动迭代；没有目标就是普通对话
   const market = usePopover()
   const metrics = metricsOf(dmeta)
+  const botFx = useBotFlash()
 
   useEffect(() => {
     setSpec(draft?.securities?.length || draft?.timeframe
@@ -305,14 +319,19 @@ function Welcome({ meta, notify, onCreated, folder }: {
     const discuss = /^\/discuss\b/.test(text)
     const topic = discuss ? text.replace(/^\/discuss\s*/, '').trim() : ''
     if (discuss && !topic) { notify('用法：/discuss 讨论的议题', true); return }
+    const reportCmd = /^\/(report|调研|报告)\b/.test(text)
+    const reportTopic = reportCmd ? text.replace(/^\/\S+\s*/, '').trim() : ''
+    if (reportCmd && !reportTopic) { notify('用法：/report 调研主题', true); return }
+    const wf = reportCmd ? 'report' : workflow
     setBusy(true)
     try {
       const pins = [...(draft?.pins ?? []), ...files.map((f) => ({ kind: f.kind ?? 'file', title: f.title, text: f.text }))]
-      const ideaText = discuss ? topic : planned ? planTask : text.replace(/^\/team\s*/, '') || text
+      const ideaText = discuss ? topic : planned ? planTask : reportCmd ? reportTopic : text.replace(/^\/(team|parallel)\s*/, '') || text
       const v = await lab.create({
-        kind, idea: ideaText, securities: goal.symbols, timeframe: goal.timeframe, model, effort, max_rounds: goal.max_rounds,
+        kind: reportCmd ? 'strategy' : kind, idea: ideaText, securities: goal.symbols, timeframe: goal.timeframe, model, effort, max_rounds: goal.max_rounds,
         bars_limit: goal.bars_limit, data_source: source, permission, market_auto: marketAuto && !goalSet, suggest: suggestOn(),
-        ...(isFactor ? { horizon: goal.horizon ?? 1, executor, universe } : {}),
+        workflow: wf, ...labPrefs(),
+        ...(isFactor && !reportCmd ? { horizon: goal.horizon ?? 1, executor, universe } : {}),
         ...(draft?.title ? { title: draft.title } : {}), ...(draft?.code ? { code: draft.code } : {}), ...(pins.length ? { pins } : {}),
         ...(folder ? { folder } : {}),
       })
@@ -320,6 +339,8 @@ function Welcome({ meta, notify, onCreated, folder }: {
       if (goalSet) await lab.setGoal(id, goal, { review: false, start: startAuto, research: isFactor ? 'none' : research })
       if (discuss) await startDiscussionIn(v.project, topic)
       else if (planned) await lab.plan(id, planTask)
+      else if (wf === 'report') await lab.report(id, reportCmd ? reportTopic : text)
+      else if (wf === 'pipeline' && !startAuto) await lab.plan(id, `完整流程：${text}`)
       else if (!startAuto) await lab.send(id, text, { suggest: suggestOn() })
       onCreated(id)
     } catch (e) {
@@ -340,10 +361,11 @@ function Welcome({ meta, notify, onCreated, folder }: {
     plan: undefined,
     night: (a) => { if (a) queueNight(a); else notify('用法：/night 你的研究想法', true) },
     team: (a) => setIdea(`/team ${a}`), discuss: (a) => setIdea(`/discuss ${a}`),
+    report: (a) => setIdea(`/report ${a}`), parallel: (a) => setIdea(`/parallel ${a}`),
     crew: isFactor ? () => { const v = executor === 'team' ? 'solo' : 'team'; setExecutor(v); store.set('qa.lab.executor', v) } : undefined,
     pin: (a) => { addNote(a || undefined) },
     mode: (a) => (PERMISSION_ALIAS[a.toLowerCase()] ? setPermission(PERMISSION_ALIAS[a.toLowerCase()]) : notify('用法：/mode auto | manual | edits | plan | bypass', true)),
-  }).map((c) => (['/team', '/discuss', '/plan'].includes(c.cmd)
+  }).map((c) => (['/team', '/discuss', '/plan', '/report', '/parallel'].includes(c.cmd)
     ? { ...c, run: undefined, disabled: false, help: c.help.replace(`（${LATER}）`, '') } : c)) // 这几个随第一条消息一起发出
   const plusItems = labPlusItems({
     ui,
@@ -365,10 +387,15 @@ function Welcome({ meta, notify, onCreated, folder }: {
       {/* 和对话中同一个布局：上面是内容区，输入框停靠在底部，「+」菜单、斜杠命令都向上展开 */}
       <div className="lab2-scroll lab2-welcome-scroll">
         <div className="lab2-welcome">
-          <QuantBot size={52} state={busy ? 'thinking' : 'idle'} className="lab2-welcome-bot" />
-          <h1>{ui ? ui.welcome : '有什么交易想法？'}</h1>
-          <div className="lab2-examples">
-            {(ui ? ui.examples : EXAMPLES).map((x) => <button key={x} className="lab2-example" onClick={() => setIdea(x)}>{x}</button>)}
+          <QuantBot size={52} state={busy ? 'strain' : idea.trim() ? 'thinking' : 'idle'} flash={botFx.flash} className="lab2-welcome-bot" />
+          <h1>{rtype === 'report' ? '想调研什么？' : rtype === 'pipeline' ? '从选标的到执行，研究什么？' : ui ? ui.welcome : '今天研究什么？'}</h1>
+          <div className="lab2-type" aria-label="研究类型">
+            <StepSlider options={RESEARCH_TYPES} value={rtype} onChange={(t) => { botFx.fire('tap'); setRtype(t) }} label="研究类型" compact />
+            <small className="lab2-type-hint anim-fade" key={rtype}>{RESEARCH_TYPES.find((t) => t.id === rtype)?.hint}</small>
+          </div>
+          <div className="lab2-examples stagger" key={`${rtype}-${seed}`} onMouseEnter={() => setHoverEx(true)} onMouseLeave={() => setHoverEx(false)}>
+            {examples.map((x) => <button key={x} className="lab2-example" onClick={() => setIdea(x)}>{x}</button>)}
+            <button type="button" className="lab2-example lab2-shuffle" onClick={() => setSeed(Math.random())} title="换一批建议">↻ 换一批</button>
           </div>
         </div>
       </div>
@@ -417,11 +444,8 @@ function Welcome({ meta, notify, onCreated, folder }: {
               {market.open && (
                 <div className="cmp-menu cmp-menu-form cmp-menu-right market-menu">
                   <div className="cmp-menu-label">研究类型</div>
-                  <div className="cmp-seg" role="group" aria-label="研究类型" style={{ gridTemplateColumns: `repeat(${kinds.length}, 1fr)` }}>
-                    {kinds.map((k) => (
-                      <button key={k.id} type="button" className={kind === k.id ? 'on' : ''} aria-pressed={kind === k.id} title={k.hint} onClick={() => setKind(k.id)}>{k.label}</button>
-                    ))}
-                  </div>
+                  <StepSlider options={RESEARCH_TYPES.filter((t) => t.id === 'pipeline' || t.id === 'report' || kinds.some((k) => k.id === t.id))}
+                    value={rtype} onChange={setRtype} label="研究类型" compact />
                   <label className="market-auto">
                     <input type="checkbox" checked={marketAuto} onChange={(e) => setMarketAuto(e.target.checked)} />
                     <span>由 AI 根据对话决定标的与周期</span>
@@ -460,7 +484,7 @@ function Welcome({ meta, notify, onCreated, folder }: {
                   )}
                   <label>{ui ? `${ui.evaluate}数据` : '回测数据'}
                     <select value={source} onChange={(e) => setSource(e.target.value as typeof source)}>
-                      <option value="auto">自动（真实优先）</option><option value="exchange">只用真实行情</option><option value="synthetic">合成数据</option>
+                      <option value="auto">真实行情（缓存优先）</option><option value="exchange">只从交易所实时拉取</option>
                     </select>
                   </label>
                   {!isFactor && <label>开始前调研
@@ -508,6 +532,14 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
     } catch { /* 存储不可用 */ }
   }, [id])
   const [rounds, setRounds] = useState<number | null>(null)
+  // 回合从「运行中」变成结束：短暂显示 Bot 打勾（或报错）
+  const [finishedAt, setFinishedAt] = useState(0)
+  const wasRunning = useRef(false)
+  const nowRunning = project?.status === 'running'
+  useEffect(() => {
+    if (wasRunning.current && !nowRunning) setFinishedAt(Date.now())
+    wasRunning.current = nowRunning
+  }, [nowRunning])
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const cursor = useRef({ after: 0, since: 0 })
   const scroller = useRef<HTMLDivElement>(null)
@@ -736,6 +768,8 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
     context: () => openPanel('context'),
     save: noCode ? undefined : () => saveOut(),
     mode: (a) => (PERMISSION_ALIAS[a.toLowerCase()] ? setPermission(PERMISSION_ALIAS[a.toLowerCase()]) : notify('用法：/mode auto | manual | edits | plan | bypass', true)),
+    report: (a) => { stick.current = true; act(() => lab.report(id, a)) },
+    parallel: (a) => send(`/parallel ${a}`.trim()),
   })
   const plusItems = labPlusItems({
     ui, running,
@@ -773,6 +807,8 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
   const changes = changeStats(project)
   const lastAsk = [...messages].reverse().find((m) => m.kind === 'ask')
   const streamingNow = messages.some((m) => m.data?.streaming)
+  const lastMsg = messages[messages.length - 1]
+  const finishOk = !(lastMsg && (lastMsg.kind === 'error' || (lastMsg.kind === 'tool' && lastMsg.data?.status === 'error')))
 
   return (
     <>
@@ -783,12 +819,16 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
           <span className="lab2-sub">
             {isFactor
               ? <>{ui!.noun}研究 · {project.securities.length} 个标的 · {project.timeframe} · 持有 {project.horizon ?? 1} 期 · {project.executor === 'team' ? '研究小组' : '单个 AI'}</>
-              : <>{project.securities.join(', ')} · {project.timeframe}</>}
-            {project.data_source === 'synthetic' && ' · 合成数据'}
+              : null}
+            {project.workflow && <span className="cb-badge">{project.workflow === 'pipeline' ? '完整流程' : '调研报告'}</span>}
+            {project.subagent_of && <> · <a href={`#/lab/${project.subagent_of}`}>子 Agent · 返回主对话</a></>}
             {project.slug && <> · <a href={`#/editor/${project.slug}`}>已存为策略</a></>}
             {ui && libId && <> · <a href={`#/${ui.libraryRoute(libId)}`}>已存入{ui.libraryName}</a></>}
           </span>
           <span className="lab2-head-gap" />
+          <MarketSwitcher symbols={project.securities} timeframe={project.timeframe} disabled={running} multi
+            onChange={(securities, timeframe) => { patch({ securities, timeframe }); notify(`标的改为 ${securities.join(', ')} · ${timeframe}`) }}
+            notify={notify} />
           <button type="button" className={`lab2-sessbtn${panel ? ' on' : ''}`} aria-pressed={!!panel} onClick={() => openPanel(panel ? null : 'code')}
             title="会话栏：更改、迭代、上下文、目标">
             <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" aria-hidden><rect x="2" y="2.5" width="12" height="11" rx="2" /><path d="M10 2.5v11" /></svg>
@@ -809,6 +849,12 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
                 onOpenCode={openEditor} onOpenLibrary={(route) => onNavigate(route)} />
             ))}
             {running && !streamingNow && <Working phase={project.job?.phase} detail={project.job?.detail} startedAt={project.job?.started_at} />}
+            {!running && finishedAt > 0 && (
+              <div className="cb-finish" key={finishedAt}>
+                <QuantBot size={22} state={finishOk ? 'happy' : 'error'} />
+                <span>{finishOk ? (project.status === 'awaiting_user' ? '等你回答' : '这一轮完成了') : '这一轮出了问题，见上方说明'}</span>
+              </div>
+            )}
             {!messages.length && !running && <div className="lab2-empty">输入 / 查看快捷指令</div>}
           </div>
         </div>
@@ -1131,6 +1177,10 @@ function MessageView({ m, project, meta, active, actions, onDecide, onOpenBackte
       return <WalkForwardCard m={m} />
     case 'plan':
       return <PlanCard plan={d.plan as LabPlan} live={project.plan?.seq === m.seq ? project.plan : null} />
+    case 'report':
+      return <ReportCard m={m} projectId={project.id} />
+    case 'subagents':
+      return <SubagentsCard m={m} onOpen={(cid) => onOpenLibrary(`lab/${cid}`)} />
     case 'discussion':
       return <DiscussionCard missionId={d.mission_id} topic={m.content} notify={actions.notify}
         onPin={(text) => actions.onPinText(`团队讨论结论 · ${m.content.slice(0, 16)}`, text)} />
@@ -1169,6 +1219,7 @@ function CodeCard({ m, onOpenCode }: { m: LabMessage; onOpenCode: () => void }) 
       {Object.keys(d.params || {}).length > 0 && (
         <div className="lab2-params">{Object.entries(d.params || {}).slice(0, 8).map(([k, v]) => <code key={k}>{k}={String(v)}</code>)}</div>
       )}
+      {(d.experiment || d.diff) && <ExperimentNote experiment={d.experiment} diff={d.diff} />}
       {open && <DiffView before={d.before || ''} after={d.after || ''} maxHeight={360} />}
     </div>
   )
@@ -1215,6 +1266,7 @@ function BacktestCard({ m, onOpen, metrics }: { m: LabMessage; onOpen: (id: stri
         <span className="lab2-ver">v{d.v}</span>
         <b>{d.cost_scale > 1 ? `${d.cost_scale}× 成本回测` : '回测'}</b>
         {ev && <span className={`cb-badge ${ev.passed ? 'ok' : 'warn'}`}>{ev.passed ? '达标' : '未达标'}</span>}
+        {d.data_check && <span className={`cb-badge ${d.data_check.formal ? 'ok' : 'warn'}`} title={d.data_check.label}>{d.data_check.formal ? '正式回测' : '非正式回测'}</span>}
         <span className="lab2-card-gap" />
         <span className="lab2-faint">{(d.data_sources || []).join(' / ')}</span>
         {d.bt_id && <button className="link" onClick={() => onOpen(d.bt_id)}>详情</button>}
@@ -1237,6 +1289,7 @@ function BacktestCard({ m, onOpen, metrics }: { m: LabMessage; onOpen: (id: stri
         </div>
       )}
       {(d.warnings || []).length > 0 && <div className="lab2-faint">{d.warnings.join('；')}</div>}
+      {d.data_check && <DataCheckBadge check={d.data_check} definitions={d.definitions} consistency={d.consistency} zero={d.zero_trade_diagnosis} />}
     </div>
   )
 }

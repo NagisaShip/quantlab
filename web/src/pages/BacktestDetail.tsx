@@ -100,6 +100,9 @@ export default function BacktestDetailPage({ id, onNavigate, notify }: PageProps
     onNavigate(row?.slug ? `backtests/${row.slug}` : 'backtests')
   }
 
+  const initCash = Number(row?.initial_cash ?? 0) || null
+  // 手续费占初始资金：比策略收益本身还大时标红，提醒成本吃掉了收益
+  const feeShare = initCash && m.total_fees !== null && m.total_fees !== undefined ? Number(m.total_fees) / initCash : null
   const overview: [string, string, string?][] = [
     ['策略收益', fmtPct(m.total_return, 2, true), tone(m.total_return)],
     ['策略年化收益', fmtPct(m.annualized_return, 2, true), tone(m.annualized_return)],
@@ -119,7 +122,7 @@ export default function BacktestDetailPage({ id, onNavigate, notify }: PageProps
     ['盈利天数占比', fmtPct(m.profit_day_ratio)],
     ['交易次数', `${m.trades} 笔 / ${m.fills} 次成交`],
     ['换手率', `${fmtNum(m.turnover)} 倍`],
-    ['手续费', fmtMoney(m.total_fees)],
+    ['手续费', `${fmtMoney(m.total_fees)}${feeShare !== null ? `（初始资金的 ${(feeShare * 100).toFixed(1)}%）` : ''}`, feeShare !== null && feeShare > Math.abs(m.total_return ?? 0) ? 'negative' : undefined],
     ['期末净值', fmtMoney(m.final_equity)],
   ]
   const recordKeys = Object.keys(bt.records || {})

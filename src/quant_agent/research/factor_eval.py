@@ -21,7 +21,7 @@ from .factor_expr import Node, _quiet, evaluate, max_lookback, parse
 from .panel import Panel
 
 YEAR_MS = 365 * 86_400_000
-ADMISSION = {"max_corr": 0.7, "oos_retention": 0.5, "coverage": 0.8, "turnover": 0.8}
+ADMISSION = {"max_corr": 0.7, "oos_retention": 0.5, "coverage": 0.8, "turnover": 0.8, "min_is_ic": 0.01}
 
 
 def _rank_rows(x: np.ndarray) -> np.ndarray:
@@ -417,6 +417,15 @@ def admission_checks(s: dict[str, Any]) -> list[dict[str, Any]]:
 
     ric, t, t_req = s.get("rank_ic"), s.get("ic_t"), s.get("t_required") or 1.96
     ret, sub = s.get("oos_retention"), s.get("sub_rank_ic")
+    is_ic, oos_ic = s.get("is_rank_ic"), s.get("oos_rank_ic")
+    # 样本内 IC 本身接近 0 时，「保留率」是两个噪声的比值（可能出现 200% 这种数），不能算样本外有效
+    weak_is = is_ic is not None and abs(is_ic) < ADMISSION.get("min_is_ic", 0.01)
+    oos_ok = ret is not None and ret >= ADMISSION["oos_retention"] and not weak_is
+    oos_detail = (
+        f"样本内 RankIC {fmt(is_ic)} 接近 0，保留率没有意义（样本外 {fmt(oos_ic)}）"
+        if weak_is
+        else f"样本外 RankIC {fmt(oos_ic)}，保留 {fmt(ret, True)}（要求 ≥ 50%）"
+    )
     out = [
         {
             "key": "significance",
@@ -429,8 +438,8 @@ def admission_checks(s: dict[str, Any]) -> list[dict[str, Any]]:
             "key": "oos",
             "label": "样本外仍然有效",
             "required": True,
-            "ok": ret is not None and ret >= ADMISSION["oos_retention"],
-            "detail": f"样本外 RankIC {fmt(s.get('oos_rank_ic'))}，保留 {fmt(ret, True)}（要求 ≥ 50%）",
+            "ok": oos_ok,
+            "detail": oos_detail,
         },
         {
             "key": "novelty",

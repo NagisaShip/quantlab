@@ -331,7 +331,7 @@ function StressView({ notify }: Pick<PageProps, 'notify'>) {
           <label className="check-row"><input type="checkbox" checked={faults} onChange={(e) => setFaults(e.target.checked)} /> 注入断线、拒单、延迟和部分成交</label>
           <button className="button small primary" disabled={!slug || running} onClick={start}>{running ? <><span className="spinner" /> 演练中</> : '开始演练'}</button>
         </div>
-        <div className="hint">用 1 分钟 K 线加速回放，走的是实盘模拟同一条下单链路（委托 → 模拟交易所回报 → 记账）。取不到历史数据时会换成形状相近的合成行情，并明确标出来。</div>
+        <div className="hint">用 1 分钟 K 线加速回放，走的是实盘模拟同一条下单链路（委托 → 模拟交易所回报 → 记账）。取不到历史数据时如实报「未接入数据」，不会用合成行情代替。</div>
       </Panel>
       {open && <StressReport run={open} />}
       {runs.length > 0 && (

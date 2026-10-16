@@ -326,10 +326,15 @@ class MarketDataService:
         self,
         adapters: dict | None = None,
         *,
-        allow_synthetic: bool = True,
+        allow_synthetic: bool | None = None,
         cache_root: str | Path | None = None,
     ) -> None:
+        import os
+
         self.adapters = adapters or {}
+        # 默认停用合成行情（QAGENT_ALLOW_SYNTHETIC=1 才允许，测试与离线演示用）
+        if allow_synthetic is None:
+            allow_synthetic = os.environ.get("QAGENT_ALLOW_SYNTHETIC", "0") == "1"
         self.allow_synthetic = allow_synthetic
         self.cache = BarCache(cache_root) if cache_root else None
         self.funding_cache = FundingCache(cache_root) if cache_root else None
@@ -357,6 +362,8 @@ class MarketDataService:
 
         if source not in {"auto", "exchange", "synthetic"}:
             raise ValueError(f"未知行情来源：{source}")
+        if source == "synthetic" and not self.allow_synthetic:
+            raise DataUnavailable(f"未接入数据：合成行情已停用（{symbol} {timeframe}），请同步真实行情")
         if source != "synthetic":
             adapter = self.adapters.get(exchange)
             error = f"未配置交易所适配器 {exchange}" if adapter is None else ""
@@ -364,7 +371,9 @@ class MarketDataService:
                 try:
                     bars = self._fetch(adapter, exchange, symbol, timeframe, start, end)
                     bars = [b for b in bars if b.closed and start <= b.open_time and b.close_time <= end]
-                    if len(bars) >= min(MIN_USABLE_BARS, expected):
+                    # 最新一根还没收盘会被过滤掉：请求 N 根时通常只拿到 N-1 根，按 90% 判断够不够用，
+                    # 否则短请求（例如 25 根）永远判为「取不到」
+                    if len(bars) >= min(MIN_USABLE_BARS, max(1, int(expected * 0.9))):
                         self.last_error.pop(exchange, None)
                         return bars, "exchange"
                     error = f"{exchange} 只返回了 {len(bars)} 根 {timeframe} 行情"
@@ -372,7 +381,7 @@ class MarketDataService:
                     error = f"{type(exc).__name__}: {exc}"[:300]
             self.last_error[exchange] = error
             if source == "exchange" or not self.allow_synthetic:
-                raise DataUnavailable(f"真实行情获取失败（{exchange} {symbol} {timeframe}）：{error}")
+                raise DataUnavailable(f"未接入数据（{exchange} {symbol} {timeframe}）：{error}")
         n = int(min(expected, 20_000))
         bars = synthetic_bars(symbol, timeframe, n, end=end, anchored=True)
         return stamp(
@@ -418,6 +427,83 @@ class MarketDataService:
             return merged + tail
         return cached
 
+    def sync(
+        self,
+        symbol: str,
+        timeframe: str,
+        *,
+        start: int,
+        end: int | None = None,
+        exchange: str = "binance",
+        chunk_bars: int = 1000,
+    ) -> dict[str, Any]:
+        """把 [start, end] 的真实 K 线同步进本地缓存：分段拉取，补齐头、尾以及**中间的缺口**，返回覆盖情况。
+
+        与 get_bars 的「缓存优先、只补头尾」不同，这里会扫描缓存里的断档逐段补拉；
+        每段最多 chunk_bars 根，单段失败不影响其他段（错误汇总在结果里）。
+        """
+        step = TIMEFRAME_MS.get(timeframe, 3_600_000)
+        now = int(time.time() * 1000)
+        end = min(int(end or now), now)
+        start = int(start)
+        adapter = self.adapters.get(exchange)
+        if adapter is None:
+            return {"ok": False, "symbol": symbol, "timeframe": timeframe, "error": f"未配置交易所适配器 {exchange}"}
+        cached = self.cache.load(exchange, symbol, timeframe) if self.cache else []
+        have = sorted(b.open_time for b in cached if start - step <= b.open_time <= end)
+        missing: list[tuple[int, int]] = []
+        if not have:
+            missing.append((start, end))
+        else:
+            if have[0] - start > step:
+                missing.append((start, have[0]))
+            for a, b in zip(have, have[1:], strict=False):
+                if b - a > step * 1.5:
+                    missing.append((a + step, b))
+            if end - have[-1] > 2 * step:
+                missing.append((have[-1], end))
+        fetched, errors = 0, []
+        for a, b in missing:
+            t = a
+            while t < b:
+                u = min(b, t + chunk_bars * step)
+                try:
+                    got = self._pull(adapter, exchange, symbol, timeframe, t, u)
+                    if self.cache is not None and got:
+                        self.cache.merge(exchange, symbol, timeframe, got)
+                    fetched += len(got)
+                except Exception as exc:
+                    errors.append(f"{type(exc).__name__}: {str(exc)[:160]}")
+                    if len(errors) >= 3:
+                        break
+                t = u
+            if len(errors) >= 3:
+                break
+        rows = [
+            b
+            for b in (self.cache.load(exchange, symbol, timeframe) if self.cache else [])
+            if start <= b.open_time <= end
+        ]
+        gaps = sum(1 for a, b in zip(rows, rows[1:], strict=False) if b.open_time - a.open_time > step * 1.5)
+        expected = max(1, (end - start) // step)
+        if not errors:
+            self.last_error.pop(exchange, None)
+        return {
+            "ok": bool(rows),
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "exchange": exchange,
+            "fetched": fetched,
+            "bars": len(rows),
+            "expected": expected,
+            "coverage": round(min(1.0, len(rows) / expected), 3),
+            "start_ts": rows[0].open_time if rows else None,
+            "end_ts": rows[-1].close_time if rows else None,
+            "gaps": gaps,
+            "segments_filled": len(missing),
+            "errors": errors,
+        }
+
     def funding_rates(
         self,
         symbol: str,
@@ -435,6 +521,8 @@ class MarketDataService:
             return [], "", f"{symbol} 不是永续合约，没有资金费率"
         start, end = int(start), int(end)
         if source == "synthetic":
+            if not self.allow_synthetic:
+                return [], "exchange", "未接入数据：合成资金费率已停用"
             return synthetic_funding(symbol, start, end), "synthetic", ""
         error = ""
         adapter = self.adapters.get(exchange)

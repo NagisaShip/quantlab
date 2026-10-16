@@ -178,3 +178,44 @@
 .bot-error-page p { margin: 0; color: var(--muted); max-width: 520px; overflow-wrap: anywhere; }
 .brand-eyes { color: var(--qb-head); display: grid; place-items: center; height: 56px; }
 .button .qeyes { margin-right: 6px; }
+
+/* ---------------------------------------------------------------- 对话处理中：更好感知的状态 */
+/*
+ * 原来的动画只有 1px 左右，在 20px 的小图标上几乎看不出。lively 用于「处理中」等需要被看见的位置：
+ * 思考 = 两眼明显交错上下浮动；专注 = Tick 跳动更强；全力 = > < 加压 + 头部轻颤 + 光晕呼吸；困惑 = 歪头。
+ */
+.qbot.lively.qbot-thinking .qbot-eye.l, .qbot.lively.qbot-thinking .qbot-eye.r { animation-name: qb-float-lg; }
+.qbot.lively.qbot-thinking .qbot-body { animation-name: qb-stretch-lg; }
+@keyframes qb-float-lg { 0%, 100% { transform: translateY(2.1px); } 50% { transform: translateY(-2.1px); } }
+@keyframes qb-stretch-lg { 0%, 100% { transform: scaleY(.74); } 50% { transform: scaleY(1.22); } }
+.qbot.lively.qbot-focus .qbot-body { animation-name: qb-tick-lg; }
+@keyframes qb-tick-lg { 0% { transform: scaleY(1); } 22% { transform: scaleY(1.2); } 45% { transform: scaleY(.82); } 70% { transform: scaleY(1.1); } 100% { transform: scaleY(1); } }
+.qbot.lively.qbot-strain .qbot-head { animation: qb-shiver-lg calc(.16s * var(--qb-speed)) linear infinite; }
+.qbot.lively.qbot-strain .qbot-eye { animation: qb-press-lg calc(.6s * var(--qb-speed)) ease-in-out infinite; }
+.qbot.lively.qbot-strain .qbot-eye.r { animation-delay: calc(-.3s * var(--qb-speed)); }
+@keyframes qb-shiver-lg { 0%, 100% { transform: translateX(-.35px); } 50% { transform: translateX(.35px); } }
+@keyframes qb-press-lg { 0%, 100% { transform: scale(1); } 50% { transform: scale(.8, 1.12); } }
+.qbot.lively.qbot-strain { animation: qb-glow 1.1s ease-in-out infinite; }
+@keyframes qb-glow { 0%, 100% { filter: drop-shadow(0 0 0 rgba(255, 154, 60, 0)); } 50% { filter: drop-shadow(0 0 6px rgba(255, 154, 60, .55)); } }
+.qbot.lively.qbot-focus { animation: qb-glow-blue 1.4s ease-in-out infinite; }
+@keyframes qb-glow-blue { 0%, 100% { filter: drop-shadow(0 0 0 rgba(74, 98, 234, 0)); } 50% { filter: drop-shadow(0 0 5px rgba(74, 98, 234, .5)); } }
+
+/* 处理中一行：Bot + 状态词（状态切换时淡入） */
+.cb-working-bot { flex: none; }
+.cb-state { font-size: 11.5px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: var(--sunken); color: var(--muted);
+  animation: qb-word-in var(--dur-3, 240ms) var(--ease-out, ease) both; white-space: nowrap; }
+.cb-state:empty { display: none; }
+.cb-state.st-strain { color: #b4570f; background: color-mix(in srgb, #ff9a3c 16%, transparent); }
+.cb-state.st-focus { color: var(--qb-head); background: color-mix(in srgb, var(--qb-head) 10%, transparent); }
+.cb-state.st-confused { color: var(--amber); background: color-mix(in srgb, #f5b400 14%, transparent); }
+@keyframes qb-word-in { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+
+/* 回合结束：Bot 打勾 / 报错 的提示，停留片刻后淡出 */
+.cb-finish { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); margin: 6px 0 2px;
+  animation: qb-finish 2.6s var(--ease-out, ease) both; }
+@keyframes qb-finish { 0% { opacity: 0; transform: translateY(4px); } 12%, 75% { opacity: 1; transform: none; } 100% { opacity: 0; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .qbot.lively, .qbot.lively * { animation: none !important; }
+  .cb-finish { animation: none; }
+}

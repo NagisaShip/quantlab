@@ -20,6 +20,7 @@ import LongRunningPage from './pages/LongRunning'
 import PromptLibraryPage from './pages/PromptLibrary'
 import ModelConfigPage from './pages/ModelConfig'
 import HomePage from './pages/Home'
+import ReportPage from './pages/Report'
 import MobileBoardPage from './pages/MobileBoard'
 import MyStrategiesPage from './pages/MyStrategies'
 import EditorPage from './pages/Editor'
@@ -83,6 +84,7 @@ type PageKey =
   | 'backtest'
   | 'optimize'
   | 'post'
+  | 'report'
 
 /** 这些页面在全屏「设置」里打开，不显示主侧栏。 */
 const SETTINGS_PAGES = new Set<PageKey>(['settings', 'models', 'roles', 'prompts', 'long-running', 'docs', 'brand'])
@@ -188,6 +190,7 @@ const PAGE_TITLES: Record<PageKey, string> = {
   backtest: '回测详情',
   optimize: '参数优化',
   post: '帖子',
+  report: '调研报告',
 }
 
 /** 详情页在导航里高亮哪个入口。 */
@@ -198,6 +201,7 @@ const PARENT: Partial<Record<PageKey, PageKey>> = {
   optimize: 'strategies',
   post: 'square',
   dsl: 'strategies',
+  report: 'lab',
 }
 
 const NAV_LABEL: Partial<Record<PageKey, string>> = Object.fromEntries(NAV.flatMap((g) => g.items.map((i) => [i.key, i.label])))
@@ -340,6 +344,8 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
         return <HomePage {...pageProps} />
       case 'board':
         return <MobileBoardPage {...pageProps} />
+      case 'report':
+        return <ReportPage arg={arg} {...pageProps} />
       case 'lab':
         return <StrategyLabPage arg={arg || undefined} {...pageProps} />
       case 'strategies':
@@ -561,7 +567,7 @@ function AccountMenu({ me, reachable, llmReady, onNavigate }: { me: Me; reachabl
         <div className="ws-menu acct-menu" role="menu">
           <div className="acct-head">
             <b>{me.user.email}</b>
-            <small>{me.user.is_admin ? '部署管理员 · ' : ''}{reachable.length ? `${reachable.join(' / ')} 行情已连接` : '离线 · 合成行情'}</small>
+            <small>{me.user.is_admin ? '部署管理员 · ' : ''}{reachable.length ? `${reachable.join(' / ')} 行情已连接` : '行情未接入'}</small>
           </div>
           <hr />
           <div className="acct-label">工作区</div>

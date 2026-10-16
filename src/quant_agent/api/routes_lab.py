@@ -110,6 +110,9 @@ class ProjectIn(BaseModel):
     folder: str = Field("", max_length=40)
     market_auto: bool = Field(False, description="标的与周期交给 AI 根据对话决定")
     suggest: bool = True
+    max_tool_calls: int = Field(1000, ge=1, le=5000, description="单轮对话最多调用工具的次数")
+    workflow: Literal["", "pipeline", "report"] = Field("", description="研究流程：完整流程 / 调研报告")
+    auto_team_context: bool = Field(True, description="团队讨论结论自动加入上下文")
 
 
 class ProjectPatch(BaseModel):
@@ -134,6 +137,9 @@ class ProjectPatch(BaseModel):
     pinned: bool | None = Field(None, description="置顶")
     folder: str | None = Field(None, max_length=40, description="所属项目（文件夹）；空串表示不归入项目")
     auto_compact: bool | None = Field(None, description="上下文超出原文预算时自动压缩较早的对话")
+    max_tool_calls: int | None = Field(None, ge=1, le=5000)
+    workflow: Literal["", "pipeline", "report"] | None = None
+    auto_team_context: bool | None = None
 
 
 IMAGE_TYPES = ("image/png", "image/jpeg", "image/gif", "image/webp")
@@ -169,6 +175,8 @@ class MessageIn(BaseModel):
     model: str | None = None  # 底栏切换的模型 / 努力程度：随消息一起提交，并记到项目上
     effort: Effort | None = None
     suggest: bool | None = Field(None, description="回答末尾是否附简短的后续建议（设置里的开关）")
+    max_tool_calls: int | None = Field(None, ge=1, le=5000, description="单轮工具调用上限（设置里的值）")
+    auto_team_context: bool | None = None
     wait: bool = False
 
     @model_validator(mode="after")
@@ -222,9 +230,11 @@ def _platform_backtest(project: dict[str, Any], code: str, *, cost_scale: float 
         taker_fee=0.001 * cost_scale,
         slippage_bps=5.0 * cost_scale,
         spread_bps=2.0 * cost_scale,
-        source=project.get("data_source") or "auto",
+        source=_data_source(project),
         persist=True,
         label=label[:60],
+        lab_project_id=project.get("id"),
+        lab_title=(project.get("title") or "")[:60],
         wait_seconds=120,
     )
     try:
@@ -232,17 +242,50 @@ def _platform_backtest(project: dict[str, Any], code: str, *, cost_scale: float 
     except AppError as exc:
         return {"ok": False, "error": exc.message}
     except HTTPException as exc:
-        return {"ok": False, "error": str(exc.detail)}
+        detail = str(exc.detail)
+        if exc.status_code == 502:  # 真实行情取不到：如实说未接入，提示 Agent 先同步数据
+            detail = f"未接入数据：{detail}。可以先调用 sync_market_data 同步该标的行情，或换一个有数据的标的"
+        return {"ok": False, "error": detail}
     if isinstance(out, JSONResponse):
         return {"ok": False, "error": "回测已排队但 worker 还没有执行（请确认 qagent worker 在运行）"}
+    from ..agents import rigor as R
+
     result = out.get("result") or {}
     eq = result.get("equity_curve") or []
     step = max(1, len(eq) // 80)
+    datasets = [d for d in result.get("datasets") or [] if d.get("kind") != "funding"]
+    metrics = summarize_metrics(result.get("metrics") or {})
+    return {
+        "datasets": [
+            {k: d.get(k) for k in ("symbol", "source", "source_label", "bars", "start_ts", "end_ts")} for d in datasets
+        ],
+        "data_check": R.data_check(project, datasets, warmup_bars=payload.warmup_bars),
+        "definitions": R.definitions(
+            initial_cash=payload.initial_cash,
+            taker_fee=payload.taker_fee,
+            slippage_bps=payload.slippage_bps,
+            spread_bps=payload.spread_bps,
+            fill_model=(result.get("assumptions") or {}).get("fill_model") or "",
+        ),
+        "consistency": R.consistency(metrics, initial_cash=payload.initial_cash),
+        "zero_trade_diagnosis": R.zero_trade_diagnosis({**result, "metrics": metrics}),
+        "cost_scale": cost_scale,
+        **_rest(out, result, eq, step, metrics),
+    }
+
+
+def _data_source(project: dict[str, Any]) -> str:
+    """合成行情默认关闭：auto 在没有真实行情时直接报「未接入数据」（QAGENT_ALLOW_SYNTHETIC=1 时才允许合成）。"""
+    src = project.get("data_source") or "auto"
+    return src if src in ("auto", "exchange", "synthetic") else "auto"
+
+
+def _rest(out: dict, result: dict, eq: list, step: int, metrics: dict) -> dict:
     return {
         "ok": True,
         "bt_id": out.get("id"),
         "run_id": out.get("run_id"),
-        "metrics": summarize_metrics(result.get("metrics") or {}),
+        "metrics": metrics,
         "equity": [round(float(v), 2) for v in eq[::step]],
         "benchmark": [round(float(v), 2) for v in (result.get("benchmark_curve") or [])[::step]],
         "data_sources": sorted({d.get("source_label") or d.get("source") for d in result.get("datasets") or []}),
@@ -331,8 +374,27 @@ def _lab() -> StrategyLab:
         registry=s.teams.tools,
         discuss=_discuss,
         night=_night,
+        collinearity=_collinearity if FACTOR_READY else None,
     )
     return StrategyLab(s.router, LabStore(s.store), tools)
+
+
+def _collinearity(
+    symbols: list[str], timeframe: str, *, factors: list[dict[str, str]], horizon: int = 1, bars_limit: int = 1500
+) -> dict:
+    """多因子共线性诊断：在同一面板上算两两相关、VIF、条件数与高相关簇。"""
+    from ..research import collinearity as CL
+    from ..research import factor_expr as FX
+
+    s = get_services()
+    fields: set[str] = {"close"}
+    for f in factors:
+        try:
+            fields.update(FX.fields_used(FX.parse(str(f.get("expr") or ""))))
+        except Exception:
+            continue
+    panel = build_panel(s.market, _datahub(), symbols, timeframe, fields=sorted(fields), bars_limit=bars_limit)
+    return CL.diagnose(panel, factors, horizon=horizon)
 
 
 def _datahub() -> DataHub:
@@ -632,7 +694,13 @@ def send_message(pid: str, payload: MessageIn) -> dict:
         _check_image_input(lab, pid, payload.model)
     changes = {
         k: v
-        for k, v in {"model": payload.model, "effort": payload.effort, "suggest": payload.suggest}.items()
+        for k, v in {
+            "model": payload.model,
+            "effort": payload.effort,
+            "suggest": payload.suggest,
+            "max_tool_calls": payload.max_tool_calls,
+            "auto_team_context": payload.auto_team_context,
+        }.items()
         if v is not None
     }
     if changes:
@@ -976,6 +1044,30 @@ def run_plan(pid: str, payload: PlanIn) -> dict:
     lab = _lab_for(pid)
     _project_or_404(lab, pid)
     return _start(lab, pid, "plan", lambda: lab.run_plan(pid, payload.text.strip()), payload.wait)
+
+
+class ReportIn(BaseModel):
+    text: str = Field("", max_length=2000, description="调研主题；不填则按对话主题")
+    wait: bool = False
+
+
+@router.post(
+    "/projects/{pid}/report", summary="/report：按调研报告流程列计划、收集资料、分析，最后生成可导出 PDF 的报告"
+)
+def run_report(pid: str, payload: ReportIn) -> dict:
+    lab = _lab_for(pid)
+    _project_or_404(lab, pid)
+    return _start(lab, pid, "plan", lambda: lab.run_report(pid, payload.text.strip()), payload.wait)
+
+
+@router.get("/projects/{pid}/reports/{rid}", summary="读取一份调研报告（Markdown 正文）")
+def get_report(pid: str, rid: str) -> dict:
+    lab = _lab_for(pid)
+    p = _project_or_404(lab, pid)
+    rep = lab.get_report(pid, rid)
+    if rep is None:
+        raise HTTPException(404, "报告不存在")
+    return {"report": rep, "project": {k: p.get(k) for k in ("id", "title", "securities", "timeframe")}}
 
 
 @router.post("/projects/{pid}/stop", summary="请求停止正在运行的回合（在下一个检查点停下）")

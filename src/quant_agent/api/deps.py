@@ -91,7 +91,13 @@ class AppServices:
             store=store,
             roles=roles,
             teams=TeamRunner(router, roles, store=store, tools=tools),
-            market=MarketDataService(adapters=cls._build_adapters(config), cache_root=home / "market" / "bars"),
+            # 合成行情默认停用：取不到真实行情就如实报「未接入数据」
+            # QAGENT_ALLOW_SYNTHETIC=1 时才兜底（测试 / 离线演示）
+            market=MarketDataService(
+                adapters=cls._build_adapters(config),
+                cache_root=home / "market" / "bars",
+                allow_synthetic=os.environ.get("QAGENT_ALLOW_SYNTHETIC", "0") == "1",
+            ),
             hub=hub,
             config_path=config_path,
             home=home,
@@ -259,7 +265,7 @@ class AppServices:
         )
         tools.register("risk_check", self.risk_check, label="风控检查", description="按风控规则检查回测结果")
         # 新式工具：带参数 schema，策略室 / 角色 / 指挥台共用
-        from ..llm.websearch import WebSearch
+        from ..llm.websearch import SOURCE_CHOICES, WebSearch
 
         self.websearch = WebSearch(self.read_secrets)
         obj = {"type": "object"}
@@ -281,15 +287,52 @@ class AppServices:
             "web_search",
             self.websearch.search,
             label="联网搜索",
-            description="联网搜索公开资料（研报、指标定义、市场事件），返回标题、链接与摘要",
+            description=(
+                "联网搜索公开资料（研报、指标定义、市场事件、用户提到的新闻与名词），返回标题、链接与摘要。"
+                "source：auto 自动；google（谷歌）；baidu（百度，中文资料优先）；bing（必应）；duckduckgo；"
+                "news（新闻：多个新闻源合并）；google_news / baidu_news；all（多个来源合并去重，适合交叉印证）"
+            ),
             parameters={
                 **obj,
                 "properties": {
                     "query": {"type": "string"},
                     "max_results": {"type": "integer", "minimum": 1, "maximum": 10},
                     "topic": {"type": "string", "enum": ["general", "news"]},
+                    "source": {"type": "string", "enum": SOURCE_CHOICES},
                 },
                 "required": ["query"],
+            },
+        )
+        tools.register(
+            "sync_market_data",
+            self.sync_market_data,
+            label="同步行情",
+            description=(
+                "从交易所公共接口同步一段 K 线到本地（分段拉取、增量补齐、校验缺口）。"
+                "回测数据不足、data_check 提示覆盖不够或数据不新鲜时先调用它；days 为回看天数"
+            ),
+            parameters={
+                **obj,
+                "properties": {
+                    "symbols": {"type": "array", "items": {"type": "string"}, "description": '如 ["BTC/USDT"]'},
+                    "timeframe": {"type": "string", "enum": ["1m", "5m", "15m", "30m", "1h", "4h", "1d"]},
+                    "days": {"type": "integer", "minimum": 1, "maximum": 1500},
+                    "exchange": {"type": "string", "enum": ["binance", "okx", "bybit"]},
+                },
+                "required": ["symbols", "timeframe"],
+            },
+        )
+        tools.register(
+            "data_coverage",
+            self.data_coverage,
+            label="数据覆盖",
+            description="查看本地已同步的行情：每个标的 / 周期的起止时间、根数、缺口与最后更新时间",
+            parameters={
+                **obj,
+                "properties": {
+                    "symbols": {"type": "array", "items": {"type": "string"}},
+                    "timeframe": {"type": "string"},
+                },
             },
         )
         tools.register(
@@ -305,8 +348,41 @@ class AppServices:
         )
 
     # ---------------- 平台能力（同时是角色工具）----------------
+    def sync_market_data(
+        self, symbols: list[str] | str = "", timeframe: str = "1h", days: int = 180, exchange: str = "binance"
+    ) -> dict:
+        """同步若干标的的真实 K 线到本地缓存（Agent 工具 / 数据页共用）。"""
+        if isinstance(symbols, str):
+            symbols = [x for x in symbols.replace("，", ",").split(",") if x.strip()]
+        syms = [s.strip().upper() for s in symbols if s.strip()][:20]
+        if not syms:
+            return {"ok": False, "error": "至少给出一个标的"}
+        end = int(time.time() * 1000)
+        start = end - max(1, min(int(days or 180), 1500)) * 86_400_000
+        rows = [self.market.sync(s, timeframe, start=start, end=end, exchange=exchange) for s in syms]
+        return {
+            "ok": any(r.get("ok") for r in rows),
+            "results": rows,
+            "note": "coverage < 0.9 或 gaps > 0 时说明交易所历史不全（新币、停牌或接口限制），回测会被标记为非正式",
+        }
+
+    def data_coverage(self, symbols: list[str] | None = None, timeframe: str = "") -> dict:
+        entries = self.market.cache.entries() if self.market.cache else []
+        want = {s.upper() for s in symbols or []}
+        rows = [
+            e
+            for e in entries
+            if (not want or e["symbol"].upper() in want) and (not timeframe or e["timeframe"] == timeframe)
+        ]
+        return {"entries": rows[:60], "total": len(rows), "last_errors": self.market.last_error}
+
     def market_summary(self, symbol: str = "BTC/USDT", timeframe: str = "1h") -> dict:
-        bars, source = self.market.get_bars(symbol, timeframe, limit=500)
+        from ..data.service import DataUnavailable
+
+        try:
+            bars, source = self.market.get_bars(symbol, timeframe, limit=500)
+        except DataUnavailable as exc:
+            return {"symbol": symbol, "timeframe": timeframe, "error": str(exc), "connected": False}
         if not bars:
             return {"symbol": symbol, "error": "无数据"}
         closes = [b.close for b in bars]

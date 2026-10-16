@@ -538,6 +538,13 @@ def _seed_float(*parts: Any) -> random.Random:
     return random.Random(hashlib.sha256("|".join(map(str, parts)).encode()).hexdigest())
 
 
+def _synthetic_allowed() -> bool:
+    """合成路径只在测试 / 离线演示时允许（QAGENT_ALLOW_SYNTHETIC=1），平台默认如实报「未接入数据」。"""
+    import os
+
+    return os.environ.get("QAGENT_ALLOW_SYNTHETIC", "0") == "1"
+
+
 def synthetic_crash_minutes(scenario_id: str, symbol: str, start: int, end: int) -> list[Bar]:
     """按事件形状生成确定性的合成 1 分钟路径：平静 → 一段或几段加速下跌（波动放大、长下影）→ 部分收复。
 
@@ -746,6 +753,11 @@ def load_scenario_data(market: _Market, sc: dict[str, Any], securities: list[str
                 warm[s] = market.fetch(s, timeframe, start - LIVE_WARMUP_BARS * step, start, tag)
     except Exception as exc:
         err = str(exc)
+        if not _synthetic_allowed():
+            raise RuntimeError(
+                f"未接入数据：压力场景「{sc.get('name') or tag}」的历史 1 分钟行情取不到（{err[:160]}）。"
+                "请检查网络或交易所接口后重试；平台不再用合成路径代替真实行情"
+            ) from exc
         source = "synthetic"
     if source == "synthetic":
         warnings.append(
@@ -790,7 +802,9 @@ def load_scenario_data(market: _Market, sc: dict[str, Any], securities: list[str
         ferr = ""
         if source == "exchange":
             rows, ferr = market.funding(p, start - 8 * 3_600_000, end)
-        if not rows:
+        if not rows and not _synthetic_allowed():
+            warnings.append(f"{p} 资金费率取不到（{ferr or '无数据'}），资金费按 0 计——资金费相关结论不可信")
+        elif not rows:
             from ..data.service import synthetic_funding
 
             rows = synthetic_funding(p, start - 8 * 3_600_000, end)

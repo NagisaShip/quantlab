@@ -13,8 +13,12 @@ import {
   Tag,
 } from '../components/ui'
 import DatahubSection from './data/Datahub'
+import { LocalLibrary } from './data/LocalLibrary'
 import { PriceChart } from '../components/charts'
 import type { PageProps } from './types'
+
+const BARS_PER_YEAR: Record<string, number> = { '1m': 525_600, '5m': 105_120, '15m': 35_040, '30m': 17_520, '1h': 8760, '4h': 2190, '1d': 365 }
+const fmtPx = (v: number) => v.toLocaleString('en-US', { maximumFractionDigits: v >= 100 ? 2 : 5 })
 
 export default function DataCenterPage({ notify, onNavigate, arg }: PageProps & { arg?: string }) {
   const tab = arg === 'hub' ? 'hub' : 'bars'
@@ -23,7 +27,7 @@ export default function DataCenterPage({ notify, onNavigate, arg }: PageProps & 
       <Heading
         eyebrow="MARKET & DATA"
         title="行情与数据"
-        description="行情 K 线与研究数据（衍生品、链上、情绪、宏观）都在这里。真实数据优先；拿不到时回退到可复现的合成序列并明确标注。"
+        description="行情 K 线与研究数据（衍生品、链上、情绪、宏观）都在这里。只用真实数据：拿不到时如实显示「未接入数据」，可以一键同步。"
       />
       <div className="fx-tabs">
         <Segments value={tab} onChange={(t) => onNavigate(t === 'hub' ? 'data/hub' : 'data')} ariaLabel="行情与数据视图"
@@ -142,7 +146,7 @@ function BarsView({ notify, heading }: Pick<PageProps, 'notify'> & { heading: Re
             ? `${symbol} · ${timeframe} · ${bars.length} 根 K 线 · 最新收盘 ${closes[closes.length - 1]?.toFixed(2)}`
             : '—'
         }
-        warn={source === 'synthetic' ? '合成数据只能验证流程与代码正确性，不能用来评估策略的真实表现' : undefined}
+        warn={source === 'synthetic' ? '合成数据只能验证流程与代码正确性，不能用来评估策略的真实表现' : error ? '未接入数据：可以在下方「本地行情库」同步，或换一个交易所' : undefined}
         right="只读公共行情"
       />
 
@@ -184,14 +188,14 @@ function BarsView({ notify, heading }: Pick<PageProps, 'notify'> & { heading: Re
               bars
             />
             <MetricCard
-              label="区间最高 / 最低"
-              value={`${Math.max(...bars.map((b) => b.h)).toFixed(0)} / ${Math.min(...bars.map((b) => b.l)).toFixed(0)}`}
-              caption={`${bars.length} 根 ${timeframe} K 线`}
+              label="区间最高"
+              value={fmtPx(Math.max(...bars.map((b) => b.h)))}
+              caption={`最低 ${fmtPx(Math.min(...bars.map((b) => b.l)))} · ${bars.length} 根 ${timeframe}`}
             />
             <MetricCard
-              label="单根波动率"
-              value={summary?.volatility_per_bar !== undefined ? Number(summary.volatility_per_bar).toFixed(4) : '—'}
-              caption="按 bar 收益率标准差"
+              label="波动率"
+              value={summary?.volatility_per_bar !== undefined ? `${(Number(summary.volatility_per_bar) * 100).toFixed(2)}%` : '—'}
+              caption={summary?.volatility_per_bar !== undefined ? `每根 ${timeframe} · 年化约 ${(Number(summary.volatility_per_bar) * Math.sqrt(BARS_PER_YEAR[timeframe] ?? 8760) * 100).toFixed(0)}%` : '按 bar 收益率标准差'}
               foot="短区间波动率高不代表长期风险高"
             />
             <MetricCard
@@ -271,6 +275,8 @@ function BarsView({ notify, heading }: Pick<PageProps, 'notify'> & { heading: Re
           </div>
         </>
       )}
+
+      <LocalLibrary notify={notify} />
 
       <Panel
         title="导入小时行情 CSV"
@@ -365,7 +371,7 @@ function BarsView({ notify, heading }: Pick<PageProps, 'notify'> & { heading: Re
               </div>
             )}
             <Callout>
-              上传的 CSV 会保存为一份带摘要的数据集，可在「统一赛道与比较」中直接选用。
+              上传的 CSV 会保存为一份带摘要的数据集，可在「回测 → 新建回测」里选作数据来源。
               CSV 的真实性、交易对与时间范围由导入者自行确认。
             </Callout>
           </div>

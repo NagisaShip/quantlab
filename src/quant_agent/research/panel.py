@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -235,6 +236,8 @@ def _assemble(
         warnings.append("部分标的使用了合成行情，结论不能作为研究结论")
 
     field_sources: dict[str, str] = {}
+    # 合成序列只在测试 / 离线演示时允许（QAGENT_ALLOW_SYNTHETIC=1）；平台默认如实报「未接入数据」
+    synth_ok = source != "exchange" and os.environ.get("QAGENT_ALLOW_SYNTHETIC", "0") == "1"
     for f in fields:
         if f in PRICE_FIELDS or f in data:
             continue
@@ -242,11 +245,11 @@ def _assemble(
         used: set[str] = set()
         synth_cols = []
         for j, s in enumerate(syms):
-            rec = hub.find(f, s, allow_synthetic=source != "exchange") if hub else None
+            rec = hub.find(f, s, allow_synthetic=synth_ok) if hub else None
             if rec is not None:
                 col[:, j] = hub.asof(rec["key"], times)  # type: ignore[union-attr]
                 used.add(rec["source"])
-            elif source != "exchange" and hub is not None and not f.startswith("x_"):
+            elif synth_ok and hub is not None and not f.startswith("x_"):
                 if FIELD_SCOPE.get(f) == "market":
                     col[:, :] = hub.synthetic(f, times, data["close"][:, 0], "market")[:, None]
                     synth_cols.append("全市场")
@@ -257,8 +260,8 @@ def _assemble(
                 col[:, :] = col[:, [j]]
                 break
         if np.all(np.isnan(col)):
-            if source == "exchange":
-                raise PanelError(f"没有字段 {f} 的真实数据。请先在「行情与数据」页同步")
+            if source == "exchange" or not synth_ok:
+                raise PanelError(f"未接入数据：没有字段 {f} 的真实数据。请先在「行情与数据 → 研究数据」同步")
             if f.startswith("x_"):
                 raise PanelError(f"没有找到自定义数据 {f}，请先在「行情与数据」页导入")
         if synth_cols:

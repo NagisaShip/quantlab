@@ -53,7 +53,7 @@ export default function DatahubSection({ notify }: Pick<PageProps, 'notify'>) {
     <>
       <Callout>
         研究数据都按「当时能不能拿到」对齐：日频数据按次日可用处理，资金费率按结算时刻可用。因子里直接用字段名引用，例如 <code>funding</code>、<code>fng</code>；
-        自定义数据用 <code>x_名字</code>。没有同步过的字段，评估时会用合成序列并明确标注。
+        自定义数据用 <code>x_名字</code>。没有同步过的字段，评估时会如实报「未接入数据」，先在这里同步。
       </Callout>
       <div className="dh-grid">
         {conns.map((c) => <ConnectorCard key={c.id} c={c} canKeys={canKeys} busy={syncing === c.id} onSync={(x) => sync(c, x)}

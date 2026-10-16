@@ -19,6 +19,7 @@ import json
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
@@ -279,9 +280,15 @@ class MissionStopped(Exception):
 
 
 class MissionRunner:
-    def __init__(self, team_runner: TeamRunner, store: MissionStore) -> None:
+    def __init__(
+        self,
+        team_runner: TeamRunner,
+        store: MissionStore,
+        on_conclusion: Callable[[dict[str, Any], str], None] | None = None,
+    ) -> None:
         self.teams = team_runner
         self.store = store
+        self.on_conclusion = on_conclusion  # (mission, conclusion)：讨论汇总完成后回调
 
     # ---------------- 创建 ----------------
     def create(self, payload: dict[str, Any], materials: dict[str, Any]) -> dict[str, Any]:
@@ -554,12 +561,19 @@ class MissionRunner:
             return
         holder = self.store.post(mid, self._placeholder(len(m["stages"]), role, "synthesis", None))
         task = self._transcript(mid) + (
-            "\n\n【你的任务】作为汇总人，整合以上讨论：共识、分歧与你的判断、结论、下一步行动项。"
+            "\n\n【你的任务】作为汇总人，整合以上讨论，按证据质量而不是发言人数取舍：\n"
+            "1. 已验证的事实（注明出处）；2. 未验证的假设（写清楚怎么验证）；"
+            "3. 被剔除的无依据结论（例如没有数据支持的收益 / 回撤预测）；4. 分歧与你的判断；5. 下一步行动项。"
         )
         step = self.teams._invoke(role, task, max_steps=3)
         self._finish_speech(mid, holder["seq"], role, step, "synthesis")
         final = next((u for u in self.store.feed(mid) if u["seq"] == holder["seq"]), {})
         self.store.patch(mid, conclusion=final.get("content", ""))
+        if self.on_conclusion is not None and final.get("content"):
+            try:  # 结论自动钉进发起讨论的 AI 研究室对话（对话设置里可关）
+                self.on_conclusion(self.store.get(mid) or m, final["content"])
+            except Exception:
+                pass
 
     # ---------------- 指挥官操作 ----------------
     def say(self, mid: str, text: str, *, to_role: str | None = None) -> dict[str, Any]:

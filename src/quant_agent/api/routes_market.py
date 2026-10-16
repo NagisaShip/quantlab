@@ -33,7 +33,7 @@ def symbols() -> dict:
         "symbols": SUPPORTED_SYMBOLS,
         "timeframes": list(TIMEFRAME_MS),
         "exchanges": ["binance", "okx", "bybit"],
-        "sources": ["auto", "exchange", "synthetic"],
+        "sources": ["auto", "exchange", *(["synthetic"] if get_services().market.allow_synthetic else [])],
     }
 
 
@@ -95,7 +95,10 @@ def ticker(symbol: str = "BTC/USDT", exchange: str = "binance") -> dict:
             return {"symbol": symbol, "source": f"{exchange}:live", **data}
         except Exception:
             pass
-    bars, source = s.market.get_bars(symbol, "1h", limit=50, exchange=exchange)
+    try:
+        bars, source = s.market.get_bars(symbol, "1h", limit=50, exchange=exchange)
+    except DataUnavailable as exc:
+        return {"symbol": symbol, "source": "none", "price": None, "connected": False, "error": str(exc)[:200]}
     return {"symbol": symbol, "source": source, "price": bars[-1].close if bars else None}
 
 
@@ -157,6 +160,43 @@ def prefetch(
         "start_ts": data[0].open_time if data else 0,
         "end_ts": data[-1].close_time if data else 0,
     }
+
+
+@router.post("/sync", summary="同步真实行情：分段拉取并补齐缺口")
+def sync_data(
+    symbols: str = Query("BTC/USDT", description="逗号分隔"),
+    timeframe: str = "1h",
+    days: int = Query(180, ge=1, le=1500),
+    exchange: str = "binance",
+) -> dict:
+    """同步真实行情：分段拉取、补齐中间缺口，返回每个标的的覆盖率与缺口数。"""
+    return get_services().sync_market_data(symbols.split(","), timeframe, days, exchange)
+
+
+@router.get("/quotes", summary="关注列表行情：多个标的的收盘序列，未接入数据的标的如实标注")
+def quotes(
+    symbols: str = Query("BTC/USDT,ETH/USDT", description="逗号分隔"),
+    timeframe: str = "1h",
+    limit: int = Query(168, ge=10, le=1000),
+) -> dict:
+    """首页关注列表：每个标的的收盘序列；没有真实行情的标的返回 connected=false（不用合成数据顶替）。"""
+    s = get_services()
+    out = []
+    for sym in [x.strip().upper() for x in symbols.split(",") if x.strip()][:12]:
+        try:
+            data, source = s.market.get_bars(sym, timeframe, limit=limit)
+            out.append(
+                {
+                    "symbol": sym,
+                    "connected": True,
+                    "source": source,
+                    "t": [b.open_time for b in data],
+                    "c": [b.close for b in data],
+                }
+            )
+        except (DataUnavailable, ValueError) as exc:
+            out.append({"symbol": sym, "connected": False, "error": str(exc)[:200]})
+    return {"timeframe": timeframe, "quotes": out}
 
 
 @router.get("/network")

@@ -20,6 +20,44 @@ const DEFAULT_EFFORTS: EffortOption[] = [
  */
 export interface SlashCommand { cmd: string; help: string; group?: string; arg?: string; run?: (arg: string) => void; disabled?: boolean }
 
+/** 可以 @ 的对象（团队角色等）。 */
+export interface MentionOption { id: string; name: string; hint?: string; avatar?: ReactNode }
+
+/** 输入末尾正在输入的 @词（光标在末尾时）：返回 [起点, 关键字]。 */
+export function mentionQuery(value: string): [number, string] | null {
+  const m = /(^|\s)@([^\s@]{0,20})$/.exec(value)
+  return m ? [value.length - m[2].length - 1, m[2]] : null
+}
+
+/** 从输入里解析出被 @ 的对象（按名字最长匹配）。 */
+export function findMention<T extends { name: string }>(text: string, options: T[]): T | undefined {
+  return [...options].sort((a, b) => b.name.length - a.name.length).find((o) => text.includes(`@${o.name}`))
+}
+
+/** @ 弹出列表：输入 @ 后按名字过滤，↑↓ 选择，Enter / Tab / 点击确认。 */
+export function MentionList({ options, query, active, onHover, onPick }: {
+  options: MentionOption[]; query: string; active: number; onHover: (i: number) => void; onPick: (o: MentionOption) => void
+}) {
+  const list = filterMentions(options, query)
+  if (!list.length) return null
+  return (
+    <div className="cmp-slash cmp-mention anim-pop" role="listbox" aria-label="选择要 @ 的角色">
+      <div className="cmp-slash-group">点名</div>
+      {list.map((o, i) => (
+        <button key={o.id} type="button" role="option" aria-selected={i === active} className={i === active ? 'on' : ''}
+          onMouseEnter={() => onHover(i)} onMouseDown={(e) => { e.preventDefault(); onPick(o) }}>
+          <b className="cmp-mention-name">{o.avatar}@{o.name}</b>{o.hint && <span>{o.hint}</span>}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+export function filterMentions(options: MentionOption[], query: string) {
+  const q = query.toLowerCase()
+  return options.filter((o) => !q || o.name.toLowerCase().includes(q) || o.id.toLowerCase().includes(q) || (o.hint ?? '').toLowerCase().includes(q)).slice(0, 8)
+}
+
 /** 点外面或按 Esc 关闭的弹出层。 */
 export function usePopover() {
   const [open, setOpen] = useState(false)
@@ -195,7 +233,7 @@ export function PlusMenu({ items }: { items: PlusItem[] }) {
 /* ------------------------------------------------------------------ */
 export function Composer({
   value, onChange, onSend, onStop, running, disabled, placeholder, commands = [], above, left, right, autoFocus, sendLabel = '发送',
-  hasAttachments, onPasteFiles,
+  hasAttachments, onPasteFiles, mentions,
 }: {
   value: string
   onChange: (v: string) => void
@@ -212,10 +250,14 @@ export function Composer({
   sendLabel?: string
   hasAttachments?: boolean                 // 带了附件时，没有文字也能发送
   onPasteFiles?: (files: File[]) => void   // 粘贴图片等文件
+  mentions?: MentionOption[]               // 输入 @ 时可以点名的对象
 }) {
   const ta = useRef<HTMLTextAreaElement>(null)
   const [active, setActive] = useState(0)
   const slash = value.startsWith('/') && !/\s/.test(value) ? commands.filter((c) => c.cmd.startsWith(value)) : []
+  const mq = mentions?.length ? mentionQuery(value) : null
+  const mlist = mq ? filterMentions(mentions!, mq[1]) : []
+  const pickMention = (o: MentionOption) => { if (mq) onChange(`${value.slice(0, mq[0])}@${o.name} `); ta.current?.focus() }
 
   useLayoutEffect(() => {
     const el = ta.current
@@ -244,6 +286,9 @@ export function Composer({
           ))}
         </div>
       )}
+      {!slash.length && mq && mlist.length > 0 && (
+        <MentionList options={mentions!} query={mq[1]} active={Math.min(active, mlist.length - 1)} onHover={setActive} onPick={pickMention} />
+      )}
       <div className={`cmp-box${disabled ? ' disabled' : ''}`} onClick={() => ta.current?.focus()}>
         {above && <div className="cmp-above">{above}</div>}
         <textarea ref={ta} rows={1} value={value} autoFocus={autoFocus} disabled={disabled}
@@ -257,6 +302,11 @@ export function Composer({
               if (e.key === 'ArrowDown') { e.preventDefault(); setActive((active + 1) % slash.length); return }
               if (e.key === 'ArrowUp') { e.preventDefault(); setActive((active - 1 + slash.length) % slash.length); return }
               if ((e.key === 'Enter' || e.key === 'Tab') && slash[active] && value !== slash[active].cmd) { e.preventDefault(); pick(slash[active]); return }
+            } else if (mlist.length) {
+              if (e.key === 'ArrowDown') { e.preventDefault(); setActive((active + 1) % mlist.length); return }
+              if (e.key === 'ArrowUp') { e.preventDefault(); setActive((active - 1 + mlist.length) % mlist.length); return }
+              if ((e.key === 'Enter' || e.key === 'Tab') && !e.nativeEvent.isComposing) { e.preventDefault(); pickMention(mlist[Math.min(active, mlist.length - 1)]); return }
+              if (e.key === 'Escape') { onChange(value + ' '); return }
             }
             if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault()

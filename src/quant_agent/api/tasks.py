@@ -224,6 +224,9 @@ def handle_backtest(ctl: TaskCtl) -> dict[str, Any]:
             "duration_ms": duration,
             "created_at": time.time(),
             "strategy_version_id": ctl.run.get("strategy_version_id"),
+            # 来自 AI 研究室对话的回测：记下对话，回测记录页可以按对话分组
+            "lab_project_id": m.get("lab_project_id"),
+            "lab_title": m.get("lab_title"),
         }
         store.upsert(Collections.BACKTESTS, row)
         store.put_blob("backtests", bt_id, {**body, "id": bt_id, "code": m["source"], "row": row})

@@ -60,7 +60,37 @@ class WaitIn(BaseModel):
 
 def _runner() -> MissionRunner:
     s = get_services()
-    return MissionRunner(s.teams, MissionStore(s.store))
+    return MissionRunner(s.teams, MissionStore(s.store), on_conclusion=_pin_conclusion)
+
+
+def _pin_conclusion(mission: dict[str, Any], conclusion: str) -> None:
+    """讨论结束：结论自动钉进发起它的 AI 研究室对话的上下文（对话的 auto_team_context 默认开启）。"""
+    pid = mission.get("lab_project_id")
+    if not pid:
+        return
+    from ..agents.strategy_lab import LabStore, _lock, _now
+
+    store = LabStore(get_services().store)
+    project = store.get(pid)
+    if project is None or project.get("auto_team_context", True) is False:
+        return
+    title = f"团队讨论结论 · {(mission.get('directive') or '')[:16]}"
+    with _lock(f"p:{pid}"):
+        p = store.get(pid) or project
+        pins = [x for x in p.get("pins") or [] if x.get("mission_id") != mission.get("id")]
+        pins.append(
+            {
+                "id": uuid.uuid4().hex[:8],
+                "kind": "team",
+                "title": title[:60],
+                "text": conclusion[:4000],
+                "mission_id": mission.get("id"),
+                "created_at": _now(),
+            }
+        )
+        p["pins"] = pins[-12:]
+        store.save(p)
+    store.append(pid, {"role": "event", "kind": "text", "content": "团队讨论结论已自动加入上下文"})
 
 
 def _or_404(r: MissionRunner, mid: str) -> dict[str, Any]:

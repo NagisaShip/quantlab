@@ -264,6 +264,9 @@ export interface BacktestRow {
   errors: number
   duration_ms: number
   created_at: number
+  /** 来自 AI 研究室对话的回测：对话 id 与标题（用于按对话分组） */
+  lab_project_id?: string | null
+  lab_title?: string | null
 }
 
 export interface Job<T = unknown> {
@@ -557,6 +560,7 @@ export const v3 = {
     get<{ backtests: BacktestRow[]; total: number }>(`/api/research/backtests?${qs({ slug, limit })}`),
   backtest: (id: string) => get<BacktestResult>(`/api/research/backtests/${id}`),
   deleteBacktest: (id: string) => del<{ ok: boolean }>(`/api/research/backtests/${id}`),
+  deleteBacktests: (ids: string[]) => post<{ ok: boolean; deleted: number }>('/api/research/backtests/batch-delete', { ids }),
   compare: (ids: string[]) =>
     post<{ items: { id: string; strategy_name: string; version: string; params: Params; metrics: Partial<FullMetrics>; timestamps: number[]; returns: number[] }[] }>(
       '/api/research/backtests/compare',

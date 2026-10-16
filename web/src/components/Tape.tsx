@@ -30,6 +30,7 @@ const fmtPrice = (v: number) => v.toLocaleString('en-US', { minimumFractionDigit
 /** 顶部行情带：最近 24 根 1 小时线的涨跌。合成数据会明确标出。 */
 export default function Tape() {
   const [quotes, setQuotes] = useState<Quote[]>([])
+  const [loaded, setLoaded] = useState(false)
   const [theme, setThemeState] = useState(resolvedTheme())
   const [updown, setUpDownState] = useState<UpDown>(getUpDown())
 
@@ -37,7 +38,7 @@ export default function Tape() {
     let alive = true
     const load = async () => {
       const qs = (await Promise.all(SYMBOLS.map(fetchQuote))).filter((q): q is Quote => q !== null)
-      if (alive) setQuotes(qs)
+      if (alive) { setQuotes(qs); setLoaded(true) }
     }
     load()
     const t = window.setInterval(load, 60_000)
@@ -70,9 +71,9 @@ export default function Tape() {
             <em className={q.change >= 0 ? 'up' : 'down'}>{q.change >= 0 ? '+' : ''}{(q.change * 100).toFixed(2)}%</em>
           </span>
         ))}
-        {!quotes.length && <span className="quote"><span>行情加载中…</span></span>}
+        {!quotes.length && <span className="quote"><span>{loaded ? '未接入行情数据' : '行情加载中…'}</span></span>}
       </div>
-      {quotes.length > 0 && <span className="tape-src" title={synthetic ? '交易所接口不可达，显示的是教学合成数据' : '交易所公共行情'}>{synthetic ? '合成行情' : '实时行情 · 24h'}</span>}
+      {quotes.length > 0 && <span className="tape-src" title={synthetic ? '部分标的不是交易所实时行情' : '交易所公共行情'}>{synthetic ? '部分未接入' : '实时行情 · 24h'}</span>}
       <div className="tape-tools">
         <button className="tape-btn" onClick={toggleUpDown} title="切换涨跌配色" aria-label={updown === 'red' ? '当前红涨绿跌，点击切换为绿涨红跌' : '当前绿涨红跌，点击切换为红涨绿跌'}>
           <span className="swatch"><i style={{ background: 'var(--up)' }} /><i style={{ background: 'var(--down)' }} /></span>

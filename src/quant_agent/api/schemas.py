@@ -355,6 +355,8 @@ class ResearchBacktestIn(SpecIn):
     name: str = ""
     persist: bool = True
     label: str = ""
+    lab_project_id: str | None = Field(None, max_length=40, description="来自哪个 AI 研究室对话（用于按对话分组）")
+    lab_title: str = Field("", max_length=60)
     wait_seconds: float = Field(30.0, ge=0, le=120, description="同步等待结果的秒数；超时返回 202 与 run_id")
     lang: Literal["dsl", "python"] | None = Field(
         None, description="只给 code 时的语言；缺省按内容判断（以 { 开头为 DSL）"

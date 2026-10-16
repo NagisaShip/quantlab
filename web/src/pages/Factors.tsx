@@ -20,7 +20,8 @@ const day = (ms?: number | null) => (ms ? new Date(ms * (ms < 1e11 ? 1000 : 1)).
 
 export default function FactorsPage({ arg, onNavigate, notify }: PageProps & { arg?: string }) {
   const [meta, setMeta] = useState<FactorMeta | null>(null)
-  useEffect(() => { factors.meta().then(setMeta).catch((e: Error) => notify(e.message, true)) }, [notify])
+  const loadMeta = useCallback(() => { factors.meta().then(setMeta).catch((e: Error) => notify(e.message, true)) }, [notify])
+  useEffect(loadMeta, [loadMeta])
   const tab: Tab | null = !arg ? 'list' : (['new', 'trials', 'syntax'] as string[]).includes(arg) ? (arg as Tab) : null
 
   return (
@@ -32,7 +33,7 @@ export default function FactorsPage({ arg, onNavigate, notify }: PageProps & { a
         {meta && <span className="hint">已入库或候选因子之外，累计试过 {meta.trials} 个表达式</span>}
       </div>
       {tab === 'list' && <FactorList meta={meta} onOpen={(id) => onNavigate(`factors/${id}`)} notify={notify} />}
-      {tab === 'new' && <Evaluator meta={meta} notify={notify} onSaved={(id) => onNavigate(`factors/${id}`)} />}
+      {tab === 'new' && <Evaluator meta={meta} notify={notify} onSaved={(id) => onNavigate(`factors/${id}`)} onEvaluated={loadMeta} />}
       {tab === 'trials' && <Trials />}
       {tab === 'syntax' && <Syntax meta={meta} />}
       {tab === null && arg && <FactorDetail key={arg} id={arg} meta={meta} notify={notify} onDeleted={() => onNavigate('factors')} />}
@@ -151,7 +152,7 @@ function FactorDetail({ id, meta, notify, onDeleted }: { id: string; meta: Facto
 }
 
 /* ------------------------------------------------------------------ */
-function Evaluator({ meta, notify, onSaved }: { meta: FactorMeta | null; notify: PageProps['notify']; onSaved: (id: string) => void }) {
+function Evaluator({ meta, notify, onSaved, onEvaluated }: { meta: FactorMeta | null; notify: PageProps['notify']; onSaved: (id: string) => void; onEvaluated?: () => void }) {
   const [p, setP] = useState<EvalParams>({ expression: '', universe: 'major10', timeframe: '4h', horizon: 1, bars_limit: 1500, source: 'auto', cost_bps: 10 })
   const [check, setCheck] = useState<{ ok: boolean; error?: string; fields?: string[]; complexity?: number; lookback?: number } | null>(null)
   const [report, setReport] = useState<FactorReport | null>(null)
@@ -164,7 +165,7 @@ function Evaluator({ meta, notify, onSaved }: { meta: FactorMeta | null; notify:
   }, [p.expression])
   const run = async () => {
     setBusy(true)
-    try { setReport(await factors.evaluate(p)) } catch (e) { notify((e as Error).message, true) } finally { setBusy(false) }
+    try { setReport(await factors.evaluate(p)); onEvaluated?.() } catch (e) { notify((e as Error).message, true) } finally { setBusy(false) }
   }
   const save = async (status: FactorStatus) => {
     try {
@@ -205,7 +206,7 @@ function Evaluator({ meta, notify, onSaved }: { meta: FactorMeta | null; notify:
           </Field>
           <Field label="数据">
             <select value={p.source} onChange={(e) => setP({ ...p, source: e.target.value as EvalParams['source'] })}>
-              <option value="auto">自动（真实优先）</option><option value="exchange">只用真实数据</option><option value="synthetic">合成数据</option>
+              <option value="auto">真实行情（缓存优先）</option><option value="exchange">只用真实数据</option>
             </select>
           </Field>
           <Field label="单边成本 bps">
@@ -271,7 +272,7 @@ function Syntax({ meta }: { meta: FactorMeta | null }) {
   if (!meta) return <Loading />
   return (
     <div className="two-columns even">
-      <Panel title="字段" subtitle="衍生品、情绪、链上字段需要先在「行情与数据」同步；没有真实数据时用合成序列并明确标注。">
+      <Panel title="字段" subtitle="衍生品、情绪、链上字段需要先在「行情与数据」同步；没有真实数据时如实报「未接入数据」，不会用合成序列顶替。">
         {Object.entries(fieldGroups).map(([g, items]) => (
           <div key={g} className="fx-syn-group">
             <h4>{g}</h4>

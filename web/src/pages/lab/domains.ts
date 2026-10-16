@@ -60,6 +60,91 @@ export const DOMAIN_UI: Partial<Record<LabKind, DomainUI>> = {
   },
 }
 
+/**
+ * 研究类型滑块：五个研究室 + 两种研究流程。流程类（完整流程、调研报告）走策略对话，附加对应的工作方式。
+ */
+export type ResearchType = LabKind | 'pipeline' | 'report'
+export const RESEARCH_TYPES: { id: ResearchType; label: string; hint: string }[] = [
+  { id: 'strategy', label: '策略', hint: '写策略代码并回测' },
+  { id: 'factor', label: '因子', hint: '挖掘因子，按 IC 与样本外评估' },
+  { id: 'model', label: '模型', hint: '用因子训练预测模型' },
+  { id: 'portfolio', label: '组合', hint: '把预测变成权重，控制风险' },
+  { id: 'execution', label: '执行', hint: '拆单算法与成本研究（仿真）' },
+  { id: 'pipeline', label: '完整流程', hint: '选标的 → 因子 → 策略 → 模型 → 组合 → 执行，一次走完并出报告' },
+  { id: 'report', label: '调研报告', hint: '联网 + 平台数据调研，最后生成可导出 PDF 的报告' },
+]
+export const kindOfType = (t: ResearchType): LabKind => (t === 'pipeline' || t === 'report' ? 'strategy' : t)
+export const workflowOfType = (t: ResearchType): '' | 'pipeline' | 'report' => (t === 'pipeline' || t === 'report' ? t : '')
+
+/** 每种研究的建议（新对话页随机展示几条，可换一批）。 */
+export const EXAMPLE_POOL: Record<ResearchType, string[]> = {
+  strategy: [
+    'BTC 1 小时，20 和 60 均线金叉做多，止损 5%',
+    'ETH 4 小时 RSI 均值回归，回撤控制在 15% 以内',
+    'BTC、ETH、SOL 每周动量轮动，只持有最强的一个',
+    'BTC 4 小时唐奇安 55 根突破，ATR 两倍移动止损',
+    '主流币资金费率极端时反向开仓，验证样本外是否有效',
+    'SOL 15 分钟布林带收口后突破，成交量放大才入场',
+    'BTC 日线定投 + 均线过滤，对比纯定投的回撤',
+    '多币种横截面动量：做多前 3、空仓其余，周度调仓',
+    'ETH/BTC 比值均值回归，比值偏离 2 倍标准差时切换持仓',
+    '波动率目标仓位：BTC 年化波动控制在 40%',
+  ],
+  factor: [
+    '资金费率持续偏高的币，之后会不会跑输',
+    '成交量放大但价格不涨，是不是出货信号',
+    '恐惧贪婪指数极端时，高贝塔币的表现',
+    '20 日动量和 5 日反转能不能同时有效',
+    '一次评估 10 个价量因子，并检查它们的共线性',
+    '波动率偏度因子在主流币横截面上的 IC',
+    '持仓量变化与价格背离作为因子',
+  ],
+  model: [
+    '用价量因子预测主流币下一根 K 线的截面排名',
+    '预测 BTC 未来 24 小时波动率，用于仓位控制',
+    '比较梯度提升树和 GRU 在涨跌方向上的表现',
+    '用 20 个因子训练 Lasso，看哪些因子被保留',
+    '三重障碍标签 + 树模型，预测 4 小时方向',
+  ],
+  portfolio: [
+    '主流十个币做风险平价，单币不超过 25%',
+    '用模型预测做 Black-Litterman，并控制目标波动',
+    '比较 HRP 和最小 CVaR 在 2022 年这类行情下的回撤',
+    '动量组合加入相关性约束，避免同涨同跌',
+  ],
+  execution: [
+    '大单 30 分钟内做完，成本比 TWAP 低',
+    '流动性差的小币用冰山单，参与率不超过 15%',
+    '比较 Almgren-Chriss 和自适应算法在剧烈波动时的表现',
+  ],
+  pipeline: [
+    '从主流十个币里选标的，做一套多因子趋势策略，完整走到组合和执行',
+    '围绕资金费率做一次完整研究：因子 → 策略 → 模型 → 组合',
+    '为 BTC/ETH 做一套中频策略，从因子到执行全流程，并给出报告',
+    '用 15 个候选因子做多因子选币，处理共线性后构建组合',
+  ],
+  report: [
+    '调研比特币现货 ETF 资金流对 BTC 价格的影响',
+    '调研最近一个月加密市场的主要事件与行情变化',
+    '对比主流交易所的手续费与流动性，评估对中频策略的影响',
+    '调研资金费率套利的原理、历史收益与主要风险',
+    '调研以太坊质押收益率变化对 ETH 价格的影响',
+    '整理“多因子共线性”的常见处理方法并给出建议',
+  ],
+}
+
+/** 从建议池里随机取 n 条（换一批）。 */
+export function pickExamples(t: ResearchType, n = 4, seed = Math.random()): string[] {
+  const pool = [...(EXAMPLE_POOL[t] ?? EXAMPLE_POOL.strategy)]
+  let s = Math.floor(seed * 2 ** 31) || 1
+  for (let i = pool.length - 1; i > 0; i--) {
+    s = (s * 48271) % 2147483647
+    const j = s % (i + 1)
+    ;[pool[i], pool[j]] = [pool[j], pool[i]]
+  }
+  return pool.slice(0, n)
+}
+
 export const domainUI = (kind?: LabKind): DomainUI | undefined => (kind && kind !== 'strategy' ? DOMAIN_UI[kind] : undefined)
 
 export const libraryIdOf = (p: { factor_id?: string | null; model_id?: string | null; library_id?: string | null }, ui?: DomainUI) =>

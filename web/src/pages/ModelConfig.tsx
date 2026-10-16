@@ -5,6 +5,7 @@ import { LimitBars, LimitEditor, UsageSummary } from '../components/modelUsage'
 import { Callout, Heading, Loading } from '../components/ui'
 import { get, request } from '../http'
 import { store } from '../components/prefs'
+import { LAB_PREF_KEYS } from '../apiLab'
 import type { PageProps } from './types'
 import { appConfirm } from '../components/dialog'
 
@@ -636,7 +637,7 @@ function SearchSection({ notify }: { notify: PageProps['notify'] }) {
       <div className="set-row">
         <div>
           <b>Tavily <i className={`prov-dot${st?.configured ? ' ok' : ''}`} /></b>
-          <small>{st?.configured ? `已配置 · ${st.key_masked}` : 'AI 研究室与团队角色用它联网搜索、读取网页。'}<a href="https://tavily.com" target="_blank" rel="noreferrer">申请密钥</a></small>
+          <small>{st?.configured ? `已配置 · ${st.key_masked}` : 'AI 研究室与团队角色用它联网搜索、读取网页；没有密钥时自动改用免密钥来源（必应、百度、DuckDuckGo、Google 新闻、百度新闻）。'}<a href="https://tavily.com" target="_blank" rel="noreferrer">申请密钥</a></small>
         </div>
         <div className="set-inline">
           <input type="password" placeholder="tvly-…" value={key} onChange={(e) => setKey(e.target.value)} autoComplete="off" />
@@ -652,6 +653,8 @@ function SearchSection({ notify }: { notify: PageProps['notify'] }) {
 /** 对话偏好（本机）：AI 研究室里，AI 每次回答末尾附 2-3 条简短的后续建议，点一下就能接着问。 */
 function ChatPrefs({ notify }: { notify: PageProps['notify'] }) {
   const [on, setOn] = useState(() => store.get('qa.lab.suggest', '1') === '1')
+  const [team, setTeam] = useState(() => store.get(LAB_PREF_KEYS.teamCtx, '1') === '1')
+  const [maxTools, setMaxTools] = useState(() => store.get(LAB_PREF_KEYS.maxTools, '1000'))
   const toggle = () => {
     const v = !on
     setOn(v)
@@ -664,6 +667,20 @@ function ChatPrefs({ notify }: { notify: PageProps['notify'] }) {
       <div className="set-row">
         <div><b>AI 生成简短建议</b><small>在 AI 研究室里，每次回答末尾给出 2-3 条你可能想接着说的话（不额外调用模型，随回答一起生成）</small></div>
         <button type="button" role="switch" aria-checked={on} aria-label="AI 生成简短建议" className={`switch${on ? ' on' : ''}`} onClick={toggle}><i /></button>
+      </div>
+      <div className="set-row">
+        <div><b>团队讨论结论自动加入上下文</b><small>/discuss、/team 的汇总结论自动钉进这段对话的上下文，之后每轮都带给模型</small></div>
+        <button type="button" role="switch" aria-checked={team} aria-label="团队讨论结论自动加入上下文" className={`switch${team ? ' on' : ''}`}
+          onClick={() => { const v = !team; setTeam(v); store.set(LAB_PREF_KEYS.teamCtx, v ? '1' : '0'); notify(v ? '团队结论会自动加入上下文' : '团队结论不再自动加入上下文') }}><i /></button>
+      </div>
+      <div className="set-row">
+        <div><b>单轮工具调用上限</b><small>AI 一轮对话里最多调用多少次工具（查数据、回测、搜索…）；复杂任务需要更多次。默认 1000，范围 1–5000</small></div>
+        <input type="number" className="set-num" min={1} max={5000} step={50} value={maxTools} aria-label="单轮工具调用上限"
+          onChange={(e) => setMaxTools(e.target.value)}
+          onBlur={() => {
+            const n = Math.max(1, Math.min(5000, Math.round(Number(maxTools) || 1000)))
+            setMaxTools(String(n)); store.set(LAB_PREF_KEYS.maxTools, String(n)); notify(`单轮工具调用上限：${n} 次`)
+          }} />
       </div>
     </section>
   )

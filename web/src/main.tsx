@@ -14,6 +14,7 @@ import './stylesFactor.css'
 import './stylesTerminal.css'
 import './stylesConv.css'
 import './stylesBot.css'
+import './stylesResearch.css'
 import './stylesMotion.css'
 
 applyPrefs()

@@ -186,7 +186,7 @@ function Designer({ meta, notify, onSaved }: { meta: PortfolioMeta | null; notif
           <Field label="K 线数"><select value={env.bars_limit} onChange={(e) => setEnv({ ...env, bars_limit: Number(e.target.value) })}>{[800, 1500, 3000, 6000].map((n) => <option key={n} value={n}>{n}</option>)}</select></Field>
           <Field label="数据">
             <select value={env.source} onChange={(e) => setEnv({ ...env, source: e.target.value as EvalParams['source'] })}>
-              <option value="auto">自动（真实优先）</option><option value="exchange">只用真实数据</option><option value="synthetic">合成数据</option>
+              <option value="auto">真实行情（缓存优先）</option><option value="exchange">只用真实数据</option>
             </select>
           </Field>
           <Field label="单边成本 bps"><input type="number" min={0} max={200} value={env.cost_bps} onChange={(e) => setEnv({ ...env, cost_bps: Number(e.target.value) })} /></Field>
@@ -264,7 +264,7 @@ function RiskCheckView({ notify }: { notify: PageProps['notify'] }) {
           <textarea className="fr-editor" rows={6} value={text} onChange={(e) => setText(e.target.value)} aria-label="持仓（每行：标的 百分比）" />
           <div>
             <Field label="周期"><select value={tf} onChange={(e) => setTf(e.target.value)}>{['1h', '4h', '1d'].map((t) => <option key={t}>{t}</option>)}</select></Field>
-            <Field label="数据"><select value={source} onChange={(e) => setSource(e.target.value)}><option value="auto">自动（真实优先）</option><option value="exchange">只用真实数据</option><option value="synthetic">合成数据</option></select></Field>
+            <Field label="数据"><select value={source} onChange={(e) => setSource(e.target.value)}><option value="auto">真实行情（缓存优先）</option><option value="exchange">只用真实数据</option></select></Field>
             <div className="hint">已识别 {Object.keys(weights).length} 个标的，合计 {fp(total, 0)}{total < 0.999 ? `（其余 ${fp(1 - total, 0)} 视为现金）` : ''}</div>
             <button className="button primary" disabled={busy || !Object.keys(weights).length} onClick={run}>{busy ? <><span className="spinner" /> 计算中</> : '体检'}</button>
           </div>

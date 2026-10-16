@@ -217,6 +217,8 @@ def run_backtest_endpoint(payload: ResearchBacktestIn, request: Request) -> Any:
         "spec": spec.to_dict(),
         "persist": payload.persist,
         "label": payload.label,
+        "lab_project_id": payload.lab_project_id,
+        "lab_title": payload.lab_title,
         "version": rec.meta.version if rec and payload.code is None else "未保存的草稿",
         "mark_backtested": bool(rec and payload.code is None),
     }
@@ -304,6 +306,21 @@ def delete_backtest(bt_id: str) -> dict:
     if not found:
         raise HTTPException(404, "回测记录不存在")
     return {"ok": True}
+
+
+class BatchDeleteIn(BaseModel):
+    ids: list[str] = Field(default_factory=list, max_length=500)
+
+
+@router.post("/backtests/batch-delete", summary="批量删除回测记录")
+def batch_delete_backtests(payload: BatchDeleteIn) -> dict:
+    s = get_services().store
+    deleted = 0
+    for bt_id in dict.fromkeys(payload.ids):
+        if s.delete(Collections.BACKTESTS, bt_id):
+            deleted += 1
+        s.delete_blob("backtests", bt_id)
+    return {"ok": True, "deleted": deleted}
 
 
 @router.post("/backtests/compare")

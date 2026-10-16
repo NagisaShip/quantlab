@@ -164,7 +164,7 @@ function ConfigForm({ meta, cfg, setCfg, env, setEnv, compact }: {
         <Field label="标的（逗号分隔）"><input value={env.symbols} onChange={(e) => setEnv({ ...env, symbols: e.target.value })} /></Field>
         <Field label="盘口来源">
           <select value={env.source} onChange={(e) => setEnv({ ...env, source: e.target.value as ExecSource, recording_id: e.target.value === 'recording' ? env.recording_id || recs[0]?.id || '' : '' })}>
-            <option value="auto">自动（真实 1 分钟 K 线推算）</option><option value="kline">只用真实 K 线</option><option value="synthetic">合成盘口</option>
+            <option value="auto">自动（真实 1 分钟 K 线推算）</option><option value="kline">只用真实 K 线</option>
             <option value="recording" disabled={!recs.length}>录制的盘口{recs.length ? '' : '（还没有）'}</option>
           </select>
         </Field>
@@ -353,7 +353,7 @@ function Radar({ meta, notify }: { meta: ExecMeta | null; notify: PageProps['not
       <Panel title="市场雷达" subtitle="看一组标的的波动、量能、估计价差与市场状态；异常会列在上面。价差由 K 线高低价估计。" actions={<>
         <select value={universe} onChange={(e) => setUniverse(e.target.value)} aria-label="标的池">{(meta?.universes ?? [{ id: 'major10', name: '主流 10', symbols: [] }]).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}</select>
         <select value={tf} onChange={(e) => setTf(e.target.value)} aria-label="周期">{['1m', '5m', '15m', '1h'].map((t) => <option key={t}>{t}</option>)}</select>
-        <select value={source} onChange={(e) => setSource(e.target.value)} aria-label="数据"><option value="auto">自动</option><option value="exchange">只用真实</option><option value="synthetic">合成</option></select>
+        <select value={source} onChange={(e) => setSource(e.target.value)} aria-label="数据"><option value="auto">自动</option><option value="exchange">只用真实</option></select>
         <label className="pf-check"><input type="checkbox" checked={auto} onChange={(e) => setAuto(e.target.checked)} />每分钟刷新</label>
         <button className="button small" disabled={busy} onClick={load}>{busy ? '刷新中' : '刷新'}</button>
       </>}>
