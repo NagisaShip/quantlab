@@ -8,7 +8,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type Mouse
 import { lab, type LabProjectBrief } from '../../apiLab'
 import { store } from '../../components/prefs'
 import { domainUI } from './domains'
-import { appConfirm, appPrompt } from '../../components/dialog'
+import { appChoose, appConfirm, appPrompt } from '../../components/dialog'
 import { labChanged, onLabChanged, requestNewChat } from './bus'
 
 type Notify = (msg: string, error?: boolean) => void
@@ -279,7 +279,22 @@ export function Conversations({ projects, activeId, onOpen, onNew, onChanged, no
           )}
           <div className="cmp-menu-sep" />
           <button type="button" role="menuitem" className="act-item danger"
-            onClick={async () => { setMenu(null); if (await appConfirm(`删除对话「${target.title}」？已保存到策略库 / 因子库的内容不受影响。${children.get(target.id)?.length ? '\n它的分叉会保留，变成独立对话。' : ''}`)) act(async () => { await lab.remove(target.id); if (target.id === activeId) onOpen('') }, '已删除') }}>
+            onClick={async () => {
+              setMenu(null)
+              const forks = children.get(target.id)?.length ?? 0
+              const base = `删除对话「${target.title}」？已保存到策略库 / 因子库的内容不受影响。`
+              const choice = forks
+                ? await appChoose(`${base}\n它有 ${forks} 个分叉。`, [
+                  { value: 'one', label: '只删这个（分叉保留）', danger: true },
+                  { value: 'all', label: `连同 ${forks} 个分叉一起删除`, danger: true },
+                ])
+                : (await appConfirm(base)) ? 'one' : null
+              if (!choice) return
+              act(async () => {
+                const r = await lab.remove(target.id, choice === 'all')
+                if (target.id === activeId || (r.deleted ?? []).includes(activeId ?? '')) onOpen('')
+              }, choice === 'all' ? `已删除 ${forks + 1} 个对话` : '已删除')
+            }}>
             <span className="act-text"><span className="act-label">删除</span></span>
           </button>
         </div>

@@ -775,3 +775,21 @@ button.goal-chips:hover .goal-chip { border-color: var(--line); }
 .wf-rec.warn { color: var(--amber); }
 .stab-dist { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 8px; font-size: 12px; color: var(--muted); }
 .stab-dist b { color: var(--ink); font-family: var(--num); font-weight: 500; }
+
+/* ---------- 输入框上方的引用卡片：点开向上展开全文 ---------- */
+.quote-tray { position: relative; display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 0 6px; }
+.quote-chip { display: inline-flex; align-items: center; max-width: 320px; border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 8px; background: var(--sunken); overflow: hidden; }
+.quote-chip.on { border-color: var(--accent-line); background: var(--accent-soft); }
+.quote-chip-main { display: inline-flex; gap: 6px; align-items: center; border: 0; background: none; color: var(--ink-2); font-size: 12px; padding: 4px 8px; cursor: pointer; min-width: 0; }
+.quote-chip-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.quote-chip-x { border: 0; background: none; color: var(--muted); padding: 4px 8px; cursor: pointer; }
+.quote-pop { position: absolute; left: 0; right: 0; bottom: calc(100% + 6px); max-height: 46vh; display: flex; flex-direction: column; background: var(--sheet); border: 1px solid var(--line); border-radius: var(--r-lg, 12px); box-shadow: var(--shadow-pop, 0 12px 32px rgba(0, 0, 0, .14)); z-index: 30; transform-origin: bottom center; }
+.quote-pop-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); font-size: 12.5px; }
+.quote-pop-body { padding: 8px 12px; overflow-y: auto; }
+.quote-picker { display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 14px; min-height: 420px; }
+.quote-picker-list { display: flex; flex-direction: column; gap: 8px; }
+.quote-msg-list { display: flex; flex-direction: column; gap: 6px; max-height: 420px; overflow-y: auto; }
+.quote-msg { display: flex; gap: 8px; text-align: left; border: 1px solid var(--line); border-radius: var(--r); background: var(--sheet); padding: 8px 10px; color: var(--ink-2); font-size: 12.5px; line-height: 1.6; cursor: pointer; }
+.quote-msg:hover { border-color: var(--accent-line); background: var(--accent-soft); }
+.quote-msg small { color: var(--muted); flex: none; }
+@media (max-width: 760px) { .quote-picker { grid-template-columns: 1fr; } }

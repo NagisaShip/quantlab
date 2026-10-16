@@ -805,11 +805,21 @@ def patch_project(pid: str, payload: ProjectPatch) -> dict:
     return {"project": _project_or_404(lab, pid)}
 
 
-@router.delete("/projects/{pid}", summary="删除策略项目（已保存的平台策略不受影响）")
-def delete_project(pid: str) -> dict:
+@router.delete("/projects/{pid}", summary="删除对话（已保存的平台策略不受影响）；cascade=true 时连同它的全部分叉一起删除")
+def delete_project(pid: str, cascade: bool = False) -> dict:
     lab = _lab_for(pid)
     _project_or_404(lab, pid)
-    return {"ok": lab.store.delete(pid)}
+    ids = [pid]
+    if cascade:
+        # 分叉的分叉也算：按 parent_id 一层层往下找
+        everything = lab.store.list()
+        frontier = {pid}
+        while frontier:
+            kids = [p["id"] for p in everything if p.get("parent_id") in frontier and p["id"] not in ids]
+            ids.extend(kids)
+            frontier = set(kids)
+    deleted = [i for i in reversed(ids) if lab.store.delete(i)]
+    return {"ok": pid in deleted, "deleted": deleted}
 
 
 @router.post("/projects/{pid}/messages", summary="发送一条消息：模型带工具协作（/回测 /解释 /团队 /迭代 为快捷指令）")

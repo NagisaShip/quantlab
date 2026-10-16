@@ -6,27 +6,55 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { inbox, NOTIFY_KIND_LABEL, since, type InboxSummary, type Notice } from '../apiCollab'
 import { QuantEyes } from './QuantBot'
 
-const POLL_MS = 30_000
+const POLL_MS = 20_000
+
+/*
+ * 角标数据全站共用一份：铃铛、头像红点、公告横幅都订阅它，只有一个轮询（有订阅者时才跑，页面隐藏时暂停）。
+ */
+let shared: InboxSummary | null = null
+const subs = new Set<(s: InboxSummary | null) => void>()
+let timer = 0
+let inflight = false
+function fetchSummary() {
+  if (document.visibilityState === 'hidden' || inflight) return
+  inflight = true
+  inbox.summary().then((s) => { shared = s; subs.forEach((f) => f(s)) }).catch(() => undefined).finally(() => { inflight = false })
+}
+const onVisible = () => fetchSummary()
+function subscribe(fn: (s: InboxSummary | null) => void) {
+  subs.add(fn)
+  if (subs.size === 1) {
+    fetchSummary()
+    timer = window.setInterval(fetchSummary, POLL_MS)
+    document.addEventListener('visibilitychange', onVisible)
+    window.addEventListener('qa:inbox-changed', onVisible)
+  }
+  return () => {
+    subs.delete(fn)
+    if (!subs.size) {
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVisible)
+      window.removeEventListener('qa:inbox-changed', onVisible)
+    }
+  }
+}
 
 export function useInboxSummary() {
-  const [sum, setSum] = useState<InboxSummary | null>(null)
-  const load = useCallback(() => {
-    if (document.visibilityState === 'hidden') return
-    inbox.summary().then(setSum).catch(() => undefined)
-  }, [])
-  useEffect(() => {
-    load()
-    const t = window.setInterval(load, POLL_MS)
-    const onVis = () => load()
-    const onPing = () => load()
-    document.addEventListener('visibilitychange', onVis)
-    window.addEventListener('qa:inbox-changed', onPing)
-    return () => { window.clearInterval(t); document.removeEventListener('visibilitychange', onVis); window.removeEventListener('qa:inbox-changed', onPing) }
-  }, [load])
-  return { sum, reload: load }
+  const [sum, setSum] = useState<InboxSummary | null>(shared)
+  useEffect(() => subscribe(setSum), [])
+  const reload = useCallback(() => fetchSummary(), [])
+  return { sum, reload }
 }
 
 export const pingInbox = () => window.dispatchEvent(new CustomEvent('qa:inbox-changed'))
+
+/** 头像右上角的红点：未读通知 + 群聊 / 私聊未读消息的总数。 */
+export function UnreadDot() {
+  const { sum } = useInboxSummary()
+  const n = (sum?.unread.total ?? 0) + (sum?.group_unread ?? 0)
+  if (!n) return null
+  return <span className="avatar-dot anim-pop" key={n} aria-label={`${n} 条未读`}>{n > 99 ? '99+' : n}</span>
+}
 
 const KIND_ICON: Record<string, string> = { mention: '@', task: '☐', group: '◎', comment: '✎', like: '▲', share: '⇪', issue: '!', announce: '📣', system: '·' }
 

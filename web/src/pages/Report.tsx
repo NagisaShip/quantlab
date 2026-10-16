@@ -7,13 +7,15 @@ import { lab, type Report } from '../apiLab'
 import { Markdown } from '../components/markdown'
 import { QuantBot } from '../components/QuantBot'
 import { EmptyState, Loading } from '../components/ui'
+import { PresenceBar, ShareToButton, usePresence } from '../components/Social'
 import type { PageProps } from './types'
 
 const day = (t: number) => new Date(t < 1e12 ? t * 1000 : t).toLocaleString('zh-CN', { hour12: false })
 
-export default function ReportPage({ arg, notify }: PageProps & { arg?: string }) {
+export default function ReportPage({ arg, notify, onNavigate }: PageProps & { arg?: string }) {
   const [path, query] = (arg || '').split('?')
   const [pid, rid] = path.split('/')
+  const others = usePresence('report', pid && rid ? `${pid}/${rid}` : undefined)
   const autoPrint = new URLSearchParams(query || '').get('print') === '1'
   const [data, setData] = useState<{ report: Report; project: { id: string; title: string; securities: string[]; timeframe: string } } | null>(null)
   const [error, setError] = useState('')
@@ -42,7 +44,9 @@ export default function ReportPage({ arg, notify }: PageProps & { arg?: string }
     <div className="rp-wrap anim-in">
       <div className="rp-actions no-print">
         <a className="button small ghost" href={`#/lab/${pid}`}>← 返回对话</a>
+        <PresenceBar others={others} />
         <span className="lab2-card-gap" />
+        <ShareToButton item={{ type: 'report', id: `${pid}/${rid}`, title: r.title }} notify={notify} onNavigate={onNavigate} />
         <button className="button small" onClick={() => navigator.clipboard?.writeText(r.markdown).then(() => notify('已复制 Markdown'))}>复制 Markdown</button>
         <button className="button small primary" onClick={exportPdf}>导出 PDF</button>
       </div>

@@ -1453,8 +1453,83 @@ def build() -> dict[str, PlatformTool]:
             {},
             t_brief,
         ),
+        PlatformTool(
+            "list_members",
+            "工作区成员",
+            "collab",
+            "按名字 / 用户名搜索工作区成员（user_id、是否在线），私聊或分享前先查。",
+            "要私聊、分享给某人或 @ 某人前",
+            "read",
+            {"q": _S("string", "搜索词，可空")},
+            t_list_members,
+        ),
+        PlatformTool(
+            "share_to",
+            "分享",
+            "collab",
+            "把平台里的内容分享到群组、私聊或策略广场。ref_type：backtest / strategy / post / project / report / link"
+            "（link 的 ref_id 是站内路由，如 factors/<id>；report 的 ref_id 是 <对话 id>/<报告 id>）。",
+            "研究者要求「发给某人 / 发到群里 / 发到广场」时",
+            "confirm",
+            {
+                "target": _S("string", "group / dm / square", enum=["group", "dm", "square"]),
+                "target_id": _S("string", "群组 id（list_groups）或成员 user_id（list_members）；广场不填"),
+                "ref_type": _S("string", "被分享内容的类型"),
+                "ref_id": _S("string", "被分享内容的 id"),
+                "title": _S("string", "标题（分享到广场时作帖子标题）"),
+                "note": _S("string", "附言 Markdown"),
+            },
+            t_share_to,
+            summary=lambda a: f"分享 {a.get('ref_type')}:{a.get('ref_id')} 到{ {'group': '群组', 'dm': '私聊', 'square': '策略广场'}.get(str(a.get('target')), a.get('target'))}",
+            required=["target", "ref_type", "ref_id"],
+            category="save",
+        ),
+        PlatformTool(
+            "notify_user",
+            "提醒研究者",
+            "collab",
+            "给当前研究者发一条站内通知（头像会出现红点），用于长任务完成、发现需要研究者决定的事。不要用来闲聊。",
+            "需要研究者注意，但对方可能不在这个页面时",
+            "read",
+            {"title": _S("string", "一句话标题"), "body": _S("string", "详情，可空"), "link": _S("string", "站内路由，可空，如 lab/<id>")},
+            t_notify_user,
+            required=["title"],
+        ),
     ]
     return {t.name: t for t in tools}
+
+
+def t_list_members(q: str = "") -> Any:
+    from ..api import routes_collab as C
+
+    return [{k: m.get(k) for k in ("user_id", "name", "username", "online")} for m in C.members(q)["members"]][:30]
+
+
+def t_share_to(
+    target: str, ref_type: str, ref_id: str, target_id: str = "", title: str = "", note: str = ""
+) -> Any:
+    from ..api import routes_collab as C
+
+    body = _call(
+        lambda: C.share_to(
+            C.ShareToIn(target=target, target_id=target_id or "", ref={"type": ref_type, "id": ref_id, "title": title},
+                        note=note or "", title=title or "")
+        )
+    )
+    if isinstance(body, dict) and body.get("ok"):
+        return {"ok": True, "link": body.get("link")}
+    return body
+
+
+def t_notify_user(title: str, body: str = "", link: str = "") -> Any:
+    from ..platform import context
+
+    ctx = context.current()
+    n = _svc().collab.notify(
+        [ctx.user_id], kind="system", title=f"QuantBot：{title}"[:200], body=body, link=link,
+        actor_id="agent", actor_name="QuantBot", workspace_id=ctx.workspace_id,
+    )
+    return {"ok": bool(n)}
 
 
 _REGISTRY: dict[str, PlatformTool] | None = None

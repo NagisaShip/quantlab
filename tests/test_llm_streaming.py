@@ -87,6 +87,28 @@ def test_openai_reasoning_models_get_reasoning_effort_and_no_temperature():
     assert "reasoning_effort" not in seen["payload"] and seen["payload"]["temperature"] == 0.2
 
 
+def test_unknown_models_try_reasoning_effort_and_drop_it_when_rejected():
+    from quant_agent.llm import providers as P
+
+    P._NO_EFFORT.clear()
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        calls.append("reasoning_effort" in body)
+        if "reasoning_effort" in body:
+            return httpx.Response(400, json={"error": {"message": "Unrecognized request argument: reasoning_effort"}})
+        return httpx.Response(200, json={"model": "x", "choices": [{"message": {"content": "ok"}}]})
+
+    p = OpenAICompatibleProvider("gw", "https://api.example.com/v1", "k", transport=httpx.MockTransport(handler))
+    assert P.openai_effort_mode("some-new-model") == "auto"
+    assert p.chat([Message(role="user", content="hi")], model="some-new-model", effort="high").content == "ok"
+    assert calls == [True, False]
+    # 记住了：之后不再带这个参数
+    p.chat([Message(role="user", content="hi")], model="some-new-model", effort="high")
+    assert calls == [True, False, False]
+
+
 def test_anthropic_adaptive_thinking_effort_and_stream():
     seen = {}
 

@@ -35,6 +35,7 @@ import { makeErrAt, RuleForm, type RuleSpec } from './rulecode/RuleForm'
 import type { PageProps } from './types'
 import { appConfirm } from '../components/dialog'
 import { EditHistory, EditorStack, ShareButton } from '../components/Share'
+import { PresenceBar, ShareToButton, usePresence } from '../components/Social'
 import { collab, type EditorMark } from '../apiCollab'
 
 type Tab = 'result' | 'logs' | 'ai' | 'params' | 'versions' | 'history' | 'editors'
@@ -352,6 +353,7 @@ export default function EditorPage({ slug, onNavigate, notify, setBusy }: PagePr
     }
   }
 
+  const presence = usePresence('strategy', strategy?.slug, dirty)
   const allErrors = [...(result?.errors ?? []), ...(runError ? [runError] : []), ...issues]
   const errLines = errorLinesFrom(allErrors)
 
@@ -373,8 +375,10 @@ export default function EditorPage({ slug, onNavigate, notify, setBusy }: PagePr
         {check && <Tag>{check.is_rule ? '规则策略' : '代码策略'}</Tag>}
         {dirty && <span className="dirty-dot" title="有未保存的修改">● 未保存</span>}
         <div className="spacer" />
+        <PresenceBar others={presence} />
         <EditorStack editors={editors} />
         <ShareButton type="strategy" id={strategy.slug} notify={notify} compact />
+        <ShareToButton item={{ type: 'strategy', id: strategy.slug, title: name }} notify={notify} onNavigate={onNavigate} />
         <button className="button small" title="版本链、克隆分支与各版本的回测" onClick={() => onNavigate(`lineage/${strategy.slug}`)}>血缘</button>
         <button className="button small" onClick={save} title="Ctrl+S">保存</button>
         <button className="button small" disabled={Boolean(running)} onClick={quickRun} title="Ctrl+Enter：用当前编辑器里的代码快速跑一遍，不进回测列表">

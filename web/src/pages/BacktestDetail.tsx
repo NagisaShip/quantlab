@@ -18,6 +18,7 @@ import { CodeView } from '../components/CodeEditor'
 import { BarChart, COLORS, LineChart, seriesColor } from '../components/charts2'
 import { Markdown } from '../components/markdown'
 import { Callout, EmptyState, Loading, Modal, Panel, Tag } from '../components/ui'
+import { ShareToButton } from '../components/Social'
 import { cumulative } from './Editor'
 import { openInLab } from '../components/handoff'
 import { backtestAskContext, useAskAIContext } from '../components/AskAI'
@@ -135,6 +136,7 @@ export default function BacktestDetailPage({ id, onNavigate, notify }: PageProps
         <Tag mono>{row?.version ?? ''}</Tag>
         <span className={`table-pill ${bt.status === 'done' ? '' : 'fail'}`}>{bt.status === 'done' ? '回测完成' : '运行有错误'}</span>
         <div className="spacer" />
+        <ShareToButton item={{ type: 'backtest', id, title: `${bt.strategy_name} 回测` }} notify={notify} onNavigate={onNavigate} />
         <button className="button small" onClick={interpret}>✦ AI 解读</button>
         {bt.code && (
           <button className="button small" title="把这次回测的代码和成绩带进 AI 研究室继续改进"

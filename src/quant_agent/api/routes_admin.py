@@ -31,7 +31,7 @@ from fastapi import APIRouter, Query
 from pydantic import BaseModel, Field
 
 from ..platform import context
-from ..platform.auth import hash_password, validate_password
+from ..platform.auth import hash_password, public_email, validate_password
 from ..platform.db import jload, now_ms
 from ..platform.errors import AppError, ErrorCode
 from ..store import Collections
@@ -187,7 +187,8 @@ def _user_row(uid: str) -> dict[str, Any]:
 
 def _user_view(r: dict[str, Any]) -> dict[str, Any]:
     return {
-        "id": r["id"], "email": r["email"], "name": r["name"], "is_admin": bool(r["is_admin"]),
+        "id": r["id"], "email": public_email(r["email"]), "username": r.get("username") or "",
+        "email_verified": bool(r.get("email_verified_at")), "name": r["name"], "is_admin": bool(r["is_admin"]),
         "is_active": bool(r["is_active"]), "created_at": r["created_at"], "last_login_at": r.get("last_login_at"),
         "banned_at": r.get("banned_at"), "banned_reason": r.get("banned_reason") or "",
     }

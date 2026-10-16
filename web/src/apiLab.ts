@@ -179,7 +179,7 @@ export interface LabView { project: LabProject; messages: LabMessage[]; context:
 
 export interface ModelOption {
   provider: string; model: string; target: string; type: string
-  ready?: boolean; effort?: 'native' | 'budget' | 'switch' | 'none'; context_window?: number
+  ready?: boolean; effort?: 'native' | 'budget' | 'switch' | 'auto' | 'none'; context_window?: number
   label?: string; request_model?: string; default_effort?: Effort | ''; inputs?: string[]
 }
 export interface EffortOption { id: Effort; label: string; hint: string }
@@ -232,7 +232,8 @@ export const lab = {
     post<LabView>('/api/lab/projects', p),
   view: (id: string, after = 0, since = 0) => get<LabView>(`/api/lab/projects/${id}?after=${after}&since=${since}`),
   update: (id: string, p: Partial<Omit<LabProject, 'goals'>> & { goals?: Partial<Goals> }) => patch<{ project: LabProject }>(`/api/lab/projects/${id}`, p),
-  remove: (id: string) => del<{ ok: boolean }>(`/api/lab/projects/${id}`),
+  /** cascade：连同它的全部分叉一起删除 */
+  remove: (id: string, cascade = false) => del<{ ok: boolean; deleted?: string[] }>(`/api/lab/projects/${id}${cascade ? '?cascade=true' : ''}`),
   send: (id: string, text: string, opts: { model?: string; effort?: Effort; suggest?: boolean; images?: { data_url: string; name?: string }[] } = {}) =>
     post<LabView>(`/api/lab/projects/${id}/messages`, { text, ...labPrefs(), ...opts }),
   /** /report：调研报告流程（列提纲 → 搜集资料 → 分析 → 生成报告） */

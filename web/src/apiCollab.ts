@@ -4,7 +4,8 @@
 import { ApiError, currentWorkspace, del, get, post, put } from './http'
 import type { LimitRule, LimitStatus } from './api2'
 
-export type RefType = 'backtest' | 'strategy' | 'code' | 'file' | 'post' | 'task' | 'project' | 'message'
+/** report：AI 研究室调研报告（id = 对话/报告）；link：站内任意页面（id 是不带 #/ 的路由） */
+export type RefType = 'backtest' | 'strategy' | 'code' | 'file' | 'post' | 'task' | 'project' | 'message' | 'report' | 'link'
 export interface Ref {
   type: RefType
   id: string
@@ -16,11 +17,14 @@ export interface Ref {
   size?: number
 }
 
-export interface Member { user_id: string; name: string; role: string; muted?: boolean }
+export interface Member { user_id: string; name: string; username?: string; role: string; muted?: boolean; online?: boolean }
 export type GroupRole = 'owner' | 'admin' | 'member'
 export interface Group {
   id: string
   name: string
+  /** dm：两人私聊 */
+  kind?: 'group' | 'dm'
+  peer?: { user_id: string; name: string } | null
   description: string
   visibility: 'open' | 'private'
   owner_id: string
@@ -163,7 +167,15 @@ const q = (o: Record<string, unknown>) => {
 }
 
 export const collab = {
-  members: () => get<{ members: Member[] }>('/api/collab/members'),
+  members: (query = '') => get<{ members: Member[] }>(`/api/collab/members${q({ q: query || undefined })}`),
+  /** 打开（没有就新建）与某位成员的私聊 */
+  dm: (user_id: string) => post<{ group: Group }>('/api/collab/dm', { user_id }),
+  /** 把任意内容分享到群组 / 私聊 / 策略广场 */
+  shareTo: (p: { target: 'group' | 'dm' | 'square'; target_id?: string; ref: Ref; note?: string; title?: string }) =>
+    post<{ ok: boolean; link: string }>('/api/collab/share-to', p),
+  /** 在线心跳：返回同时在看 / 编辑这个对象的其他成员 */
+  presence: (p: { object_type: string; object_id: string; editing?: boolean; leave?: boolean }) =>
+    post<{ others: { user_id: string; name: string; editing: boolean }[] }>('/api/collab/presence', p),
   groups: () => get<{ groups: Group[] }>('/api/collab/groups'),
   group: (id: string) => get<{ group: Group }>(`/api/collab/groups/${id}`),
   createGroup: (p: { name: string; description?: string; visibility: 'open' | 'private'; members?: string[] }) =>

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { fmtTime, v3, type LimitMetric, type LimitRule, type LimitWindow, type MemberModelPolicy, type ModelUsage, type QuotaRequest } from '../api2'
 import {
   KIND_LABEL, MODE_LABEL, RUN_STATE, v4,
-  type AuditItem, type Invite, type Me, type Member, type NetworkStatus, type Role, type Run, type RunEvent,
+  type Account, type AuditItem, type Invite, type Me, type Member, type NetworkStatus, type Role, type Run, type RunEvent,
   type TotpStatus, type UsageItem, type UsagePanel as UsagePanelData,
 } from '../api3'
 import { LimitBars, LimitEditor, METRICS, UsageSummary, WINDOWS, fmtCost, fmtTokens } from '../components/modelUsage'
@@ -43,7 +43,7 @@ export default function SettingsPage({ tab, me, onNavigate, notify, onMeChanged 
       {current === 'node' && <NodeTab notify={notify} isAdmin={isAdmin} onNavigate={onNavigate} />}
       {current === 'audit' && (isAdmin ? <AuditTab notify={notify} /> : <Callout tone="warn">只有工作区管理员可以查看审计日志。</Callout>)}
       {current === 'system' && <SystemTab notify={notify} />}
-      {current === 'account' && <AccountTab me={me} notify={notify} />}
+      {current === 'account' && <AccountTab me={me} notify={notify} onSaved={onMeChanged} />}
       {current === 'lab' && <LabPrefsTab notify={notify} />}
     </>
   )
@@ -684,16 +684,14 @@ function SystemTab({ notify }: { notify: PageProps['notify'] }) {
   )
 }
 
-function AccountTab({ me, notify }: { me: Me; notify: PageProps['notify'] }) {
+function AccountTab({ me, notify, onSaved }: { me: Me; notify: PageProps['notify']; onSaved: () => void }) {
   const [oldPw, setOld] = useState('')
   const [newPw, setNew] = useState('')
   return (
-    <div style={{ maxWidth: 460 }}>
-      <dl className="kv" style={{ marginBottom: 18 }}>
-        <dt>邮箱</dt><dd>{me.user.email}</dd>
-        <dt>名称</dt><dd>{me.user.name}</dd>
-        <dt>部署管理员</dt><dd>{me.user.is_admin ? '是（可配置模型服务）' : '否'}</dd>
-      </dl>
+    <div style={{ maxWidth: 520 }}>
+      <ProfileSection me={me} notify={notify} onSaved={onSaved} />
+      <EmailSection notify={notify} onSaved={onSaved} />
+      <h3 className="set-sub">密码</h3>
       <Field label="当前密码"><input type="password" value={oldPw} onChange={(e) => setOld(e.target.value)} /></Field>
       <div style={{ height: 10 }} />
       <Field label="新密码" hint="修改后所有会话失效，需要重新登录"><input type="password" value={newPw} onChange={(e) => setNew(e.target.value)} /></Field>
@@ -704,6 +702,98 @@ function AccountTab({ me, notify }: { me: Me; notify: PageProps['notify'] }) {
       </div>
       <TotpSection notify={notify} />
     </div>
+  )
+}
+
+/** 用户名（可用来登录）与显示名。 */
+function ProfileSection({ me, notify, onSaved }: { me: Me; notify: PageProps['notify']; onSaved: () => void }) {
+  const [username, setUsername] = useState(me.user.username || '')
+  const [name, setName] = useState(me.user.name)
+  const [busy, setBusy] = useState(false)
+  const dirty = username !== (me.user.username || '') || name !== me.user.name
+  return (
+    <>
+      <h3 className="set-sub">账号</h3>
+      <div className="field-row">
+        <Field label="用户名" hint="可以用用户名或已绑定的邮箱登录"><input value={username} maxLength={32} onChange={(e) => setUsername(e.target.value.trim())} /></Field>
+        <Field label="显示名称"><input value={name} maxLength={40} onChange={(e) => setName(e.target.value)} /></Field>
+      </div>
+      <dl className="kv" style={{ margin: '10px 0' }}>
+        <dt>部署管理员</dt><dd>{me.user.is_admin ? '是（可配置模型服务）' : '否'}</dd>
+      </dl>
+      <div className="button-row">
+        <button className="button primary" disabled={!dirty || busy || username.length < 2} onClick={async () => {
+          setBusy(true)
+          try { await v4.updateAccount({ username, name }); notify('已保存'); onSaved() } catch (e) { notify((e as Error).message, true) } finally { setBusy(false) }
+        }}>保存</button>
+      </div>
+    </>
+  )
+}
+
+/** 绑定 / 更换邮箱：先发验证码到邮箱，填对后才算绑定成功。 */
+function EmailSection({ notify, onSaved }: { notify: PageProps['notify']; onSaved: () => void }) {
+  const [acc, setAcc] = useState<Account | null>(null)
+  const [email, setEmail] = useState('')
+  const [code, setCode] = useState('')
+  const [sentTo, setSentTo] = useState('')
+  const [wait, setWait] = useState(0)
+  const [busy, setBusy] = useState(false)
+  useEffect(() => { v4.account().then((r) => setAcc(r.account)).catch(() => undefined) }, [])
+  useEffect(() => {
+    if (wait <= 0) return
+    const t = window.setTimeout(() => setWait(wait - 1), 1000)
+    return () => window.clearTimeout(t)
+  }, [wait])
+  const send = async () => {
+    setBusy(true)
+    try {
+      const r = await v4.sendEmailCode(email)
+      setSentTo(r.email); setWait(r.cooldown); setCode('')
+      notify(r.via === 'outbox' ? '验证码已写入服务器 outbox（开发模式，未真正发信）' : `验证码已发送到 ${r.email}`)
+    } catch (e) {
+      const err = e as Error & { details?: { retry_after?: number } }
+      if (err.details?.retry_after) setWait(err.details.retry_after)
+      notify(err.message, true)
+    } finally { setBusy(false) }
+  }
+  const verify = async () => {
+    setBusy(true)
+    try {
+      const r = await v4.verifyEmail(sentTo, code)
+      setAcc(r.account); setSentTo(''); setEmail(''); setCode('')
+      notify('邮箱绑定成功，之后可以用它登录'); onSaved()
+    } catch (e) { notify((e as Error).message, true) } finally { setBusy(false) }
+  }
+  return (
+    <>
+      <h3 className="set-sub">邮箱</h3>
+      <p className="hint" style={{ marginTop: 0 }}>
+        {acc?.email
+          ? <>当前绑定：<b>{acc.email}</b> {acc.email_verified ? <Tag tone="ok">已验证</Tag> : <Tag tone="warn">未验证</Tag>}</>
+          : '还没有绑定邮箱。绑定后可以用邮箱登录、接收通知。'}
+      </p>
+      <div className="field-row">
+        <Field label={acc?.email ? '更换为' : '邮箱地址'}>
+          <input type="email" value={email} placeholder="name@example.com" onChange={(e) => { setEmail(e.target.value); if (sentTo && e.target.value !== sentTo) setSentTo('') }} />
+        </Field>
+        <div style={{ alignSelf: 'flex-end' }}>
+          <button className="button" disabled={busy || wait > 0 || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)} onClick={send}>
+            {wait > 0 ? `${wait} 秒后可重发` : sentTo ? '重新发送' : '发送验证码'}
+          </button>
+        </div>
+      </div>
+      {sentTo && (
+        <div className="field-row anim-in" style={{ marginTop: 10 }}>
+          <Field label={`发到 ${sentTo} 的 6 位验证码`} hint="10 分钟内有效">
+            <input inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))} />
+          </Field>
+          <div style={{ alignSelf: 'flex-end' }}>
+            <button className="button primary" disabled={busy || code.length !== 6} onClick={verify}>验证并绑定</button>
+          </div>
+        </div>
+      )}
+    </>
   )
 }
 

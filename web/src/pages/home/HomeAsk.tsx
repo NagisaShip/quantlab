@@ -6,9 +6,9 @@ import { directBars } from '../../marketDirect'
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useDraft } from '../../components/draft'
 import { get } from '../../http'
-import { lab, labPrefs, type LabKind } from '../../apiLab'
+import { lab, labPrefs, type Effort, type LabKind, type LabMeta } from '../../apiLab'
 import { models } from '../../apiModels'
-import { Composer, type SlashCommand } from '../../components/chat/Composer'
+import { Composer, ModelMenu, type SlashCommand } from '../../components/chat/Composer'
 import { Sparkline } from '../../components/charts2'
 import { QuantBot, QuantEyes, useBotFlash, viewFromSignal, type BotView } from '../../components/QuantBot'
 import { store } from '../../components/prefs'
@@ -57,6 +57,11 @@ export function HomeAsk({ onNavigate, notify, brief }: { onNavigate: (k: string)
     return types.map((t, i) => ({ type: t, text: pickExamples(t, 1, (seed * (i + 3)) % 1)[0] })).slice(0, 5)
   }, [seed])
   const { type } = parse(text)
+  // 模型与思考程度：和 AI 研究室新对话共用同一份偏好（这台设备）
+  const [meta, setMeta] = useState<LabMeta | null>(null)
+  const [model, setModel] = useState(() => store.get('qa.lab.model', ''))
+  const [effort, setEffort] = useState<Effort>(() => store.get('qa.lab.effort', 'medium') as Effort)
+  useEffect(() => { lab.meta().then(setMeta).catch(() => undefined) }, [])
   const commands: SlashCommand[] = [
     ...TYPE_CMDS.map((c) => ({ cmd: c.cmd, group: '研究类型', arg: '[想法]', help: `${c.help}（也可用 ${c.alias[0]}）` })),
     ...EXTRA_CMDS,
@@ -76,7 +81,7 @@ export function HomeAsk({ onNavigate, notify, brief }: { onNavigate: (k: string)
       const v = await lab.create({
         kind, idea: body.replace(/^\/\S+\s*/, '') || longFiles[0]?.title || '长文本', market_auto: true, workflow, suggest: store.get('qa.lab.suggest', '1') === '1',
         ...(longFiles.length ? { pins: longFiles.map((f) => ({ kind: 'file' as const, title: f.title, text: f.text })) } : {}),
-        model: store.get('qa.lab.model', ''), effort: (store.get('qa.lab.effort', 'medium') as 'medium'), ...labPrefs(),
+        model, effort, ...labPrefs(),
       })
       const id = v.project.id
       if (workflow === 'report') await lab.report(id, body)
@@ -106,7 +111,15 @@ export function HomeAsk({ onNavigate, notify, brief }: { onNavigate: (k: string)
         onLongText={async (f) => { const text = await f.text(); setLongFiles((x) => [...x, { title: f.name, text }]) }}
         placeholder="和 AI 聊聊你的想法；输入 / 选择 预测、策略、因子、完整流程、调研报告…"
         above={type ? <div className="cmp-attached on"><span>{RESEARCH_TYPES.find((x) => x.id === type)?.label} · {RESEARCH_TYPES.find((x) => x.id === type)?.hint}</span></div> : undefined}
+        right={meta ? (
+          <ModelMenu models={meta.models} value={model} defaultModel={meta.default_model} effort={effort} efforts={meta.efforts}
+            onModel={(m) => { setModel(m); store.set('qa.lab.model', m) }}
+            onEffort={(e) => { setEffort(e); store.set('qa.lab.effort', e) }} />
+        ) : undefined}
         left={<div className="home-types">
+          {/* 不指定研究类型时就是「自动」：AI 按内容判断该用哪些工具 */}
+          <button type="button" className={`chip${!type ? ' on' : ''}`} title={RESEARCH_TYPES.find((x) => x.id === 'auto')?.hint}
+            onClick={() => { fx.fire('tap'); setText(parse(text).rest) }}>自动</button>
           {TYPE_CMDS.slice(0, 7).map((c) => (
             <button key={c.cmd} type="button" className={`chip${type === c.type ? ' on' : ''}`} title={c.help}
               onClick={() => { fx.fire('tap'); setText(`${c.cmd} ${parse(text).rest}`) }}>{RESEARCH_TYPES.find((x) => x.id === c.type)?.label}</button>

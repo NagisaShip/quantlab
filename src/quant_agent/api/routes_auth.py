@@ -17,14 +17,19 @@ router = APIRouter(prefix="/api", tags=["账号与工作区"])
 
 
 class RegisterIn(BaseModel):
-    email: str = Field(..., max_length=200)
+    """用户名与邮箱至少填一个；注册时填的邮箱不算已验证，之后在账号设置里用验证码绑定。"""
+
+    username: str = Field("", max_length=32)
+    email: str = Field("", max_length=200)
     name: str = Field("", max_length=40)
     password: str = Field(..., min_length=8, max_length=200)
     invite_code: str | None = None
 
 
 class LoginIn(BaseModel):
-    email: str
+    #: 用户名或邮箱（字段名沿用 email，兼容旧客户端；也可以用 login）
+    email: str = Field("", max_length=200)
+    login: str = Field("", max_length=200)
     password: str
     # 已启用 2FA 的账号必须带上验证码（或恢复码）；不带则返回 401 + details.totp_required
     totp_code: str | None = Field(None, max_length=64)
@@ -108,10 +113,14 @@ def auth_status() -> dict:
 def register(payload: RegisterIn, request: Request, response: Response) -> dict:
     s = get_services()
     res = s.auth.register(
-        email=payload.email, name=payload.name, password=payload.password, invite_code=payload.invite_code
+        email=payload.email,
+        username=payload.username,
+        name=payload.name,
+        password=payload.password,
+        invite_code=payload.invite_code,
     )
     token, _ = s.auth.login(
-        email=payload.email,
+        email=payload.email or payload.username,
         password=payload.password,
         ip=request.client.host if request.client else "",
         user_agent=request.headers.get("user-agent", ""),
@@ -138,8 +147,11 @@ def login(payload: LoginIn, request: Request, response: Response) -> dict:
     密码每次都会被重新校验，口令限速同样生效。）
     """
     s = get_services()
+    ident = (payload.login or payload.email).strip()
+    if not ident:
+        raise AppError(ErrorCode.INVALID_PARAMETER, "请输入用户名或邮箱")
     token, user = s.auth.login(
-        email=payload.email,
+        email=ident,
         password=payload.password,
         ip=request.client.host if request.client else "",
         user_agent=request.headers.get("user-agent", ""),
@@ -155,7 +167,59 @@ def login(payload: LoginIn, request: Request, response: Response) -> dict:
         user_id=user["id"],
         details={"mfa": bool(payload.totp_code)},
     )
-    return {"ok": True, "token": token, "user": {"id": user["id"], "email": user["email"], "name": user["name"]}}
+    return {"ok": True, "token": token, "user": {"id": user["id"], **_public(user)}}
+
+
+def _public(user: dict) -> dict:
+    from ..platform.auth import public_email
+
+    return {"email": public_email(user.get("email")), "username": user.get("username") or "", "name": user.get("name")}
+
+
+class AccountIn(BaseModel):
+    username: str | None = Field(None, max_length=32)
+    name: str | None = Field(None, max_length=40)
+
+
+class EmailCodeIn(BaseModel):
+    email: str = Field(..., max_length=200)
+
+
+class EmailVerifyIn(BaseModel):
+    email: str = Field(..., max_length=200)
+    code: str = Field(..., max_length=12)
+
+
+@router.get("/auth/account", summary="账号资料：用户名、显示名、绑定的邮箱与是否已验证")
+def get_account() -> dict:
+    return {"account": get_services().auth.account(context.current().user_id)}
+
+
+@router.put("/auth/account", summary="修改用户名 / 显示名")
+def put_account(payload: AccountIn) -> dict:
+    ctx = context.current()
+    s = get_services()
+    acc = s.auth.update_account(ctx.user_id, username=payload.username, name=payload.name)
+    s.audit.record("user.account", object_type="user", object_id=ctx.user_id, details=payload.model_dump(exclude_none=True))
+    return {"account": acc}
+
+
+@router.post("/auth/email/code", summary="给要绑定的邮箱发验证码（60 秒冷却，每小时 5 次）")
+def send_email_code(payload: EmailCodeIn) -> dict:
+    ctx = context.current()
+    s = get_services()
+    out = s.auth.send_email_code(ctx.user_id, payload.email)
+    s.audit.record("user.email_code", object_type="user", object_id=ctx.user_id, details={"email": out["email"]})
+    return out
+
+
+@router.post("/auth/email/verify", summary="填验证码完成绑定（之后可以用这个邮箱登录）")
+def verify_email(payload: EmailVerifyIn) -> dict:
+    ctx = context.current()
+    s = get_services()
+    acc = s.auth.verify_email_code(ctx.user_id, payload.email, payload.code)
+    s.audit.record("user.email_bind", object_type="user", object_id=ctx.user_id, details={"email": acc["email"]})
+    return {"account": acc}
 
 
 @router.get("/auth/totp")
@@ -236,8 +300,16 @@ def me() -> dict:
     s = get_services()
     workspaces = s.auth.memberships(ctx.user_id)
     current = s.auth.workspace(ctx.workspace_id) if ctx.workspace_id else None
+    acc = s.auth.account(ctx.user_id)
     return {
-        "user": {"id": ctx.user_id, "email": ctx.user_email, "name": ctx.user_name, "is_admin": ctx.is_admin},
+        "user": {
+            "id": ctx.user_id,
+            "email": acc["email"],
+            "username": acc["username"],
+            "email_verified": acc["email_verified"],
+            "name": ctx.user_name,
+            "is_admin": ctx.is_admin,
+        },
         "workspaces": workspaces,
         "workspace": current
         and {

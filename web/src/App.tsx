@@ -28,7 +28,7 @@ import BacktestDetailPage from './pages/BacktestDetail'
 import BacktestListPage from './pages/BacktestList'
 import OptimizePage from './pages/Optimize'
 import PaperPage from './pages/Paper'
-import CommunityPage, { PostPage } from './pages/Community'
+import CommunityPage, { ComposePage, PostPage } from './pages/Community'
 import ApiDocsPage from './pages/ApiDocs'
 import BrandPage from './pages/Brand'
 import LoginPage from './pages/Login'
@@ -45,7 +45,7 @@ import InboxPage from './pages/Inbox'
 import IssuesPage, { NewIssueModal } from './pages/Issues'
 import AdminPage from './pages/Admin'
 import LineagePage from './pages/LineagePage'
-import { InboxBell, PlatformBanner } from './components/Inbox'
+import { InboxBell, PlatformBanner, UnreadDot } from './components/Inbox'
 import { v4, type Me } from './api3'
 import { ApiError, currentWorkspace, setWorkspace } from './http'
 import { Loading } from './components/ui'
@@ -299,14 +299,27 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
   const [toast, setToast] = useState<{ message: string; error?: boolean } | null>(null)
   const [busy, setBusy] = useState<{ title: string; note?: string } | null>(null)
 
+  // 从 AI 对话里点链接跳到别的页面（回测、策略、报告……）时记下来源对话，目标页顶部显示「返回对话」
+  const [returnTo, setReturnTo] = useState<{ route: string; title: string } | null>(() => {
+    try { return JSON.parse(sessionStorage.getItem('qa.returnTo') || 'null') } catch { return null }
+  })
   useEffect(() => {
-    const onHash = () => {
-      setRoute(routeFromHash())
+    const onHash = (e: HashChangeEvent) => {
+      const next = routeFromHash()
+      const prev = (e.oldURL.split('#')[1] || '').replace(/^\/?/, '')
+      if (next.page === 'lab') setReturnTo(null)
+      else if (/^lab\/[\w-]+/.test(prev) && !SETTINGS_PAGES.has(next.page)) {
+        setReturnTo({ route: prev.split('?')[0], title: document.title.replace(/ · QuantLab$/, '') })
+      }
+      setRoute(next)
       window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior })
     }
     window.addEventListener('hashchange', onHash)
     return () => window.removeEventListener('hashchange', onHash)
   }, [])
+  useEffect(() => {
+    try { if (returnTo) sessionStorage.setItem('qa.returnTo', JSON.stringify(returnTo)); else sessionStorage.removeItem('qa.returnTo') } catch { /* 私密模式 */ }
+  }, [returnTo])
 
   const lastMain = useRef('home')
   useEffect(() => {
@@ -438,7 +451,10 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
       case 'lineage':
         return <LineagePage arg={arg || undefined} {...pageProps} />
       case 'post':
-        return <PostPage key={arg} id={arg} {...pageProps} />
+        // #/post/new/<类型> 发帖，#/post/<id>/edit 编辑：都是完整页面
+        return arg.startsWith('new') || arg.endsWith('/edit')
+          ? <ComposePage key={arg} arg={arg} {...pageProps} />
+          : <PostPage key={arg} id={arg} {...pageProps} />
       case 'docs':
         return <ApiDocsPage {...pageProps} />
       case 'brand':
@@ -588,7 +604,15 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
         <PlatformBanner />
         <main className={FULL_BLEED.has(page) ? 'full' : undefined}>
           {me.workspace?.role === 'reviewer' && <div className="callout warn" style={{ marginBottom: 14 }}>你在此工作区是<b>审阅者</b>：可以查看全部内容，但不能修改或发起运行。</div>}
-          {showHead && <PageHead key={nav} title={NAV_LABEL[nav] ?? PAGE_TITLES[page]} purpose={PURPOSE[page]} page={page} onSlot={setSlot} onNavigate={go} />}
+          {returnTo && page !== 'lab' && (
+            <div className="return-pill anim-in">
+              <button type="button" className="return-pill-go" onClick={() => go(returnTo.route)} title="回到刚才的 AI 对话，滚动位置与草稿都保留">
+                <span aria-hidden>←</span> 返回对话{returnTo.title ? `「${returnTo.title.slice(0, 24)}」` : ''}
+              </button>
+              <button type="button" className="return-pill-x" aria-label="不再提示" onClick={() => setReturnTo(null)}>×</button>
+            </div>
+          )}
+          {showHead && <PageHead key={nav}title={NAV_LABEL[nav] ?? PAGE_TITLES[page]} purpose={PURPOSE[page]} page={page} onSlot={setSlot} onNavigate={go} />}
           {hub && <HubTabs tabs={hub} page={page} />}
           <PageSlot.Provider value={showHead ? slot : null}>
             <div className="page-enter" key={page}><PageErrorBoundary resetKey={`${page}/${route.arg}`}>{render()}</PageErrorBoundary></div>
@@ -628,7 +652,7 @@ function AccountMenu({ me, reachable, llmReady, onNavigate, notify }: { me: Me; 
     <div className="user-row acct" ref={ref}>
       {reporting && <NewIssueModal onClose={() => setReporting(false)} notify={notify} onDone={(id) => { setReporting(false); onNavigate(`issues/${id}`) }} />}
       <button className="acct-trigger" onClick={() => setOpen(!open)} aria-expanded={open} aria-haspopup="menu">
-        <span className="avatar">{name.slice(0, 1).toUpperCase()}</span>
+        <span className="avatar">{name.slice(0, 1).toUpperCase()}<UnreadDot /></span>
         <div className="acct-text">
           <div>{name}</div>
           <small>{ws?.name ?? '未选择工作区'} · {ROLE_NAME[ws?.role ?? 'member']}</small>
@@ -638,7 +662,7 @@ function AccountMenu({ me, reachable, llmReady, onNavigate, notify }: { me: Me; 
       {open && (
         <div className="ws-menu acct-menu" role="menu">
           <div className="acct-head">
-            <b>{me.user.email}</b>
+            <b>{me.user.email || (me.user.username ? `@${me.user.username}` : me.user.name)}</b>
             <small>{me.user.is_admin ? '部署管理员 · ' : ''}{reachable.length ? `${reachable.join(' / ')} 行情已连接` : '行情未接入'}</small>
           </div>
           <hr />

@@ -32,6 +32,7 @@ VISIBILITY = ("private", "workspace", "group")
 SHARE_TYPES = ("strategy", "project")
 NOTIFY_KINDS = {
     "mention": "@我的",
+    "dm": "私聊",
     "task": "任务",
     "group": "群组",
     "comment": "评论与回复",
@@ -86,7 +87,8 @@ _MAGIC = {
     "application/zip": (b"PK\x03\x04", b"PK\x05\x06"),
 }
 
-REF_TYPES = ("backtest", "strategy", "code", "file", "post", "task", "project", "message")
+#: link：平台内任意页面（报告、因子、模型……）的分享卡片，id 是站内路由（不带 #/）
+REF_TYPES = ("backtest", "strategy", "code", "file", "post", "task", "project", "message", "report", "link")
 MENTION_ALL = ("所有人", "all", "everyone")
 
 
@@ -386,9 +388,14 @@ class CollabService:
             )
             or 0
         )
+        dm = settings.get("dm") or []
+        peer = next((u for u in dm if u != user_id), None) if dm else None
         return {
             "id": row["id"],
             "name": row["name"],
+            # 私聊：两人的私密群组，界面显示对方名字
+            "kind": "dm" if dm else "group",
+            "peer": {"user_id": peer, "name": self.names([peer]).get(peer, "?")} if peer else None,
             "description": row["description"],
             "visibility": row["visibility"],
             "owner_id": row["owner_id"],
@@ -416,7 +423,8 @@ class CollabService:
         out = [
             self._view_group(r, user_id)
             for r in rows
-            if r["id"] in mine or r["visibility"] == "open" or ws_admin
+            # 私聊只给两位当事人看，工作区管理员也不列出
+            if r["id"] in mine or ((r["visibility"] == "open" or ws_admin) and '"dm"' not in (r.get("settings") or ""))
         ]
         out.sort(key=lambda g: (g["my_role"] is None, -((g["last_message"] or {}).get("at") or g["created_at"])))
         return out
@@ -426,6 +434,8 @@ class CollabService:
         if row["workspace_id"] != ws:
             raise _missing("群组不存在")
         role = self.group_role(gid, user_id)
+        if role is None and '"dm"' in (row.get("settings") or ""):
+            raise _missing("群组不存在")  # 私聊只有两位当事人能看，管理员也不行
         if role is None and row["visibility"] != "open" and not ws_admin:
             raise _deny("这是私密群组，需要群主或群管理员邀请")
         view = self._view_group(row, user_id)
@@ -470,6 +480,34 @@ class CollabService:
                     )
         self._system_message(gid, ws, f"群组「{name}」已创建")
         return gid
+
+    def open_dm(self, ws: str, user_id: str, peer_id: str) -> str:
+        """和某位工作区成员的私聊：两人的私密群组，同一对人只有一个（id 由两人 id 决定）。"""
+        if peer_id == user_id:
+            raise _err("不能和自己私聊")
+        if peer_id not in set(self.ws_member_ids(ws)):
+            raise _missing("对方不在这个工作区")
+        a, b = sorted((user_id, peer_id))
+        gid = "dm" + hashlib.sha256(f"{ws}|{a}|{b}".encode()).hexdigest()[:14]
+        if self.db.fetchone("SELECT id FROM collab_groups WHERE id=?", (gid,)):
+            self.db.execute("UPDATE collab_groups SET archived_at=NULL WHERE id=?", (gid,))
+            return gid
+        now = now_ms()
+        with self.db.tx() as t:
+            t.execute(
+                "INSERT INTO collab_groups (id, workspace_id, name, description, visibility, owner_id, settings, "
+                "created_at) VALUES (?,?,?,?,?,?,?,?)",
+                (gid, ws, f"私聊 {gid[-6:]}", "", "private", a, jdump({"dm": [a, b]}), now),
+            )
+            for uid in (a, b):
+                t.execute(
+                    "INSERT INTO collab_group_members (group_id, user_id, role, joined_at) VALUES (?,?,?,?)",
+                    (gid, uid, "member", now),
+                )
+        return gid
+
+    def is_dm(self, gid: str) -> bool:
+        return bool((self.group_settings(gid) or {}).get("dm"))
 
     def require_group_admin(self, gid: str, user_id: str, *, ws_admin: bool = False) -> dict[str, Any]:
         row = self._group_row(gid)
@@ -517,6 +555,8 @@ class CollabService:
 
     def add_members(self, gid: str, user_ids: list[str], *, by: str, by_name: str) -> list[str]:
         row = self._group_row(gid)
+        if '"dm"' in (row.get("settings") or ""):
+            raise _err("私聊不能拉人，可以新建一个群组")
         ws_members = set(self.ws_member_ids(row["workspace_id"]))
         existing = set(self.group_member_ids(gid))
         added = [u for u in dict.fromkeys(user_ids) if u in ws_members and u not in existing]
@@ -628,8 +668,24 @@ class CollabService:
             t.execute(
                 "UPDATE collab_group_members SET last_read_id=? WHERE group_id=? AND user_id=?", (mid, gid, author_id)
             )
-        # @提及：@所有人 / @成员名
         members = self.group_member_ids(gid)
+        if '"dm"' in (row.get("settings") or ""):
+            # 私聊：每条消息都提醒对方（头像红点与通知中心）
+            self.notify(
+                [u for u in members if u != author_id],
+                kind="dm",
+                title=f"{author_name} 给你发了私信",
+                body=body[:200] or "[引用]",
+                link=f"groups/{gid}",
+                actor_id=author_id,
+                actor_name=author_name,
+                source_type="message",
+                source_id=str(mid),
+                workspace_id=row["workspace_id"],
+                group_id=gid,
+            )
+            return self.message(mid)
+        # @提及：@所有人 / @成员名
         names = self.names(members)
         mentioned: set[str] = set()
         if any(f"@{w}" in body for w in MENTION_ALL):

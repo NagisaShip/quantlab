@@ -14,7 +14,8 @@ import {
 import { CodeView } from '../components/CodeEditor'
 import { COLORS, LineChart, Sparkline } from '../components/charts2'
 import { Markdown } from '../components/markdown'
-import { Callout, EmptyState, Heading, Loading, Modal, Panel, Tag } from '../components/ui'
+import { Callout, EmptyState, Heading, Loading, Panel, Tag } from '../components/ui'
+import { PresenceBar, ShareToButton, usePresence } from '../components/Social'
 import type { PageProps } from './types'
 import { appConfirm } from '../components/dialog'
 import { RichBody, RichEditor, SourceBadge } from '../components/RichText'
@@ -47,7 +48,6 @@ export default function CommunityPage({ onNavigate, notify }: PageProps) {
   const [data, setData] = useState<{ items: PostSummary[]; total: number; viewer: string } | null>(null)
   const [tags, setTags] = useState<{ tag: string; count: number }[]>([])
   const [stats, setStats] = useState<{ ranking: { author: string; posts: number; likes: number; clones: number; score: number }[]; counts: Record<string, number> } | null>(null)
-  const [compose, setCompose] = useState<null | 'article' | 'question' | 'strategy'>(null)
   const [profile, setProfile] = useState<{ name: string; bio: string } | null>(null)
   const [editProfile, setEditProfile] = useState(false)
 
@@ -68,9 +68,9 @@ export default function CommunityPage({ onNavigate, notify }: PageProps) {
     <>
       <Heading title="策略广场" actions={
         <div className="button-row">
-          <button className="button" onClick={() => setCompose('question')}>提问题</button>
-          <button className="button" onClick={() => setCompose('article')}>写文章</button>
-          <button className="button primary" onClick={() => setCompose('strategy')}><span>＋</span>分享策略</button>
+          <button className="button" onClick={() => onNavigate('post/new/question')}>提问题</button>
+          <button className="button" onClick={() => onNavigate('post/new/article')}>写文章</button>
+          <button className="button primary" onClick={() => onNavigate('post/new/strategy')}><span>＋</span>分享策略</button>
         </div>
       } />
 
@@ -138,7 +138,6 @@ export default function CommunityPage({ onNavigate, notify }: PageProps) {
         </aside>
       </div>
 
-      {compose && <ComposeModal initialType={compose} onClose={() => setCompose(null)} onDone={(id) => onNavigate(`post/${id}`)} notify={notify} />}
     </>
   )
 }
@@ -204,95 +203,139 @@ function ProfileForm({ profile, onSaved, notify }: { profile: { name: string; bi
   )
 }
 
-/* ---------------- 发帖 ---------------- */
-export function ComposeModal({ initialType, onClose, onDone, notify, presetBacktest }: {
-  initialType: 'article' | 'question' | 'strategy'
-  onClose: () => void
-  onDone: (id: string) => void
-  notify: PageProps['notify']
-  presetBacktest?: string
-}) {
-  const [type, setType] = useState(initialType)
+/* ---------------- 发帖 / 编辑：完整页面（#/post/new/<类型>、#/post/<id>/edit） ---------------- */
+type PostType = 'article' | 'question' | 'strategy'
+const TYPE_LABEL: Record<PostType, string> = { strategy: '策略分享', article: '文章', question: '问答' }
+
+export function ComposePage({ arg, onNavigate, notify }: PageProps & { arg: string }) {
+  const parts = arg.split('/')
+  const editId = parts[1] === 'edit' ? parts[0] : ''
+  const [type, setType] = useState<PostType>((['article', 'question', 'strategy'] as PostType[]).find((t) => t === parts[1]) ?? 'article')
+  const [orig, setOrig] = useState<Post | null>(null)
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
   const [refs, setRefs] = useState<Ref[]>([])
   const [tags, setTags] = useState<string[]>([])
+  const [tagInput, setTagInput] = useState('')
   const [suggested, setSuggested] = useState<string[]>([])
   const [strategies, setStrategies] = useState<StrategyFile[]>([])
   const [backtests, setBacktests] = useState<BacktestRow[]>([])
   const [slug, setSlug] = useState('')
-  const [btId, setBtId] = useState(presetBacktest ?? '')
+  const [btId, setBtId] = useState(() => new URLSearchParams(window.location.hash.split('?')[1] || '').get('bt') ?? '')
   const [review, setReview] = useState(true)
   const [busy, setBusy] = useState(false)
+  const others = usePresence('post', editId || undefined, true)
 
   useEffect(() => {
     v3.tags().then((r) => setSuggested(r.suggested)).catch(() => undefined)
+    if (editId) {
+      v3.post(editId).then((r) => {
+        setOrig(r.post); setTitle(r.post.title); setBody(r.post.body); setRefs(r.post.refs ?? []); setTags(r.post.tags)
+      }).catch((e) => notify((e as Error).message, true))
+      return
+    }
     v3.strategies().then((r) => setStrategies(r.strategies)).catch(() => undefined)
     v3.backtests(undefined, 100).then((r) => setBacktests(r.backtests)).catch(() => undefined)
-  }, [])
+  }, [editId, notify])
   const btOptions = useMemo(() => (slug ? backtests.filter((b) => b.slug === slug) : backtests), [backtests, slug])
+  const addTag = (t: string) => { const v = t.trim().slice(0, 12); if (v && !tags.includes(v)) setTags([...tags, v].slice(0, 8)) }
 
   const submit = async () => {
     setBusy(true)
     try {
+      if (editId) {
+        await v3.updatePost(editId, { title, body, refs, tags })
+        try { localStorage.removeItem(`qa.draft.post.${editId}`) } catch { /* 私密模式 */ }
+        notify('已保存')
+        onNavigate(`post/${editId}`)
+        return
+      }
       const r = await v3.createPost({
-        type,
-        title,
-        body,
-        tags,
+        type, title, body, tags, refs,
         strategy_slug: type === 'strategy' && slug ? slug : null,
         backtest_id: type === 'strategy' && btId ? btId : null,
         ai_review: type === 'strategy' && review,
-        refs,
       })
       try { localStorage.removeItem('qa.draft.post.new') } catch { /* 私密模式 */ }
       notify('已发布')
-      onDone(r.post.id)
+      onNavigate(`post/${r.post.id}`)
     } catch (e) {
       notify((e as Error).message, true)
     } finally {
       setBusy(false)
     }
   }
+  const back = () => onNavigate(editId ? `post/${editId}` : 'square')
+  const canSubmit = !busy && title.trim().length >= 2 && (editId || type !== 'strategy' || !!slug || !!btId)
 
   return (
-    <Modal title="发帖" onClose={onClose} width={1040}
-      footer={<><span className="hint">以你的名义发布，标记为「成员」；Agent 代发的帖子会单独标注</span><span className="spacer" /><button className="button" onClick={onClose}>取消</button><button className="button primary" disabled={busy || title.trim().length < 2 || (type === 'strategy' && !slug && !btId)} onClick={submit}>{busy ? '发布中…' : '发布'}</button></>}>
-      <div className="segments" style={{ display: 'inline-flex', marginBottom: 12 }}>
-        {(['strategy', 'article', 'question'] as const).map((t) => (
-          <button key={t} aria-pressed={type === t} onClick={() => setType(t)}>{t === 'strategy' ? '策略分享' : t === 'article' ? '文章' : '问答'}</button>
-        ))}
+    <div className="compose-page anim-in">
+      <div className="editor-toolbar">
+        <button className="button small" onClick={back}>← {editId ? '返回帖子' : '策略广场'}</button>
+        <h1 className="toolbar-title">{editId ? '编辑帖子' : `发帖 · ${TYPE_LABEL[type]}`}</h1>
+        <PresenceBar others={others} />
+        <div className="spacer" />
+        <span className="hint">以你的名义发布，标记为「成员」；Agent 代发的帖子会单独标注</span>
+        <button className="button small" onClick={back}>取消</button>
+        <button className="button small primary" disabled={!canSubmit} onClick={submit}>{busy ? '提交中…' : editId ? '保存' : '发布'}</button>
       </div>
-      {(
-        <>
-          <label>标题<input value={title} maxLength={120} onChange={(e) => setTitle(e.target.value)} placeholder={type === 'question' ? '一句话说清你的问题' : '标题'} /></label>
-          {type === 'strategy' && (
-            <div className="form-grid" style={{ marginTop: 10 }}>
-              <label>附加策略（冻结当前版本代码）
+      <div className="compose-body">
+        <div className="compose-main">
+          <input className="compose-title" value={title} maxLength={120} autoFocus={!editId} onChange={(e) => setTitle(e.target.value)}
+            placeholder={type === 'question' ? '一句话说清你的问题' : '标题'} aria-label="标题" />
+          <RichEditor value={body} onChange={setBody} refs={refs} onRefs={setRefs} rows={22} draftKey={editId ? `post.${editId}` : 'post.new'} notify={notify}
+            initialMode="split"
+            placeholder={type === 'strategy' ? '思路、参数、回测条件、局限……\n\n可以用「＋ 引用」插入回测结果、策略、代码片段和文件，或者直接粘贴截图。支持完整 Markdown、公式、Mermaid、<details> 折叠与 HTML 表格。' : '正文（Markdown）。可以引用回测、策略、代码与文件，或直接粘贴截图。支持公式、Mermaid、<details> 折叠与 HTML 表格。'} />
+        </div>
+        <aside className="compose-side">
+          {!editId && (
+            <Panel title="类型">
+              <div className="segments" style={{ display: 'flex' }}>
+                {(['strategy', 'article', 'question'] as const).map((t) => (
+                  <button key={t} aria-pressed={type === t} onClick={() => setType(t)}>{TYPE_LABEL[t]}</button>
+                ))}
+              </div>
+            </Panel>
+          )}
+          {!editId && type === 'strategy' && (
+            <Panel title="附加策略与回测">
+              <label>策略（冻结当前版本代码）
                 <select value={slug} onChange={(e) => { setSlug(e.target.value); setBtId('') }}>
                   <option value="">— 选择策略 —</option>
                   {strategies.map((s) => <option key={s.slug} value={s.slug}>{s.name}（{s.version}）</option>)}
                 </select>
               </label>
-              <label>附加回测（推荐）
+              <label style={{ marginTop: 10 }}>回测（推荐）
                 <select value={btId} onChange={(e) => setBtId(e.target.value)}>
                   <option value="">— 不附回测 —</option>
                   {btOptions.map((b) => <option key={b.id} value={b.id}>{b.strategy_name} · {fmtPct(b.metrics.total_return, 1, true)} · {ago(b.created_at)}</option>)}
                 </select>
               </label>
-            </div>
+              <label className="check" style={{ marginTop: 10 }}><input type="checkbox" checked={review} onChange={(e) => setReview(e.target.checked)} /> 发布后请 AI 审稿人公开挑刺</label>
+            </Panel>
           )}
-          <div className="chip-row" style={{ marginTop: 10 }}>
-            {suggested.map((t) => <button key={t} className={`chip${tags.includes(t) ? ' on' : ''}`} onClick={() => setTags(tags.includes(t) ? tags.filter((x) => x !== t) : [...tags, t].slice(0, 8))}>{t}</button>)}
-          </div>
-          <div style={{ marginTop: 10 }}>
-            <RichEditor value={body} onChange={setBody} refs={refs} onRefs={setRefs} rows={14} draftKey="post.new" notify={notify}
-              placeholder={type === 'strategy' ? '思路、参数、回测条件、局限……\n\n可以用「＋ 引用」插入回测结果、策略、代码片段和文件，或者直接粘贴截图。' : '正文（Markdown）。可以引用回测、策略、代码与文件，或直接粘贴截图。'} />
-          </div>
-          {type === 'strategy' && <label className="check"><input type="checkbox" checked={review} onChange={(e) => setReview(e.target.checked)} /> 发布后请 AI 审稿人公开挑刺</label>}
-        </>
-      )}
-    </Modal>
+          {editId && orig && (orig.strategy || orig.backtest) && <Callout>附带的策略代码与回测快照不可修改，读者看到的始终是发布时那一份。</Callout>}
+          <Panel title="标签" subtitle="最多 8 个">
+            <div className="chip-row">
+              {tags.map((t) => <button key={t} className="chip on" onClick={() => setTags(tags.filter((x) => x !== t))}>{t} ×</button>)}
+            </div>
+            <input value={tagInput} maxLength={12} placeholder="输入标签后回车" style={{ marginTop: 8 }}
+              onChange={(e) => setTagInput(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) { e.preventDefault(); addTag(tagInput); setTagInput('') } }} />
+            <div className="chip-row" style={{ marginTop: 8 }}>
+              {suggested.filter((t) => !tags.includes(t)).map((t) => <button key={t} className="chip" onClick={() => addTag(t)}>{t}</button>)}
+            </div>
+          </Panel>
+          <Panel title="写作提示">
+            <ul className="hint compose-tips">
+              <li>用 #、##、### 分清层级，读者可以快速跳读</li>
+              <li>指标定义写成公式：{'$\\frac{\\mu}{\\sigma}\\sqrt{N}$'} 这样的 LaTeX</li>
+              <li>流程用 ```mermaid，长附录放进 &lt;details&gt; 折叠</li>
+              <li>引用回测会冻结当时的指标，之后改动不影响帖子</li>
+            </ul>
+          </Panel>
+        </aside>
+      </div>
+    </div>
   )
 }
 
@@ -304,7 +347,6 @@ export function PostPage({ id, onNavigate, notify }: PageProps & { id: string })
   const [text, setText] = useState('')
   const [replyTo, setReplyTo] = useState<CommentRow | null>(null)
   const [reviewing, setReviewing] = useState(false)
-  const [editing, setEditing] = useState(false)
 
   const load = useCallback(() => {
     v3.post(id).then(setData).catch((e) => setError(e.message))
@@ -380,14 +422,19 @@ export function PostPage({ id, onNavigate, notify }: PageProps & { id: string })
         <button className={`button small${post.favorited ? ' on' : ''}`} onClick={() => act(() => v3.favoritePost(id))}>{post.favorited ? '★ 已收藏' : '☆ 收藏'} {post.favorite_count}</button>
         {post.strategy && <button className="button small primary" onClick={clone}>⎘ 克隆策略</button>}
         {post.strategy && <button className="button small" disabled={reviewing} onClick={review}>{reviewing ? '审稿中…' : '✦ AI 审稿'}</button>}
-        <button className="button small" onClick={() => act(() => v3.featurePost(id))}>{post.featured ? '取消精华' : '设为精华'}</button>
-        <button className="button small" onClick={() => act(() => v3.pinPost(id))}>{post.pinned ? '取消置顶' : '置顶'}</button>
+        <ShareToButton item={{ type: 'post', id, title: post.title }} notify={notify} onNavigate={onNavigate} />
+        {data.can_moderate && <button className="button small" onClick={() => act(() => v3.featurePost(id))}>{post.featured ? '取消精华' : '设为精华'}</button>}
+        {data.can_moderate && <button className="button small" onClick={() => act(() => v3.pinPost(id))}>{post.pinned ? '取消置顶' : '置顶'}</button>}
         {!mine && <button className={`button small${data.post_muted ? ' on' : ''}`} title="屏蔽后，这篇帖子的新回复、点赞不再通知你"
           onClick={() => act(() => (data.post_muted ? inbox.unmute('post', id) : inbox.mute('post', id, post.title)), data.post_muted ? '已恢复通知' : '已屏蔽这篇帖子的通知')}>{data.post_muted ? '🔕 已屏蔽' : '屏蔽通知'}</button>}
         {!mine && post.author_id && post.author_id !== 'system' && post.source?.kind !== 'agent' && <button className="button small" title="不再看到此人的帖子与通知"
           onClick={() => act(() => (data.author_muted ? inbox.unmute('user', post.author_id!) : inbox.mute('user', post.author_id!, post.author)), data.author_muted ? `已取消屏蔽 ${post.author}` : `已屏蔽 ${post.author}`)}>{data.author_muted ? `取消屏蔽 ${post.author}` : `屏蔽 ${post.author}`}</button>}
-        {mine && <button className="button small" onClick={() => setEditing(true)}>编辑</button>}
-        {mine && <button className="button small danger" onClick={async () => { if (await appConfirm('删除这篇帖子？')) { await v3.deletePost(id); onNavigate('square') } }}>删除</button>}
+        {mine && <button className="button small" onClick={() => onNavigate(`post/${id}/edit`)}>编辑</button>}
+        {(mine || data.can_moderate) && <button className="button small danger" title={mine ? undefined : '工作区管理员删除他人的帖子'} onClick={async () => {
+          if (await appConfirm(mine ? '删除这篇帖子？' : `以工作区管理员身份删除「${post.author}」的这篇帖子？此操作会记入审计日志。`, { danger: true })) {
+            try { await v3.deletePost(id); notify('已删除'); onNavigate('square') } catch (e) { notify((e as Error).message, true) }
+          }
+        }}>删除</button>}
       </div>
 
       <div className="community-layout">
@@ -475,27 +522,6 @@ export function PostPage({ id, onNavigate, notify }: PageProps & { id: string })
         </aside>
       </div>
 
-      {editing && <EditPostModal post={post} onClose={() => setEditing(false)} onSaved={() => { setEditing(false); load() }} notify={notify} />}
     </div>
-  )
-}
-
-function EditPostModal({ post, onClose, onSaved, notify }: { post: Post; onClose: () => void; onSaved: () => void; notify: PageProps['notify'] }) {
-  const [title, setTitle] = useState(post.title)
-  const [body, setBody] = useState(post.body)
-  const [refs, setRefs] = useState<Ref[]>(post.refs ?? [])
-  const [tags, setTags] = useState(post.tags.join(', '))
-  return (
-    <Modal title="编辑帖子" onClose={onClose} width={1040}
-      footer={<><button className="button" onClick={onClose}>取消</button><button className="button primary" onClick={async () => {
-        try { await v3.updatePost(post.id, { title, body, refs, tags: tags.split(/[,，]+/).map((t) => t.trim()).filter(Boolean) }); try { localStorage.removeItem(`qa.draft.post.${post.id}`) } catch { /* */ } onSaved() } catch (e) { notify((e as Error).message, true) }
-      }}>保存</button></>}>
-      <Callout>附带的策略代码与回测快照不可修改，这是为了让读者看到的始终是发布时那一份。</Callout>
-      <label>标题<input value={title} onChange={(e) => setTitle(e.target.value)} /></label>
-      <label style={{ marginTop: 10 }}>标签（逗号分隔）<input value={tags} onChange={(e) => setTags(e.target.value)} /></label>
-      <div style={{ marginTop: 10 }}>
-        <RichEditor value={body} onChange={setBody} refs={refs} onRefs={setRefs} rows={14} draftKey={`post.${post.id}`} notify={notify} />
-      </div>
-    </Modal>
   )
 }

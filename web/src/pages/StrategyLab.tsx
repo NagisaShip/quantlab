@@ -33,6 +33,8 @@ import { rd } from '../apiRd'
 import type { PageProps } from './types'
 import { appConfirm, appPrompt } from '../components/dialog'
 import { ShareButton } from '../components/Share'
+import { PresenceBar, ShareToButton, ShareToModal, usePresence } from '../components/Social'
+import { QuotePicker, QuoteTray, quotePrefix, type Quote } from '../components/chat/Quotes'
 
 export const SYMBOL_PICKS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT', 'DOGE/USDT', 'ADA/USDT', 'AVAX/USDT', 'LINK/USDT', 'TON/USDT']
 /** 设置 · 模型 里的「AI 生成简短建议」开关（本机偏好，默认开） */
@@ -116,6 +118,8 @@ interface PlusOpts {
   saveLabel: string
   saveHint?: string
   onModels: () => void
+  /** 引用其他对话或其中某条 AI 回答（新对话页面没有） */
+  onQuote?: () => void
   auto: ReactNode
 }
 
@@ -123,6 +127,7 @@ function labPlusItems(o: PlusOpts): ActionItem[] {
   const run = !!o.running
   return [
     { label: '添加文件或照片', icon: Icons.attach, hint: o.fileHint, onClick: o.onFiles },
+    ...(o.onQuote ? [{ label: '引用对话或消息', icon: Icons.pin, hint: '引用其他对话、或其中某条 AI 回答', onClick: o.onQuote }] : []),
     { label: '斜杠命令', icon: Icons.slash, hint: '/backtest、/goal、/plan、/discuss…', onClick: o.onSlash },
     { label: '分步计划', icon: Icons.loop, hint: '/plan：AI 列计划并一步步做完，达标前不停', onClick: o.onPlan, disabled: !!o.running },
     {
@@ -167,6 +172,8 @@ interface CmdOpts {
   mode: ArgHandler
   report: ArgHandler
   parallel: ArgHandler
+  share?: Handler
+  quote?: Handler
 }
 
 /** 没有处理函数的命令（新对话里还用不了）置灰，并注明「开始对话后可用」。 */
@@ -193,6 +200,8 @@ function labCommands(o: CmdOpts): SlashCommand[] {
     c('/explain', '协作', o.ui ? `解释当前${o.ui.noun}的逻辑与风险` : '逐段解释当前策略', o.explain),
     c('/team', '协作', o.ui ? '召集研究小组评审' : '召集团队评审', o.team, { arg: '[议题]' }),
     c('/discuss', '协作', '团队讨论：多个角色依次发言、相互质疑，最后汇总（发言以气泡显示在对话里）', o.discuss, { arg: '[议题]' }),
+    c('/share', '协作', '把这个对话分享到群组、私聊或策略广场', o.share, { disabled: !o.share }),
+    c('/quote', '协作', '引用其他对话或其中某条 AI 回答', o.quote, { disabled: !o.quote }),
     ...(o.ui ? [c('/crew', '协作', o.executorTeam ? '自动迭代改为单个 AI 执行' : '自动迭代改为研究小组执行', o.crew)] : []),
     c('/pin', '上下文', '钉一段材料到上下文', o.pin, { arg: '[内容]', disabled: !o.pin }),
     c('/compact', '上下文', '把较早的对话压缩成摘要', o.compact, { disabled: !o.compact || run || !!o.compacting }),
@@ -656,10 +665,13 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
     }
     setInput('')
     stick.current = true
-    if (!imgs.length) { await act(() => lab.send(id, t, { suggest: suggestOn() })); return }
+    // 引用：拼成 Markdown 引用块放在消息前面（整个对话只给 id，AI 自己用 read_conversation 读）
+    const quoted = quotes.length ? quotePrefix(quotes, id) + t : t
+    if (quotes.length) setQuotes([])
+    if (!imgs.length) { await act(() => lab.send(id, quoted, { suggest: suggestOn() })); return }
     setAttachments([])
     try {
-      await lab.send(id, t, { suggest: suggestOn(), images: imgs.map((a) => ({ data_url: a.url, name: a.name })) })
+      await lab.send(id, quoted, { suggest: suggestOn(), images: imgs.map((a) => ({ data_url: a.url, name: a.name })) })
       await pull()
       follow()
     } catch (e) {
@@ -724,6 +736,14 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const panelSpec = useMemo(() => (project ? projectSpec(project) : null), [project?.updated_at, project?.id])
+  const [quotes, setQuotes] = useState<Quote[]>([])
+  const [quotePicking, setQuotePicking] = useState(false)
+  const [sharing, setSharing] = useState(false)
+  const addQuote = (q: Quote) => { setQuotes((prev) => (prev.some((x) => x.key === q.key) ? prev : [...prev, q].slice(-6))); setQuotePicking(false) }
+  // 多人协作：谁也在看这个对话；有人在输入（草稿非空）时显示为「正在编辑」
+  const presence = usePresence('project', id, !!input.trim())
+  // 浏览器标题用对话名：从对话跳到其他页面时，「返回对话」能写出是哪个对话
+  useEffect(() => { if (project?.title) document.title = `${project.title} · QuantLab` }, [project?.title])
 
   if (!project || !panelSpec) return <section className="lab2-main"><Loading label="正在打开项目" /></section>
 
@@ -783,6 +803,8 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
     mode: (a) => (PERMISSION_ALIAS[a.toLowerCase()] ? setPermission(PERMISSION_ALIAS[a.toLowerCase()]) : notify('用法：/mode auto | manual | edits | plan | bypass', true)),
     report: (a) => { stick.current = true; act(() => lab.report(id, a)) },
     parallel: (a) => send(`/parallel ${a}`.trim()),
+    share: () => setSharing(true),
+    quote: () => setQuotePicking(true),
   })
   const plusItems = labPlusItems({
     ui, running,
@@ -791,6 +813,7 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
     executorTeam: project.executor === 'team', onExecutor: toggleCrew,
     onDiscuss: () => startDiscussion(''), onTeam: () => send('/team'), onNight: () => queueNight(''),
     onPin: () => openPanel('context'), onSave: noCode ? undefined : saveOut, saveLabel, saveHint: noCode ? '有代码后可用 · /save' : '/save',
+    onQuote: () => setQuotePicking(true),
     onModels: () => onNavigate('models'),
     auto: <AutoIterateRow rounds={roundsNow} disabled={running} needsGoal={!hasGoal} onSetGoal={() => setGoalOpen({ initial: projectSpec(project) })}
       onRounds={(n) => { setRounds(n); lab.update(id, { max_rounds: n }).catch(() => undefined) }} onStart={startAuto} />,
@@ -816,6 +839,7 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
     onFork: forkAt,
     onPin: (m) => act(async () => { await lab.pin(id, { kind: 'note', title: m.content.replace(/\s+/g, ' ').slice(0, 24), text: m.content.slice(0, 4000) }); notify('已钉进上下文') }),
     onCopy: (m) => { navigator.clipboard?.writeText(m.content).then(() => notify('已复制'), () => notify('复制失败', true)) },
+    onQuote: (m) => addQuote({ key: `m:${id}:${m.seq}`, pid: id, title: project.title, seq: m.seq, text: m.content }),
     onRenderErrors: (m, errors) => { stick.current = true; lab.renderErrors(id, m.seq, errors).then(() => pull(false)).catch(() => undefined) },
   }
   askRef.current = (text) => { if (running) notify('AI 正在处理，等这一轮结束再点'); else send(text) }
@@ -845,7 +869,9 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
           <MarketSwitcher symbols={project.securities} timeframe={project.timeframe} disabled={running} multi
             onChange={(securities, timeframe) => { patch({ securities, timeframe }); notify(`标的改为 ${securities.join(', ')} · ${timeframe}`) }}
             notify={notify} />
+          <PresenceBar others={presence} />
           <ShareButton type="project" id={id} notify={notify} compact />
+          <ShareToButton item={{ type: 'project', id, title: project.title }} notify={notify} onNavigate={onNavigate} />
           <button type="button" className={`lab2-sessbtn${panel ? ' on' : ''}`} aria-pressed={!!panel} onClick={() => openPanel(panel ? null : 'code')}
             title="会话栏：更改、迭代、上下文、目标">
             <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" aria-hidden><rect x="2" y="2.5" width="12" height="11" rx="2" /><path d="M10 2.5v11" /></svg>
@@ -887,7 +913,8 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
             commands={commands} placeholder={running ? '正在处理，可随时停止' : ui ? ui.replyPlaceholder : '回复…'}
             hasAttachments={attachments.length > 0}
             onPasteFiles={(files) => onFiles(files)}
-            above={(goalOpen || (running && project.job?.kind === 'autopilot') || attachments.length) ? (<>
+            above={(goalOpen || (running && project.job?.kind === 'autopilot') || attachments.length || quotes.length) ? (<>
+              <QuoteTray quotes={quotes} onRemove={(key) => setQuotes((prev) => prev.filter((q) => q.key !== key))} />
               {attachments.length > 0 && (
                 <AttachTray items={attachments} warning={imageBlock}
                   onRemove={(key) => setAttachments((prev) => prev.filter((a) => a.key !== key))} />
@@ -956,6 +983,8 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
         </aside>
       )}
 
+      {quotePicking && <QuotePicker currentId={id} onPick={addQuote} onClose={() => setQuotePicking(false)} />}
+      {sharing && <ShareToModal item={{ type: 'project', id, title: project.title }} notify={notify} onNavigate={onNavigate} onClose={() => setSharing(false)} />}
       {editorOpen && (
         <Modal title={<>{fileNameOf(project.kind)} · v{project.current_v}{project.kind && project.kind !== 'strategy' && project.code && (
           <span style={{ marginLeft: 12, fontWeight: 400 }}><PythonCodeButton kind={project.kind as PyKind} artifact={project.code} name={project.title} /></span>)}</>}
@@ -1050,6 +1079,7 @@ interface MessageActions {
   onFork: (m: LabMessage) => void
   onPin: (m: LabMessage) => void
   onCopy: (m: LabMessage) => void
+  onQuote: (m: LabMessage) => void
   onRenderErrors: (m: LabMessage, errors: RenderError[]) => void
 }
 
@@ -1092,6 +1122,7 @@ const MI = {
   fork: <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden><circle cx="4.5" cy="3.5" r="1.5" /><circle cx="11.5" cy="3.5" r="1.5" /><circle cx="8" cy="12.5" r="1.5" /><path d="M4.5 5v1.5c0 1.4 1 2.2 2.3 2.6L8 9.5M11.5 5v1.5c0 1.4-1 2.2-2.3 2.6L8 9.5V11" /></svg>,
   copy: <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" aria-hidden><rect x="5" y="5" width="8.5" height="8.5" rx="1.6" /><path d="M11 5V3.6c0-.6-.5-1.1-1.1-1.1H3.6c-.6 0-1.1.5-1.1 1.1v6.3c0 .6.5 1.1 1.1 1.1H5" /></svg>,
   pin: <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M9.8 2.5 13.5 6.2 11 7.4 8.6 9.8 8.2 12.4 3.6 7.8 6.2 7.4 8.6 5Z" /><path d="m5.8 10.2-3.3 3.3" /></svg>,
+  quote: <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M3 9.5c0-2.5 1-4.2 3-5M3 9.5h2.6v3H3zM9 9.5c0-2.5 1-4.2 3-5M9 9.5h2.6v3H9z" /></svg>,
 }
 
 function MsgBar({ m, items, align }: { m: LabMessage; items: [keyof typeof MI, string, () => void, boolean?][]; align: 'left' | 'right' }) {
@@ -1181,6 +1212,7 @@ function MessageView({ m, project, meta, active, actions, onDecide, onOpenBackte
           {!d.streaming && m.content && (
             <MsgBar m={m} align="left" items={[
               ['copy', '复制', () => actions.onCopy(m)],
+              ['quote', '引用到输入框', () => actions.onQuote(m)],
               ['fork', '从这里分叉', () => actions.onFork(m)],
               ['pin', '钉进上下文', () => actions.onPin(m)],
             ]} />

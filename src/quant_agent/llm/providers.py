@@ -49,12 +49,36 @@ _OPENAI_REASONING = re.compile(r"^(o\d|gpt-5)", re.I)
 
 
 def openai_effort_mode(model: str, base_url: str = "") -> str:
-    """native：发 reasoning_effort；switch：DeepSeek 在 chat / reasoner 之间切换；none：不支持。"""
+    """native：发 reasoning_effort；switch：DeepSeek 在 chat / reasoner 之间切换；
+    auto：认不出的模型（网关转发的新模型等）——先带 reasoning_effort 试，服务商不接受就去掉重发并记住。"""
     if _OPENAI_REASONING.match(model):
         return "native"
+    if _OPENAI_PLAIN.match(model):
+        return "none"  # 明确不支持思考的老模型，不白发一次请求
     if "deepseek" in model.lower() or "deepseek" in base_url.lower():
         return "switch"
-    return "none"
+    return "auto"
+
+
+_OPENAI_PLAIN = re.compile(r"^(gpt-4|gpt-3\.5|chatgpt-4o|text-|davinci|babbage)", re.I)
+
+
+#: 明确拒绝过 reasoning_effort 的（服务商, 模型）：之后不再发这个参数
+_NO_EFFORT: set[tuple[str, str]] = set()
+
+
+def _rejects_effort(e: httpx.HTTPError) -> bool:
+    resp = getattr(e, "response", None)
+    if resp is None or resp.status_code not in (400, 422):
+        return False
+    try:
+        text = resp.text
+    except Exception:  # 流式响应可能还没读
+        try:
+            text = resp.read().decode("utf-8", "ignore")
+        except Exception:
+            return False
+    return "reasoning" in text.lower() or "unrecognized" in text.lower() or "unknown param" in text.lower()
 
 
 class OpenAICompatibleProvider:
@@ -97,17 +121,38 @@ class OpenAICompatibleProvider:
         on_delta: Callable[[str, str], None] | None = None,
     ) -> ChatResult:
         payload: dict[str, Any] = {"model": model, "messages": self._messages(messages)}
-        if effort and openai_effort_mode(model) == "native":
+        mode = openai_effort_mode(model, self.base_url)
+        # DeepSeek 等「换模型调思考」的服务商：网关上的混合思考模型（如 v4 系列）也可能认 reasoning_effort，同样先试
+        if mode == "switch":
+            mode = "auto"
+        try_effort = bool(effort) and (
+            mode == "native" or (mode == "auto" and (self.name, model) not in _NO_EFFORT)
+        )
+        if try_effort:
             payload["reasoning_effort"] = {"low": "low", "medium": "medium", "high": "high", "max": "high"}.get(
-                effort, "medium"
+                effort or "", "medium"
             )
-        elif not _OPENAI_REASONING.match(model):
+        if not _OPENAI_REASONING.match(model):
             payload["temperature"] = temperature  # o 系列 / gpt-5 只接受默认温度
         if max_tokens:
             payload["max_tokens"] = max_tokens
         if tools:
             payload["tools"] = [t.schema() for t in tools]
             payload["tool_choice"] = "auto"
+        try:
+            return self._send(payload, model, stream, on_delta)
+        except LLMError as exc:
+            # 认不出的模型带了 reasoning_effort 被拒：去掉重发一次，并记住这个模型不支持
+            if mode == "auto" and "reasoning_effort" in payload and getattr(exc, "rejects_effort", False):
+                _NO_EFFORT.add((self.name, model))
+                payload.pop("reasoning_effort", None)
+                return self._send(payload, model, stream, on_delta)
+            raise
+
+    def _send(
+        self, payload: dict[str, Any], model: str, stream: bool, on_delta: Callable[[str, str], None] | None
+    ) -> ChatResult:
+        payload = dict(payload)
         streaming = bool(on_delta) or stream
         if streaming:
             payload["stream"] = True
@@ -136,7 +181,9 @@ class OpenAICompatibleProvider:
             )
             resp.raise_for_status()
         except httpx.HTTPError as e:  # 网络/限流/超时统一包装（标出能否重试）
-            raise http_error(self.name, e) from e
+            err = http_error(self.name, e)
+            err.rejects_effort = "reasoning_effort" in payload and _rejects_effort(e)  # type: ignore[attr-defined]
+            raise err from e
         return self._parse(resp, model, None)
 
     def _parse(self, resp: httpx.Response, model: str, on_delta) -> ChatResult:

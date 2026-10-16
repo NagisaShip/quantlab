@@ -60,8 +60,8 @@ export function RichBody({ text, refs = [], compact, attachmentsTitle = '附件�
   )
 }
 
-const REF_LABEL: Record<string, string> = { backtest: '回测', strategy: '策略', code: '代码', file: '文件', post: '帖子', task: '任务', project: '研究项目', message: '消息' }
-const REF_GLYPH: Record<string, string> = { backtest: '↗', strategy: '⌗', code: '{}', file: '⎙', post: '✎', task: '☐', project: '✦', message: '“' }
+const REF_LABEL: Record<string, string> = { backtest: '回测', strategy: '策略', code: '代码', file: '文件', post: '帖子', task: '任务', project: '研究对话', message: '消息', report: '调研报告', link: '页面' }
+const REF_GLYPH: Record<string, string> = { backtest: '↗', strategy: '⌗', code: '{}', file: '⎙', post: '✎', task: '☐', project: '✦', message: '“', report: '▤', link: '⇱' }
 
 export function RefCard({ r, small, onRemove }: { r: Ref; small?: boolean; onRemove?: () => void }) {
   const s = r.summary || {}
@@ -84,7 +84,8 @@ export function RefCard({ r, small, onRemove }: { r: Ref; small?: boolean; onRem
     )
   }
   const href = r.type === 'backtest' ? `#/backtest/${r.id}` : r.type === 'strategy' ? `#/editor/${r.id}` : r.type === 'post' ? `#/post/${r.id}`
-    : r.type === 'file' ? uploadUrl(r.id) : r.type === 'project' ? `#/lab/${r.id}` : r.type === 'task' ? '#/groups/tasks' : undefined
+    : r.type === 'file' ? uploadUrl(r.id) : r.type === 'project' ? `#/lab/${r.id}` : r.type === 'task' ? '#/groups/tasks'
+      : r.type === 'report' ? `#/report/${r.id}` : r.type === 'link' && /^[a-z][\w\-./:]*$/.test(r.id) ? `#/${r.id}` : undefined
   const body = (
     <>
       <div className="ref-head">
@@ -107,6 +108,7 @@ export function RefCard({ r, small, onRemove }: { r: Ref; small?: boolean; onRem
         <div className="ref-metrics"><span>{s.securities} {s.timeframe}</span><span>版本 <b className="mono">{s.version}</b></span><span>代码 <b className="mono">{s.code_sha256}</b></span></div>
       )}
       {r.type === 'task' && s.status && <div className="ref-metrics"><span>{s.status}</span><span>{s.assignee || '未指派'}</span></div>}
+      {r.type === 'report' && s.project && !small && <div className="ref-metrics"><span>来自对话「{s.project}」</span></div>}
       {r.type === 'file' && <div className="ref-metrics"><span>{r.mime}</span>{r.size ? <span>{fmtSize(r.size)}</span> : null}</div>}
     </>
   )
@@ -192,13 +194,15 @@ export interface RichEditorProps {
   footer?: ReactNode
   notify?: (m: string, error?: boolean) => void
   minimalToolbar?: boolean
+  /** 打开时的视图：编辑 / 分屏（左写右看）/ 预览 */
+  initialMode?: ViewMode
 }
 
 export function RichEditor({
-  value, onChange, refs, onRefs, placeholder, rows = 12, compact, onSubmit, draftKey, mentions, autoFocus, footer, notify, minimalToolbar,
+  value, onChange, refs, onRefs, placeholder, rows = 12, compact, onSubmit, draftKey, mentions, autoFocus, footer, notify, minimalToolbar, initialMode = 'edit',
 }: RichEditorProps) {
   const ta = useRef<HTMLTextAreaElement>(null)
-  const [mode, setMode] = useState<ViewMode>('edit')
+  const [mode, setMode] = useState<ViewMode>(initialMode)
   const [picker, setPicker] = useState<PickType | null>(null)
   const [snippet, setSnippet] = useState(false)
   const [uploading, setUploading] = useState(0)

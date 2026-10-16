@@ -346,7 +346,8 @@ class ModelRouter:
         return [model_name]
 
     def effort_mode(self, target: str) -> str:
-        """给界面用：这个模型的思考努力程度怎么生效（native / budget / switch / none）。"""
+        """给界面用：这个模型的思考努力程度怎么生效（native / budget / switch / auto / none）。
+        auto：认不出的模型先带 reasoning_effort 试，服务商不接受就自动去掉——界面上照样可以调。"""
         provider_name, _, model_name = target.partition("/")
         pc = self.config.providers.get(provider_name)
         if pc is None:
@@ -356,7 +357,7 @@ class ModelRouter:
             return anthropic_effort_mode(model_name)
         mode = openai_effort_mode(model_name, pc.base_url)
         if mode == "switch" and not any("reason" in m or m.endswith("-r1") for m in pc.models):
-            return "none"
+            return "auto"
         return mode
 
     def context_window_for(self, target: str) -> int:

@@ -426,3 +426,45 @@ tr.row-muted td { opacity: .62; }
 .inbox-pop, .share-pop { animation: m-menu var(--dur-2) var(--ease-out) backwards; }
 .inbox-head b { white-space: nowrap; }
 .inbox-toggle { white-space: nowrap; }
+
+/* 侧栏头像右上角：未读通知 + 群聊 / 私聊未读的总数 */
+.avatar { position: relative; }
+.avatar-dot { position: absolute; top: -5px; right: -7px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--danger); color: #fff; font-size: 10px; font-weight: 700; line-height: 16px; text-align: center; box-shadow: 0 0 0 2px var(--side, var(--sheet)); pointer-events: none; }
+
+/* ---------- 成员选择器（新建群组、邀请、私聊、分享） ---------- */
+.mpick { display: flex; flex-direction: column; gap: 8px; }
+.mpick-picked { gap: 6px; }
+.mpick-list { display: flex; flex-direction: column; gap: 2px; max-height: 260px; overflow-y: auto; border: 1px solid var(--line); border-radius: var(--r); padding: 4px; background: var(--sheet); }
+.mpick-item { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: calc(var(--r) - 2px); background: none; border: 0; text-align: left; color: var(--ink); cursor: pointer; transition: background var(--dur-1, .12s); }
+.mpick-item:hover { background: var(--sunken); }
+.mpick-item.on { background: var(--accent-soft); }
+.mpick-name { display: flex; flex-direction: column; min-width: 0; flex: 1; line-height: 1.3; }
+.mpick-name small { color: var(--muted); font-size: 11.5px; }
+.mpick-check { color: var(--accent); font-weight: 700; }
+.ed-av { position: relative; }
+.online-dot { position: absolute; right: -1px; bottom: -1px; width: 8px; height: 8px; border-radius: 50%; background: var(--up, #1a9e5a); box-shadow: 0 0 0 2px var(--sheet); }
+.grp-av.dm { border-radius: 50%; }
+
+/* ---------- 分享到 ---------- */
+.share-to-btn { display: inline-flex; align-items: center; gap: 5px; }
+.share-to-item .ref-card { margin: 0; }
+
+/* ---------- 在线状态 ---------- */
+.presence-bar { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); }
+.presence-bar .ed-av { margin-left: -4px; box-shadow: 0 0 0 2px var(--sheet); }
+.presence-bar .ed-av:first-child { margin-left: 0; }
+.presence-bar .ed-av.editing { background: var(--accent); color: var(--primary-ink, #fff); animation: m-pulse 2s var(--ease, ease) infinite; }
+.presence-bar small { margin-left: 4px; }
+@keyframes m-pulse { 0%, 100% { box-shadow: 0 0 0 2px var(--sheet), 0 0 0 3px transparent; } 50% { box-shadow: 0 0 0 2px var(--sheet), 0 0 0 5px var(--accent-soft); } }
+
+/* ---------- 发帖 / 编辑帖子：完整页面 ---------- */
+.compose-page { display: flex; flex-direction: column; gap: 14px; }
+.compose-body { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 18px; align-items: start; }
+.compose-main { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.compose-title { font-size: 22px; font-weight: 650; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; padding: 8px 2px; background: transparent; color: var(--ink); }
+.compose-title:focus { outline: none; border-bottom-color: var(--accent); box-shadow: none; }
+.compose-side { display: flex; flex-direction: column; gap: 12px; position: sticky; top: 12px; }
+.compose-tips { margin: 0 0 8px; padding-left: 18px; line-height: 1.8; }
+.compose-page .rich-input textarea { min-height: 52vh; }
+.compose-page .rich-preview { max-height: none; min-height: 52vh; }
+@media (max-width: 960px) { .compose-body { grid-template-columns: 1fr; } .compose-side { position: static; } }

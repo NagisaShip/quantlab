@@ -125,3 +125,9 @@ main { max-width: var(--page-max, 1480px); }
   .topbar .status-chip { font-size: 0; gap: 0; padding: 0 8px; min-width: 26px; }
   .topbar .status-chip > *:not(i):not(.dot):not(svg) { display: none; }
 }
+
+/* 从 AI 对话跳到其他页面后，顶部的「返回对话」 */
+.return-pill { display: inline-flex; align-items: center; margin: 0 0 12px; border: 1px solid var(--accent-line); background: var(--accent-soft); border-radius: 999px; overflow: hidden; }
+.return-pill-go { border: 0; background: none; color: var(--accent); font-weight: 600; font-size: 12.5px; padding: 5px 12px; cursor: pointer; }
+.return-pill-go:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.return-pill-x { border: 0; border-left: 1px solid var(--accent-line); background: none; color: var(--muted); padding: 5px 9px; cursor: pointer; }

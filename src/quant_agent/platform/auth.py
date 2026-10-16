@@ -16,6 +16,7 @@ import base64
 import hashlib
 import hmac
 import os
+import re
 import secrets
 import threading
 import time
@@ -69,6 +70,23 @@ def verify_password(password: str, encoded: str) -> bool:
 
 def _token_hash(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+#: 只用用户名注册的账号，email 列写 <id>@unbound.invalid（保留域名，永远收不到信）
+UNBOUND_DOMAIN = "@unbound.invalid"
+_USERNAME_RE = re.compile(r"^[A-Za-z0-9_.\-一-鿿]{2,32}$")
+
+
+def normalize_username(raw: str) -> str:
+    name = (raw or "").strip()
+    if not _USERNAME_RE.match(name) or name.startswith((".", "-")):
+        raise AppError(ErrorCode.INVALID_PARAMETER, "用户名 2–32 个字符，只能用字母、数字、中文、下划线、点和短横线，且不能含 @")
+    return name
+
+
+def public_email(email: str | None) -> str:
+    """对外显示的邮箱：占位地址显示为空（未绑定）。"""
+    return "" if not email or email.endswith(UNBOUND_DOMAIN) else email
 
 
 def validate_password(password: str) -> None:
@@ -152,12 +170,23 @@ class AuthService:
                 return bool(override)
         return os.environ.get("QAGENT_OPEN_REGISTRATION", "") == "1"
 
-    def register(self, *, email: str, name: str, password: str, invite_code: str | None = None) -> dict[str, Any]:
+    def register(
+        self, *, email: str = "", name: str = "", password: str, invite_code: str | None = None, username: str = ""
+    ) -> dict[str, Any]:
+        """注册。用户名与邮箱至少给一个：只给用户名时邮箱记占位地址，之后在账号设置里用验证码绑定；
+        只给邮箱时用户名取邮箱 @ 前面的部分（重名自动加数字）。注册时填的邮箱不算已验证。"""
         email = email.strip().lower()
-        name = name.strip()[:40] or email.split("@")[0]
-        if "@" not in email or len(email) > 200:
+        username = normalize_username(username) if username.strip() else ""
+        if not email and not username:
+            raise AppError(ErrorCode.INVALID_PARAMETER, "请填写用户名或邮箱")
+        if email and ("@" not in email or len(email) > 200 or email.endswith(UNBOUND_DOMAIN)):
             raise AppError(ErrorCode.INVALID_PARAMETER, "邮箱格式不正确")
         validate_password(password)
+        if username and self.db.fetchone("SELECT id FROM users WHERE lower(username)=?", (username.lower(),)):
+            raise AppError(ErrorCode.CONFLICT, "用户名已被使用")
+        if not username:
+            username = self._free_username(email.split("@")[0])
+        name = name.strip()[:40] or username
         now = now_ms()
         with self.db.tx() as t:
             first = int(t.scalar("SELECT COUNT(*) AS n FROM users") or 0) == 0
@@ -177,11 +206,12 @@ class AuthService:
             user_id = uuid.uuid4().hex
             try:
                 t.execute(
-                    "INSERT INTO users (id, email, name, password_hash, is_admin, created_at) VALUES (?,?,?,?,?,?)",
-                    (user_id, email, name, hash_password(password), first, now),
+                    "INSERT INTO users (id, email, username, name, password_hash, is_admin, created_at)"
+                    " VALUES (?,?,?,?,?,?,?)",
+                    (user_id, email or f"{user_id}{UNBOUND_DOMAIN}", username, name, hash_password(password), first, now),
                 )
             except IntegrityError as exc:
-                raise AppError(ErrorCode.CONFLICT, "该邮箱已注册") from exc
+                raise AppError(ErrorCode.CONFLICT, "该邮箱或用户名已注册") from exc
             if invite is not None:
                 t.execute(
                     "INSERT INTO memberships (workspace_id, user_id, role, created_at) VALUES (?,?,?,?)",
@@ -225,13 +255,17 @@ class AuthService:
         `totp_code`（验证码或恢复码），否则抛 `UNAUTHENTICATED` 且 `details.totp_required=True`，
         前端据此提示用户输入验证码并重发登录请求。
         """
+        # email 参数也接受用户名：含 @ 按邮箱查，否则按用户名查（不区分大小写）
         email = email.strip().lower()
         key = f"{email}|{ip}"
         limiter.check(key)
-        row = self.db.fetchone("SELECT * FROM users WHERE email=?", (email,))
+        if "@" in email:
+            row = self.db.fetchone("SELECT * FROM users WHERE email=?", (email,))
+        else:
+            row = self.db.fetchone("SELECT * FROM users WHERE lower(username)=?", (email,))
         if row is None or not verify_password(password, row["password_hash"]):
             limiter.fail(key)
-            raise AppError(ErrorCode.UNAUTHENTICATED, "邮箱或密码错误")
+            raise AppError(ErrorCode.UNAUTHENTICATED, "用户名 / 邮箱或密码错误")
         if not row["is_active"]:
             # 密码正确才说明原因：不给撞库者额外信息
             reason = row.get("banned_reason") or ""
@@ -584,6 +618,116 @@ class AuthService:
             t.execute("UPDATE users SET password_hash=? WHERE id=?", (hash_password(new), user_id))
             t.execute("UPDATE sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL", (now_ms(), user_id))
 
+    # ---------------- 账号资料：用户名、绑定邮箱 ----------------
+    EMAIL_CODE_TTL_MS = 10 * 60_000
+    EMAIL_CODE_COOLDOWN_MS = 60_000
+    EMAIL_CODE_HOURLY = 5
+    EMAIL_CODE_ATTEMPTS = 5
+
+    def _free_username(self, base: str) -> str:
+        base = re.sub(r"[^\w.\-一-鿿]", "", base)[:24] or "user"
+        if len(base) < 2:
+            base = f"{base}_u"
+        name, n = base, 1
+        while self.db.fetchone("SELECT id FROM users WHERE lower(username)=?", (name.lower(),)):
+            n += 1
+            name = f"{base}{n}"
+        return name
+
+    def backfill_usernames(self) -> int:
+        """给还没有用户名的老账号补一个（邮箱 @ 前面的部分，重名加数字）。幂等，启动时调用。"""
+        rows = self.db.fetchall("SELECT id, email FROM users WHERE username IS NULL OR username='' ORDER BY created_at")
+        for r in rows:
+            self.db.execute("UPDATE users SET username=? WHERE id=?", (self._free_username(r["email"].split("@")[0]), r["id"]))
+        return len(rows)
+
+    def account(self, user_id: str) -> dict[str, Any]:
+        row = self.db.fetchone("SELECT id, email, username, name, email_verified_at FROM users WHERE id=?", (user_id,))
+        if row is None:
+            raise AppError(ErrorCode.NOT_FOUND, "账号不存在")
+        email = public_email(row["email"])
+        return {
+            "id": row["id"],
+            "username": row["username"] or "",
+            "name": row["name"],
+            "email": email,
+            "email_verified": bool(email and row["email_verified_at"]),
+        }
+
+    def update_account(self, user_id: str, *, username: str | None = None, name: str | None = None) -> dict[str, Any]:
+        if username is not None:
+            username = normalize_username(username)
+            other = self.db.fetchone("SELECT id FROM users WHERE lower(username)=? AND id<>?", (username.lower(), user_id))
+            if other:
+                raise AppError(ErrorCode.CONFLICT, "用户名已被使用")
+            self.db.execute("UPDATE users SET username=? WHERE id=?", (username, user_id))
+        if name is not None and name.strip():
+            self.db.execute("UPDATE users SET name=? WHERE id=?", (name.strip()[:40], user_id))
+        return self.account(user_id)
+
+    def send_email_code(self, user_id: str, email: str) -> dict[str, Any]:
+        """给要绑定的邮箱发 6 位验证码（10 分钟有效）。同一账号 60 秒内只能发一次、每小时最多 5 次。"""
+        from . import mailer
+
+        email = email.strip().lower()
+        if "@" not in email or len(email) > 200 or email.endswith(UNBOUND_DOMAIN) or not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+            raise AppError(ErrorCode.INVALID_PARAMETER, "邮箱格式不正确")
+        taken = self.db.fetchone("SELECT id FROM users WHERE email=? AND id<>?", (email, user_id))
+        if taken:
+            raise AppError(ErrorCode.CONFLICT, "该邮箱已绑定其他账号")
+        now = now_ms()
+        recent = self.db.fetchall(
+            "SELECT created_at FROM email_codes WHERE user_id=? AND created_at>? ORDER BY created_at DESC",
+            (user_id, now - 3_600_000),
+        )
+        if recent and now - recent[0]["created_at"] < self.EMAIL_CODE_COOLDOWN_MS:
+            wait = int((self.EMAIL_CODE_COOLDOWN_MS - (now - recent[0]["created_at"])) / 1000) + 1
+            raise AppError(ErrorCode.RATE_LIMITED, f"验证码已发送，请 {wait} 秒后再试", details={"retry_after": wait})
+        if len(recent) >= self.EMAIL_CODE_HOURLY:
+            raise AppError(ErrorCode.RATE_LIMITED, "发送太频繁，请一小时后再试")
+        code = f"{secrets.randbelow(1_000_000):06d}"
+        row = self.db.fetchone("SELECT username, name FROM users WHERE id=?", (user_id,)) or {}
+        who = row.get("name") or row.get("username") or ""
+        mode = mailer.send(
+            email,
+            f"QuantLab 邮箱验证码：{code}",
+            f"{who}，你好：\n\n你正在为 QuantLab 账号绑定邮箱 {email}。验证码：{code}\n"
+            "10 分钟内有效。如果不是你本人操作，请忽略这封邮件。\n\n— QuantLab",
+            f"<p>{who}，你好：</p><p>你正在为 QuantLab 账号绑定邮箱 <b>{email}</b>。</p>"
+            f"<p style='font-size:24px;letter-spacing:6px'><b>{code}</b></p><p>10 分钟内有效。如果不是你本人操作，请忽略这封邮件。</p>",
+        )
+        # 发出去之后才记录：发信失败不占用冷却与次数
+        self.db.execute(
+            "INSERT INTO email_codes (id, user_id, email, purpose, code_hash, created_at, expires_at) VALUES (?,?,?,?,?,?,?)",
+            (uuid.uuid4().hex, user_id, email, "bind", _token_hash(f"{email}|{code}"), now, now + self.EMAIL_CODE_TTL_MS),
+        )
+        return {"sent": True, "email": email, "via": mode, "expires_in": self.EMAIL_CODE_TTL_MS // 1000,
+                "cooldown": self.EMAIL_CODE_COOLDOWN_MS // 1000}
+
+    def verify_email_code(self, user_id: str, email: str, code: str) -> dict[str, Any]:
+        email = email.strip().lower()
+        code = re.sub(r"\s", "", code or "")
+        now = now_ms()
+        row = self.db.fetchone(
+            "SELECT * FROM email_codes WHERE user_id=? AND email=? AND used_at IS NULL ORDER BY created_at DESC LIMIT 1",
+            (user_id, email),
+        )
+        if row is None or row["expires_at"] < now:
+            raise AppError(ErrorCode.INVALID_PARAMETER, "验证码已过期，请重新获取")
+        if row["attempts"] >= self.EMAIL_CODE_ATTEMPTS:
+            raise AppError(ErrorCode.RATE_LIMITED, "验证码错误次数过多，请重新获取")
+        if not hmac.compare_digest(row["code_hash"], _token_hash(f"{email}|{code}")):
+            self.db.execute("UPDATE email_codes SET attempts=attempts+1 WHERE id=?", (row["id"],))
+            left = self.EMAIL_CODE_ATTEMPTS - row["attempts"] - 1
+            raise AppError(ErrorCode.INVALID_PARAMETER, f"验证码不正确（还可以试 {left} 次）")
+        try:
+            with self.db.tx() as t:
+                t.execute("UPDATE email_codes SET used_at=? WHERE id=?", (now, row["id"]))
+                t.execute("UPDATE users SET email=?, email_verified_at=? WHERE id=?", (email, now, user_id))
+        except IntegrityError as exc:
+            raise AppError(ErrorCode.CONFLICT, "该邮箱已绑定其他账号") from exc
+        return self.account(user_id)
+
     # ---------------- 工作区与成员 ----------------
     def memberships(self, user_id: str) -> list[dict[str, Any]]:
         rows = self.db.fetchall(
@@ -636,11 +780,12 @@ class AuthService:
         return self.workspace(workspace_id)
 
     def members(self, workspace_id: str) -> list[dict[str, Any]]:
-        return self.db.fetchall(
-            "SELECT u.id AS user_id, u.email, u.name, m.role, m.status, m.created_at, u.last_login_at "
+        rows = self.db.fetchall(
+            "SELECT u.id AS user_id, u.email, u.username, u.name, m.role, m.status, m.created_at, u.last_login_at "
             "FROM memberships m JOIN users u ON u.id = m.user_id WHERE m.workspace_id=? ORDER BY m.created_at",
             (workspace_id,),
         )
+        return [{**r, "email": public_email(r["email"]), "username": r.get("username") or ""} for r in rows]
 
     def set_role(self, workspace_id: str, user_id: str, role: str) -> None:
         if role not in ROLES:

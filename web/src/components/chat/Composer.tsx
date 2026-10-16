@@ -118,7 +118,9 @@ export function ModelMenu({ models, value, defaultModel, effort, efforts, onMode
             <div className="cmp-menu-label">思考努力程度</div>
             <StepSlider options={list} value={effort} onChange={onEffort} disabled={!effortSupported} label="思考努力程度" compact />
             <div className="cmp-menu-hint">
-              {effortSupported ? list.find((e) => e.id === effort)?.hint : '这个模型不支持调节思考程度'}
+              {!effortSupported ? '这个模型不支持调节思考程度'
+                : current?.effort === 'auto' ? `${list.find((e) => e.id === effort)?.hint ?? ''}（会按这个程度请求；服务商不支持时自动忽略）`
+                  : list.find((e) => e.id === effort)?.hint}
             </div>
           </div>
           <div className="cmp-menu-sep" />

@@ -720,6 +720,10 @@ TOOL_GUIDE = (
     "研究者提到「之前那个对话」「另一个因子研究」时先查找并阅读；需要另一个对话复现、补充或并行研究时直接调起它，"
     "或新建对话把子问题拆出去；引用别的对话的结论要注明出处\n"
     "- queue_night（/night）：耗时长、可以无人值守的研究，放进夜班队列，结果写进晨报\n"
+    "- start_tuning / start_stress_drill / run_checkup 是后台任务：发起后不用反复查询，任务结束时平台会自动叫你回到这个对话汇报"
+    "（消息以「【后台任务完成】」开头），那时直接给结论与下一步\n"
+    "- share_to（/share）：研究者要把对话、回测、报告、策略发给某人 / 某个群 / 策略广场时；先用 list_members / list_groups 查对象；"
+    "notify_user：长任务出结果、或有需要研究者拍板的事时提醒他（头像红点），不要用来闲聊\n"
     "- pin_note（/pin）：研究者给的长期约束、重要结论，钉进上下文每轮都带着\n"
     "- context_usage（/context）、compact_history（/compact）：对话很长时先看用量，吃紧再压缩\n"
     "- set_market：研究者没指定或改了标的与周期时\n"
@@ -1552,7 +1556,14 @@ class StrategyLab:
                 if missing:
                     return {"error": f"缺少参数：{'、'.join(missing)}"}
                 shown = {k: str(v)[:60] for k, v in args.items() if v not in (None, "")}
-                return self._tool(pid, _alias, _t.title, shown, lambda: _t.handler(**args))
+                out = self._tool(pid, _alias, _t.title, shown, lambda: _t.handler(**args))
+                # 调参 / 压力演练 / 体检是后台任务：登记跟进，完成后 AI 自动回到这个对话汇报
+                from .followup import FOLLOWUPS
+
+                FOLLOWUPS.watch(self, pid, _t.name, out)
+                if isinstance(out, dict) and out.get("run_id") and _t.name in ("start_tuning", "start_stress_drill", "run_checkup"):
+                    out = {**out, "followup": "任务完成后平台会自动叫你回到这个对话汇报结果，不需要反复查询"}
+                return out
 
             desc = f"{t.description} 可用时机：{t.when}。" + ("（执行前需研究者审批）" if t.risk == "confirm" else "")
             out[alias] = Tool(alias, desc, t.schema(), handler)

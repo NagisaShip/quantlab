@@ -9,7 +9,8 @@ type Mode = 'login' | 'register'
 export default function LoginPage({ onDone }: { onDone: () => void }) {
   const [status, setStatus] = useState<{ bootstrapped: boolean; open_registration: boolean } | null>(null)
   const [mode, setMode] = useState<Mode>('login')
-  const [email, setEmail] = useState('')
+  const [email, setEmail] = useState('') // 登录时是「用户名或邮箱」，注册时是可选的邮箱
+  const [username, setUsername] = useState('')
   const [name, setName] = useState('')
   const [password, setPassword] = useState('')
   const [invite, setInvite] = useState(() => new URLSearchParams(window.location.search).get('invite') ?? '')
@@ -32,7 +33,7 @@ export default function LoginPage({ onDone }: { onDone: () => void }) {
     setError('')
     setBusy(true)
     try {
-      if (mode === 'register') await v4.register({ email, password, name, invite_code: invite || undefined })
+      if (mode === 'register') await v4.register({ username: username.trim() || undefined, email: email.trim() || undefined, password, name, invite_code: invite || undefined })
       else await v4.login(email, password, totp || undefined)
       onDone()
     } catch (err) {
@@ -91,9 +92,15 @@ export default function LoginPage({ onDone }: { onDone: () => void }) {
               </>
             ) : (
               <>
-                <label>邮箱<input type="email" autoComplete="username" required value={email} onChange={(e) => setEmail(e.target.value)} /></label>
-                {mode === 'register' && (
-                  <label>显示名称<input value={name} maxLength={40} onChange={(e) => setName(e.target.value)} placeholder="可选" /></label>
+                {mode === 'login' ? (
+                  <label>用户名或邮箱<input autoComplete="username" required value={email} onChange={(e) => setEmail(e.target.value)} /></label>
+                ) : (
+                  <>
+                    <label>用户名<input autoComplete="username" required minLength={2} maxLength={32} pattern="[A-Za-z0-9_.\-一-鿿]{2,32}"
+                      title="2–32 个字符：字母、数字、中文、下划线、点或短横线" value={username} onChange={(e) => setUsername(e.target.value)} /></label>
+                    <label>邮箱<input type="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="可选：之后也可以在账号设置里绑定" /></label>
+                    <label>显示名称<input value={name} maxLength={40} onChange={(e) => setName(e.target.value)} placeholder="可选，默认同用户名" /></label>
+                  </>
                 )}
                 <label>
                   密码

@@ -17,6 +17,7 @@ import { LimitBars, LimitEditor, fmtCost, fmtTokens } from '../components/modelU
 import { QuantBot } from '../components/QuantBot'
 import { appConfirm } from '../components/dialog'
 import { pingInbox } from '../components/Inbox'
+import { MemberPicker } from '../components/Social'
 import type { Me } from '../api3'
 import type { PageProps } from './types'
 
@@ -42,17 +43,28 @@ export default function GroupsPage({ arg, me, onNavigate, notify }: PageProps & 
   useEffect(() => { load(); collab.members().then((r) => setMembers(r.members)).catch(() => undefined) }, [load])
   useEffect(() => { const t = window.setInterval(load, 15000); return () => window.clearInterval(t) }, [load])
 
-  const mine = (groups ?? []).filter((g) => g.my_role && (!q || g.name.includes(q)))
-  const open = (groups ?? []).filter((g) => !g.my_role && (!q || g.name.includes(q)))
+  const [dmOpen, setDmOpen] = useState(false)
+  const label = (g: Group) => (g.kind === 'dm' ? g.peer?.name ?? '私聊' : g.name)
+  const hit = (g: Group) => !q || label(g).toLowerCase().includes(q.toLowerCase())
+  const dms = (groups ?? []).filter((g) => g.kind === 'dm' && hit(g))
+  const mine = (groups ?? []).filter((g) => g.kind !== 'dm' && g.my_role && hit(g))
+  const open = (groups ?? []).filter((g) => g.kind !== 'dm' && !g.my_role && hit(g))
   const current = groups?.find((g) => g.id === gid)
   const showTasks = gid === 'tasks'
+  const startDm = async (uid: string) => {
+    try {
+      const r = await collab.dm(uid)
+      setDmOpen(false); load(); onNavigate(`groups/${r.group.id}`)
+    } catch (e) { notify((e as Error).message, true) }
+  }
 
   return (
     <div className="grp-layout">
       <aside className="grp-side">
         <div className="grp-side-top">
-          <input className="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索群组" aria-label="搜索群组" />
-          <button type="button" className="button small primary" onClick={() => setCreating(true)}>＋ 新建</button>
+          <input className="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索群组或私聊" aria-label="搜索群组或私聊" />
+          <button type="button" className="button small primary" onClick={() => setCreating(true)}>＋ 群组</button>
+          <button type="button" className="button small" onClick={() => setDmOpen(true)} title="和工作区里的某位成员私聊">私聊</button>
         </div>
         <button type="button" className={`grp-item tasks${showTasks ? ' on' : ''}`} onClick={() => onNavigate('groups/tasks')}>
           <span className="grp-av tasks" aria-hidden>☐</span>
@@ -61,7 +73,11 @@ export default function GroupsPage({ arg, me, onNavigate, notify }: PageProps & 
         </button>
         {!groups ? <Loading /> : (
           <>
-            <div className="grp-label">我加入的 · {mine.length}</div>
+            {dms.length > 0 && <div className="grp-label">私聊 · {dms.length}</div>}
+            <div className="stagger">
+              {dms.map((g) => <GroupItem key={g.id} g={g} on={g.id === gid} onClick={() => onNavigate(`groups/${g.id}`)} />)}
+            </div>
+            <div className="grp-label">我加入的群组 · {mine.length}</div>
             <div className="stagger">
               {mine.map((g) => <GroupItem key={g.id} g={g} on={g.id === gid} onClick={() => onNavigate(`groups/${g.id}`)} />)}
             </div>
@@ -87,16 +103,24 @@ export default function GroupsPage({ arg, me, onNavigate, notify }: PageProps & 
       </section>
       {creating && <CreateGroupModal members={members} meId={me.user.id} onClose={() => setCreating(false)} notify={notify}
         onCreated={(g) => { setCreating(false); load(); onNavigate(`groups/${g.id}`) }} />}
+      {dmOpen && (
+        <Modal title="发起私聊" onClose={() => setDmOpen(false)} width={460}>
+          <MemberPicker members={members} picked={[]} single exclude={[me.user.id]} autoFocus onChange={([uid]) => uid && startDm(uid)} />
+          <p className="hint" style={{ marginBottom: 0 }}>私聊只有你们两人能看到；对方会收到通知，头像上出现红点。</p>
+        </Modal>
+      )}
     </div>
   )
 }
 
 function GroupItem({ g, on, onClick }: { g: Group; on: boolean; onClick: () => void }) {
+  const dm = g.kind === 'dm'
+  const name = dm ? g.peer?.name ?? '私聊' : g.name
   return (
-    <button type="button" className={`grp-item${on ? ' on' : ''}`} onClick={onClick}>
-      <span className="grp-av" aria-hidden>{g.name.slice(0, 1)}</span>
+    <button type="button" className={`grp-item${on ? ' on' : ''}${dm ? ' dm' : ''}`} onClick={onClick}>
+      <span className={`grp-av${dm ? ' dm' : ''}`} aria-hidden>{name.slice(0, 1)}</span>
       <span className="grp-main">
-        <b>{g.name}{g.visibility === 'private' && <span className="grp-lock" title="私密群组">🔒</span>}</b>
+        <b>{name}{!dm && g.visibility === 'private' && <span className="grp-lock" title="私密群组">🔒</span>}</b>
         <small>{g.last_message ? `${g.last_message.author}：${g.last_message.body}` : g.description || `${g.member_count} 人`}</small>
       </span>
       <span className="grp-meta">
@@ -129,13 +153,8 @@ function CreateGroupModal({ members, meId, onClose, onCreated, notify }: {
         <button type="button" role="radio" aria-selected={vis === 'private'} onClick={() => setVis('private')}>私密 · 只能邀请加入</button>
       </div>
       <div className="grp-pick">
-        <div className="hint">邀请成员（可以之后再加）</div>
-        <div className="chip-row">
-          {members.filter((m) => m.user_id !== meId).map((m) => (
-            <button key={m.user_id} type="button" className={`chip${picked.includes(m.user_id) ? ' on' : ''}`}
-              onClick={() => setPicked(picked.includes(m.user_id) ? picked.filter((x) => x !== m.user_id) : [...picked, m.user_id])}>{m.name}</button>
-          ))}
-        </div>
+        <div className="hint">邀请成员（可以之后再加）{picked.length > 0 && ` · 已选 ${picked.length} 人`}</div>
+        <MemberPicker members={members} picked={picked} onChange={setPicked} exclude={[meId]} />
       </div>
     </Modal>
   )
@@ -151,13 +170,25 @@ function GroupView({ group: g0, tab, me, members, onNavigate, notify, onChanged 
   const isMember = !!g.my_role
   const isMod = g.my_role === 'owner' || g.my_role === 'admin' || me.workspace?.role === 'admin'
   const go = (t: Tab) => onNavigate(`groups/${g.id}${t === 'chat' ? '' : `/${t}`}`)
+  const dm = g.kind === 'dm'
+  const peer = members.find((m) => m.user_id === g.peer?.user_id)
+  const tabs = dm ? TABS.filter((t) => t.key === 'chat' || t.key === 'shared') : TABS
   return (
     <div className="grp-view">
       <header className="grp-head">
-        <span className="grp-av big" aria-hidden>{g.name.slice(0, 1)}</span>
+        <span className={`grp-av big${dm ? ' dm' : ''}`} aria-hidden>{(dm ? g.peer?.name ?? '?' : g.name).slice(0, 1)}</span>
         <div className="grp-title">
-          <h2>{g.name} {g.visibility === 'private' ? <Tag>私密</Tag> : <Tag>公开</Tag>}</h2>
-          <small>{g.description || '没有简介'} · {g.member_count} 名成员{g.my_role ? ` · 我是${ROLE_LABEL[g.my_role]}` : ''}</small>
+          {dm ? (
+            <>
+              <h2>{g.peer?.name} <Tag>私聊</Tag></h2>
+              <small>{peer?.username ? `@${peer.username} · ` : ''}{peer?.online ? '在线' : '离线'} · 只有你们两人能看到</small>
+            </>
+          ) : (
+            <>
+              <h2>{g.name} {g.visibility === 'private' ? <Tag>私密</Tag> : <Tag>公开</Tag>}</h2>
+              <small>{g.description || '没有简介'} · {g.member_count} 名成员{g.my_role ? ` · 我是${ROLE_LABEL[g.my_role]}` : ''}</small>
+            </>
+          )}
         </div>
         <div className="grp-avatars" title={(g.members ?? []).map((m) => m.name).join('、')}>
           {(g.members ?? []).slice(0, 6).map((m) => <span key={m.user_id} className="ed-av">{m.name.slice(0, 1)}</span>)}
@@ -171,7 +202,7 @@ function GroupView({ group: g0, tab, me, members, onNavigate, notify, onChanged 
         <MuteGroupButton g={g} notify={notify} />
       </header>
       <nav className="grp-tabs tabs flat" aria-label="群组">
-        {TABS.map((t) => <button key={t.key} type="button" aria-pressed={tab === t.key} onClick={() => go(t.key)}>{t.label}{t.key === 'tasks' && g.open_tasks > 0 && <small> {g.open_tasks}</small>}</button>)}
+        {tabs.map((t) => <button key={t.key} type="button" aria-pressed={tab === t.key} onClick={() => go(t.key)}>{t.label}{t.key === 'tasks' && g.open_tasks > 0 && <small> {g.open_tasks}</small>}</button>)}
       </nav>
       <div className="grp-body page-enter" key={tab}>
         {tab === 'chat' && <Chat g={g} me={me} isMember={isMember} isMod={isMod} notify={notify} onChanged={onChanged} />}
@@ -711,13 +742,9 @@ function GroupSettings({ g, me, isMod, members, notify, onSaved, onLeft }: {
         {canInvite && (
           <div style={{ marginTop: 12 }}>
             <div className="hint">邀请工作区成员加入</div>
-            <div className="chip-row">
-              {members.filter((m) => !inGroup.has(m.user_id)).map((m) => (
-                <button key={m.user_id} type="button" className={`chip${adding.includes(m.user_id) ? ' on' : ''}`}
-                  onClick={() => setAdding(adding.includes(m.user_id) ? adding.filter((x) => x !== m.user_id) : [...adding, m.user_id])}>{m.name}</button>
-              ))}
-              {members.every((m) => inGroup.has(m.user_id)) && <span className="hint">工作区成员都已在群里</span>}
-            </div>
+            {members.every((m) => inGroup.has(m.user_id))
+              ? <span className="hint">工作区成员都已在群里</span>
+              : <MemberPicker members={members} picked={adding} onChange={setAdding} exclude={[...inGroup]} />}
             {adding.length > 0 && <button type="button" className="button small primary" style={{ marginTop: 8 }} onClick={() => act(async () => { await collab.addMembers(g.id, adding); setAdding([]) }, '已邀请')}>邀请 {adding.length} 人</button>}
           </div>
         )}

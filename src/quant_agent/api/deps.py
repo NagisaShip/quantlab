@@ -114,6 +114,7 @@ class AppServices:
             runs=RunService(db, wake=wake_build()),
             versions=VersionService(db),
         )
+        services.auth.backfill_usernames()  # 用户名登录之前注册的账号：按邮箱补一个用户名
         from ..live.accounts import AccountService
         from ..live.service import LiveService
 

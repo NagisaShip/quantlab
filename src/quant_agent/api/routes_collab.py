@@ -46,17 +46,113 @@ def _writer() -> None:
 # ---------------------------------------------------------------------------
 # 工作区成员目录（选择器用）
 # ---------------------------------------------------------------------------
-@router.get("/collab/members", summary="工作区成员目录（选择群成员、指派任务、@ 提及用）")
-def members() -> dict:
+@router.get("/collab/members", summary="工作区成员目录（选择群成员、指派任务、@ 提及、私聊用；q 按名字 / 用户名 / 邮箱搜索）")
+def members(q: str = "") -> dict:
     ws, uid, _ = _me()
     rows = get_services().auth.members(ws)
     muted = _c().muted_users(uid)
+    ql = q.strip().lower()
+    online = presence_online(ws)
     return {
         "members": [
-            {"user_id": r["user_id"], "name": r["name"] or r["email"].split("@")[0], "role": r["role"],
-             "muted": r["user_id"] in muted}
+            {"user_id": r["user_id"], "name": r["name"] or r["username"] or "成员", "username": r["username"],
+             "role": r["role"], "muted": r["user_id"] in muted, "online": r["user_id"] in online}
             for r in rows
             if r["status"] == "active"
+            and (not ql or any(ql in str(r.get(k) or "").lower() for k in ("name", "username", "email")))
+        ]
+    }
+
+
+# ---------------------------------------------------------------------------
+# 私聊
+# ---------------------------------------------------------------------------
+class DmIn(BaseModel):
+    user_id: str = Field(..., min_length=1, max_length=64)
+
+
+@router.post("/collab/dm", summary="打开与某位成员的私聊（没有就新建），返回私聊会话")
+def open_dm(payload: DmIn) -> dict:
+    _writer()
+    ws, uid, _ = _me()
+    gid = _c().open_dm(ws, uid, payload.user_id)
+    return {"group": _c().get_group(ws, gid, uid)}
+
+
+# ---------------------------------------------------------------------------
+# 分享到群组 / 私聊 / 策略广场
+# ---------------------------------------------------------------------------
+class ShareToIn(BaseModel):
+    target: Literal["group", "dm", "square"]
+    target_id: str = Field("", max_length=64, description="群组 id 或私聊对象的 user_id；分享到广场时为空")
+    ref: dict[str, Any] = Field(..., description="被分享的内容：{type, id, title}；type=link 时 id 是站内路由")
+    note: str = Field("", max_length=4000, description="附言（Markdown）")
+    title: str = Field("", max_length=120, description="分享到广场时的帖子标题，默认用内容标题")
+
+
+@router.post("/collab/share-to", summary="把平台里的任意内容（回测、策略、报告、帖子、页面）分享到群组、私聊或策略广场")
+def share_to(payload: ShareToIn) -> dict:
+    _writer()
+    ws, uid, name = _me()
+    refs = _resolve_refs([payload.ref])
+    if not refs:
+        raise AppError(ErrorCode.NOT_FOUND, "要分享的内容不存在，或你没有权限查看")
+    ref = refs[0]
+    if payload.target == "square":
+        from ..api.schemas import PostIn
+        from .routes_community import publish
+
+        title = (payload.title or ref.get("title") or "分享").strip()[:120]
+        if len(title) < 2:
+            title = f"分享：{title}"
+        body = (payload.note.strip() + "\n\n" if payload.note.strip() else "") + f"{{{{ref:{ref['type']}:{ref['id']}}}}}"
+        post = publish(PostIn(title=title, body=body, refs=[ref]), {"kind": "human", "label": "成员"})
+        return {"ok": True, "target": "square", "link": f"post/{post['id']}"}
+    gid = payload.target_id
+    if payload.target == "dm":
+        gid = _c().open_dm(ws, uid, payload.target_id)
+    _c().require_group_member(gid, uid, ws=ws)
+    msg = _c().post_message(gid, author_id=uid, author_name=name, body=payload.note.strip(), refs=[ref])
+    return {"ok": True, "target": payload.target, "link": f"groups/{gid}", "message": msg}
+
+
+# ---------------------------------------------------------------------------
+# 在线状态：谁正在看 / 编辑某个对象（进程内，心跳 20 秒，45 秒没心跳算离开）
+# ---------------------------------------------------------------------------
+_PRESENCE: dict[tuple[str, str, str], dict[str, dict[str, Any]]] = {}
+_PRESENCE_TTL = 45.0
+
+
+def presence_online(ws: str) -> set[str]:
+    """工作区里最近 45 秒有心跳的成员（成员目录里的绿点）。"""
+    now = time.time()
+    return {u for (w, _, _), who in _PRESENCE.items() if w == ws for u, v in who.items() if now - v["at"] < _PRESENCE_TTL}
+
+
+class PresenceIn(BaseModel):
+    object_type: str = Field(..., max_length=24)
+    object_id: str = Field(..., max_length=160)
+    editing: bool = False
+    leave: bool = False
+
+
+@router.post("/collab/presence", summary="在线心跳：我正在看 / 编辑这个对象；返回同时在场的其他成员")
+def presence(payload: PresenceIn) -> dict:
+    ws, uid, name = _me()
+    key = (ws, payload.object_type, payload.object_id)
+    now = time.time()
+    who = _PRESENCE.setdefault(key, {})
+    if payload.leave:
+        who.pop(uid, None)
+    else:
+        who[uid] = {"name": name, "editing": payload.editing, "at": now}
+    for k in [k for k, v in who.items() if now - v["at"] >= _PRESENCE_TTL]:
+        who.pop(k, None)
+    if not who:
+        _PRESENCE.pop(key, None)
+    return {
+        "others": [
+            {"user_id": k, "name": v["name"], "editing": v["editing"]} for k, v in who.items() if k != uid
         ]
     }
 
@@ -203,7 +299,9 @@ def _readable_group(gid: str) -> dict[str, Any]:
     row = _c()._group_row(gid)
     if row["workspace_id"] != ws:
         raise AppError(ErrorCode.NOT_FOUND, "群组不存在")
-    if _c().group_role(gid, uid) is None and not (row["visibility"] == "open" or _ws_admin()):
+    if _c().group_role(gid, uid) is None and (
+        '"dm"' in (row.get("settings") or "") or not (row["visibility"] == "open" or _ws_admin())
+    ):
         raise AppError(ErrorCode.PERMISSION_DENIED, "你不在这个群组里")
     return row
 
@@ -668,6 +766,20 @@ def _resolve_refs(refs: list[dict[str, Any]]) -> list[dict[str, Any]]:
             r["summary"] = {"status": task["status_label"], "assignee": task["assignee_name"]}
         elif t == "project":
             r["title"] = r["title"] or _project_title(rid)
+        elif t == "report":
+            # AI 研究室的调研报告：id = <对话 id>/<报告 id>
+            pid, _, rep = rid.partition("/")
+            if not pid or not rep:
+                continue
+            r["title"] = r["title"] or "调研报告"
+            r["summary"] = {"project": _project_title(pid)}
+        elif t == "link":
+            # 站内任意页面：只接受站内路由，不接受外部网址
+            import re as _re
+
+            if not _re.fullmatch(r"[a-z][\w\-./:]{0,150}", rid) or "//" in rid:
+                continue
+            r["title"] = r["title"] or rid
         out.append(r)
     return out
 

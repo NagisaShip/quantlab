@@ -13,9 +13,12 @@ import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { createPortal } from 'react-dom'
 import { QuantBot } from './QuantBot'
 
+interface Choice { value: string; label: string; danger?: boolean }
+
 interface Req {
   id: number
-  kind: 'confirm' | 'prompt'
+  kind: 'confirm' | 'prompt' | 'choose'
+  choices?: Choice[]
   message: string
   title?: string
   okLabel?: string
@@ -48,6 +51,11 @@ export function appPrompt(message: string, value = '', opts: { title?: string; o
   return open({ kind: 'prompt', message, value, ...opts }) as Promise<string | null>
 }
 
+/** 多选一：返回选中项的 value，取消返回 null。例：删除对话时「只删这个 / 连同分叉一起删」。 */
+export function appChoose(message: string, choices: Choice[], opts: { title?: string } = {}): Promise<string | null> {
+  return open({ kind: 'choose', message, choices, danger: choices.some((c) => c.danger), ...opts }) as Promise<string | null>
+}
+
 function done(r: Req, v: boolean | string | null) {
   queue = queue.filter((x) => x.id !== r.id)
   emit()
@@ -68,11 +76,11 @@ function DialogView({ r }: { r: Req }) {
   const input = useRef<HTMLInputElement>(null)
   useEffect(() => {
     if (r.kind === 'prompt') { input.current?.focus(); input.current?.select() } else ok.current?.focus()
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); done(r, r.kind === 'prompt' ? null : false) } }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); done(r, r.kind === 'confirm' ? false : null) } }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
   }, [r])
-  const cancel = () => done(r, r.kind === 'prompt' ? null : false)
+  const cancel = () => done(r, r.kind === 'confirm' ? false : null)
   const accept = () => done(r, r.kind === 'prompt' ? value : true)
   const lines = r.message.split('\n')
   return (
@@ -91,9 +99,13 @@ function DialogView({ r }: { r: Req }) {
         </div>
         <div className="app-dialog-foot">
           <button type="button" className="button" onClick={cancel}>取消</button>
-          <button ref={ok} type="button" className={`button ${r.danger ? 'danger-solid' : 'primary'}`} onClick={accept}>
-            {r.okLabel ?? (r.danger ? '确定' : r.kind === 'prompt' ? '确定' : '确定')}
-          </button>
+          {r.kind === 'choose' ? r.choices!.map((c, i) => (
+            <button key={c.value} ref={i === 0 ? ok : undefined} type="button" className={`button ${c.danger ? 'danger-solid' : i === 0 ? 'primary' : ''}`} onClick={() => done(r, c.value)}>{c.label}</button>
+          )) : (
+            <button ref={ok} type="button" className={`button ${r.danger ? 'danger-solid' : 'primary'}`} onClick={accept}>
+              {r.okLabel ?? '确定'}
+            </button>
+          )}
         </div>
       </div>
     </div>

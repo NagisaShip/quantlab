@@ -5,8 +5,10 @@ import { del, get, idemKey, post, put, withWs } from './http'
 export type Dec = string
 export type Role = 'admin' | 'member' | 'reviewer'
 
+export interface Account { id: string; username: string; name: string; email: string; email_verified: boolean }
 export interface Me {
-  user: { id: string; email: string; name: string; is_admin: boolean }
+  /** email 为空表示还没绑定邮箱 */
+  user: { id: string; email: string; username?: string; email_verified?: boolean; name: string; is_admin: boolean }
   workspaces: { id: string; name: string; role: Role; is_demo?: boolean }[]
   workspace: { id: string; name: string; role: Role; is_demo: boolean; settings: WorkspaceSettings } | null
   live_enabled: boolean
@@ -183,11 +185,17 @@ export interface Banner {
 export const v4 = {
   // ---- 账号 ----
   authStatus: () => get<{ bootstrapped: boolean; open_registration: boolean }>('/api/auth/status'),
-  register: (p: { email: string; password: string; name?: string; invite_code?: string }) => post<{ ok: boolean; workspace_id: string }>('/api/auth/register', p),
-  login: (email: string, password: string, totp_code?: string) =>
-    post<{ ok: boolean }>('/api/auth/login', { email, password, totp_code: totp_code || undefined }),
+  register: (p: { username?: string; email?: string; password: string; name?: string; invite_code?: string }) => post<{ ok: boolean; workspace_id: string }>('/api/auth/register', p),
+  /** login：用户名或邮箱 */
+  login: (login: string, password: string, totp_code?: string) =>
+    post<{ ok: boolean }>('/api/auth/login', { login, password, totp_code: totp_code || undefined }),
   logout: () => post<{ ok: boolean }>('/api/auth/logout'),
   me: () => get<Me>('/api/auth/me'),
+  // ---- 账号资料与绑定邮箱 ----
+  account: () => get<{ account: Account }>('/api/auth/account'),
+  updateAccount: (p: { username?: string; name?: string }) => put<{ account: Account }>('/api/auth/account', p),
+  sendEmailCode: (email: string) => post<{ sent: boolean; email: string; via: string; expires_in: number; cooldown: number }>('/api/auth/email/code', { email }),
+  verifyEmail: (email: string, code: string) => post<{ account: Account }>('/api/auth/email/verify', { email, code }),
   changePassword: (old_password: string, new_password: string) => post<{ ok: boolean }>('/api/auth/password', { old_password, new_password }),
   // ---- 双因素认证（T11）----
   // 明文密钥只在 setup 的响应里出现一次；恢复码明文只在 enable 的响应里出现一次。
