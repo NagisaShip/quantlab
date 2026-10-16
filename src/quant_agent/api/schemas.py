@@ -338,6 +338,9 @@ class SpecIn(BaseModel):
     taker_fee: float = Field(0.001, ge=0, le=0.05)
     slippage_bps: float = Field(5.0, ge=0, le=500)
     spread_bps: float = Field(2.0, ge=0, le=500)
+    cost_scale: float = Field(
+        1.0, ge=0, le=20, description="成本压力倍数：手续费、价差、滑点在撮合时统一乘上它（策略自己设置的成本也一样）"
+    )
     rebalance_tolerance: float = Field(0.005, ge=0, le=0.2)
     fill_at: Literal["next_open", "close"] = "next_open"
     exchange: Literal["binance", "okx"] = "binance"

@@ -150,7 +150,8 @@ interface CmdOpts {
   saveLabel: string
   compacting?: boolean
   backtest: Handler
-  stress: Handler
+  stress: ArgHandler
+  sweep?: ArgHandler
   walkForward: ArgHandler
   auto: ArgHandler
   plan: ArgHandler
@@ -179,7 +180,8 @@ function labCommands(o: CmdOpts): SlashCommand[] {
   const evalLabel = o.ui ? `${o.ui.evaluate}当前${o.ui.noun}` : '回测当前版本'
   return [
     c(o.ui ? '/eval' : '/backtest', '运行', evalLabel, o.backtest),
-    ...(!o.ui || o.kind === 'factor' ? [c('/stress', '运行', o.ui ? '2× 成本评估（只看，不改成绩）' : '2× 成本压力测试', o.stress)] : []),
+    ...(!o.ui || o.kind === 'factor' ? [c('/stress', '运行', o.ui ? '成本评估（默认 2×，只看，不改成绩）' : '成本压力测试（默认 2×，可写倍数，如 /stress 3）', o.stress, { arg: '[倍数]' })] : []),
+    ...(!o.ui ? [c('/sweep', '运行', '成本压力扫描：并行跑多档成本倍数，找出不再满足目标的极限（可写倍数，如 /sweep 1 2 3 5）', o.sweep, { arg: '[倍数…]' })] : []),
     ...(!o.ui ? [c('/walkforward', '运行', '分段回测：检查是否只在某段有效', o.walkForward, { arg: '[段数]' })] : []),
     c('/auto', '迭代', o.hasGoal ? `按目标自动迭代（现在 ${o.rounds} 轮）` : '需要先设定目标（/goal）；没有目标就直接对话', o.auto,
       { arg: '[轮数]', disabled: !o.auto || run || !o.hasGoal }),
@@ -754,7 +756,8 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
   const commands = labCommands({
     ui, kind: project.kind, running, hasGoal, rounds: roundsNow, executorTeam: project.executor === 'team', saveLabel, compacting,
     backtest: noCode ? undefined : () => act(() => lab.backtest(id)),
-    stress: noCode ? undefined : () => act(() => lab.backtest(id, 2)),
+    stress: noCode ? undefined : (a) => act(() => lab.backtest(id, Math.min(20, Math.max(0.5, Number(a) || 2)))),
+    sweep: noCode ? undefined : (a) => act(() => lab.costSweep(id, (a.match(/\d+(?:\.\d+)?/g) || []).map(Number).slice(0, 8))),
     walkForward: noCode ? undefined : (a) => act(() => lab.walkForward(id, Math.min(6, Math.max(2, Number(a) || 3)))),
     auto: (a) => startAuto(Math.min(8, Math.max(1, Number(a) || roundsNow))),
     plan: (a) => { stick.current = true; act(() => lab.plan(id, a)) },
@@ -1165,6 +1168,8 @@ function MessageView({ m, project, meta, active, actions, onDecide, onOpenBackte
       return <ExecutionReportCard m={m} metrics={metricsOf(meta)} onOpenRun={(rid) => onOpenLibrary(`execution/run/${rid}`)} />
     case 'backtest':
       return <BacktestCard m={m} onOpen={onOpenBacktest} metrics={metricsOf(meta)} />
+    case 'cost_sweep':
+      return <CostSweepCard m={m} onOpen={onOpenBacktest} />
     case 'round':
       return <RoundCard m={m} metrics={metricsOf(meta)} />
     case 'team':
@@ -1288,8 +1293,68 @@ function BacktestCard({ m, onOpen, metrics }: { m: LabMessage; onOpen: (id: stri
           })}
         </div>
       )}
+      {d.fee_check && <FeeCheck c={d.fee_check} />}
       {(d.warnings || []).length > 0 && <div className="lab2-faint">{d.warnings.join('；')}</div>}
       {d.data_check && <DataCheckBadge check={d.data_check} definitions={d.definitions} consistency={d.consistency} zero={d.zero_trade_diagnosis} />}
+    </div>
+  )
+}
+
+interface FeeCheckData { scale: number; total_ratio: number; per_trade_ratio: number | null; note: string }
+
+/** 压力回测的手续费口径：总手续费 = 成交额 × 费率，成交额会变，所以按每笔平均手续费核对放大倍数。 */
+function FeeCheck({ c }: { c: FeeCheckData }) {
+  return (
+    <div className="lab2-faint fee-check" title="费率在撮合时按倍数放大；总手续费还取决于成交额（净值缩水会让仓位变小）和交易笔数">
+      手续费核对：总额是 1× 的 {c.total_ratio.toFixed(2)} 倍
+      {c.per_trade_ratio !== null && <>，每笔平均 {c.per_trade_ratio.toFixed(2)} 倍（费率 {c.scale}×）</>}
+      {c.note && <>；{c.note}</>}
+    </div>
+  )
+}
+
+interface SweepRow {
+  scale: number; ok: boolean; error: string | null; passed: boolean; failed: string[]; bt_id?: string
+  metrics: Partial<Metrics> & { total_fees?: number | null }
+  fee_check: FeeCheckData | null
+}
+
+/** 成本压力扫描：每档倍数一行，标出最后一档满足和第一档不满足，之间就是成本极限。 */
+function CostSweepCard({ m, onOpen }: { m: LabMessage; onOpen: (id: string) => void }) {
+  const d = m.data as { v: number; criterion: string; rows: SweepRow[]; limit: { pass_max: number | null; fail_min: number | null }; summary: string }
+  return (
+    <div className="lab2-card sweep-card">
+      <div className="lab2-card-head">
+        <span className="lab2-ver">v{d.v}</span>
+        <b>成本压力扫描</b>
+        {d.limit.pass_max !== null && d.limit.fail_min !== null && <span className="cb-badge warn">极限 {d.limit.pass_max}×–{d.limit.fail_min}×</span>}
+        {d.limit.fail_min === null && d.limit.pass_max !== null && <span className="cb-badge ok">全部满足</span>}
+        <span className="lab2-card-gap" />
+        <span className="lab2-faint" title="判定标准">{d.criterion}</span>
+      </div>
+      <div className="table-wrap">
+        <table className="sweep-table">
+          <thead><tr><th>成本</th><th className="right">总收益</th><th className="right">夏普</th><th className="right">最大回撤</th><th className="right">交易</th><th className="right">手续费</th><th>结果</th></tr></thead>
+          <tbody>
+            {d.rows.map((r) => (
+              <tr key={r.scale} className={`${r.passed ? 'ok' : 'bad'}${r.scale === d.limit.pass_max || r.scale === d.limit.fail_min ? ' edge' : ''}`}>
+                <td className="mono">{r.scale}×</td>
+                {r.ok ? <>
+                  <td className="right mono">{pct(r.metrics.total_return)}</td>
+                  <td className="right mono">{num(r.metrics.sharpe)}</td>
+                  <td className="right mono">{pct(r.metrics.max_drawdown)}</td>
+                  <td className="right mono">{r.metrics.trades ?? 0}</td>
+                  <td className="right mono" title={r.fee_check ? `总额 ${r.fee_check.total_ratio}×，每笔 ${r.fee_check.per_trade_ratio ?? '—'}×` : undefined}>
+                    {num(r.metrics.total_fees ?? null)}{r.fee_check && r.scale !== 1 ? <small className="muted"> ×{(r.fee_check.per_trade_ratio ?? r.fee_check.total_ratio).toFixed(2)}</small> : null}
+                  </td>
+                  <td>{r.passed ? '✓ 满足' : `✗ ${r.failed.slice(0, 2).join('、') || '收益转负'}`}{r.bt_id && <button className="link" onClick={() => onOpen(r.bt_id!)}>详情</button>}</td>
+                </> : <td colSpan={6} className="lab2-faint">{r.error}</td>}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="lab2-faint">{d.summary} 手续费列的 ×N 是每笔平均手续费相对 1× 的倍数（总额还会随成交额与笔数变化）。</div>
     </div>
   )
 }

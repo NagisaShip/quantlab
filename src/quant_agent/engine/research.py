@@ -45,6 +45,8 @@ class BacktestSpec:
     taker_fee: float = 0.001
     slippage_bps: float = 5.0
     spread_bps: float = 2.0
+    # 成本压力倍数（2 = 手续费、价差、滑点都翻倍）。在撮合时统一生效，策略自己 set_order_cost 也照样放大
+    cost_scale: float = 1.0
     rebalance_tolerance: float = 0.005
     fill_at: str = "next_open"
     exchange: str = "binance"
@@ -202,6 +204,7 @@ def execute(
         risk=spec.risk_config(),
         cash_flows=spec.flows_for(bars),
         research=research,
+        cost_scale=spec.cost_scale,
     )
 
 

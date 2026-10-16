@@ -291,8 +291,12 @@ class BacktestRuntime:
         strategy_version_id: str = "",
         quote_currency: str = "USDT",
         research: dict[str, Any] | None = None,
+        cost_scale: float = 1.0,
     ) -> None:
         self.bars_by_security = bars_by_security
+        # 成本压力倍数：在成交时统一乘到手续费（吃单 / 挂单）、价差、滑点与冲击成本上。
+        # 不在入参里预先放大，是因为策略可以在 initialize 里 set_order_cost 覆盖成本——那样压力测试会失效
+        self.cost_scale = max(0.0, float(cost_scale or 1.0))
         # 回测前按时间点算好的研究数据：factor() / predict() 的取值表、optimize() 的方案配置
         self.research = research or {}
         self._research_missing: set[str] = set()
@@ -772,12 +776,28 @@ class BacktestRuntime:
         sig.status, sig.status_reason, sig.reason_code = status, reason, code
 
     # ------------------------------------------------------------------ 交易
+    def effective_cost(self) -> dict[str, Any]:
+        """报告里的成本模型：策略设置后的成本，再乘上压力倍数（倍数为 1 时与原值相同）。"""
+        out = self.cost.to_dict()
+        if self.cost_scale != 1.0:
+            out["cost_scale"] = self.cost_scale
+            for k in ("taker_fee", "maker_fee", "slippage_bps", "spread_bps"):
+                if isinstance(out.get(k), (int, float)):
+                    out[f"base_{k}"] = out[k]
+                    out[k] = out[k] * self.cost_scale
+        return out
+
+    def _fee_rate(self, rate: float) -> Decimal:
+        """实际收取的手续费率（含成本压力倍数）。"""
+        return dec(rate) * dec(self.cost_scale)
+
     def _exec_price(self, base: float | Decimal, side: str, participation: float | None = None) -> Decimal:
         slippage = self.slippage_override if self.slippage_override is not None else self.cost.slippage_bps
         adj = dec(self.cost.spread_bps) / 2 + dec(slippage)
         if self.impact_model is not None and participation is not None:
             # 执行方案的成本曲线已经包含价差与冲击（不含手续费），替代固定的价差 + 滑点
             adj = dec(max(self.impact_model["a"] + self.impact_model["b"] * math.sqrt(max(participation, 0.0)), 0.0))
+        adj = adj * dec(self.cost_scale)
         p = dec(base) * (1 + adj / 10_000) if side == "buy" else dec(base) * (1 - adj / 10_000)
         return self._round_price(p)
 
@@ -802,7 +822,7 @@ class BacktestRuntime:
         return OrderResult(ok=False, security=req.security, side=req.side, message=reason, status="rejected")
 
     def can_afford(self, security: str, amount: float, price: float) -> bool:
-        need = dec(amount) * dec(price) * (1 + dec(self.cost.taker_fee))
+        need = dec(amount) * dec(price) * (1 + self._fee_rate(self.cost.taker_fee))
         return need <= self.ledger.cash()
 
     def _held(self, security: str) -> Decimal:
@@ -1239,7 +1259,7 @@ class BacktestRuntime:
             exec_price = self._exec_price(base_price, side, part)
             if price_cap is not None:
                 exec_price = min(exec_price, price_cap) if side == "buy" else max(exec_price, price_cap)
-        rate = dec(self.cost.maker_fee if liquidity == "maker" else self.cost.taker_fee)
+        rate = self._fee_rate(self.cost.maker_fee if liquidity == "maker" else self.cost.taker_fee)
         step = dec(self.cost.qty_step) if self.cost.qty_step else Decimal("1e-12")
         qty = floor_to(abs(delta), step)
         explicit = req.target_kind in ("", "amount", "amount_target", "value", "value_target")
@@ -1617,9 +1637,9 @@ class BacktestRuntime:
                 "perp": prot.get("perp", False),
                 "note": "",
             }
-            rate = dec(self.cost.taker_fee)
+            rate = self._fee_rate(self.cost.taker_fee)
         else:
-            rate = dec(self.cost.taker_fee)
+            rate = self._fee_rate(self.cost.taker_fee)
             self._reserve(intent, rate, sign=-1)
         sig = self._signal_by_id(intent.get("signal_id") or "")
         sec, side = intent["security"], intent["side"]
@@ -2031,6 +2051,7 @@ def run_backtest(
     risk_free_rate: float = 0.0,
     research: dict[str, Any] | None = None,
     delistings: list[dict[str, Any]] | None = None,
+    cost_scale: float = 1.0,
 ) -> LocalRunResult:
     """在本地把一份策略跑一遍，返回净值曲线、基准、日度统计与指标。
 
@@ -2052,6 +2073,7 @@ def run_backtest(
         run_id=run_id,
         strategy_version_id=strategy_version_id,
         research=research,
+        cost_scale=cost_scale,
     )
     ctx = runtime.ctx
     ctx.securities = list(bars_by_security)
@@ -2060,7 +2082,7 @@ def run_backtest(
     result = LocalRunResult(
         strategy=strategy.name,
         initial_cash=initial_cash,
-        cost_model=runtime.cost.to_dict(),
+        cost_model=runtime.effective_cost(),
         params=dict(getattr(strategy, "params", {}) or {}),
         securities=list(bars_by_security),
         timeframe=timeframe,
@@ -2085,7 +2107,7 @@ def run_backtest(
         if bench not in bars_by_security:
             bench = next(iter(bars_by_security))
         result.benchmark = bench
-        result.cost_model = runtime.cost.to_dict()
+        result.cost_model = runtime.effective_cost()
 
         scoring_start = min(warmup_bars, max(0, len(timeline) - 2))
         bench_p0 = 0.0

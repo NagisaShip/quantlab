@@ -315,6 +315,55 @@ def goals_text(goals: dict[str, Any]) -> str:
     return "、".join(parts) or "未设置"
 
 
+SWEEP_DEFAULT = (1.0, 1.5, 2.0, 3.0, 4.0, 6.0)
+SWEEP_WORKERS = 4
+SWEEP_METRICS = ("total_return", "excess_return", "sharpe", "max_drawdown", "trades", "win_rate", "total_fees")
+
+
+def cost_fee_check(base: dict[str, Any] | None, stressed: dict[str, Any] | None, scale: float) -> dict[str, Any] | None:
+    """核对压力回测的手续费口径：总手续费 = 成交额 × 费率，费率按倍数放大，但成交额会随净值和交易次数变化，
+    所以总手续费不一定正好是倍数；按「每笔平均手续费」比较更接近费率本身的放大。"""
+    if not base or not stressed:
+        return None
+    f0, f1 = base.get("total_fees"), stressed.get("total_fees")
+    n0, n1 = base.get("trades") or 0, stressed.get("trades") or 0
+    if not f0 or f1 is None:
+        return None
+    total_ratio = f1 / f0
+    per_trade = (f1 / n1) / (f0 / n0) if n0 and n1 else None
+    note = []
+    if n0 != n1:
+        note.append(f"交易笔数 {n0}→{n1}")
+    if per_trade is not None and abs(per_trade - scale) / scale > 0.15:
+        note.append("每笔手续费的放大明显偏离倍数：通常是成交额变化（净值缩水使仓位变小）或部分订单走挂单费率")
+    return {
+        "scale": scale,
+        "total_ratio": round(total_ratio, 3),
+        "per_trade_ratio": round(per_trade, 3) if per_trade is not None else None,
+        "note": "；".join(note),
+    }
+
+
+def sweep_limit(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """从 1× 往上，找最后一档连续达标的倍数（pass_max）和之后第一档不达标的倍数（fail_min）。"""
+    pass_max = fail_min = None
+    for r in sorted((r for r in rows if r["ok"]), key=lambda r: r["scale"]):
+        if r["passed"] and fail_min is None:
+            pass_max = r["scale"]
+        elif not r["passed"] and fail_min is None:
+            fail_min = r["scale"]
+    return {"pass_max": pass_max, "fail_min": fail_min}
+
+
+def sweep_summary(limit: dict[str, Any], criterion: str) -> str:
+    lo, hi = limit["pass_max"], limit["fail_min"]
+    if lo is None and hi is not None:
+        return f"按{criterion}，1× 基准成本下就不满足，不需要再加压。"
+    if hi is None:
+        return f"按{criterion}，测试的各档成本都满足（至少到 {lo:g}× 成本）。"
+    return f"按{criterion}，成本放大到 {lo:g}× 时仍满足，到 {hi:g}× 时不再满足：成本极限在 {lo:g}×–{hi:g}× 之间。"
+
+
 def metrics_text(m: dict[str, Any] | None) -> str:
     if not m:
         return "（尚无回测）"
@@ -528,6 +577,7 @@ EDIT_TOOLS = frozenset(
 RUN_TOOLS = frozenset(
     {
         "run_backtest",
+        "cost_sweep",
         "walk_forward",
         "evaluate_factor",
         "train_model",
@@ -557,8 +607,10 @@ TOOL_GUIDE = (
     "计划执行期间不要停下来等研究者确认，直到所有步骤完成且目标达标；只有确实需要研究者做决定时才用 ask_user\n"
     "- set_goal / check_goals（/goal）：研究者给出达标要求时记下来；不达标时先看差距再改\n"
     "- start_autopilot（/auto）：已有目标、研究者要求连续自动改进时\n"
-    "- 回测 / 评估工具（/backtest、/eval），带 2 倍成本做压力测试（/stress），"
+    "- 回测 / 评估工具（/backtest、/eval），run_backtest(cost_scale=N) 做 N 倍成本压力测试（/stress N），"
     "walk_forward 分段回测（/walkforward）：验证结果与稳健性\n"
+    "- cost_sweep（/sweep）：并行跑多档成本倍数，找出不再满足目标的成本极限；策略接近达标、准备保存或上线前，"
+    "或者研究者问「成本再高一点还行不行」时用。倍数按情况自己定（例如交易频繁时多测 1.2–2 倍之间）\n"
     "- convene_team（/team）：要一份快速的团队评审结论时；"
     "start_discussion（/discuss）：需要多个角色充分辩论、相互质疑时（发言以气泡显示在对话里，讨论在后台进行）\n"
     "- queue_night（/night）：耗时长、可以无人值守的研究，放进夜班队列，结果写进晨报\n"
@@ -708,6 +760,7 @@ TOOL_PHASE = {
     "walk_forward": "分段回测",
     "set_market": "设定标的",
     "ask_user": "提问",
+    "cost_sweep": "成本压力扫描",
     "set_plan": "列计划",
     "update_plan_step": "更新计划进度",
     "start_discussion": "团队讨论",
@@ -930,6 +983,10 @@ class StrategyLab:
             self._set_version_result(
                 pid, v, metrics=out.get("metrics"), bt_id=out.get("bt_id"), evaluation=evaluation, formal=formal
             )
+        else:
+            fee_check = cost_fee_check(row.get("metrics"), out.get("metrics"), cost_scale)
+            if fee_check:
+                out["fee_check"] = fee_check
         prefix = "" if formal else "【非正式回测】"
         self._post(
             pid,
@@ -939,6 +996,84 @@ class StrategyLab:
             data={"v": v, "cost_scale": cost_scale, **out},
         )
         return out
+
+    # ---------------- 成本压力扫描 ----------------
+    def cost_sweep(self, pid: str, scales: list[float] | None = None, *, refine: bool = True) -> dict[str, Any]:
+        """并行跑多档成本倍数的回测，找出策略在多大的成本下不再满足目标（没设目标时看总收益是否转负）。
+        第一轮按 scales 并行；找到「最后一档达标」和「第一档不达标」之间的区间后，再在区间内并行补 3 档，把极限收窄。
+        只展示、不改版本成绩。"""
+        project = self.store.get(pid) or {}
+        code = project.get("code") or ""
+        if not code:
+            return {"ok": False, "error": "当前还没有代码"}
+        grid = sorted({round(min(20.0, max(0.5, float(s))), 2) for s in (scales or SWEEP_DEFAULT)})[:8]
+        if 1.0 not in grid:
+            grid = sorted([1.0, *grid])[:8]
+        v = project.get("current_v") or 0
+        items = G.project_items(project)
+        has_goal = self.has_goal(project)
+        self._phase(pid, f"成本压力扫描 · {len(grid)} 档并行", "、".join(f"{s:g}×" for s in grid))
+        card = self._post(
+            pid,
+            role="tool",
+            kind="tool",
+            data={
+                "name": "cost_sweep",
+                "label": "成本压力扫描",
+                "args": {"倍数": " / ".join(f"{s:g}×" for s in grid)},
+                "status": "running",
+            },
+        )
+        t0 = time.perf_counter()
+
+        def one(scale: float) -> dict[str, Any]:
+            out = self.tools.backtest(project, code, cost_scale=scale, label=f"策略室 v{v} · {scale:g}× 成本扫描")
+            m = (out.get("metrics") or {}) if out.get("ok") else {}
+            ev = G.evaluate_items(m, items) if out.get("ok") and items else None
+            ok = bool(out.get("ok")) and (ev["passed"] if has_goal and ev else (m.get("total_return") or 0) > 0)
+            return {
+                "scale": scale,
+                "ok": bool(out.get("ok")),
+                "error": None if out.get("ok") else str(out.get("error") or "回测失败")[:200],
+                "passed": ok,
+                "metrics": {k: m.get(k) for k in SWEEP_METRICS},
+                "failed": [i["label"] for i in (ev or {}).get("items", []) if not i.get("ok")],
+                "bt_id": out.get("bt_id"),
+            }
+
+        rows = self._parallel(pid, one, grid)
+        limit = sweep_limit(rows)
+        if refine and limit["pass_max"] is not None and limit["fail_min"] is not None:
+            lo, hi = limit["pass_max"], limit["fail_min"]
+            extra = [round(lo + (hi - lo) * k / 4, 2) for k in (1, 2, 3)]
+            extra = [s for s in extra if s not in {r["scale"] for r in rows} and lo < s < hi]
+            if extra:
+                self._phase(pid, f"成本压力扫描 · 在 {lo:g}×–{hi:g}× 之间补 {len(extra)} 档", "")
+                rows += self._parallel(pid, one, extra)
+                limit = sweep_limit(rows)
+        rows.sort(key=lambda r: r["scale"])
+        base = next((r for r in rows if r["scale"] == 1.0 and r["ok"]), None)
+        for r in rows:
+            r["fee_check"] = cost_fee_check((base or {}).get("metrics"), r["metrics"], r["scale"]) if base else None
+        criterion = f"目标（{G.items_text(items)}）" if has_goal else "总收益 > 0（还没设目标）"
+        summary = sweep_summary(limit, criterion)
+        self.store.update(
+            pid,
+            card["seq"],
+            data={"status": "ok", "elapsed_ms": int((time.perf_counter() - t0) * 1000), "preview": summary},
+        )
+        result = {"ok": True, "v": v, "criterion": criterion, "rows": rows, "limit": limit, "summary": summary}
+        self._post(pid, role="tool", kind="cost_sweep", content=summary, data=result)
+        return result
+
+    def _parallel(self, pid: str, fn: Callable[[float], dict[str, Any]], args: list[float]) -> list[dict[str, Any]]:
+        """在线程里并行跑；每个任务带一份请求上下文（工作区、成员），否则存储与权限会找不到工作区。"""
+        from concurrent.futures import ThreadPoolExecutor
+
+        self._check_stop(pid)
+        with ThreadPoolExecutor(max_workers=min(SWEEP_WORKERS, len(args))) as pool:
+            futures = [pool.submit(contextvars.copy_context().run, fn, a) for a in args]
+            return [f.result() for f in futures]
 
     # =====================================================================
     # 对话
@@ -951,6 +1086,17 @@ class StrategyLab:
         rest = cmd[1] if len(cmd) > 1 else ""
         if head in ("/回测", "/backtest"):
             self.backtest_current(pid)
+            return
+        if head in ("/压力", "/stress"):
+            try:
+                scale = float(rest) if rest else 2.0
+            except ValueError:
+                scale = 2.0
+            self.backtest_current(pid, cost_scale=min(20.0, max(0.5, scale)))
+            return
+        if head in ("/sweep", "/成本扫描"):
+            nums = [float(x) for x in re.findall(r"\d+(?:\.\d+)?", rest)]
+            self.cost_sweep(pid, nums or None)
             return
         if head in ("/解释", "/explain"):
             self._explain(pid)
@@ -1263,6 +1409,23 @@ class StrategyLab:
                 "consistency（指标一致性）、zero_trade_diagnosis（零交易诊断）",
                 {**obj, "properties": {"cost_scale": {"type": "number"}}},
                 backtest,
+            ),
+            "cost_sweep": Tool(
+                "cost_sweep",
+                "成本压力扫描（等同 /sweep）：并行跑多档成本倍数（手续费、价差、滑点一起放大）的回测，"
+                "找出策略不再满足目标（没设目标时为总收益转负）的成本极限，并核对各档手续费是否按倍数放大。"
+                "scales 不填默认 1、1.5、2、3、4、6 倍；找到区间后会自动在区间内再细分。只展示，不改版本成绩",
+                {
+                    **obj,
+                    "properties": {
+                        "scales": {
+                            "type": "array",
+                            "items": {"type": "number"},
+                            "description": "成本倍数列表，0.5–20，最多 8 个",
+                        }
+                    },
+                },
+                lambda scales=None: self.cost_sweep(pid, scales),
             ),
             "list_versions": Tool(
                 "list_versions", "列出本项目历次版本及其回测成绩", {**obj, "properties": {}}, versions

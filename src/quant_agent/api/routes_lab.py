@@ -209,7 +209,7 @@ class CodeIn(BaseModel):
 
 class WaitIn(BaseModel):
     wait: bool = False
-    cost_scale: float = Field(1.0, ge=0.5, le=5)
+    cost_scale: float = Field(1.0, ge=0.5, le=20)
 
 
 # ---------------------------------------------------------------------------
@@ -228,9 +228,11 @@ def _platform_backtest(project: dict[str, Any], code: str, *, cost_scale: float 
         bars_limit=project.get("bars_limit") or 1500,
         start=project.get("start"),
         end=project.get("end"),
-        taker_fee=0.001 * cost_scale,
-        slippage_bps=5.0 * cost_scale,
-        spread_bps=2.0 * cost_scale,
+        # 基准成本 + 压力倍数：倍数在撮合时统一生效，策略 initialize 里 set_order_cost 也会被放大
+        taker_fee=0.001,
+        slippage_bps=5.0,
+        spread_bps=2.0,
+        cost_scale=cost_scale,
         source=_data_source(project),
         persist=True,
         label=label[:60],
@@ -1085,6 +1087,20 @@ def backtest_project(pid: str, payload: WaitIn) -> dict:
     lab = _lab_for(pid)
     _project_or_404(lab, pid)
     return _start(lab, pid, "backtest", lambda: lab.backtest_current(pid, cost_scale=payload.cost_scale), payload.wait)
+
+
+class SweepIn(BaseModel):
+    scales: list[float] = Field(default_factory=list, max_length=8, description="成本倍数（0.5–20），不填用默认档位")
+    wait: bool = False
+
+
+@router.post("/projects/{pid}/cost-sweep", summary="成本压力扫描：并行回测多档成本倍数，找出不再满足目标的成本极限")
+def cost_sweep_project(pid: str, payload: SweepIn) -> dict:
+    lab = _lab_for(pid)
+    _project_or_404(lab, pid)
+    if type(lab) is not StrategyLab:
+        raise HTTPException(400, "成本压力扫描目前只支持策略研究；因子 / 模型等请用 /stress 做单档成本评估")
+    return _start(lab, pid, "backtest", lambda: lab.cost_sweep(pid, payload.scales or None), payload.wait)
 
 
 @router.post("/projects/{pid}/code", summary="保存手动编辑的代码为新版本（先做沙箱试跑）")

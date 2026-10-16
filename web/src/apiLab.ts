@@ -145,7 +145,7 @@ export interface LabMessage {
   role: 'user' | 'assistant' | 'tool' | 'event'
   kind: 'text' | 'tool' | 'code' | 'backtest' | 'round' | 'team' | 'ask' | 'error' | 'saved' | 'goal' | 'walkforward' |
     'factor_code' | 'factor_report' | 'model_spec' | 'model_report' | 'portfolio_spec' | 'portfolio_report' | 'execution_spec' | 'execution_report' | 'discussion' | 'plan' |
-    'report' | 'subagents'
+    'report' | 'subagents' | 'cost_sweep'
   content: string
   data: Record<string, any>
   mode?: 'llm' | 'fallback'
@@ -248,6 +248,8 @@ export const lab = {
   decide: (id: string, choice: string, note = '') => post<LabView>(`/api/lab/projects/${id}/decision`, { choice, note }),
   stop: (id: string) => post<{ ok: boolean }>(`/api/lab/projects/${id}/stop`),
   backtest: (id: string, cost_scale = 1) => post<LabView>(`/api/lab/projects/${id}/backtest`, { cost_scale }),
+  /** 成本压力扫描：并行回测多档成本倍数，找出不再满足目标的极限 */
+  costSweep: (id: string, scales: number[] = []) => post<LabView>(`/api/lab/projects/${id}/cost-sweep`, { scales }),
   saveCode: (id: string, code: string, note = '手动编辑') => post<LabView>(`/api/lab/projects/${id}/code`, { code, note }),
   restore: (id: string, v: number) => post<LabView>(`/api/lab/projects/${id}/versions/${v}/restore`),
   pin: (id: string, p: { kind?: string; title: string; text: string }) => post<{ pin: Pin; context: ContextView }>(`/api/lab/projects/${id}/pins`, p),
