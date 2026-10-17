@@ -1564,6 +1564,7 @@ class StrategyLab:
                 from .followup import FOLLOWUPS
 
                 FOLLOWUPS.watch(self, pid, _t.name, out)
+                FOLLOWUPS.seen(pid, _t.name, out)
                 if isinstance(out, dict) and out.get("run_id") and _t.name in ("start_tuning", "start_stress_drill", "run_checkup"):
                     out = {**out, "followup": "任务完成后平台会自动叫你回到这个对话汇报结果，不需要反复查询"}
                 return out

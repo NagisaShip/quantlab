@@ -75,6 +75,27 @@ class FollowUps:
                 self._thread = threading.Thread(target=self._loop, daemon=True, name="lab-followup")
                 self._thread.start()
 
+    #: 查结果的工具 → 它对应的发起工具
+    RESULT_OF = {"tuning_result": "start_tuning", "stress_result": "start_stress_drill", "checkup_result": "run_checkup"}
+
+    def seen(self, pid: str, tool: str, out: Any) -> None:
+        """AI 自己查到了已结束的结果：对应的跟进取消，不再重复汇报。"""
+        start = self.RESULT_OF.get(tool)
+        if not start or not isinstance(out, (dict, list)):
+            return
+        text = json.dumps(out, ensure_ascii=False, default=str)
+        finished = isinstance(out, list) or bool(
+            out.get("best_params") or out.get("status") in ("done", "failed", "error") or out.get("state") in ("FAILED", "CANCELED")
+        )
+        if not finished:
+            return
+        with self._lock:
+            for w in [w for w in self._items if w.pid == pid and w.tool == start]:
+                # 列表形式的结果里要能看到这个任务，单个结果默认就是最近发起的那个
+                if isinstance(out, list) and w.run_id not in text:
+                    continue
+                self._items.remove(w)
+
     def pending(self, pid: str) -> list[dict[str, str]]:
         with self._lock:
             return [{"tool": w.tool, "run_id": w.run_id} for w in self._items if w.pid == pid]
@@ -115,10 +136,11 @@ class FollowUps:
             return False
         if project.get("status") == "running":
             return False  # 对话正忙：等这一轮结束再汇报
-        self._deliver(w, project, res)
+        # AI 正在等研究者回答（审批卡、提问）：不另起回合把问题冲掉，只把结果写进对话、发通知
+        self._deliver(w, project, res, start_turn=project.get("status") != "awaiting_user")
         return True
 
-    def _deliver(self, w: _Watch, project: dict[str, Any], res: Any) -> None:
+    def _deliver(self, w: _Watch, project: dict[str, Any], res: Any, *, start_turn: bool = True) -> None:
         label = LABEL[w.tool]
         summary = json.dumps(res, ensure_ascii=False, default=str)
         if len(summary) > 6000:
@@ -127,12 +149,18 @@ class FollowUps:
             f"【后台任务完成】你之前发起的{label}（{w.run_id}）已经结束，结果如下：\n{summary}\n"
             "请主动向研究者汇报：结论是什么、可信度如何（样本区间、成交数、是否失败及原因）、建议的下一步。"
         )
-        w.lab.store.append(w.pid, {"role": "event", "kind": "text", "content": f"{label} {w.run_id} 已完成，AI 正在汇报结果"})
-        w.lab.store.append(w.pid, {"role": "user", "kind": "text", "content": text, "data": {"auto": "followup"}})
-        try:
-            w.lab.start(w.pid, "chat", lambda: w.lab.chat(w.pid, text), wait=False)
-        except RuntimeError:
-            pass  # 刚好有人发了消息：结果已经在对话里，下一轮 AI 会看到
+        if not start_turn:
+            w.lab.store.append(
+                w.pid, {"role": "event", "kind": "text", "content": f"{label} {w.run_id} 已完成；回答上面的问题后 AI 会一起汇报"}
+            )
+            w.lab.store.append(w.pid, {"role": "user", "kind": "text", "content": text, "data": {"auto": "followup"}})
+        else:
+            w.lab.store.append(w.pid, {"role": "event", "kind": "text", "content": f"{label} {w.run_id} 已完成，AI 正在汇报结果"})
+            w.lab.store.append(w.pid, {"role": "user", "kind": "text", "content": text, "data": {"auto": "followup"}})
+            try:
+                w.lab.start(w.pid, "chat", lambda: w.lab.chat(w.pid, text), wait=False)
+            except RuntimeError:
+                pass  # 刚好有人发了消息：结果已经在对话里，下一轮 AI 会看到
         try:
             from ..api.deps import get_services
 
