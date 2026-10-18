@@ -15,7 +15,7 @@
 |---|---|
 | `ruff check src tests scripts` | Passed |
 | `ruff format --check src tests scripts` | Passed, 338 files formatted |
-| `pytest -q` | **1,201 passed / 4 skipped** |
+| `pytest -q` | **1,202 passed / 4 skipped** |
 | `npm run build` in `web/` | Passed; circular-chunk warning removed, `page-research` is about 624KB |
 | `npm run e2e:typecheck` | Passed |
 | `npm run e2e` | **32 passed** (12.3 min, Microsoft Edge, video disabled) |
@@ -45,7 +45,7 @@ python -m pytest -q
 Result:
 
 ```text
-1201 passed, 4 skipped
+1202 passed, 4 skipped
 ```
 
 The remaining warnings are upstream FastAPI/Starlette/httpx deprecation notices.

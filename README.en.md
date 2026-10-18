@@ -140,7 +140,7 @@ LLM providers can be configured in the Models page, through environment variable
 | Check | Result |
 |---|---|
 | Ruff lint / formatting | Passed |
-| Full backend suite | **1,201 passed / 4 skipped** |
+| Full backend suite | **1,202 passed / 4 skipped** |
 | TypeScript + Vite production build | Passed |
 | Research Flow coverage audit | 30/44 direct, 8 contextual, 6 non-research |
 | Playwright E2E | **32 passed** |

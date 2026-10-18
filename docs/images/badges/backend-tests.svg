@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="204" height="20" role="img" aria-label="backend tests: 1201 passed">
-  <title>backend tests: 1201 passed</title>
+<svg xmlns="http://www.w3.org/2000/svg" width="204" height="20" role="img" aria-label="backend tests: 1202 passed">
+  <title>backend tests: 1202 passed</title>
   <linearGradient id="s" x2="0" y2="100%"><stop offset="0" stop-color="#fff" stop-opacity=".08"/><stop offset="1" stop-opacity=".08"/></linearGradient>
   <clipPath id="r"><rect width="204" height="20" rx="3" fill="#fff"/></clipPath>
   <g clip-path="url(#r)">
@@ -10,7 +10,7 @@
   <g fill="#fff" text-anchor="middle" font-family="Verdana,DejaVu Sans,sans-serif" font-size="11">
     <text x="56.0" y="15" fill="#010101" fill-opacity=".3">backend tests</text>
     <text x="56.0" y="14">backend tests</text>
-    <text x="158.0" y="15" fill="#010101" fill-opacity=".3">1201 passed</text>
-    <text x="158.0" y="14">1201 passed</text>
+    <text x="158.0" y="15" fill="#010101" fill-opacity=".3">1202 passed</text>
+    <text x="158.0" y="14">1202 passed</text>
   </g>
 </svg>
