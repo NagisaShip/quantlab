@@ -281,11 +281,12 @@ def test_config_missing_raises(tmp_path, monkeypatch):
 
 
 def test_config_default_when_missing(tmp_path, monkeypatch):
-    """没有配置文件时也要能起来——否则交付第一眼就是报错。"""
+    """没有配置文件时也要能起来——默认不内置服务商，但配置对象必须完整可用。"""
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
     cfg = AgentConfig.load(tmp_path / "nope.toml")
-    assert "deepseek" in cfg.providers
-    assert cfg.routing["default"]
+    assert cfg.providers == {}
+    assert cfg.routing["fallback"] == []
     assert cfg.notify["channel"] == "console"
 
 

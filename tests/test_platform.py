@@ -32,6 +32,14 @@ def _assert_error(r, status: int, code: str):
     return body
 
 
+def test_postgres_translate_escapes_literal_percent():
+    db = object.__new__(Database)
+    db.dialect = "postgres"
+    assert db.translate("SELECT * FROM t WHERE name LIKE ? AND x='100%'") == (
+        "SELECT * FROM t WHERE name LIKE %s AND x='100%%'"
+    )
+
+
 def test_migration_random_id_expression_is_portable():
     """0018 的随机 UID 回填不能在 PostgreSQL 上调用 SQLite 的 randomblob()。"""
     db = object.__new__(Database)

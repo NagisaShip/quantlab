@@ -174,7 +174,8 @@ class Database:
 
     def translate(self, sql: str) -> str:
         if self.dialect == "postgres":
-            return sql.replace("?", "%s")
+            # psycopg 把 % 当作占位符起始符；SQL 里的 LIKE '%x%' 和字面量 % 必须先转义。
+            return sql.replace("%", "%%").replace("?", "%s")
         return sql
 
     def wrap_error(self, exc: Exception) -> Exception:
