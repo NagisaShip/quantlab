@@ -212,7 +212,7 @@ qagent serve --with-worker   # 单机：API + 守护 worker，http://127.0.0.1:8
 | `ruff check src tests scripts` | ✅ All checks passed |
 | `ruff format --check src tests scripts` | ✅ 338 files already formatted |
 | `tsc -b && vite build`（`web/`） | ✅ 通过 |
-| `pytest -q`（完整套件） | ✅ **1,202 passed / 4 skipped** |
+| `pytest -q`（完整套件） | ✅ **1,203 passed / 4 skipped** |
 | 定向后端测试（账本 v2 / 真实永续 / 资金费 / 能力矩阵） | ✅ 60 passed |
 | 英文界面逐页巡检 | ✅ 35 个登录页 + 未登录首页无 UI 中文残留（系统错误文本、运行时路径除外） |
 | 浏览器端 E2E（Microsoft Edge，关闭录像） | ✅ 32 passed |
