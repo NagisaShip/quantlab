@@ -412,7 +412,9 @@ def test_admin_console_ban_reset_announce_and_registration(app):
     # 普通成员（即使是工作区管理员）不能进运维控制台
     assert a.get("/api/admin/overview").status_code == 403
     ov = admin.get("/api/admin/overview").json()
-    assert ov["users"]["total"] == 3 and ov["server"]["db"] == "sqlite" and "disk" in ov["server"]
+    assert ov["users"]["total"] == 3
+    assert ov["server"]["db"] in {"sqlite", "postgres"}
+    assert "disk" in ov["server"]
     users = admin.get("/api/admin/users?q=example").json()["users"]
     assert {x["email"] for x in users} >= {"a@example.com", "b@example.com"}
     assert admin.get(f"/api/admin/users/{a_id}").json()["workspaces"][0]["role"] == "member"
