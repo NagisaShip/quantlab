@@ -7,6 +7,9 @@ WORKDIR /web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY web/ ./
+# 介绍页会把仓库根目录的 README 作为原文打包；构建上下文只 COPY web/ 时需显式补上
+COPY README.md /README.md
+COPY README.en.md /README.en.md
 RUN npm run build
 
 # ---------- 运行时 ----------
