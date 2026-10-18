@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 24 24" role="img" aria-labelledby="title desc">
+  <title id="title">QuantLab Bot</title>
+  <desc id="desc">QuantLab Bot logo: a blue robot head with two white candlestick-chart eyes.</desc>
+  <defs>
+    <linearGradient id="quantlab-bot-head" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4A62EA"/>
+      <stop offset="1" stop-color="#2E45C8"/>
+    </linearGradient>
+  </defs>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="2.5" y="3.25" width="19" height="17.5" rx="5.2" fill="url(#quantlab-bot-head)" stroke="none"/>
+    <rect x="4.6" y="5.85" width="14.8" height="10.6" rx="3.4" fill="#22379F" fill-opacity="0.55" stroke="none"/>
+    <g stroke="#FFFFFF" stroke-opacity="0.9" stroke-width="0.7">
+      <path d="M8.6 6.9v8.6"/><path d="M15.4 6.9v8.6"/>
+    </g>
+    <rect x="6.7" y="8.8" width="3.8" height="4.8" rx="0.8" fill="#FFFFFF" stroke="none"/>
+    <rect x="13.5" y="9.5" width="3.8" height="3.6" rx="0.8" fill="#FFFFFF" stroke="none"/>
+  </g>
+</svg>
