@@ -85,12 +85,16 @@ def test_sweep_limit_and_summary():
 def test_cost_sweep_runs_in_parallel_and_refines_the_limit(tmp_path):
     """收益在成本 2.5× 以上转负：第一轮 1、2、3 倍找到区间，第二轮在 2–3 之间补 3 档把极限收窄。"""
     import threading
+    import time
 
     seen: list[float] = []
     threads: set[int] = set()
     lock = threading.Lock()
 
     def backtest(project, code, *, cost_scale=1.0, label=""):
+        # 回测本身是纯函数、耗时极短；留一点重叠时间，避免线程池复用单线程导致
+        # “是否并行”的断言变成调度相关的偶发失败。
+        time.sleep(0.02)
         with lock:
             seen.append(cost_scale)
             threads.add(threading.get_ident())
