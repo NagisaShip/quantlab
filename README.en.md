@@ -2,11 +2,11 @@
 
 <div align="center">
 
-**A cryptocurrency quantitative research and simulation platform built around the AI Lab**
+**An AI-driven cryptocurrency quantitative research and simulation platform**
 
-Strategy → backtest → robustness checks → paper trading → exchange demo → micro live → live attribution
+Research goals → multi-agent collaboration → strategy backtests → robustness review → research conclusions
 
-[中文](README.md) | [English documentation](docs/README.en.md)
+[中文](README.md) | [English](README.en.md)
 
 [![Python](./docs/images/badges/python.svg)](https://www.python.org/)
 [![TypeScript](./docs/images/badges/typescript.svg)](https://www.typescriptlang.org/)
@@ -14,6 +14,14 @@ Strategy → backtest → robustness checks → paper trading → exchange demo 
 [![License](./docs/images/badges/license.svg)](LICENSE)
 
 </div>
+
+![QuantLab home](docs/images/latest/en/01-home.png)
+
+![Research loop demo: define a goal → multi-agent collaboration → backtest → robustness review → conclusion](docs/images/latest/en/demo-research-flow-en.gif)
+
+*Research loop: goal → multi-agent collaboration → strategy backtest → robustness review → conclusion*
+
+> **See it work first:** describe a research goal in the AI Lab. Multiple agents divide the work, call platform tools to build and backtest strategies, audit the evidence, and return a reproducible conclusion.
 
 > **Preview release:** interfaces, data conventions and capability boundaries may change before a stable release.
 
@@ -36,8 +44,6 @@ QuantLab is a conversation-first research platform:
 - the Agent uses 51 platform tools across market data, strategy generation, backtests, factors, models, portfolios, execution and reports;
 - every conclusion is tied to code hashes, parameters, data sources, cost assumptions and a run manifest;
 - strategies must pass validation before paper trading, exchange demo or real-money micro live.
-
-![Home](docs/images/latest/en/01-home.png)
 
 ![Research Flow](docs/images/latest/en/17-research-flow.png)
 

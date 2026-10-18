@@ -4,9 +4,6 @@
 
 **以 AI 研究室为核心的加密货币量化研究与仿真验证平台**
 
-> **Preview release:** interfaces, data conventions and capabilities may change before a stable release.
-> 当前为 `v 0.1 preview`，接口、数据口径与功能边界仍可能调整。
-
 写策略 → 回测 → 参数稳健性检验 → 纸面模拟 → 交易所模拟盘 → 微实盘 → 实盘对照
 
 [中文](README.md) | [English](README.en.md)
@@ -17,6 +14,16 @@
 [![License](./docs/images/badges/license.svg)](LICENSE)
 
 </div>
+
+![QuantLab 首页](./docs/images/latest/01-home.png)
+
+![研究闭环演示：提出研究目标 → 多 Agent 协作 → 策略回测 → 稳健性审查 → 研究结论](./docs/images/latest/demo-research-flow-zh.gif)
+
+*研究闭环：提出目标 → 多 Agent 协作 → 策略回测 → 稳健性审查 → 研究结论*
+
+> **先看它怎么工作：** 在 AI 研究室描述研究目标，多个 Agent 分工协作，调用平台工具完成策略开发、回测和审查，最后给出可复现、可复核的研究结论。
+
+> **Preview release:** interfaces, data conventions and capabilities may change before a stable release. 当前为 `v 0.1 preview`，接口、数据口径与功能边界仍可能调整。
 
 ---
 
@@ -40,8 +47,6 @@ QuantLab 不是一个“填表单跑回测”的单点工具，而是一个**对
 - AI 在平台的 51 个工具上调行情、写策略、跑回测、评估因子、训练模型、做组合优化与执行仿真；
 - 每个结论都落回可复现的记录：代码哈希、参数、数据来源、成本假设、运行清单；
 - 研究通过上线验证后，才进入纸面模拟、模拟盘或微实盘。
-
-![首页](./docs/images/latest/01-home.png)
 
 ![研究流程](./docs/images/latest/17-research-flow.png)
 
