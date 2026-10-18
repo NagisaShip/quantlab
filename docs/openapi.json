@@ -1,9 +1,9 @@
 {
  "openapi": "3.1.0",
  "info": {
-  "title": "QuantLab v 0.1 preview API",
+  "title": "QuantLab v0.1.0-preview.1 API",
   "description": "交易所行情接入、策略管理、回测与仿真、Agent 团队调研、长期 Agent 与通知。\n\n仅为研究结果，非投资建议。",
-  "version": "0.1.0-preview"
+  "version": "0.1.0-preview.1"
  },
  "paths": {
   "/api/auth/status": {

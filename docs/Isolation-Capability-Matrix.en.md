@@ -1,4 +1,4 @@
-# QuantLab v 0.1 preview · Isolation Capability Matrix
+# QuantLab v0.1.0-preview.1 · Isolation Capability Matrix
 
 > Evaluated 2026-10-18. Results reflect current code and local probes. “Partially effective” is never displayed as “fully isolated”.
 

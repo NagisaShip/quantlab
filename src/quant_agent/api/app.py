@@ -56,11 +56,11 @@ WEB_DIST = Path(__file__).resolve().parents[3] / "web" / "dist"
 def create_app(*, with_scheduler: bool = False) -> FastAPI:
     app = FastAPI(
         lifespan=_background if with_scheduler else None,
-        title="QuantLab v 0.1 preview API",
+        title="QuantLab v0.1.0-preview.1 API",
         description=(
             "交易所行情接入、策略管理、回测与仿真、Agent 团队调研、长期 Agent 与通知。\n\n仅为研究结果，非投资建议。"
         ),
-        version="0.1.0-preview",
+        version="0.1.0-preview.1",
     )
 
     # 不开放跨域：前端与 API 同源部署（开发时由 Vite 代理）。需要跨域时由反向代理显式配置白名单。

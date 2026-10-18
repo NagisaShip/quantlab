@@ -1,4 +1,4 @@
--- QuantLab v2.0 初始结构
+-- QuantLab 初始结构
 -- DECIMAL_T：PostgreSQL 为 NUMERIC(38,18)，SQLite 为 TEXT（避免二进制浮点）
 -- AUTOINC_PK：PostgreSQL 为 BIGSERIAL PRIMARY KEY，SQLite 为 INTEGER PRIMARY KEY AUTOINCREMENT
 -- 时间统一为 UTC 毫秒整数；JSON 存 TEXT

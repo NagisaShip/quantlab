@@ -1,4 +1,4 @@
-# QuantLab v 0.1 preview · Documentation Index
+# QuantLab v0.1.0-preview.1 · Documentation Index
 
 > Preview release. Interfaces, data conventions and capability boundaries may change before a stable release. The code, tests and `src/quant_agent/platform/features.py` remain the final authority.
 

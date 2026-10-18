@@ -1,4 +1,4 @@
-# QuantLab v 0.1 preview · Strategy Protocol and Data Conventions
+# QuantLab v0.1.0-preview.1 · Strategy Protocol and Data Conventions
 
 This document defines what a strategy can observe, what it can emit, how orders are matched, how fills are recorded and how metrics are calculated. Backtests, paper trading and live comparison share the protocol; only the event source and matching venue differ.
 

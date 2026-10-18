@@ -82,7 +82,7 @@ export default function Tape() {
     <div className="tape" role="region" aria-label="行情">
       <a className="tape-brand" href="#/home" style={{ textDecoration: 'none' }}>
         <LogoMark />
-        <span className="tape-brand-copy"><span>QuantLab</span><small>v 0.1 preview</small></span>
+        <span className="tape-brand-copy"><span>QuantLab</span><small>v0.1.0-preview.1</small></span>
       </a>
       <div className="tape-quotes">
         {quotes.map((q) => (

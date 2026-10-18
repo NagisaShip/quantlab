@@ -22,7 +22,7 @@ from ..exchanges.base import Bar
 from ..sdk import RuntimeCost, run_backtest
 from ..sdk.runtimes import LocalRunResult, RiskConfig
 
-PLATFORM_VERSION = "0.1.0-preview"
+PLATFORM_VERSION = "0.1.0-preview.1"
 BACKTEST_TIME_LIMIT = 60.0
 OPT_RUN_TIME_LIMIT = 20.0
 MAX_COMBINATIONS = 150

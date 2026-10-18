@@ -1,4 +1,4 @@
-# QuantLab v 0.1 preview · Operations and Recovery Manual
+# QuantLab v0.1.0-preview.1 · Operations and Recovery Manual
 
 This manual is for deployment and on-call operators. The platform separates the API control plane from the worker execution plane. They communicate through the database; Redis is only a wake-up accelerator and can be lost without breaking correctness.
 

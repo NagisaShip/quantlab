@@ -1,4 +1,4 @@
-# QuantLab v 0.1 preview · Personal Account Integration Guide
+# QuantLab v0.1.0-preview.1 · Personal Account Integration Guide
 
 > This step is optional. Strategy authoring, backtesting, optimization and paper trading work without an exchange account. Connect real records only when you want to compare simulated results with actual fills.
 

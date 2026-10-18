@@ -1,4 +1,4 @@
-# QuantLab v 0.1 preview · Exchange Demo Trading and Strategy Packages
+# QuantLab v0.1.0-preview.1 · Exchange Demo Trading and Strategy Packages
 
 [中文](交易所模拟盘与策略包.md) | [Documentation index](README.en.md) | [Back to README](../README.md)
 

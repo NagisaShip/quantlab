@@ -1,5 +1,5 @@
 {
-  "name": "QuantLab v 0.1 preview",
+  "name": "QuantLab v0.1.0-preview.1",
   "short_name": "QuantLab",
   "description": "运行中实验的手机看板：收益、持仓、告警，一键停止并平仓",
   "start_url": "/#/board",

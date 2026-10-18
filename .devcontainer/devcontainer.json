@@ -1,0 +1,15 @@
+{
+  "name": "QuantLab",
+  "image": "mcr.microsoft.com/devcontainers/python:1-3.12-bookworm",
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "22"
+    }
+  },
+  "postCreateCommand": "pip install -r requirements-dev.lock && pip install --no-deps -e . && cd web && npm ci --no-audit --no-fund",
+  "forwardPorts": [8000, 5173],
+  "portsAttributes": {
+    "8000": { "label": "QuantLab" },
+    "5173": { "label": "QuantLab Vite dev server" }
+  }
+}

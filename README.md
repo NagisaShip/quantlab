@@ -1,19 +1,42 @@
-# QuantLab v 0.1 preview
+# QuantLab v0.1.0-preview.1
 
 <div align="center">
 
-**以 AI 研究室为核心的加密货币量化研究与仿真验证平台**
+**把一句研究想法，变成可回测、可审查、可复现的策略结论。**
 
-写策略 → 回测 → 参数稳健性检验 → 纸面模拟 → 交易所模拟盘 → 微实盘 → 实盘对照
+面向加密货币的 AI 原生量化研究台：对话式研究、多 Agent 协作、回测与稳健性检验、纸面模拟、交易所模拟盘和受控实盘验证。
 
-[中文](README.md) | [English](README.en.md)
+[在浏览器中运行（GitHub Codespaces）](https://codespaces.new/NagisaShip/quantlab) · [30 秒演示](#先看它怎么工作) · [快速开始](#快速开始) · [Roadmap](#roadmap) · [中文](README.md) | [English](README.en.md)
 
 [![Python](./docs/images/badges/python.svg)](https://www.python.org/)
 [![TypeScript](./docs/images/badges/typescript.svg)](https://www.typescriptlang.org/)
 [![Backend tests](./docs/images/badges/backend-tests.svg)](docs/测试与验证报告.md)
 [![License](./docs/images/badges/license.svg)](LICENSE)
+[![Run in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/NagisaShip/quantlab)
 
 </div>
+
+> **当前版本：`v0.1.0-preview.1`** · Preview 表示接口和数据口径仍可能调整；真实资金通道默认关闭。
+
+## 15 秒了解 QuantLab
+
+| 它是什么 | 凭什么不一样 | 多久能跑起来 |
+|---|---|---|
+| 一个对话式的量化研究平台。你描述研究目标，Agent 选择工具、写策略、跑回测、审查证据并给出可复现结论。 | 不是“再做一个回测库”：它把 **AI 研究对话、多 Agent 评审、回测/稳健性检验、执行仿真、工作区协作与审计** 串成同一条证据链。 | **Docker 首次启动约 10–15 分钟**（含镜像构建）；依赖已缓存时约 5 分钟。没有模型密钥也能启动，配置密钥后可运行完整 AI 研究流程。 |
+
+## 和常见工具的区别
+
+| 项目 | 核心定位 | 更适合谁 | 与 QuantLab 的主要区别 |
+|---|---|---|---|
+| **QuantLab** | AI 原生、自托管的研究与验证工作台 | 想把“研究想法 → 证据 → 模拟/实盘验证”放在同一个系统里的团队 | 对话式 Agent、多 Agent 评审、研究门禁、协作审计和运行链路一体化 |
+| **Freqtrade** | 成熟的加密货币交易机器人与策略框架 | 需要稳定执行、插件生态和现成交易机器人能力的用户 | QuantLab 更偏研究、审查和结论可追溯；Freqtrade 更偏策略运行与交易自动化 |
+| **Backtrader** | Python 事件驱动回测库 | 希望自行编写回测逻辑、完全控制代码结构的开发者 | QuantLab 提供完整 Web 工作区、Agent、团队协作和运行/验证链路 |
+| **QuantConnect** | 托管式多资产算法交易平台 | 希望使用托管数据、IDE 和云端研究环境的用户 | QuantLab 可自托管，强调 AI 研究对话、工作区隔离和本地数据/模型配置 |
+| **Zipline** | Python 回测与研究库 | 熟悉 Python 数据栈、需要轻量研究库的量化开发者 | QuantLab 额外提供 Agent、UI、协作、审计、纸面/模拟盘和实盘验证流程 |
+
+> 这些工具都很成熟；QuantLab 的差异不是替代它们的底层撮合或数据能力，而是把研究、审查与运行组织成一条可复用的工作流。
+
+## 先看它怎么工作
 
 ![QuantLab 首页](./docs/images/latest/01-home.png)
 
@@ -21,25 +44,9 @@
 
 *研究闭环：提出目标 → 多 Agent 协作 → 策略回测 → 稳健性审查 → 研究结论*
 
-> **先看它怎么工作：** 在 AI 研究室描述研究目标，多个 Agent 分工协作，调用平台工具完成策略开发、回测和审查，最后给出可复现、可复核的研究结论。
+如果只想快速体验，使用上方的 **GitHub Codespaces** 入口，无需在本机安装依赖。首次打开后在终端运行 `bash scripts/dev.sh`，再访问转发出的 `8000` 端口；本地部署按下面的快速开始操作。
 
-> **Preview release:** interfaces, data conventions and capabilities may change before a stable release. 当前为 `v 0.1 preview`，接口、数据口径与功能边界仍可能调整。
-
----
-
-## ⚠️ 安全边界
-
-- **默认没有任何真实下单路径。** 只读账户、纸面模拟和交易所模拟盘都不会动真钱。
-- 平台内置**微实盘**：一条默认关闭、只支持 Binance / OKX 现货、只允许“已毕业”策略以小额真实资金运行的通道。
-- 打开微实盘需要同时满足：部署者设置 `QAGENT_MICROLIVE=1`、工作区管理员确认风险告知、每次启动输入确认码；交易所止损必挂，支持一键平仓停止。
-- **真实永续**是独立通道：使用 `QAGENT_REAL_PERP=1`，独立密钥目录、管理员确认码、期货账户自检、单笔/总名义/杠杆/日亏限制、交易所止损和 `real_perp.KILL` 自动急停；不复用微实盘开关。
-- 所有回测、模拟和 AI 结论都只用于研究，**不构成投资建议**，也不承诺收益。
-
-> 微实盘与真实永续都是平台设计的一部分，不是隐藏功能；未开启时相关接口整体不可用。
-
----
-
-## 平台是什么
+## QuantLab 是什么
 
 QuantLab 不是一个“填表单跑回测”的单点工具，而是一个**对话式研究平台**：
 
@@ -51,6 +58,64 @@ QuantLab 不是一个“填表单跑回测”的单点工具，而是一个**对
 ![研究流程](./docs/images/latest/17-research-flow.png)
 
 研究流程把 **7 个阶段、56 个阶段入口和 27 个跨阶段能力** 放在同一页：数据、因子、策略、模型、组合执行、验证与运行按研究顺序展开；角色库、提示词库、模型服务、AI 研究室、群组任务、通知、问题反馈、收藏和 API 工具参考也按“研究配置 / 协作复用”并入。工作区关闭的能力直接标注“未开启”，客户端入口仍由服务端能力矩阵最终裁决。
+
+---
+
+## 快速开始
+
+### Docker Compose（推荐）
+
+```bash
+mkdir -p secrets
+python -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())" > secrets/secret.key
+cp .env.example .env
+# 编辑 .env，至少修改 POSTGRES_PASSWORD
+docker compose up -d --build
+```
+
+打开 <http://127.0.0.1:8000>，第一个注册的账号成为部署管理员。
+
+### 单机开发
+
+**Windows:**
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\dev.ps1
+```
+
+**Linux / macOS:**
+
+```bash
+bash scripts/dev.sh
+```
+
+脚本会安装依赖、构建前端、执行迁移，并启动 API 与 Worker。
+
+**手动启动：**
+
+```bash
+pip install -r requirements-dev.lock
+pip install --no-deps -e .
+cd web && npm ci && npm run build && cd ..
+qagent migrate
+qagent serve --with-worker   # 单机：API + 守护 worker，http://127.0.0.1:8000
+# 或分开部署：qagent worker &  +  qagent serve
+
+# 在回环地址（127.0.0.1 / localhost）启动 serve 时，若没有在线 worker 会自动拉起；
+# 已有外部 worker 时不会重复启动，worker 退出后会由守护线程自动恢复。
+```
+
+> 无外网时行情会明确报“未接入数据”，不会用合成数据冒充真实行情。演示页与压力演练中的示意数据会单独标注。
+
+### 配置大模型
+
+三种方式任选其一：
+
+1. 界面「模型」页登记服务与密钥（部署管理员）；
+2. 环境变量：`DEEPSEEK_API_KEY`、`OPENAI_API_KEY`、`ANTHROPIC_API_KEY` 等；
+3. 复制 `agent.config.example.toml` 为 `agent.config.toml`。
+
+支持 DeepSeek、通义千问、Kimi、智谱、OpenAI 兼容接口、Anthropic、Ollama、vLLM 等。
 
 ---
 
@@ -152,63 +217,20 @@ Worker 进程  qagent worker
 
 ---
 
-## 快速开始
+<details>
+<summary><strong>安全边界：默认不启用真实资金</strong>（决定部署或贡献后再展开）</summary>
 
-### Docker Compose（推荐）
+- **默认没有任何真实下单路径。** 只读账户、纸面模拟和交易所模拟盘都不会动真钱。
+- 平台内置**微实盘**：一条默认关闭、只支持 Binance / OKX 现货、只允许“已毕业”策略以小额真实资金运行的通道。
+- 打开微实盘需要同时满足：部署者设置 `QAGENT_MICROLIVE=1`、工作区管理员确认风险告知、每次启动输入确认码；交易所止损必挂，支持一键平仓停止。
+- **真实永续**是独立通道：使用 `QAGENT_REAL_PERP=1`，独立密钥目录、管理员确认码、期货账户自检、单笔/总名义/杠杆/日亏限制、交易所止损和 `real_perp.KILL` 自动急停；不复用微实盘开关。
+- 所有回测、模拟和 AI 结论都只用于研究，**不构成投资建议**，也不承诺收益。
 
-```bash
-mkdir -p secrets
-python -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())" > secrets/secret.key
-cp .env.example .env
-# 编辑 .env，至少修改 POSTGRES_PASSWORD
-docker compose up -d --build
-```
-
-打开 <http://127.0.0.1:8000>，第一个注册的账号成为部署管理员。
-
-### 单机开发
-
-**Windows:**
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\dev.ps1
-```
-
-**Linux / macOS:**
-
-```bash
-bash scripts/dev.sh
-```
-
-脚本会安装依赖、构建前端、执行迁移，并启动 API 与 Worker。
-
-**手动启动：**
-
-```bash
-pip install -r requirements-dev.lock
-pip install --no-deps -e .
-cd web && npm ci && npm run build && cd ..
-qagent migrate
-qagent serve --with-worker   # 单机：API + 守护 worker，http://127.0.0.1:8000
-# 或分开部署：qagent worker &  +  qagent serve
-
-# 在回环地址（127.0.0.1 / localhost）启动 serve 时，若没有在线 worker 会自动拉起；
-# 已有外部 worker 时不会重复启动，worker 退出后会由守护线程自动恢复。
-```
-
-> 无外网时行情会明确报“未接入数据”，不会用合成数据冒充真实行情。演示页与压力演练中的示意数据会单独标注。
-
-### 配置大模型
-
-三种方式任选其一：
-
-1. 界面「模型」页登记服务与密钥（部署管理员）；
-2. 环境变量：`DEEPSEEK_API_KEY`、`OPENAI_API_KEY`、`ANTHROPIC_API_KEY` 等；
-3. 复制 `agent.config.example.toml` 为 `agent.config.toml`。
-
-支持 DeepSeek、通义千问、Kimi、智谱、OpenAI 兼容接口、Anthropic、Ollama、vLLM 等。
+> 微实盘与真实永续都是平台设计的一部分，不是隐藏功能；未开启时相关接口整体不可用。
 
 ---
+
+</details>
 
 ## 当前验证状态（2026-10-18）
 
@@ -243,6 +265,31 @@ qagent serve --with-worker   # 单机：API + 守护 worker，http://127.0.0.1:8
 > 行数口径：源文件总行数（含注释与空行），由当前工作区直接统计。
 
 ---
+
+## Roadmap
+
+### Now · `v0.1.0-preview.1`
+
+- 稳定自托管部署、升级和数据迁移路径；
+- 补齐模型服务商预设、错误提示与连接可靠性；
+- 完善 API、策略协议、运维和英文文档；
+- 继续扩大 PostgreSQL / SQLite 双后端测试覆盖。
+
+### Next
+
+- 提供公开的只读在线 Demo，让访客无需部署即可浏览一次完整 AI 研究流程；
+- 增加一键启动镜像和更短的首次运行路径；
+- 扩展数据源、执行仿真和交易所模拟盘适配；
+- 发布插件/工具扩展接口与示例；
+- 为 `good first issue` 标注清晰的贡献入口。
+
+### Later
+
+- 更多资产类别与跨市场研究；
+- 更细粒度的团队权限、审计和研究资产治理；
+- 可复现实验包、模型卡和策略包的生态互操作。
+
+> Roadmap 会随反馈调整。想参与，请从 [Issues](https://github.com/NagisaShip/quantlab/issues) 或 [CONTRIBUTING.md](CONTRIBUTING.md) 开始。
 
 ## 文档
 

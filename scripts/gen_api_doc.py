@@ -40,7 +40,7 @@ def main() -> None:
             count += 1
     tags = sorted(groups, key=lambda t: (ORDER.index(t) if t in ORDER else len(ORDER), t))
     lines = [
-        "# QuantLab v 0.1 preview · API 参考",
+        "# QuantLab v0.1.0-preview.1 · API 参考",
         "",
         "[English](API-Reference.en.md) | [文档索引](README.md) | [返回 README](../README.md)",
         "",

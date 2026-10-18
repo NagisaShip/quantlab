@@ -1,4 +1,4 @@
-# QuantLab v 0.1 preview 运行时依赖锁定（测试环境 Python 3.13；Linux x86_64 / Windows 通用，要求 Python ≥ 3.11）
+# QuantLab v0.1.0-preview.1 运行时依赖锁定（测试环境 Python 3.13；Linux x86_64 / Windows 通用，要求 Python ≥ 3.11）
 # 安装：pip install -r requirements.lock && pip install --no-deps -e .
 #
 # 带 [verified] 的版本是本次 406 项测试（SQLite 与 PostgreSQL 两套）实际运行的版本；

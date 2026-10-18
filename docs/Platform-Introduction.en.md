@@ -1,4 +1,4 @@
-# QuantLab v 0.1 preview · Platform Introduction
+# QuantLab v0.1.0-preview.1 · Platform Introduction
 
 > **A cryptocurrency quantitative research and simulation platform built around the AI Lab.**
 > Preview release: interfaces and capabilities may change. Simulation is the default; real-money paths are separately gated and disabled by default.

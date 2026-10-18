@@ -166,7 +166,7 @@ export const EN_PATTERNS: [string, string][] = [
   ['(.+?)「(.+?)」· Python', '$1 "$2" · Python'],
   ['(\\d+) 个标的同步失败：(.+)', '$1 symbols failed to sync: $2'],
   ['(.+?)× 成本评估', '$1× cost evaluation'],
-  ['(.+?) · QuantLab v 0.1 preview 调研报告', '$1 · QuantLab v 0.1 preview research report'],
+  ['(.+?) · QuantLab v0.1.0-preview.1 调研报告', '$1 · QuantLab v0.1.0-preview.1 research report'],
   ['(.+?) 只读', '$1 read-only'],
   ['(.+?) 已载入，点「上传并校验」提交', '$1 loaded; click "Upload & validate" to submit'],
   ['(.+?) 倍', '$1×'],

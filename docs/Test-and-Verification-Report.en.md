@@ -1,8 +1,8 @@
-# QuantLab v 0.1 preview · Test and Verification Report
+# QuantLab v0.1.0-preview.1 · Test and Verification Report
 
 > Verification date: 2026-10-18
 >
-> Target: current workspace (`v 0.1 preview`)
+> Target: current workspace (`v0.1.0-preview.1`)
 > Environment: Windows 11, Python 3.14.7, Node.js 26.5.0, Microsoft Edge for local Playwright runs
 
 [中文](测试与验证报告.md) | [Documentation index](README.en.md) | [Back to README](../README.md)

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "quant-agent"
-version = "0.1.0"
-description = "QuantLab v 0.1 preview — cryptocurrency quantitative research and simulation platform (AI Agent layer)"
+version = "0.1.0rc1"
+description = "QuantLab v0.1.0-preview.1 — cryptocurrency quantitative research and simulation platform (AI Agent layer)"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

@@ -346,7 +346,7 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
       const prev = (e.oldURL.split('#')[1] || '').replace(/^\/?/, '')
       if (next.page === 'lab') setReturnTo(null)
       else if (/^lab\/[\w-]+/.test(prev) && !SETTINGS_PAGES.has(next.page)) {
-        setReturnTo({ route: prev.split('?')[0], title: document.title.replace(/ · QuantLab v 0.1 preview$/, '') })
+        setReturnTo({ route: prev.split('?')[0], title: document.title.replace(/ · QuantLab v0.1.0-preview.1$/, '') })
       }
       setRoute(next)
       // AI 研究室有自己的消息滚动容器：对话之间切换时保留窗口滚动；从其他页面进入时回到顶部。
@@ -393,7 +393,7 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
   }, [page, me.workspace?.id])
 
   useEffect(() => {
-    document.title = `${t(PAGE_TITLES[page])} · QuantLab v 0.1 preview`
+    document.title = `${t(PAGE_TITLES[page])} · QuantLab v0.1.0-preview.1`
   }, [page])
 
   const reachable = health ? Object.entries(health.adapters).filter(([, v]) => v.reachable).map(([k]) => k) : []
@@ -574,7 +574,7 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
       {drawer && <div className="drawer-backdrop" onClick={() => setDrawer(false)} aria-hidden />}
       <aside className={`sidebar${drawer ? ' open' : ''}`} aria-hidden={side.collapsed || undefined}>
         <div className="side-top">
-          <a className="side-brand" href="#/home"><LogoMark size={20} /><span className="side-brand-copy"><span>QuantLab</span><small>v 0.1 preview</small></span></a>
+          <a className="side-brand" href="#/home"><LogoMark size={20} /><span className="side-brand-copy"><span>QuantLab</span><small>v0.1.0-preview.1</small></span></a>
           <SearchButton onNavigate={go} />
           <SideToggle collapsed={false} onToggle={side.toggle} />
           <button type="button" className="drawer-close" onClick={() => setDrawer(false)} aria-label={t('关闭导航')}>

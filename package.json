@@ -1,7 +1,7 @@
 {
   "name": "quant-agent-e2e",
   "private": true,
-  "version": "0.1.0-preview",
+  "version": "0.1.0-preview.1",
   "type": "module",
   "description": "T12 端到端测试（Playwright）。前端应用依赖在 web/ 下；这里只装 E2E 运行时。",
   "scripts": {
