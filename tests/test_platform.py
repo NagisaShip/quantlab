@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from quant_agent.api.app import create_app
 from quant_agent.api.deps import AppServices, get_services, reset_services, set_services
+from quant_agent.platform.db import Database
 
 
 @pytest.fixture()
@@ -29,6 +30,18 @@ def _assert_error(r, status: int, code: str):
     assert body["code"] == code
     assert body["trace_id"] and r.headers.get("x-trace-id") == body["trace_id"]
     return body
+
+
+def test_migration_random_id_expression_is_portable():
+    """0018 的随机 UID 回填不能在 PostgreSQL 上调用 SQLite 的 randomblob()。"""
+    db = object.__new__(Database)
+    script = "SELECT 'QLU-' || RANDOM_HEX_8"
+    db.dialect = "postgres"
+    pg = db._dialect_sql(script)
+    assert "randomblob" not in pg and "md5(random()::text)" in pg
+    db.dialect = "sqlite"
+    sqlite = db._dialect_sql(script)
+    assert "randomblob(4)" in sqlite and "md5(" not in sqlite
 
 
 # ---------------- 账号 ----------------

@@ -300,9 +300,11 @@ class Database:
         if self.dialect == "postgres":
             script = script.replace("DECIMAL_T", "NUMERIC(38,18)")
             script = script.replace("AUTOINC_PK", "BIGSERIAL PRIMARY KEY")
+            script = script.replace("RANDOM_HEX_8", "upper(substr(md5(random()::text), 1, 8))")
         else:
             script = script.replace("DECIMAL_T", "TEXT")
             script = script.replace("AUTOINC_PK", "INTEGER PRIMARY KEY AUTOINCREMENT")
+            script = script.replace("RANDOM_HEX_8", "upper(substr(hex(randomblob(4)), 1, 8))")
         return script
 
 

@@ -8,11 +8,11 @@ ALTER TABLE collab_groups ADD COLUMN quantlab_no TEXT;
 ALTER TABLE community_profiles ADD COLUMN public_profile INTEGER NOT NULL DEFAULT 0;
 
 UPDATE users
-SET quantlab_uid = 'QLU-' || upper(substr(hex(randomblob(4)), 1, 8))
+SET quantlab_uid = 'QLU-' || RANDOM_HEX_8
 WHERE quantlab_uid IS NULL OR quantlab_uid = '';
 
 UPDATE collab_groups
-SET quantlab_no = 'QLG-' || upper(substr(hex(randomblob(4)), 1, 8))
+SET quantlab_no = 'QLG-' || RANDOM_HEX_8
 WHERE (quantlab_no IS NULL OR quantlab_no = '')
   AND settings NOT LIKE '%"dm"%';
 
