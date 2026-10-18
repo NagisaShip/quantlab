@@ -19,36 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-## 重要声明 / Important Notice
-
-本软件用于量化策略研究与教育目的。微实盘功能默认关闭；一旦启用，将使用真实资金，
-可能导致资金损失。使用者应自行确认所在地区的法律法规，并自行承担全部风险。
-
-**本软件不托管资金、不提供投资建议、不保证收益。**
-
-使用本软件即表示您理解并接受以下条款：
-
-1. 本软件按"原样"提供，不提供任何明示或暗示的保证
-2. 作者不对使用本软件造成的任何损失负责
-3. 用户需自行承担使用本软件的所有风险
-4. 本软件仅用于研究和教育，不构成投资建议
-5. 用户应遵守所在地区关于加密货币的法律法规
-
----
-
-This software is for quantitative strategy research and educational purposes only.
-Trading cryptocurrencies using this software involves risks and may result in
-financial losses. Users must comply with local laws and regulations.
-
-**This software does not custody funds, provide investment advice, or guarantee returns.**
-
-By using this software, you understand and accept the following terms:
-
-1. This software is provided "as is" without any warranties
-2. The authors are not liable for any losses caused by using this software
-3. Users bear all risks of using this software
-4. This software is for research and education only, not investment advice
-5. Users must comply with local cryptocurrency laws and regulations
