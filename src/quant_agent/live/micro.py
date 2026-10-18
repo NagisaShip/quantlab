@@ -47,7 +47,9 @@ TIER_DAYS = 14
 TIER_MAX_DD = 0.10
 CHALLENGE_TTL_MS = 5 * 60_000
 ACK_PHRASE = "我已了解实盘风险"
+ACK_PHRASE_EN = "I understand live trading risk"
 START_PHRASE = "确认实盘"
+START_PHRASE_EN = "Confirm live trading"
 
 CONFIG = "microlive_config"
 TIERS = "microlive_tiers"
@@ -63,7 +65,18 @@ RISK_NOTICE = """\
 4. 资金上限、交易所止损和一键停止能限制损失，但不能保证：极端行情下止损单可能以远差于触发价的价格成交，交易所也可能拒单或宕机。
 5. 平台不会替你做任何超出你确认范围的事：不会自动升档，不会自动加资金，不会在你未确认时启动。
 6. 你可以随时一键停止：平掉微实盘的全部持仓并停止，之后需要管理员重新解除才能再启动。
-"""  # noqa: E501 风险告知原文，不折行
+"""
+RISK_NOTICE_EN = """\
+**Micro live trading uses real money and you may lose all of it.**
+
+1. The platform is a tool, not investment advice. Backtests, paper trading, and demo results do not predict future returns. A strategy can lose money because of market changes, exchange failures, network interruptions, slippage, fees, or software errors.
+2. You are responsible for confirming that local laws and regulations allow you to use this exchange and trade these assets, and for your tax obligations.
+3. The API key must have trading permission only. Withdrawals and transfers must be disabled, and an IP allowlist must be configured. The platform checks these three requirements but cannot safeguard your exchange account.
+4. Position caps, exchange stop-loss orders, and the emergency stop can limit losses but cannot guarantee protection. In extreme markets, stop orders may fill far worse than the trigger price, and the exchange may reject orders or go offline.
+5. The platform will not do anything beyond what you confirm: it will not raise tiers automatically, add funds automatically, or start a session without your confirmation.
+6. You can use the emergency stop at any time: it closes all micro-live positions and stops trading. An admin must re-arm the workspace before trading can resume.
+"""
+
 NOTICE_VERSION = hashlib.sha256(RISK_NOTICE.encode()).hexdigest()[:12]
 
 
@@ -300,7 +313,16 @@ class LiveConnectionService(DemoConnectionService):
             doc["status"] = "active"
         except AppError as exc:
             doc["last_test"] = {"at": _now(), "ok": False, "error": exc.message, **(exc.details or {})}
-            doc["status"] = "error" if doc.get("secret_ref") else "revoked"
+            checks = (exc.details or {}).get("checks") or []
+            dangerous = any(c.get("name") in ("提现 / 划转", "交易权限") and not c.get("ok") for c in checks)
+            if dangerous:
+                # 权限事后被放大（例如新增了提现）：立即擦掉密文，不能只把状态标成 error。
+                self._wipe(doc.get("secret_ref"))
+                doc["secret_ref"] = None
+                doc["status"] = "revoked"
+                doc["revoked_at"] = _now()
+            else:
+                doc["status"] = "error" if doc.get("secret_ref") else "revoked"
         self.store.upsert(CONNS, doc)
         return self._out(doc)
 
@@ -340,36 +362,61 @@ def config(store: Any) -> dict[str, Any]:
 def status(store: Any, home: Path | str) -> dict[str, Any]:
     c = config(store)
     current = c.get("notice_version") == NOTICE_VERSION
-    blockers = []
+    blockers: list[str] = []
+    blockers_en: list[str] = []
+
+    def block(zh: str, en: str) -> None:
+        blockers.append(zh)
+        blockers_en.append(en)
+
     if not server_enabled():
-        blockers.append(f"服务器没有打开微实盘（部署时设置环境变量 {SERVER_FLAG}=1）")
+        block(
+            f"服务器没有打开微实盘（部署时设置环境变量 {SERVER_FLAG}=1）",
+            f"Micro live trading is disabled on the server (set {SERVER_FLAG}=1 when deploying)",
+        )
     if server_killed(home):
-        blockers.append(f"服务器上有急停文件 {KILL_FILE}：删掉它才能恢复")
+        block(
+            f"服务器上有急停文件 {KILL_FILE}：删掉它才能恢复",
+            f"The server has an emergency-stop file {KILL_FILE}; remove it to recover",
+        )
     if not c["enabled"]:
-        blockers.append("工作区还没打开微实盘：管理员读完风险告知后打开")
+        block(
+            "工作区还没打开微实盘：管理员读完风险告知后打开",
+            "Micro live trading is not enabled for this workspace: an admin must read the risk notice and enable it",
+        )
     elif not current:
-        blockers.append("风险告知更新过，需要管理员重新确认")
+        block(
+            "风险告知更新过，需要管理员重新确认",
+            "The risk notice has changed; an admin must confirm it again",
+        )
     if c["killed"]:
-        blockers.append("已一键停止：管理员解除后才能再启动")
+        block(
+            "已一键停止：管理员解除后才能再启动",
+            "Emergency stop is active; an admin must re-arm the workspace before trading can resume",
+        )
     return {
         **c,
         "server_enabled": server_enabled(),
         "server_killed": server_killed(home),
         "notice": RISK_NOTICE,
+        "notice_en": RISK_NOTICE_EN,
         "notice_current": NOTICE_VERSION,
         "ack_phrase": ACK_PHRASE,
+        "ack_phrase_en": ACK_PHRASE_EN,
         "start_phrase": START_PHRASE,
+        "start_phrase_en": START_PHRASE_EN,
         "hard_ceiling": HARD_CEILING,
         "ready": not blockers,
         "blockers": blockers,
+        "blockers_en": blockers_en,
     }
 
 
 def enable(
     store: Any, *, user: str, phrase: str, notice_version: str, tiers: list[float] | None = None
 ) -> dict[str, Any]:
-    if phrase.strip() != ACK_PHRASE:
-        raise AppError(ErrorCode.INVALID_PARAMETER, f"请输入「{ACK_PHRASE}」确认")
+    if phrase.strip() not in (ACK_PHRASE, ACK_PHRASE_EN):
+        raise AppError(ErrorCode.INVALID_PARAMETER, f"请输入「{ACK_PHRASE}」或「{ACK_PHRASE_EN}」确认")
     if notice_version != NOTICE_VERSION:
         raise AppError(ErrorCode.INVALID_PARAMETER, "风险告知已经更新，请刷新后重新阅读")
     c = config(store)
@@ -388,8 +435,8 @@ def disable(store: Any, *, user: str) -> dict[str, Any]:
 
 def set_killed(store: Any, killed: bool, *, user: str, phrase: str = "") -> dict[str, Any]:
     c = config(store)
-    if not killed and phrase.strip() != ACK_PHRASE:
-        raise AppError(ErrorCode.INVALID_PARAMETER, f"解除急停请输入「{ACK_PHRASE}」")
+    if not killed and phrase.strip() not in (ACK_PHRASE, ACK_PHRASE_EN):
+        raise AppError(ErrorCode.INVALID_PARAMETER, f"解除急停请输入「{ACK_PHRASE}」或「{ACK_PHRASE_EN}」")
     c.update(
         killed=killed,
         **({"killed_by": user, "killed_at": _now()} if killed else {"rearmed_by": user, "rearmed_at": _now()}),
@@ -515,8 +562,8 @@ def consume(store: Any, cid: str, *, code: str, phrase: str, user: str) -> dict[
         raise AppError(ErrorCode.PERMISSION_DENIED, "只能由生成启动摘要的人确认")
     if _now() > ch["expires_at"]:
         raise AppError(ErrorCode.INVALID_PARAMETER, "确认码已过期（5 分钟），请重新生成")
-    if phrase.strip() != START_PHRASE:
-        raise AppError(ErrorCode.INVALID_PARAMETER, f"请输入「{START_PHRASE}」")
+    if phrase.strip() not in (START_PHRASE, START_PHRASE_EN):
+        raise AppError(ErrorCode.INVALID_PARAMETER, f"请输入「{START_PHRASE}」或「{START_PHRASE_EN}」")
     if not _secrets.compare_digest(_code_hash(code.strip()), ch["code_hash"]):
         ch["attempts"] = int(ch.get("attempts") or 0) + 1
         if ch["attempts"] >= 3:

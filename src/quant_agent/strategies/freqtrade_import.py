@@ -47,9 +47,7 @@ IGNORED_METHODS = {
     "confirm_trade_exit": "出场确认",
 }
 BLOCKING_METHODS = {
-    "leverage": "杠杆（平台导入的 Freqtrade 策略只跑现货多头）",
     "adjust_trade_position": "仓位调整（DCA）",
-    "populate_short_trend": "做空信号",
 }
 DP_OK = {"get_pair_dataframe", "current_whitelist", "get_analyzed_dataframe", "historic_ohlcv", "runmode"}
 
@@ -66,6 +64,8 @@ class ImportReport:
     param_space: dict[str, Any] = field(default_factory=dict)
     source: str = ""
     smoke: dict[str, Any] | None = None
+    can_short: bool = False
+    uses_leverage: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -81,6 +81,8 @@ class ImportReport:
                 "param_space",
                 "source",
                 "smoke",
+                "can_short",
+                "uses_leverage",
             )
         }
 
@@ -204,8 +206,12 @@ def convert(source: str, *, smoke: bool = True) -> ImportReport:
     for m, why in IGNORED_METHODS.items():
         if m in methods:
             rep.warnings.append(f"{m}：{why}，平台不调用")
-    if _class_attr(cls, "can_short"):
-        rep.warnings.append("can_short = True：只运行多头信号，做空信号忽略")
+    rep.can_short = bool(_class_attr(cls, "can_short"))
+    rep.uses_leverage = "leverage" in methods
+    if rep.can_short:
+        rep.features.append("做空信号（仅线性永续）")
+    if rep.uses_leverage:
+        rep.features.append("Freqtrade leverage() 杠杆设置")
     if _class_attr(cls, "position_adjustment_enable"):
         rep.errors.append("position_adjustment_enable = True：仓位调整（DCA）不支持")
     from ..sdk.ft import SUPPORTED_TA, _Qt
@@ -324,7 +330,7 @@ def convert(source: str, *, smoke: bool = True) -> ImportReport:
         rep.errors.append(issue)
     rep.errors = list(dict.fromkeys(rep.errors))
     if not rep.errors and smoke:
-        rep.smoke = smoke_test(rep.source, rep.timeframe)
+        rep.smoke = smoke_test(rep.source, rep.timeframe, pair="BTC/USDT:PERP" if rep.can_short else "BTC/USDT")
         if rep.smoke.get("error"):
             rep.errors.append("试运行出错：" + rep.smoke["error"])
     rep.ok = not rep.errors
@@ -341,7 +347,7 @@ def _params(body: str, cls_name: str) -> tuple[dict[str, Any], dict[str, Any]]:
     return param_space(cls)
 
 
-def smoke_test(source: str, timeframe: str, bars: int = 400) -> dict[str, Any]:
+def smoke_test(source: str, timeframe: str, bars: int = 400, pair: str = "BTC/USDT") -> dict[str, Any]:
     """在合成行情上跑一小段，确认能跑通（不评价好坏）。"""
     import math as _m
 
@@ -358,9 +364,9 @@ def smoke_test(source: str, timeframe: str, bars: int = 400) -> dict[str, Any]:
         o = p
         p = 100 * (1 + 0.08 * _m.sin(i / 17) + 0.03 * _m.sin(i / 5.3)) + 0.02 * i
         hi, lo = max(o, p) * 1.003, min(o, p) * 0.997
-        out.append(Bar("BTC/USDT", tf, t0 + i * step, t0 + (i + 1) * step - 1, o, hi, lo, p, 1000 + 50 * _m.cos(i / 7)))
+        out.append(Bar(pair, tf, t0 + i * step, t0 + (i + 1) * step - 1, o, hi, lo, p, 1000 + 50 * _m.cos(i / 7)))
     try:
-        res = run_backtest(load_source(source, name="ft_smoke"), {"BTC/USDT": out}, timeframe=tf)
+        res = run_backtest(load_source(source, name="ft_smoke"), {pair: out}, timeframe=tf)
     except Exception as exc:
         return {"error": f"{type(exc).__name__}: {str(exc)[:300]}"}
     errs = list(getattr(res, "errors", []) or [])

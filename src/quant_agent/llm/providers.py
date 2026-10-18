@@ -11,11 +11,13 @@ OpenAI 兼容层可对接 DeepSeek、通义、Kimi、vLLM、Ollama 等；
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 from collections.abc import Callable
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -40,6 +42,52 @@ def _iter_sse(resp: httpx.Response):
 
 def _is_event_stream(resp: httpx.Response) -> bool:
     return "text/event-stream" in resp.headers.get("content-type", "")
+
+
+def _host(base_url: str) -> str:
+    return (urlparse(base_url).hostname or "").lower()
+
+
+def _is_opencode(base_url: str) -> bool:
+    host = _host(base_url)
+    return host == "opencode.ai" or host.endswith(".opencode.ai")
+
+
+def _is_openrouter(base_url: str) -> bool:
+    host = _host(base_url)
+    return host == "openrouter.ai" or host.endswith(".openrouter.ai")
+
+
+def _is_azure_openai(base_url: str) -> bool:
+    host = _host(base_url)
+    return host.endswith(".openai.azure.com") or host.endswith(".services.ai.azure.com")
+
+
+def _opencode_session(messages: list[Message]) -> str:
+    # Stable per-conversation routing id. Do not hash the whole history: it grows every turn.
+    seed = next((m.content for m in messages if m.role == "user" and m.content), "default")
+    return "quantlab-" + hashlib.sha256(seed.encode("utf-8")).hexdigest()[:32]
+
+
+def openai_headers(base_url: str, api_key: str, messages: list[Message] | None = None) -> dict[str, str]:
+    """Auth and provider-specific headers for OpenAI-compatible HTTP APIs."""
+    if _is_azure_openai(base_url):
+        headers = {"api-key": api_key}
+    else:
+        headers = {"Authorization": f"Bearer {api_key}"}
+    if _is_openrouter(base_url):
+        # Optional attribution headers recommended by OpenRouter.
+        headers["HTTP-Referer"] = "http://127.0.0.1:8000"
+        headers["X-OpenRouter-Title"] = "QuantLab"
+    if _is_opencode(base_url):
+        headers["User-Agent"] = "QuantLab/1.0"
+        # OpenCode 网关在 Cloudflare 后面。关闭空闲连接复用和传输压缩，避开偶发的
+        # TLS UNEXPECTED_EOF（上游/代理在 keep-alive 连接或流式压缩上提前关闭）。
+        headers["Connection"] = "close"
+        headers["Accept-Encoding"] = "identity"
+        if messages is not None:
+            headers["x-opencode-session"] = _opencode_session(messages)
+    return headers
 
 
 # ---------------------------------------------------------------------------
@@ -108,6 +156,9 @@ class OpenAICompatibleProvider:
             out.append(d)
         return out
 
+    def _headers(self, messages: list[Message] | None = None) -> dict[str, str]:
+        return openai_headers(self.base_url, self.api_key, messages)
+
     def chat(
         self,
         messages: list[Message],
@@ -125,9 +176,7 @@ class OpenAICompatibleProvider:
         # DeepSeek 等「换模型调思考」的服务商：网关上的混合思考模型（如 v4 系列）也可能认 reasoning_effort，同样先试
         if mode == "switch":
             mode = "auto"
-        try_effort = bool(effort) and (
-            mode == "native" or (mode == "auto" and (self.name, model) not in _NO_EFFORT)
-        )
+        try_effort = bool(effort) and (mode == "native" or (mode == "auto" and (self.name, model) not in _NO_EFFORT))
         if try_effort:
             payload["reasoning_effort"] = {"low": "low", "medium": "medium", "high": "high", "max": "high"}.get(
                 effort or "", "medium"
@@ -140,17 +189,22 @@ class OpenAICompatibleProvider:
             payload["tools"] = [t.schema() for t in tools]
             payload["tool_choice"] = "auto"
         try:
-            return self._send(payload, model, stream, on_delta)
+            return self._send(payload, model, stream, on_delta, self._headers(messages))
         except LLMError as exc:
             # 认不出的模型带了 reasoning_effort 被拒：去掉重发一次，并记住这个模型不支持
             if mode == "auto" and "reasoning_effort" in payload and getattr(exc, "rejects_effort", False):
                 _NO_EFFORT.add((self.name, model))
                 payload.pop("reasoning_effort", None)
-                return self._send(payload, model, stream, on_delta)
+                return self._send(payload, model, stream, on_delta, self._headers(messages))
             raise
 
     def _send(
-        self, payload: dict[str, Any], model: str, stream: bool, on_delta: Callable[[str, str], None] | None
+        self,
+        payload: dict[str, Any],
+        model: str,
+        stream: bool,
+        on_delta: Callable[[str, str], None] | None,
+        headers: dict[str, str],
     ) -> ChatResult:
         payload = dict(payload)
         streaming = bool(on_delta) or stream
@@ -164,7 +218,7 @@ class OpenAICompatibleProvider:
                 with self._client.stream(
                     "POST",
                     f"{self.base_url}/chat/completions",
-                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    headers=headers,
                     json=payload,
                 ) as resp:
                     if resp.status_code >= 400:
@@ -176,7 +230,7 @@ class OpenAICompatibleProvider:
                     return self._parse(resp, model, on_delta)
             resp = self._client.post(
                 f"{self.base_url}/chat/completions",
-                headers={"Authorization": f"Bearer {self.api_key}"},
+                headers=headers,
                 json=payload,
             )
             resp.raise_for_status()
@@ -270,7 +324,7 @@ class OpenAICompatibleProvider:
     def embed(self, texts: list[str], *, model: str) -> list[list[float]]:
         resp = self._client.post(
             f"{self.base_url}/embeddings",
-            headers={"Authorization": f"Bearer {self.api_key}"},
+            headers=self._headers(),
             json={"model": model, "input": texts},
         )
         resp.raise_for_status()
@@ -351,7 +405,7 @@ class OpenAIResponsesProvider(OpenAICompatibleProvider):
         payload = self.build_payload(
             messages, model=model, temperature=temperature, tools=tools, max_tokens=max_tokens, effort=effort
         )
-        headers = {"Authorization": f"Bearer {self.api_key}"}
+        headers = self._headers(messages)
         url = f"{self.base_url}/responses"
         try:
             if on_delta or stream:

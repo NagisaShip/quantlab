@@ -79,14 +79,23 @@ def test_groups_messages_mentions_tasks_and_mutes(app):
     assert b.get("/api/collab/groups").json()["groups"][0]["unread"] >= 1
     b.post(f"/api/collab/groups/{g['id']}/read", json={"last_id": m["id"]})
     assert b.get("/api/collab/groups").json()["groups"][0]["unread"] == 0
+    # 普通群消息也进入通知中心，并在打开群组已读时同步清除
+    ordinary = a.post(f"/api/collab/groups/{g['id']}/messages", json={"body": "普通群消息：复测进度"}).json()["message"]
+    inbox = b.get("/api/inbox?unread=true").json()
+    assert inbox["items"][0]["kind"] == "group"
+    assert inbox["items"][0]["body"] == "普通群消息：复测进度"
+    assert inbox["items"][0]["source_type"] == "message"
+    b.post(f"/api/collab/groups/{g['id']}/read", json={"last_id": ordinary["id"]})
+    assert b.get("/api/inbox?unread=true").json()["unread"].get("group", 0) == 0
     # 回复别人的消息也会通知对方；空消息被拒绝
     b.post(f"/api/collab/groups/{g['id']}/messages", json={"body": "收到", "reply_to": m["id"]})
     assert a.get("/api/inbox").json()["items"][0]["kind"] == "mention"
     assert a.post(f"/api/collab/groups/{g['id']}/messages", json={"body": "  "}).status_code == 400
 
     # 任务摊派：指派 → 通知负责人；改状态 → 通知创建者
-    t = a.post(f"/api/collab/groups/{g['id']}/tasks",
-               json={"title": "复测 2 倍成本", "assignee_id": b_id, "priority": "high"}).json()["task"]
+    t = a.post(
+        f"/api/collab/groups/{g['id']}/tasks", json={"title": "复测 2 倍成本", "assignee_id": b_id, "priority": "high"}
+    ).json()["task"]
     assert t["assignee_name"] == "研究员乙" and t["status"] == "todo"
     assert b.get("/api/inbox").json()["items"][0]["kind"] == "task"
     assert [x["id"] for x in b.get("/api/collab/tasks/mine").json()["tasks"]] == [t["id"]]
@@ -94,10 +103,15 @@ def test_groups_messages_mentions_tasks_and_mutes(app):
     assert r.json()["task"]["status"] == "done" and r.json()["task"]["done_at"]
     assert a.get("/api/inbox").json()["items"][0]["title"].endswith("已完成")
     # 不能指派给群外的人
-    assert a.post(f"/api/collab/groups/{g['id']}/tasks", json={"title": "x", "assignee_id": "nobody"}).status_code == 400
+    assert (
+        a.post(f"/api/collab/groups/{g['id']}/tasks", json={"title": "x", "assignee_id": "nobody"}).status_code == 400
+    )
 
     # 屏蔽：屏蔽甲后，甲 @ 乙不再进乙的通知中心，群消息标记为已屏蔽
-    assert b.post("/api/inbox/mutes", json={"target_type": "user", "target_id": a_id, "label": "研究员甲"}).status_code == 200
+    assert (
+        b.post("/api/inbox/mutes", json={"target_type": "user", "target_id": a_id, "label": "研究员甲"}).status_code
+        == 200
+    )
     before = b.get("/api/inbox").json()["unread"].get("total", 0)
     a.post(f"/api/collab/groups/{g['id']}/messages", json={"body": "@研究员乙 再看一下"})
     assert b.get("/api/inbox").json()["unread"].get("total", 0) == before
@@ -146,7 +160,9 @@ def test_strategy_and_project_visibility(app):
 
     # 群组内公开：只有群成员看得到，并收到共享通知
     g = a.post("/api/collab/groups", json={"name": "共享组", "members": [b_id]}).json()["group"]
-    assert a.put(f"/api/collab/shares/strategy/{slug}", json={"visibility": "group", "group_ids": []}).status_code == 400
+    assert (
+        a.put(f"/api/collab/shares/strategy/{slug}", json={"visibility": "group", "group_ids": []}).status_code == 400
+    )
     a.put(f"/api/collab/shares/strategy/{slug}", json={"visibility": "group", "group_ids": [g["id"]]})
     assert b.get(f"/api/studio/strategies/{slug}").status_code == 200
     assert any(n["kind"] == "share" for n in b.get("/api/inbox").json()["items"])
@@ -170,10 +186,17 @@ def test_edit_marks_and_lineage_with_clone(app):
     slug = s["slug"]
     detail = b.get(f"/api/studio/strategies/{slug}").json()["strategy"]
     # 乙改了一版
-    r = b.post("/api/studio/strategies", json={
-        "name": detail["name"], "slug": slug, "code": SIMPLE,
-        "symbol": "BTC/USDT", "timeframe": "1h", "allow_issues": True,
-    })
+    r = b.post(
+        "/api/studio/strategies",
+        json={
+            "name": detail["name"],
+            "slug": slug,
+            "code": SIMPLE,
+            "symbol": "BTC/USDT",
+            "timeframe": "1h",
+            "allow_issues": True,
+        },
+    )
     assert r.status_code == 200, r.text
     edits = a.get(f"/api/collab/edits/strategy/{slug}").json()["edits"]
     assert [(e["user_id"], e["action"]) for e in edits] == [(a_id, "create"), (b_id, "edit")]
@@ -182,11 +205,14 @@ def test_edit_marks_and_lineage_with_clone(app):
     assert {e["name"] for e in eds} == {"研究员甲", "研究员乙"}
 
     # 跑一次回测，挂到当前版本上
-    bt = a.post("/api/research/backtests",
-                json={"slug": slug, "source": "synthetic", "bars_limit": 400, "warmup_bars": 60}).json()
+    bt = a.post(
+        "/api/research/backtests", json={"slug": slug, "source": "synthetic", "bars_limit": 400, "warmup_bars": 60}
+    ).json()
     # 分享到广场后被乙克隆：血缘里出现克隆边
-    post = a.post("/api/community/posts", json={"type": "strategy", "title": "血缘测试", "body": "x",
-                                                "strategy_slug": slug, "backtest_id": bt["id"]}).json()["post"]
+    post = a.post(
+        "/api/community/posts",
+        json={"type": "strategy", "title": "血缘测试", "body": "x", "strategy_slug": slug, "backtest_id": bt["id"]},
+    ).json()["post"]
     clone = b.post(f"/api/community/posts/{post['id']}/clone").json()["strategy"]
     lin = a.get(f"/api/collab/lineage?slug={slug}").json()
     by_slug = {}
@@ -208,15 +234,25 @@ def test_post_source_refs_and_agent_publish(app):
     a, a_id = u["a"]
     b, _ = u["b"]
     s = _strategy(a, "引用策略")
-    bt = a.post("/api/research/backtests",
-                json={"slug": s["slug"], "source": "synthetic", "bars_limit": 400, "warmup_bars": 60}).json()
+    bt = a.post(
+        "/api/research/backtests", json={"slug": s["slug"], "source": "synthetic", "bars_limit": 400, "warmup_bars": 60}
+    ).json()
     up = a.post("/api/uploads?filename=chart.png", content=PNG, headers={"Content-Type": "image/png"}).json()["file"]
     body = f"见回测：\n{{{{ref:backtest:{bt['id']}}}}}\n截图：\n{{{{ref:file:{up['id']}}}}}"
-    post = a.post("/api/community/posts", json={
-        "type": "article", "title": "带引用的文章", "body": body,
-        "refs": [{"type": "backtest", "id": bt["id"]}, {"type": "file", "id": up["id"]},
-                 {"type": "backtest", "id": "missing"}, {"type": "evil", "id": "x"}],
-    }).json()["post"]
+    post = a.post(
+        "/api/community/posts",
+        json={
+            "type": "article",
+            "title": "带引用的文章",
+            "body": body,
+            "refs": [
+                {"type": "backtest", "id": bt["id"]},
+                {"type": "file", "id": up["id"]},
+                {"type": "backtest", "id": "missing"},
+                {"type": "evil", "id": "x"},
+            ],
+        },
+    ).json()["post"]
     assert post["source"]["kind"] == "human"
     assert [r["type"] for r in post["refs"]] == ["backtest", "file"]
     assert post["refs"][0]["summary"]["sharpe"] is not None and post["refs"][1]["mime"] == "image/png"
@@ -240,20 +276,36 @@ def test_post_source_refs_and_agent_publish(app):
 # ---------------------------------------------------------------- 问题报告与上传
 def test_issue_reports_with_attachments(app):
     u = _team(app)
-    a, a_id = u["a"]
+    a, _a_id = u["a"]
     b, _ = u["b"]
     admin, _ = u["admin"]
     # 类型与内容必须一致；不支持的类型拒绝
-    assert a.post("/api/uploads?filename=x.png", content=b"<html>", headers={"Content-Type": "image/png"}).status_code == 400
-    assert a.post("/api/uploads?filename=x.exe", content=b"MZ", headers={"Content-Type": "application/x-msdownload"}).status_code == 400
+    assert (
+        a.post("/api/uploads?filename=x.png", content=b"<html>", headers={"Content-Type": "image/png"}).status_code
+        == 400
+    )
+    assert (
+        a.post(
+            "/api/uploads?filename=x.exe", content=b"MZ", headers={"Content-Type": "application/x-msdownload"}
+        ).status_code
+        == 400
+    )
     up = a.post("/api/uploads?filename=err.png", content=PNG, headers={"Content-Type": "image/png"}).json()["file"]
     r = a.get(f"/api/uploads/{up['id']}")
     assert r.status_code == 200 and r.headers["content-type"] == "image/png"
     assert r.headers["x-content-type-options"] == "nosniff"
 
-    iss = a.post("/api/issues", json={"title": "回测页报错", "body": "点开就白屏", "category": "bug",
-                                      "severity": "high", "attachments": [up["id"]],
-                                      "context": {"page": "backtest"}}).json()["issue"]
+    iss = a.post(
+        "/api/issues",
+        json={
+            "title": "回测页报错",
+            "body": "点开就白屏",
+            "category": "bug",
+            "severity": "high",
+            "attachments": [up["id"]],
+            "context": {"page": "backtest"},
+        },
+    ).json()["issue"]
     assert iss["attachments"][0]["filename"] == "err.png" and iss["status"] == "open"
     assert any(n["kind"] == "issue" for n in admin.get("/api/inbox").json()["items"])
     # 其他成员看不到别人的报告
@@ -267,7 +319,10 @@ def test_issue_reports_with_attachments(app):
     # 提交者补充后重新变为待处理；成员不能把状态改成已解决，但可以关闭
     assert a.post(f"/api/issues/{iss['id']}/replies", json={"body": "补充日志"}).json()["issue"]["status"] == "open"
     assert a.put(f"/api/issues/{iss['id']}/status", json={"status": "resolved"}).status_code == 403
-    assert admin.put(f"/api/issues/{iss['id']}/status", json={"status": "resolved"}).json()["issue"]["status"] == "resolved"
+    assert (
+        admin.put(f"/api/issues/{iss['id']}/status", json={"status": "resolved"}).json()["issue"]["status"]
+        == "resolved"
+    )
     items = admin.get("/api/issues?scope=all").json()
     assert items["is_staff"] and items["items"][0]["reply_count"] == 2
 
@@ -291,12 +346,19 @@ def test_calendar_windows_and_group_quotas(app):
     admin, _ = u["admin"]
     a, a_id = u["a"]
     b, b_id = u["b"]
-    shared = {"name": "shared", "type": "openai_compatible", "base_url": "https://a.example/v1",
-              "api_key": "sk-admin-0001", "models": ["m"],
-              "model_settings": {"m": {"price_in": "1", "price_out": "1"}}}
+    shared = {
+        "name": "shared",
+        "type": "openai_compatible",
+        "base_url": "https://a.example/v1",
+        "api_key": "sk-admin-0001",
+        "models": ["m"],
+        "model_settings": {"m": {"price_in": "1", "price_out": "1"}},
+    }
     assert admin.post("/api/config/providers", json=shared).status_code == 200
     # 新成员默认限额：没单独设过的成员沿用
-    r = admin.put("/api/config/member-defaults", json={"limits": [{"metric": "tokens", "window": "total", "limit": "1000000"}]})
+    r = admin.put(
+        "/api/config/member-defaults", json={"limits": [{"metric": "tokens", "window": "total", "limit": "1000000"}]}
+    )
     assert r.json()["limits"][0]["window"] == "total"
     row = next(m for m in admin.get("/api/config/members").json()["members"] if m["user_id"] == a_id)
     assert row["limits"][0]["window"] == "total"
@@ -304,8 +366,10 @@ def test_calendar_windows_and_group_quotas(app):
     g = a.post("/api/collab/groups", json={"name": "额度组", "members": [b_id]}).json()["group"]
     # 只有工作区管理员能给群组分配共享模型额度
     assert a.put(f"/api/collab/groups/{g['id']}/quota", json={"ws_limits": []}).status_code == 403
-    r = admin.put(f"/api/collab/groups/{g['id']}/quota",
-                  json={"ws_limits": [{"metric": "tokens", "window": "day", "limit": "100"}]})
+    r = admin.put(
+        f"/api/collab/groups/{g['id']}/quota",
+        json={"ws_limits": [{"metric": "tokens", "window": "day", "limit": "100"}]},
+    )
     assert r.json()["group"]["ws_limits"][0]["window"] == "day"
 
     s = get_services()
@@ -326,7 +390,9 @@ def test_calendar_windows_and_group_quotas(app):
     assert r.status_code == 200 and r.json()["provider"]["group_id"] == g["id"]
     assert any(p["name"] == "grp-ds" for p in b.get("/api/config").json()["providers"])
     assert all(p["name"] != "grp-ds" for p in admin.get("/api/config").json()["providers"])
-    a.put(f"/api/collab/groups/{g['id']}", json={"member_limits": [{"metric": "tokens", "window": "week", "limit": "50"}]})
+    a.put(
+        f"/api/collab/groups/{g['id']}", json={"member_limits": [{"metric": "tokens", "window": "week", "limit": "50"}]}
+    )
     with context.bind(ws, user_id=b_id, role="member"):
         pc = s.router.config.providers["grp-ds"]
         assert pc.api_key == "sk-group-0001" and pc.group_id == g["id"]
@@ -383,9 +449,15 @@ def test_admin_console_ban_reset_announce_and_registration(app):
     assert c.get("/api/inbox/summary").json()["banner"]["text"] == "周六凌晨维护"
 
     # 开放注册（覆盖环境变量）
-    assert TestClient(app).post("/api/auth/register", json={"email": "x@y.com", "password": "Abcdef12!"}).status_code == 403
+    assert (
+        TestClient(app).post("/api/auth/register", json={"email": "x@y.com", "password": "Abcdef12!"}).status_code
+        == 403
+    )
     admin.put("/api/admin/settings", json={"open_registration": True})
-    assert TestClient(app).post("/api/auth/register", json={"email": "x@y.com", "password": "Abcdef12!"}).status_code == 200
+    assert (
+        TestClient(app).post("/api/auth/register", json={"email": "x@y.com", "password": "Abcdef12!"}).status_code
+        == 200
+    )
 
     # 停用工作区 / 全站用量 / 审计
     other = admin.get("/api/admin/workspaces").json()["workspaces"]

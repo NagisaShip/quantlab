@@ -32,7 +32,7 @@ export default function ReportPage({ arg, notify, onNavigate }: PageProps & { ar
   }, [])
   useEffect(() => {
     if (!data) return
-    document.title = `${data.report.title} · QuantLab 调研报告`
+    document.title = `${data.report.title} · QuantLab v 0.1 preview 调研报告`
     if (autoPrint) { const t = window.setTimeout(() => window.print(), 600); return () => window.clearTimeout(t) }
   }, [data, autoPrint])
 
@@ -54,7 +54,7 @@ export default function ReportPage({ arg, notify, onNavigate }: PageProps & { ar
         <header className="rp-brand">
           <span className="rp-logo"><QuantBot size={34} state="idle" motion="none" title="QuantLab" /></span>
           <div>
-            <b>QuantLab 量化研究台</b>
+            <b>QuantLab v 0.1 preview 量化研究台</b>
             <small>AI 研究室 · 调研报告</small>
           </div>
           <span className="rp-no">No. {r.id.toUpperCase()}</span>
@@ -82,7 +82,7 @@ export default function ReportPage({ arg, notify, onNavigate }: PageProps & { ar
           </section>
         )}
         <footer className="rp-foot">
-          <span>QuantLab 量化研究台 · 由 AI 研究室生成，结论需结合原始数据复核</span>
+          <span>QuantLab v 0.1 preview 量化研究台 · 由 AI 研究室生成，结论需结合原始数据复核</span>
           <span>仅为研究结果，不构成投资建议</span>
         </footer>
       </article>

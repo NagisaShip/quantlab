@@ -457,3 +457,87 @@ def step(ctx):
     a = sdk.metrics["total_return"]
     b = platform.metrics.total_return
     assert abs(a - b) < 0.02, f"SDK {a:.4f} vs 平台 {b:.4f} 差得太多"
+
+
+# ---------------- 成本优先级 / 预置指标 ----------------
+def test_set_order_cost_overrides_platform_cost_and_reports_source(bars):
+    result = run(TREND, bars, warmup_bars=100, cost=RuntimeCost(taker_fee=0.002, slippage_bps=8))
+    assert result.cost_model["cost_source"] == "strategy"
+    assert result.cost_model["taker_fee"] == 0.001
+    assert result.cost_model["slippage_bps"] == 5.0
+    assert result.cost_model["strategy_cost_overrides"]["taker_fee"] == 0.001
+    assert result.assumptions["cost"]["cost_source"] == "strategy"
+
+
+def test_platform_cost_is_used_when_code_does_not_override(bars):
+    source = """
+def initialize(ctx):
+    run_daily(go, time="close")
+
+def go(ctx):
+    order_target_percent(ctx.securities[0], 0.5)
+"""
+    result = run(source, bars, warmup_bars=10, cost=RuntimeCost(taker_fee=0.002, slippage_bps=8))
+    assert result.cost_model["cost_source"] == "platform"
+    assert result.cost_model["taker_fee"] == 0.002
+    assert result.cost_model["slippage_bps"] == 8.0
+
+
+def test_precomputed_indicators_run_and_are_causal(bars):
+    source = """
+def initialize(ctx):
+    set_benchmark("BTC/USDT")
+    run_daily(go, time="close")
+
+def go(ctx):
+    s = ctx.securities[0]
+    fast = ctx.indicators.ema(s, 24)
+    slow = ctx.indicators.ema(s, 48)
+    band = ctx.indicators.atr(s, 14)
+    record(fast=fast, slow=slow, atr=band)
+    if fast == fast and slow == slow:
+        order_target_percent(s, 0.6 if fast > slow else 0.0)
+"""
+    result = run(source, bars, warmup_bars=60)
+    assert not result.errors, result.errors
+    assert result.records["fast"][-1]["v"] == result.records["fast"][-1]["v"]  # 非 NaN
+    assert len(result.fills) > 0
+
+
+def test_tick_execution_mode_and_dynamic_slippage_are_reported(bars):
+    result = run(
+        TREND,
+        bars,
+        warmup_bars=100,
+        cost=RuntimeCost(execution_mode="tick", dynamic_slippage=True, vol_slippage=0.5),
+    )
+    assert not result.errors, result.errors
+    assert result.cost_model["execution_mode"] == "tick"
+    assert result.cost_model["dynamic_slippage"] is True
+    assert result.counters["tick_path_fills"] > 0
+    assert result.assumptions["fill_model"] == "tick"
+
+
+def test_liquidity_drought_rejects_orders(bars):
+    source = """
+def initialize(ctx):
+    run_daily(go, time="close")
+
+def go(ctx):
+    order_target_percent(ctx.securities[0], 0.5)
+"""
+    result = run(
+        source,
+        bars,
+        warmup_bars=10,
+        cost=RuntimeCost(min_liquidity_usd=1e18),
+    )
+    assert result.fills == []
+    assert result.counters["liquidity_drought"] > 0
+
+
+def test_dynamic_slippage_changes_fill_prices(bars):
+    base = run(TREND, bars, warmup_bars=100, cost=RuntimeCost())
+    dyn = run(TREND, bars, warmup_bars=100, cost=RuntimeCost(dynamic_slippage=True, vol_slippage=1.0))
+    assert base.fills and dyn.fills
+    assert base.fills[0]["price"] != dyn.fills[0]["price"]

@@ -175,12 +175,12 @@ test.describe('02 · DSL 新建与回测（经 worker）', () => {
     await expect(page.getByText('校验通过', { exact: false }).first()).toBeVisible({ timeout: 30_000 })
 
     // 保存并回测：前端会等 worker 完成后跳到回测详情。
+    // 不再依赖“回测运行中”这段瞬时文案——它只出现在 document.title，页面会直接进入详情。
     await page.getByRole('button', { name: '保存并回测' }).click()
-    await expect(page.getByText('回测运行中', { exact: false }).first()).toBeVisible({ timeout: 30_000 })
 
     // 回测详情页：收益概述 + 交易详情/信号页签。
     await expect(page.getByRole('heading', { name: '收益概述' })).toBeVisible({ timeout: 90_000 })
-    await expect(page.locator('.overview-grid')).toBeVisible()
+    await expect(page.locator('.overview-grid').first()).toBeVisible()
     await expect(page.getByRole('button', { name: /信号/ })).toBeVisible()
     await expect(page.getByText('回测完成', { exact: false }).first()).toBeVisible()
   })

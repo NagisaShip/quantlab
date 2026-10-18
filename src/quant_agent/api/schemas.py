@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
+
 from ..timeframes import TimeframeStr
 
 
@@ -24,11 +25,13 @@ class ModelSettingIn(BaseModel):
 
 
 class LimitRuleIn(BaseModel):
-    metric: Literal["tokens", "cost"] = Field(description="按 token 或按费用（元）计算")
+    metric: Literal[
+        "tokens", "cost", "cpu_seconds", "backtests", "optimize_combinations", "storage_bytes", "record_units"
+    ] = Field(description="按 token、费用、CPU 秒、回测次数、优化组合数、上传存储或研究记录单位计算")
     window: Literal["1h", "5h", "1d", "7d", "30d", "day", "week", "month", "total"] = Field(
         description="时间段：1h/5h/1d/7d/30d 为滚动；day/week/month 为自然日 / 周 / 月；total 为累计"
     )
-    limit: str = Field(max_length=20, description="上限：token 数或人民币金额")
+    limit: str = Field(max_length=20, description="上限：token 数、人民币金额、次数或字节数")
 
 
 class ProviderIn(BaseModel):
@@ -341,6 +344,7 @@ class SpecIn(BaseModel):
     bars_limit: int = Field(1500, ge=50, le=20_000)
     warmup_bars: int = Field(100, ge=0, le=2000)
     initial_cash: float = Field(10_000.0, gt=0, le=1e10)
+    initial_currency: str = Field("USDT", min_length=2, max_length=12, description="初始资金币种；反向合约可填 BTC")
     taker_fee: float = Field(0.001, ge=0, le=0.05)
     slippage_bps: float = Field(5.0, ge=0, le=500)
     spread_bps: float = Field(2.0, ge=0, le=500)
@@ -349,7 +353,21 @@ class SpecIn(BaseModel):
     )
     rebalance_tolerance: float = Field(0.005, ge=0, le=0.2)
     fill_at: Literal["next_open", "close"] = "next_open"
-    exchange: Literal["binance", "okx"] = "binance"
+    execution_mode: Literal["bar", "tick"] = Field(
+        "bar", description="bar = 下一根开盘；tick = OHLC 路径逐笔撮合（50ms~1s 周期即子秒级）"
+    )
+    dynamic_slippage: bool = Field(False, description="按本根振幅放大滑点")
+    vol_slippage: float = Field(0.25, ge=0, le=10, description="动态滑点 = 基础滑点 + 本根振幅 × 该系数")
+    impact_a_bps: float = Field(0.0, ge=0, le=500, description="冲击成本截距 a（bp）")
+    impact_b_bps: float = Field(0.0, ge=0, le=2000, description="冲击成本斜率 b：a + b·√(参与率)")
+    limit_move_pct: float = Field(0.0, ge=0, le=1, description="涨跌停幅度；0 = 关闭（加密现货默认无涨跌停）")
+    min_liquidity_usd: float = Field(0.0, ge=0, le=1e12, description="本根最低成交额；低于该值视为流动性枯竭")
+    exchange: Literal["binance", "okx", "bybit"] = "binance"
+    margin_mode: Literal["isolated", "cross"] = "isolated"
+    position_mode: Literal["one-way", "hedge"] = "one-way"
+    contract_type: Literal["linear", "inverse", "delivery"] = "linear"
+    expiry_ts: int | None = Field(None, description="交割合约到期时间（毫秒 UTC）")
+    ledger_v2: bool = Field(False, description="强制启用账本 v2（跨仓/对冲/反向/交割会自动启用）")
     source: Literal["auto", "exchange", "synthetic"] = "auto"
     benchmark: str | None = None
     params: dict[str, Any] = Field(default_factory=dict)
@@ -423,6 +441,7 @@ class PaperStartIn(BaseModel):
     symbol: str | None = None
     timeframe: TIMEFRAMES | None = None
     initial_cash: float = Field(10_000.0, gt=0)
+    initial_currency: str = Field("USDT", min_length=2, max_length=12)
     source: Literal["exchange", "demo"] = "exchange"
     exchange: Literal["binance", "okx", "bybit"] = "binance"
     params: dict[str, Any] = Field(default_factory=dict)
@@ -435,6 +454,11 @@ class PaperStartIn(BaseModel):
     max_order_notional: float = Field(1_000.0, gt=0, le=10_000_000)
     max_orders_per_minute: int = Field(10, ge=1, le=600)
     max_daily_loss: float = Field(0.05, ge=0, le=1)
+    margin_mode: Literal["isolated", "cross"] = "isolated"
+    position_mode: Literal["one-way", "hedge"] = "one-way"
+    contract_type: Literal["linear", "inverse", "delivery"] = "linear"
+    expiry_ts: int | None = None
+    ledger_v2: bool = False
 
 
 class DemoConnectIn(BaseModel):
@@ -521,11 +545,36 @@ class PostUpdateIn(BaseModel):
     refs: list[dict[str, Any]] | None = Field(None, max_length=12)
 
 
+class PostReportIn(BaseModel):
+    reason: Literal["spam", "abuse", "misinformation", "duplicate", "other"] = "other"
+    detail: str = Field("", max_length=500)
+
+
+class PostReportDecisionIn(BaseModel):
+    status: Literal["resolved", "dismissed"]
+    note: str = Field("", max_length=300)
+
+
 class CommentIn(BaseModel):
     body: str = Field(..., min_length=1, max_length=10_000)
     parent_id: str | None = None
 
 
+class QmojiIn(BaseModel):
+    emoji: str = Field(..., min_length=3, max_length=40, pattern=r"^:qbot-[a-z0-9-]+:$")
+
+
 class ProfileIn(BaseModel):
     name: str = Field(..., min_length=1, max_length=30)
     bio: str = Field("", max_length=200)
+    dm_policy: Literal["reply_only", "open", "none"] = "reply_only"
+    avatar_color: str = Field("#2E5C9A", pattern=r"^#[0-9a-fA-F]{6}$")
+    public_profile: bool = False
+
+
+class FavoriteIn(BaseModel):
+    object_type: Literal["post", "strategy", "backtest", "factor", "model", "project", "link"]
+    object_id: str = Field(..., min_length=1, max_length=200)
+    title: str = Field("", max_length=160)
+    link: str = Field("", max_length=300)
+    meta: dict[str, Any] = Field(default_factory=dict)

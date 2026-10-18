@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { BOT_FLASHES, BOT_STATES, BOT_VIEWS, QuantBot, QuantEyes, useBotFlash, type BotState, type BotView } from '../components/QuantBot'
+import { QMOJI_GROUPS, QMOJIS, Qmoji } from '../components/Qmoji'
 import { Heading } from '../components/ui'
 import type { PageProps } from './types'
 
@@ -17,6 +18,7 @@ const SCENES: { title: string; state: BotState; view?: BotView; text: string }[]
 export default function BrandPage(_: PageProps) {
   const [state, setState] = useState<BotState>('thinking')
   const [view, setView] = useState<BotView>('neutral')
+  const [emojiMotion, setEmojiMotion] = useState<'static' | 'animated'>('animated')
   const fx = useBotFlash()
   return (
     <>
@@ -78,6 +80,32 @@ export default function BrandPage(_: PageProps) {
       </section>
 
       <section className="set-section">
+        <div className="set-section-head"><h3>社交表情 · Qmoji</h3></div>
+        <p className="set-section-note">
+          策略广场发帖 / 评论、多 Agent 讨论与 AI 研究室对话共用的 30 枚表情，按情绪 / 状态 / 社交 / 量化分类。造型仍是同一个 QuantLab Bot：只改眼睛几何、头部姿态、眼睛颜色与面罩 HUD 字符；外部元素克制到一滴汗与两颊淡粉，只在紧张 / 努力 / 害羞时出现，其他道具与贴纸仍不加。正文与 Agent 结论首次出现时播放一次短动画，之后保持静态；表情面板支持分类快速选择和最近使用。
+        </p>
+        <div className="button-row" style={{ marginBottom: 10 }}>
+          <button type="button" className={`chip${emojiMotion === 'static' ? ' on' : ''}`} onClick={() => setEmojiMotion('static')}>静态</button>
+          <button type="button" className={`chip${emojiMotion === 'animated' ? ' on' : ''}`} onClick={() => setEmojiMotion('animated')}>动态</button>
+        </div>
+        {QMOJI_GROUPS.map((g) => (
+          <div key={g.id} className="qmoji-group-block">
+            <div className="qmoji-section-label">{g.label}</div>
+            <div className="qmoji-gallery">
+              {QMOJIS.filter((q) => q.group === g.id).map((q) => (
+                <div key={q.id} className="qmoji-card">
+                  <Qmoji id={q.id} size={52} animated={emojiMotion === 'animated'} />
+                  <b>{q.name}</b>
+                  <small>{q.hint}</small>
+                  <code>{q.code}</code>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </section>
+
+      <section className="set-section">
         <div className="set-section-head"><h3>市场观点（与状态独立）</h3></div>
         <p className="set-section-note">
           看涨 / 看跌只填眼睛的实体，颜色跟随顶栏「红涨绿跌 / 绿涨红跌」的全局设置；必须对应真实的模型信号，不能用来表达普通情绪。
@@ -120,10 +148,11 @@ export default function BrandPage(_: PageProps) {
       <section className="set-section">
         <div className="set-section-head"><h3>设计边界</h3></div>
         <div className="brand-rules">
-          <div><b>克制</b>不加腮红、表情符号或装饰，让眼睛自己说话。嘴只有两种：完成的白色 √（随后回到待机）和报错的橙色 ×。</div>
+          <div><b>克制</b>除 Qmoji 的一滴汗与两颊淡粉外，产品界面不加腮红、道具或外部贴图；情绪仍主要靠眼睛、头部、扫描线与面罩 HUD 字符。嘴只有两种：完成的白色 √（随后回到待机）和报错的橙色 ×。</div>
           <div><b>明确</b>红绿只代表模型的市场观点，并且来自真实信号；情绪用动画表达，不用颜色。</div>
           <div><b>一致</b>所有页面都用同一个组件（QuantBot），不另画机器人。不同场景只换动画节奏，不换造型。</div>
-          <div><b>可读</b>动画只动 transform 与透明度；系统开启「减少动态效果」时全部静止，含义仍能从文字读出。</div>
+          <div><b>可读</b>动画只动 transform、透明度与轻微辉光；系统开启「减少动态效果」时全部静止，含义仍能从文字读出。</div>
+          <div><b>社交</b>Qmoji 只用于策略广场发帖 / 评论与表情面板；正文默认静态，悬停播放短动画，避免整页同时运动。</div>
         </div>
       </section>
     </>

@@ -17,6 +17,7 @@ import { EmptyState, Field, Heading, Loading, Panel, Segments, Tag } from '../co
 import { QuantBot, QuantEyes, viewFromSignal } from '../components/QuantBot'
 import type { PageProps } from './types'
 import { appConfirm } from '../components/dialog'
+import { RecordPinButton } from '../components/RecordPin'
 
 type Tab = 'list' | 'train' | 'runs'
 const TABS: { value: Tab; label: string }[] = [
@@ -70,7 +71,7 @@ function ModelList({ meta, onOpen, notify }: { meta: ModelMeta | null; onOpen: (
           <table className="fx-table">
             <thead><tr>
               <th>模型</th><th>状态</th><th className="right">样本外 RankIC</th><th className="right">超出基线</th><th className="right">方向准确率</th>
-              <th className="right">多空夏普</th><th>健康度</th><th>训练至</th>
+              <th className="right">多空夏普</th><th>健康度</th><th>训练至</th><th>保护</th>
             </tr></thead>
             <tbody>
               {rows.map((m) => {
@@ -85,6 +86,7 @@ function ModelList({ meta, onOpen, notify }: { meta: ModelMeta | null; onOpen: (
                     <td className="right num">{isVol(m.summary) ? '—' : f3(m.summary?.ls_sharpe, 2)}</td>
                     <td>{h.length > 1 ? <Sparkline values={h} width={80} height={20} /> : <span className="muted">未检查</span>}</td>
                     <td className="muted">{day(m.train_end)}</td>
+                    <td onClick={(e) => e.stopPropagation()}><RecordPinButton type="model" id={m.id} pinned={m.pinned} notify={notify} /></td>
                   </tr>
                 )
               })}
@@ -140,6 +142,7 @@ function ModelDetail({ id, meta, notify, onDeleted }: { id: string; meta: ModelM
         <button className="button small" disabled={busy} onClick={refresh}>{busy ? <><span className="spinner" /> 检查中</> : '检查健康度'}</button>
         <button className="button small" onClick={() => toLab(`改进模型「${m.name}」：针对已知弱点调整特征或结构，必须跑赢基线`)}>交给 AI 改进</button>
         <PythonCodeButton kind="model" artifact={m.spec} name={m.name} />
+        <RecordPinButton type="model" id={m.id} pinned={m.pinned} notify={notify} />
         <button className="button small" onClick={() => toLab(`召集模型小组评审「${m.name}」：检查泄漏、过拟合和上线风险`)}>召集团队评审</button>
         <button className="button small danger" onClick={async () => { if (await appConfirm(`删除模型「${m.name}」？实验记录会保留。`)) { await models.remove(id); onDeleted() } }}>删除</button>
       </>}>
@@ -364,7 +367,7 @@ function Runs({ onOpen, notify }: { onOpen: (id: string) => void; notify: PagePr
         {data.runs.length === 0 ? <EmptyState glyph="☰" title="还没有实验" /> : (
           <div className="table-wrap">
             <table className="fx-table">
-              <thead><tr><th style={{ width: 28 }} /><th>实验</th><th className="right">样本外 RankIC</th><th className="right">基线</th><th className="right">多空夏普</th><th>检查</th><th>来源</th><th>时间</th></tr></thead>
+              <thead><tr><th style={{ width: 28 }} /><th>实验</th><th className="right">样本外 RankIC</th><th className="right">基线</th><th className="right">多空夏普</th><th>检查</th><th>来源</th><th>时间</th><th>保护</th></tr></thead>
               <tbody>{data.runs.map((r) => (
                 <tr key={r.id} className="clickable" onClick={() => onOpen(r.id)}>
                   <td onClick={(e) => e.stopPropagation()}><input type="checkbox" aria-label="加入对比" checked={pick.includes(r.id)} onChange={() => toggle(r.id)} /></td>
@@ -375,6 +378,7 @@ function Runs({ onOpen, notify }: { onOpen: (id: string) => void; notify: PagePr
                   <td>{r.summary.leak_passed === 0 ? <Tag tone="warn">泄漏检查未过</Tag> : r.admitted ? <Tag tone="ok">可上线</Tag> : <Tag>未全过</Tag>}</td>
                   <td className="muted">{r.source === 'lab' ? 'AI 研究室' : '训练台'}</td>
                   <td className="muted">{when(r.created_at)}</td>
+                  <td onClick={(e) => e.stopPropagation()}><RecordPinButton type="model_run" id={r.id} pinned={r.pinned} notify={notify} /></td>
                 </tr>
               ))}</tbody>
             </table>
@@ -458,6 +462,7 @@ function RunDetail({ id, meta, notify, onSaved }: { id: string; meta: ModelMeta 
   return (
     <Panel title={title} subtitle={`${when(data.run.created_at)} · ${data.run.source === 'lab' ? 'AI 研究室' : '训练台'}`} actions={<>
       <input className="fx-search" placeholder="模型名称" value={name} onChange={(e) => setName(e.target.value)} aria-label="模型名称" />
+      <RecordPinButton type="model_run" id={id} pinned={data.run.pinned} notify={notify} />
       <button className="button small" onClick={() => save('candidate')}>存为候选</button>
       <button className="button small primary" disabled={!data.report.admitted} onClick={() => save('active')}>上线</button>
     </>}>

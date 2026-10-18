@@ -70,6 +70,7 @@ class AppServices:
     websearch: Any = None  # WebSearch：联网搜索与网页抓取（密钥在模型配置页登记）
     model_hub: Any = None  # ModelHub：工作区 / 个人模型服务商、成员模型权限与限额、用量计量
     collab: Any = None  # CollabService：群组、任务、可见性、编辑标记、通知中心、问题报告
+    social: Any = None  # SocialService：用户资料、关注、拉黑与私信策略
     dbcache: Any = None  # DbCache：外部接口结果的数据库缓存（行情摘要、搜索结果、网页正文）
 
     @classmethod
@@ -95,7 +96,7 @@ class AppServices:
             router=router,
             store=store,
             roles=roles,
-            teams=TeamRunner(router, roles, store=store, tools=tools),
+            teams=TeamRunner(router, roles, store=store, tools=tools, platform_tools=True),
             # 合成行情默认停用：取不到真实行情就如实报「未接入数据」
             # QAGENT_ALLOW_SYNTHETIC=1 时才兜底（测试 / 离线演示）
             market=MarketDataService(
@@ -125,8 +126,10 @@ class AppServices:
         services.demo = DemoConnectionService(services.store, services.secrets, home)
         services.quota = QuotaService(db)
         from ..platform.collab import CollabService
+        from ..platform.social import SocialService
 
         services.collab = CollabService(db, home)
+        services.social = SocialService(db, store)
         services.auth.settings_reader = lambda: global_store.get(Collections.SETTINGS, "platform_settings")
         services._register_collab_hooks()
         store.initializer = services._init_workspace_store
@@ -171,9 +174,19 @@ class AppServices:
         _repo.SAVE_HOOKS.append(on_save)
 
     def _init_workspace_store(self, workspace_id: str, store: JsonStore) -> None:
-        """新工作区第一次被访问：写入内置角色与预设团队。"""
+        """新工作区第一次被访问：写入内置角色、团队与通过审核的默认研究资产。"""
         self.roles._seed_builtin(store)
         sync_builtin_teams(store)
+        try:
+            from ..research.default_assets import seed_default_assets
+
+            ws = self.auth.workspace(workspace_id) if self.auth is not None else {}
+            seed_default_assets(self, store, workspace_id, owner_id=(ws.get("owner_id") or "system"))
+        except Exception:
+            # 种子失败不能阻断工作区登录；失败详情会留在服务日志里，后续版本可重试。
+            import logging
+
+            logging.getLogger("quantlab.default_assets").exception("工作区默认研究资产初始化失败：%s", workspace_id)
 
     # ---------------- 大模型密钥（部署级，加密存放） ----------------
     @property
@@ -326,7 +339,10 @@ class AppServices:
                 "type": "object",
                 "properties": {
                     "symbol": {"type": "string", "description": "如 BTC/USDT"},
-                    "timeframe": {"type": "string", "description": "周期：数字+单位，例如 100ms、250ms、1s、5s、1m、15m、1h、4h、1d（秒级 / 毫秒级只有 Binance 现货，由 1s K 线或逐笔成交聚合）"},
+                    "timeframe": {
+                        "type": "string",
+                        "description": "周期：数字+单位，例如 100ms、250ms、1s、5s、1m、15m、1h、4h、1d（秒级 / 毫秒级只有 Binance 现货，由 1s K 线或逐笔成交聚合）",
+                    },
                     "bars": {"type": "integer", "description": f"K 线根数 100-5000，默认 {MARKET_WINDOW}"},
                 },
                 "required": ["symbol"],
@@ -412,9 +428,7 @@ class AppServices:
         )
         tools.register(
             "list_search_sources",
-            lambda: {
-                k: v for k, v in self.websearch.status().items() if k in ("providers", "custom", "free_sources")
-            },
+            lambda: {k: v for k, v in self.websearch.status().items() if k in ("providers", "custom", "free_sources")},
             label="搜索来源",
             description="查看联网搜索可用的来源：哪些付费 API 已配置密钥、自定义来源、免密钥来源",
             parameters={**obj, "properties": {}},
@@ -431,7 +445,10 @@ class AppServices:
                 **obj,
                 "properties": {
                     "symbols": {"type": "array", "items": {"type": "string"}, "description": '如 ["BTC/USDT"]'},
-                    "timeframe": {"type": "string", "description": "周期：数字+单位，例如 100ms、250ms、1s、5s、1m、15m、1h、4h、1d（秒级 / 毫秒级只有 Binance 现货，由 1s K 线或逐笔成交聚合）"},
+                    "timeframe": {
+                        "type": "string",
+                        "description": "周期：数字+单位，例如 100ms、250ms、1s、5s、1m、15m、1h、4h、1d（秒级 / 毫秒级只有 Binance 现货，由 1s K 线或逐笔成交聚合）",
+                    },
                     "days": {"type": "integer", "minimum": 1, "maximum": 1500},
                     "exchange": {"type": "string", "enum": ["binance", "okx", "bybit"]},
                 },
@@ -494,7 +511,6 @@ class AppServices:
 
     def market_summary(self, symbol: str = "BTC/USDT", timeframe: str = "1h", bars: int = MARKET_WINDOW) -> dict:
         """bars：取最近多少根 K 线。默认与 AI 研究室回测窗口一致（1500），单 Agent 与团队看到的是同一段数据。"""
-        from ..data.service import DataUnavailable
 
         limit = max(100, min(int(bars or MARKET_WINDOW), 5000))
         # 同一标的 / 周期 / 窗口的摘要在一根 K 线内不会变：放进数据库缓存，多个对话、多个角色反复看行情时不再重算、不再请求交易所

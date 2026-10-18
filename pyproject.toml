@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "quant-agent"
-version = "2.0.0"
-description = "加密货币量化交易仿真验证平台 —— AI Agent 能力层"
+version = "0.1.0"
+description = "QuantLab v 0.1 preview — cryptocurrency quantitative research and simulation platform (AI Agent layer)"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -15,6 +15,7 @@ dependencies = [
     "pydantic>=2.7",
     "cryptography>=42",
     "numpy>=1.26",  # 因子研究：面板计算与评估
+    "Pillow>=10",  # 图片上传缩略图生成
     "optuna>=3.6",  # 智能调参（贝叶斯 / 多目标搜索）：Agent 的 start_tuning 依赖它
     "tomli>=2.0; python_version < '3.11'",
 ]
@@ -41,6 +42,7 @@ target-version = "py310"
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "RUF"]
 ignore = [
+    "E501",  # 长中文提示、URL 与协议原文保持单行更易读；代码排版由 ruff format 负责
     "EXE002",  # 挂载盘会把文件标成可执行，与代码无关
     "BLE001",  # Agent/工具边界有意捕获宽泛异常，避免单点失败拖垮运行
     "RUF001",  # 中文全角标点在中文文案中是正确写法

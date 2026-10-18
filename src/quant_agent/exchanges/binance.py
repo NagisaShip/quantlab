@@ -30,17 +30,33 @@ from .base import (
     OrderIntent,
     UnsupportedFeature,
 )
+from .contracts import contract_type_of, is_derivative
 from .signing import decimal_str, hmac_sha256_hex, signed_query
 
 PUBLIC_BASE = "https://data-api.binance.vision"
 # U 本位永续的公共行情（K 线、资金费率、标记价）。data-api.binance.vision 只有现货。
 FUTURES_BASE = "https://fapi.binance.com"
+COINM_BASE = "https://dapi.binance.com"
 TESTNET_BASE = "https://testnet.binance.vision"
 
 _INTERVAL_MAP = {"1m": 60_000, "5m": 300_000, "15m": 900_000, "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000}
 #: Binance K 线接口原生支持的周期（1s 只有现货有）
 NATIVE_INTERVALS = {
-    "1s", "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w",
+    "1s",
+    "1m",
+    "3m",
+    "5m",
+    "15m",
+    "30m",
+    "1h",
+    "2h",
+    "4h",
+    "6h",
+    "8h",
+    "12h",
+    "1d",
+    "3d",
+    "1w",
 }
 #: 逐笔成交聚合最多扫多少页（每页 1000 笔）：防止一次请求把 100ms 线拉成几十万次调用
 MAX_TRADE_PAGES = 200
@@ -66,6 +82,7 @@ class BinanceAdapter(BaseAdapter):
         limits = httpx.Limits(max_connections=64, max_keepalive_connections=16)
         self._client = httpx.Client(base_url=PUBLIC_BASE, timeout=timeout, limits=limits, transport=transport)
         self._fclient = httpx.Client(base_url=FUTURES_BASE, timeout=timeout, limits=limits, transport=transport)
+        self._dclient = httpx.Client(base_url=COINM_BASE, timeout=timeout, limits=limits, transport=transport)
         # 交易客户端：模拟盘走 testnet，仅用于账户与订单接口
         self.trade_base = TESTNET_BASE if simulated else PUBLIC_BASE
         self._trade_client = httpx.Client(base_url=self.trade_base, timeout=15.0, transport=transport)
@@ -110,7 +127,7 @@ class BinanceAdapter(BaseAdapter):
         """K 线。非原生周期在本地聚合：整秒周期用 1s K 线合成，亚秒周期用逐笔成交（aggTrades）合成。"""
         from ..timeframes import parse_timeframe_ms
 
-        perp = symbol.upper().endswith(":PERP")
+        perp = is_derivative(symbol)
         step = parse_timeframe_ms(timeframe)
         if step is None:
             raise UnsupportedFeature(f"不支持的周期 {timeframe}")
@@ -135,7 +152,12 @@ class BinanceAdapter(BaseAdapter):
             # aggTrades 一次的时间窗不能超过 1 小时
             resp = self._client.get(
                 "/api/v3/aggTrades",
-                params={"symbol": raw_symbol, "startTime": cursor, "endTime": min(end, cursor + 3_600_000) - 1, "limit": 1000},
+                params={
+                    "symbol": raw_symbol,
+                    "startTime": cursor,
+                    "endTime": min(end, cursor + 3_600_000) - 1,
+                    "limit": 1000,
+                },
             )
             resp.raise_for_status()
             rows = resp.json()
@@ -167,17 +189,31 @@ class BinanceAdapter(BaseAdapter):
             prev_close = c
             close_time = t + step - 1
             bars.append(
-                Bar(symbol=symbol, timeframe=timeframe, open_time=t, close_time=close_time, open=o, high=h, low=lo,  # type: ignore[arg-type]
-                    close=c, volume=vol, closed=close_time < end)  # type: ignore[arg-type]
+                Bar(
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    open_time=t,
+                    close_time=close_time,
+                    open=o,
+                    high=h,
+                    low=lo,  # type: ignore[arg-type]
+                    close=c,
+                    volume=vol,
+                    closed=close_time < end,
+                )  # type: ignore[arg-type]
             )
             t += step
         return bars
 
     def _klines(self, symbol: str, timeframe: str, start: int, end: int) -> list[Bar]:
-        perp = symbol.upper().endswith(":PERP")
+        kind = contract_type_of(symbol)
         raw_symbol = symbol.split(":")[0].replace("/", "")
-        client, path = (self._fclient, "/fapi/v1/klines") if perp else (self._client, "/api/v3/klines")
-        limit = 1000 if not perp else 1500
+        if kind == "inverse":
+            client, path, limit = self._dclient, "/dapi/v1/klines", 1500
+        elif kind in ("linear", "delivery"):
+            client, path, limit = self._fclient, "/fapi/v1/klines", 1500
+        else:
+            client, path, limit = self._client, "/api/v3/klines", 1000
         bars: list[Bar] = []
         cursor = start
         while cursor < end:
@@ -216,15 +252,16 @@ class BinanceAdapter(BaseAdapter):
 
     def fetch_funding_rates(self, symbol: str, start: int, end: int) -> list[FundingRate]:
         """U 本位永续的历史资金费率（公共接口 /fapi/v1/fundingRate，每页最多 1000 条）。"""
-        if not symbol.upper().endswith(":PERP"):
-            raise UnsupportedFeature(f"{symbol} 是现货，没有资金费率（永续写成 BTC/USDT:PERP）")
+        kind = contract_type_of(symbol)
+        if kind not in ("linear", "inverse"):
+            raise UnsupportedFeature(f"{symbol} 没有资金费率（永续写成 :PERP 或 :INVERSE）")
         raw = symbol.split(":")[0].replace("/", "")
         out: list[FundingRate] = []
         cursor = start
+        client = self._dclient if kind == "inverse" else self._fclient
+        path = "/dapi/v1/fundingRate" if kind == "inverse" else "/fapi/v1/fundingRate"
         while cursor < end:
-            resp = self._fclient.get(
-                "/fapi/v1/fundingRate", params={"symbol": raw, "startTime": cursor, "endTime": end, "limit": 1000}
-            )
+            resp = client.get(path, params={"symbol": raw, "startTime": cursor, "endTime": end, "limit": 1000})
             rows = _json_or_error(resp)
             if not rows:
                 break
@@ -235,7 +272,7 @@ class BinanceAdapter(BaseAdapter):
                         ts=int(r["fundingTime"]),
                         rate=str(r["fundingRate"]),
                         mark_price=str(r.get("markPrice") or "0"),
-                        source="binance:fapi",
+                        source="binance:dapi" if kind == "inverse" else "binance:fapi",
                         instrument_id=f"binance:{symbol}",
                         raw_ref=f"binance:fundingRate?symbol={raw}&startTime={cursor}",
                     )
@@ -247,10 +284,12 @@ class BinanceAdapter(BaseAdapter):
         return out
 
     def fetch_ticker(self, symbol: str) -> dict:
-        if symbol.upper().endswith(":PERP"):
+        kind = contract_type_of(symbol)
+        if kind in ("linear", "inverse", "delivery"):
             raw = symbol.split(":")[0].replace("/", "")
-            book = _json_or_error(self._fclient.get("/fapi/v1/ticker/bookTicker", params={"symbol": raw}))
-            prem = _json_or_error(self._fclient.get("/fapi/v1/premiumIndex", params={"symbol": raw}))
+            client, prefix = (self._dclient, "/dapi/v1") if kind == "inverse" else (self._fclient, "/fapi/v1")
+            book = _json_or_error(client.get(f"{prefix}/ticker/bookTicker", params={"symbol": raw}))
+            prem = _json_or_error(client.get(f"{prefix}/premiumIndex", params={"symbol": raw}))
             return {
                 "price": prem.get("markPrice"),
                 "bid": book["bidPrice"],
@@ -267,7 +306,17 @@ class BinanceAdapter(BaseAdapter):
     def fetch_order_book(self, symbol: str, depth: int = 20) -> dict:
         """公开盘口快照（执行研究的盘口录制用）。"""
         limit = min((x for x in (5, 10, 20, 50, 100) if x >= depth), default=100)
-        d = self._client.get("/api/v3/depth", params={"symbol": symbol.replace("/", ""), "limit": limit}).json()
+        kind = contract_type_of(symbol)
+        if kind == "inverse":
+            d = self._dclient.get(
+                "/dapi/v1/depth", params={"symbol": symbol.split(":")[0].replace("/", ""), "limit": limit}
+            ).json()
+        elif kind in ("linear", "delivery"):
+            d = self._fclient.get(
+                "/fapi/v1/depth", params={"symbol": symbol.split(":")[0].replace("/", ""), "limit": limit}
+            ).json()
+        else:
+            d = self._client.get("/api/v3/depth", params={"symbol": symbol.replace("/", ""), "limit": limit}).json()
         return {
             "ts": int(time.time() * 1000),
             "bids": [[float(p), float(q)] for p, q in d["bids"][:depth]],

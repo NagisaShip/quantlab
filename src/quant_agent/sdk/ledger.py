@@ -39,6 +39,8 @@ from dataclasses import dataclass, field
 from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal, InvalidOperation, localcontext
 from typing import Any
 
+from ..exchanges.contracts import is_derivative, spec_for
+
 ZERO = Decimal(0)
 CAPITAL = "equity:capital"
 FEES = "expenses:fees"
@@ -54,8 +56,8 @@ MARGIN_STEP = Decimal(
 
 
 def is_perp(instrument: str) -> bool:
-    """`BTC/USDT:PERP` 这样带市场后缀的标的是 U 本位永续合约。"""
-    return instrument.upper().endswith(PERP_SUFFIX)
+    """兼容旧调用名；现在识别线性、反向与交割合约。"""
+    return is_derivative(instrument)
 
 
 class LedgerError(ValueError):
@@ -221,6 +223,13 @@ class PerpPosition:
     opened_ts: int = 0
     last_price: Decimal = ZERO
     liquidations: int = 0
+    # 合约规格快照：报告要能回答“这次用了哪一档 MMR、强平费用/滑点是多少”。
+    mmr_tier: str = ""
+    liquidation_fee_bps: Decimal = ZERO
+    liquidation_slippage_bps: Decimal = ZERO
+    liquidation_fee: Decimal = ZERO
+    liquidation_mark_price: Decimal = ZERO
+    liquidation_reason: str = ""
 
     @property
     def side(self) -> str:
@@ -278,6 +287,12 @@ class PerpPosition:
             opened_ts=int(d.get("opened_ts") or 0),
             last_price=dec(d.get("last_price") or 0),
             liquidations=int(d.get("liquidations") or 0),
+            mmr_tier=str(d.get("mmr_tier") or ""),
+            liquidation_fee_bps=dec(d.get("liquidation_fee_bps") or 0),
+            liquidation_slippage_bps=dec(d.get("liquidation_slippage_bps") or 0),
+            liquidation_fee=dec(d.get("liquidation_fee") or 0),
+            liquidation_mark_price=dec(d.get("liquidation_mark_price") or 0),
+            liquidation_reason=str(d.get("liquidation_reason") or ""),
         )
 
 
@@ -301,6 +316,8 @@ class TradeBooking:
 @dataclass
 class Ledger:
     base_currency: str = "USDT"
+    exchange: str = "binance"
+    perp_book: Any = None
     balances: dict[tuple[str, str], Decimal] = field(default_factory=dict)
     entries: list[JournalEntry] = field(default_factory=list)
     holdings: dict[str, Holding] = field(default_factory=dict)
@@ -320,6 +337,7 @@ class Ledger:
     funding_paid: Decimal = ZERO  # 累计付出（多头正费率时）
     funding_received: Decimal = ZERO  # 累计收取（空头正费率时）
     funding_events: int = 0
+    funding_details: list[dict[str, Any]] = field(default_factory=list)
     # ---- 永续合约（逐仓、单向）----
     perps: dict[str, PerpPosition] = field(default_factory=dict)
     leverage: dict[str, Decimal] = field(default_factory=dict)  # 每个合约的杠杆设置（开新仓时使用）
@@ -544,8 +562,42 @@ class Ledger:
         lev = dec(leverage)
         if lev < 1 or lev > 125:
             raise LedgerError("杠杆必须在 1 到 125 倍之间")
-        self.leverage[instrument] = lev
+        self.leverage[instrument.upper()] = lev
+        if self.perp_book is not None:
+            self.perp_book.leverage[instrument.upper()] = lev
         return lev
+
+    def enable_perp_book(
+        self,
+        *,
+        margin_mode: str = "isolated",
+        position_mode: str = "one-way",
+        contract_type: str = "linear",
+        quote_ccy: str | None = None,
+        settlement_ccy: str = "USDT",
+        expiry_ts: int | None = None,
+        exchange: str | None = None,
+        specs: dict[str, Any] | None = None,
+    ) -> Any:
+        from .perp_book import PerpBook
+
+        self.perp_book = PerpBook(
+            margin_mode=margin_mode,
+            position_mode=position_mode,
+            contract_type=contract_type,
+            quote_ccy=quote_ccy or self.base_currency,
+            settlement_ccy=settlement_ccy,
+            expiry_ts=expiry_ts,
+            exchange=exchange or self.exchange,
+        )
+        for _key, spec in (specs or {}).items():
+            self.perp_book.add_spec(spec)
+        return self.perp_book
+
+    def iter_perp_positions(self) -> list[Any]:
+        if self.perp_book is not None:
+            return list(self.perp_book.all_legs())
+        return [p for p in self.perps.values() if p.qty]
 
     def perp(self, instrument: str) -> PerpPosition:
         p = self.perps.get(instrument)
@@ -570,12 +622,49 @@ class Ledger:
         ts: int = 0,
         ref: str = "",
         mmr: Any = None,
+        mmr_tier: str = "",
+        liquidation_fee_bps: float = 50.0,
+        liquidation_slippage_bps: float = 10.0,
+        position_side: str = "",
+        leverage: Any | None = None,
     ) -> TradeBooking:
         """记一笔永续合约成交（逐仓、单向持仓）。手续费一律按计价币扣。
 
         方向相反且数量超过现有持仓时**反手**：先全部平掉，再按剩余数量反向开仓。
         开仓部分需要的保证金 + 手续费超过现金时拒绝入账（InsufficientFunds）。
         """
+        if self.perp_book is not None:
+            try:
+                fill = self.perp_book.trade(
+                    self,
+                    instrument=instrument,
+                    side=side,
+                    qty=qty,
+                    price=price,
+                    fee=fee,
+                    position_side=position_side,
+                    leverage=leverage,
+                    ts=ts,
+                    ref=ref,
+                    mmr=mmr,
+                    mmr_tier=mmr_tier,
+                    liquidation_fee_bps=liquidation_fee_bps,
+                    liquidation_slippage_bps=liquidation_slippage_bps,
+                )
+            except ValueError as exc:
+                raise InsufficientFunds(str(exc)) from exc
+            self.liquidation_loss = self.perp_book.liquidation_loss
+            direction = Decimal(1) if side == "buy" else Decimal(-1)
+            return TradeBooking(
+                qty_delta=(fill.opened_qty - fill.closed_qty) * direction,
+                cash_delta=ZERO,
+                fee=fill.fee,
+                fee_currency=fill.settlement_ccy,
+                fee_value=fill.fee_value,
+                realized=fill.realized,
+                closed=bool(fill.closed_qty and not fill.opened_qty),
+                holding_ms=0,
+            )
         q, p, f = dec(qty), dec(price), dec(fee)
         if q <= 0 or p <= 0:
             raise LedgerError("成交数量与价格必须为正")
@@ -629,6 +718,10 @@ class Ledger:
                     pos.entry = (abs(pos.qty) * pos.entry + opening * p) / (abs(pos.qty) + opening)
             if mmr is not None:
                 pos.mmr = dec(mmr)
+            spec = spec_for(self.exchange, instrument)
+            pos.mmr_tier = mmr_tier or spec.tier_for_notional(float(abs(pos.qty + opening) * p))["label"]
+            pos.liquidation_fee_bps = dec(liquidation_fee_bps)
+            pos.liquidation_slippage_bps = dec(liquidation_slippage_bps)
             pos.qty += opening if signed > 0 else -opening
             pos.margin += open_margin
             postings += [Posting(MARGIN, quote, open_margin), Posting("assets", quote, -open_margin)]
@@ -663,8 +756,52 @@ class Ledger:
         direction = Decimal(1) if pos.qty > 0 else Decimal(-1)
         return released + closing * (price - pos.entry) * direction
 
-    def liquidate(self, instrument: str, *, price: Any, ts: int = 0, ref: str = "") -> TradeBooking:
-        """强平：在强平价平掉全部持仓，损失全部逐仓保证金（剩余维持保证金作为强平费用没收）。"""
+    def liquidate(
+        self,
+        instrument: str,
+        *,
+        price: Any,
+        ts: int = 0,
+        ref: str = "",
+        fee: Any = 0,
+        slippage_bps: float = 0.0,
+        mark_price: Any = None,
+        reason: str = "",
+    ) -> TradeBooking:
+        """强平：按强平价/滑点后的价格平掉全部持仓。
+
+        逐仓模型的损失上限是保证金：剩余保证金中，交易所强平费先被没收，剩余部分记为
+        liquidation 费用。若市场跳空超过破产价，平台不把亏损扩大到账户其他现金（避免伪造
+        穿仓后的追缴），而是在报告里标注“简化逐仓模型”。
+        """
+        if self.perp_book is not None:
+            legs = [x for x in self.perp_book.all_legs() if x.instrument.upper() == instrument.upper()]
+            if not legs:
+                raise LedgerError(f"{instrument} 没有永续持仓，无法强平")
+            if self.perp_book.cross:
+                result = self.perp_book.liquidate_cross_all(self, {instrument: price}, ts=ts, ref=ref, reason=reason)
+            else:
+                result = self.perp_book.liquidate(
+                    self,
+                    legs[0],
+                    price=price,
+                    ts=ts,
+                    ref=ref,
+                    fee=fee,
+                    mark_price=mark_price,
+                    reason=reason,
+                )
+            self.liquidation_loss = self.perp_book.liquidation_loss
+            return TradeBooking(
+                qty_delta=ZERO,
+                cash_delta=ZERO,
+                fee=result.fee,
+                fee_currency=self.base_currency,
+                fee_value=result.fee,
+                realized=result.realized,
+                closed=True,
+                holding_ms=max(0, ts - legs[0].opened_ts),
+            )
         pos = self.perps.get(instrument)
         if pos is None or not pos.qty:
             raise LedgerError(f"{instrument} 没有永续持仓，无法强平")
@@ -675,17 +812,20 @@ class Ledger:
         q0 = abs(pos.qty)
         pnl = max(quantize(q0 * (p - pos.entry) * direction, MARGIN_STEP), -m)
         remaining = m + pnl  # ≥ 0：被没收的剩余保证金
+        liq_fee = min(max(dec(fee), ZERO), remaining)
+        seizure = remaining  # 交易所没收的剩余保证金（其中 liq_fee 是强平费）
         postings = [Posting(MARGIN, quote, -m), Posting("assets", quote, m)]
         if pnl:
             postings += [Posting("assets", quote, pnl), Posting(PERP_PNL, quote, -pnl)]
-        if remaining:
-            postings += [Posting("assets", quote, -remaining), Posting(LIQUIDATION, quote, remaining)]
+        if seizure:
+            postings += [Posting("assets", quote, -seizure), Posting(LIQUIDATION, quote, seizure)]
         self._post(
             ts,
             "liquidation",
             ref,
             postings,
-            f"强平 {instrument} {pos.side} {dstr(q0)} @ {dstr(p)}，损失保证金 {dstr(m)}",
+            f"强平 {instrument} {pos.side} {dstr(q0)} @ {dstr(p)}，损失保证金 {dstr(m)}"
+            f"；强平费 {dstr(liq_fee)}；滑点 {slippage_bps:.1f} bps" + (f"；{reason}" if reason else ""),
         )
         holding_ms = max(0, ts - pos.opened_ts)
         pos.realized += -m
@@ -694,13 +834,16 @@ class Ledger:
         pos.entry = ZERO
         pos.last_price = p
         pos.liquidations += 1
+        pos.liquidation_fee = liq_fee
+        pos.liquidation_mark_price = dec(mark_price) if mark_price not in (None, "") else ZERO
+        pos.liquidation_reason = reason
         self.liquidation_loss += m
         return TradeBooking(
             qty_delta=-direction * q0,
             cash_delta=ZERO,
-            fee=ZERO,
+            fee=liq_fee,
             fee_currency=quote,
-            fee_value=ZERO,
+            fee_value=liq_fee,
             realized=-m,
             closed=True,
             holding_ms=holding_ms,
@@ -708,6 +851,16 @@ class Ledger:
 
     def settle_funding(self, instrument: str, *, rate: Any, mark_price: Any, ts: int = 0, ref: str = "") -> Decimal:
         """按当前永续持仓结算一次资金费，返回现金变化（正 = 收到）。空仓记一笔零额分录。"""
+        if self.perp_book is not None:
+            delta = self.perp_book.settle_funding(self, instrument, rate=rate, mark_price=mark_price, ts=ts, ref=ref)
+            self.funding_by_instrument = dict(self.perp_book.funding_by_instrument)
+            self.funding_events = self.perp_book.funding_events
+            self.funding_details = list(self.perp_book.funding_details)
+            if delta < 0:
+                self.funding_paid += -delta
+            else:
+                self.funding_received += delta
+            return delta
         pos = self.perps.get(instrument)
         qty = abs(pos.qty) if pos else ZERO
         side = pos.side if pos and pos.qty else "long"
@@ -721,11 +874,17 @@ class Ledger:
 
     def perp_value(self) -> Decimal:
         """永续部分的权益贡献 = 保证金 + 浮动盈亏。"""
+        if self.perp_book is not None:
+            return self.perp_book.posted_margin() + self.perp_book.unrealized()
         return sum((p.margin + p.unrealized for p in self.perps.values() if p.qty), ZERO)
 
     def gross_exposure(self) -> Decimal:
         """总敞口：现货市值 + 永续名义价值（绝对值）。"""
         spot = sum((h.qty * h.last_price for h in self.holdings.values() if h.qty), ZERO)
+        if self.perp_book is not None:
+            return spot + sum(
+                (leg.notional(self.perp_book.spec(leg.instrument)) for leg in self.perp_book.all_legs()), ZERO
+            )
         return spot + sum((p.notional for p in self.perps.values() if p.qty), ZERO)
 
     # ------------------------------------------------------------------ 资金费率
@@ -796,16 +955,31 @@ class Ledger:
         else:
             self.funding_received += cash_delta
         self.funding_events += 1
+        if len(self.funding_details) < 500:
+            self.funding_details.append(
+                {
+                    "instrument": instrument,
+                    "ts": ts,
+                    "side": direction,
+                    "rate": dstr(r),
+                    "mark_price": dstr(mp),
+                    "notional": dstr(notional),
+                    "cash_delta": dstr(cash_delta),
+                    "ref": ref,
+                }
+            )
         return entry
 
     def funding_report(self) -> dict[str, Any]:
         """资金费汇总（Decimal → 十进制字符串）。"""
+        net = self.funding_received - self.funding_paid
         return {
             "events": self.funding_events,
             "paid": dstr(self.funding_paid),
             "received": dstr(self.funding_received),
-            "net": dstr(self.funding_received - self.funding_paid),
+            "net": dstr(net),
             "by_instrument": {k: dstr(v) for k, v in self.funding_by_instrument.items()},
+            "details": list(self.funding_details),
         }
 
     # ------------------------------------------------------------------ 估值
@@ -816,6 +990,8 @@ class Ledger:
             h = self.holdings.get(inst)
             if h is not None:
                 h.last_price = dec(price)
+            if self.perp_book is not None:
+                self.perp_book.mark({inst: price})
             p = self.perps.get(inst)
             if p is not None:
                 p.last_price = dec(price)
@@ -826,13 +1002,18 @@ class Ledger:
         return spot + self.perp_value()
 
     def equity(self) -> Decimal:
-        """总权益（计价币种）= 现金 + 持仓按最新标记价估值（永续含保证金与浮动盈亏）。"""
+        """总权益（计价币种）。反向合约的基础币保证金也在此折算。"""
+        if self.perp_book is not None:
+            return self.perp_book.equity(self)
         return self.cash() + self.positions_value()
 
     def realized_total(self) -> Decimal:
-        return sum((h.realized for h in self.holdings.values()), ZERO) + sum(
-            (p.realized for p in self.perps.values()), ZERO
+        perp = (
+            self.perp_book.realized_value()
+            if self.perp_book is not None
+            else sum((p.realized for p in self.perps.values()), ZERO)
         )
+        return sum((h.realized for h in self.holdings.values()), ZERO) + perp
 
     def open_holdings(self) -> list[Holding]:
         return [h for h in self.holdings.values() if h.qty > 0]
@@ -863,6 +1044,7 @@ class Ledger:
     def to_dict(self, *, entries: bool = False) -> dict[str, Any]:
         out = {
             "base_currency": self.base_currency,
+            "exchange": self.exchange,
             "seq": self.seq,
             "balances": [[a, c, dstr(v)] for (a, c), v in sorted(self.balances.items())],
             "holdings": {k: h.to_dict() for k, h in self.holdings.items()},
@@ -875,9 +1057,11 @@ class Ledger:
             "funding_paid": dstr(self.funding_paid),
             "funding_received": dstr(self.funding_received),
             "funding_events": self.funding_events,
+            "funding_details": list(self.funding_details),
             "perps": {k: p.to_dict() for k, p in self.perps.items()},
             "leverage": {k: dstr(v) for k, v in self.leverage.items()},
             "liquidation_loss": dstr(self.liquidation_loss),
+            "perp_book": self.perp_book.to_dict() if self.perp_book is not None else None,
         }
         if entries:
             out["entries"] = [e.to_dict() for e in self.entries]
@@ -885,7 +1069,7 @@ class Ledger:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> Ledger:
-        led = cls(base_currency=d.get("base_currency", "USDT"))
+        led = cls(base_currency=d.get("base_currency", "USDT"), exchange=d.get("exchange", "binance"))
         led.seq = int(d.get("seq") or 0)
         led.balances = {(a, c): dec(v) for a, c, v in d.get("balances", [])}
         led.holdings = {k: Holding.from_dict(v) for k, v in (d.get("holdings") or {}).items()}
@@ -898,7 +1082,12 @@ class Ledger:
         led.funding_paid = dec(d.get("funding_paid") or 0)
         led.funding_received = dec(d.get("funding_received") or 0)
         led.funding_events = int(d.get("funding_events") or 0)
+        led.funding_details = [dict(x) for x in (d.get("funding_details") or [])]
         led.perps = {k: PerpPosition.from_dict(v) for k, v in (d.get("perps") or {}).items()}
         led.leverage = {k: dec(v) for k, v in (d.get("leverage") or {}).items()}
         led.liquidation_loss = dec(d.get("liquidation_loss") or 0)
+        if d.get("perp_book"):
+            from .perp_book import PerpBook
+
+            led.perp_book = PerpBook.from_dict(d["perp_book"])
         return led

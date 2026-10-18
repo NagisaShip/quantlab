@@ -34,19 +34,32 @@ def _result(n=240, drift=0.001, trips=None, fee_rate=0.001, slip=0.0005, fills=N
         "timeframe": "1h",
         "fills": fills,
         "fills_total": len(fills),
-        "round_trips": trips if trips is not None else [
+        "round_trips": trips
+        if trips is not None
+        else [
             {"open_ts": ts[10], "close_ts": ts[50], "return": 0.02},
             {"open_ts": ts[70], "close_ts": ts[130], "return": -0.01},  # 跨段
             {"open_ts": ts[150], "close_ts": ts[200], "return": 0.03},
         ],
-        "metrics": {"total_return": eq[-1] / 10_000 - 1, "total_fees": fees, "final_equity": eq[-1] - fees * 0, "trades": 3},
+        "metrics": {
+            "total_return": eq[-1] / 10_000 - 1,
+            "total_fees": fees,
+            "final_equity": eq[-1] - fees * 0,
+            "trades": 3,
+        },
     }
 
 
 def test_semantics_declare_every_field():
     for mode in ("independent", "sliced", "full"):
         s = BA.segment_semantics(mode)
-        for key in ("continuous_compounding", "reset_capital", "cross_segment_positions", "trade_attribution", "reconstructs_full"):
+        for key in (
+            "continuous_compounding",
+            "reset_capital",
+            "cross_segment_positions",
+            "trade_attribution",
+            "reconstructs_full",
+        ):
             assert key in s
     assert BA.segment_semantics("independent")["reset_capital"] is True
     assert BA.segment_semantics("independent")["reconstructs_full"] is False
@@ -71,7 +84,10 @@ def test_sliced_segments_reconstruct_full_return_and_attribute_trades():
 
 
 def test_independent_segments_never_claim_to_reconstruct():
-    rows = [{"ok": True, "metrics": {"total_return": 0.05, "trades": 2}}, {"ok": True, "metrics": {"total_return": 0.05, "trades": 1}}]
+    rows = [
+        {"ok": True, "metrics": {"total_return": 0.05, "trades": 2}},
+        {"ok": True, "metrics": {"total_return": 0.05, "trades": 1}},
+    ]
     rec = BA.reconcile(rows, {"total_return": 0.2, "trades": 4}, "independent")
     assert rec["reconstructs"] is False and rec["issues"]
 
@@ -79,7 +95,9 @@ def test_independent_segments_never_claim_to_reconstruct():
 def test_cost_audit_passes_when_fees_scale_and_blocks_conclusion_when_not():
     base = _result()
     good = _result(scale=2.0)
-    good["metrics"]["final_equity"] = base["metrics"]["final_equity"] - (good["metrics"]["total_fees"] - base["metrics"]["total_fees"]) - 25
+    good["metrics"]["final_equity"] = (
+        base["metrics"]["final_equity"] - (good["metrics"]["total_fees"] - base["metrics"]["total_fees"]) - 25
+    )
     good["metrics"]["total_return"] = base["metrics"]["total_return"] - 0.004
     ok = BA.cost_audit(base, good, 2.0)
     assert ok["checks"] and all(c["ok"] for c in ok["checks"] if c["name"].startswith(("有效费率", "滑点"))), ok

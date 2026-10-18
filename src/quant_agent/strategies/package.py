@@ -212,7 +212,17 @@ def code_hash(source: str, params: dict[str, Any] | None) -> str:
 
 
 def run_golden(
-    *, lang: str, source: str, name: str, params: dict[str, Any] | None, data: dict[str, list[Bar]], timeframe: str
+    *,
+    lang: str,
+    source: str,
+    name: str,
+    params: dict[str, Any] | None,
+    data: dict[str, list[Bar]],
+    timeframe: str,
+    margin_mode: str = "isolated",
+    position_mode: str = "one-way",
+    contract_type: str = "linear",
+    expiry_ts: int | None = None,
 ) -> dict[str, Any]:
     """在隔离子进程里把策略在数据片段上跑一遍，返回指纹。"""
     from ..engine.research import BacktestSpec
@@ -227,6 +237,11 @@ def run_golden(
         initial_cash=GOLDEN_CASH,
         source="csv",
         params=dict(params or {}),
+        margin_mode=margin_mode,
+        position_mode=position_mode,
+        contract_type=contract_type,
+        expiry_ts=expiry_ts,
+        ledger_v2=True,
     )
     body = isolation.run_batch(
         {
@@ -320,15 +335,54 @@ def build(
     lineage: dict[str, Any] | None = None,
     risk: dict[str, Any] | None = None,
     golden: dict[str, Any] | None = None,
+    market: str | None = None,
+    contract_type: str | None = None,
+    margin_mode: str = "isolated",
+    position_mode: str = "one-way",
+    expiry_ts: int | None = None,
 ) -> tuple[bytes, dict[str, Any]]:
     """打包。`golden` 不传就现场在隔离进程里跑一次标准答案。"""
     from .lang import lang_of
 
     lang = lang_of(kind)
     securities = list(securities) or ["BTC/USDT"]
+    from ..exchanges.contracts import contract_type_of, is_derivative
+
+    inferred_market = "perp" if any(is_derivative(s) for s in securities) else "spot"
+    market = (market or inferred_market).lower()
+    first_kind = next((contract_type_of(s) for s in securities if is_derivative(s)), "spot")
+    contract_type = (contract_type or ("linear" if market == "perp" and first_kind == "spot" else first_kind)).lower()
+    if market not in ("spot", "perp"):
+        raise PackageError(f"不支持的市场类型：{market}")
+    if market == "perp":
+        from ..platform.features import require
+
+        require("package.qstrat_perp")
+        if contract_type not in ("linear", "inverse", "delivery"):
+            raise PackageError(f"不支持的合约类型：{contract_type}")
+        expected = {"linear": ":PERP", "inverse": ":INVERSE", "delivery": ":DELIVERY"}[contract_type]
+        if any(not s.upper().endswith(expected) for s in securities):
+            raise PackageError(f"{contract_type} 策略包里的标的必须以 {expected} 结尾")
+        if contract_type == "delivery" and not expiry_ts:
+            raise PackageError("交割策略包必须提供 expiry_ts")
+        if margin_mode not in ("isolated", "cross") or position_mode not in ("one-way", "hedge"):
+            raise PackageError("不支持的保证金或持仓模式")
+    elif any(is_derivative(s) for s in securities):
+        raise PackageError("现货策略包不能包含衍生品标的；请显式设置 market='perp'")
     data = golden_data(securities, timeframe)
     if golden is None:
-        golden = run_golden(lang=lang, source=source, name=slug, params=params, data=data, timeframe=timeframe)
+        golden = run_golden(
+            lang=lang,
+            source=source,
+            name=slug,
+            params=params,
+            data=data,
+            timeframe=timeframe,
+            margin_mode=margin_mode,
+            position_mode=position_mode,
+            contract_type=contract_type,
+            expiry_ts=expiry_ts,
+        )
     manifest: dict[str, Any] = {
         "format": FORMAT,
         "name": name,
@@ -340,7 +394,11 @@ def build(
         "lang": lang,
         "sdk_api": SDK_API,
         "platform": __version__,
-        "market": "spot",
+        "market": market,
+        "contract_type": contract_type,
+        "margin_mode": margin_mode if market == "perp" else "cash",
+        "position_mode": position_mode if market == "perp" else "long-only",
+        "expiry_ts": expiry_ts,
         "securities": securities,
         "timeframe": timeframe,
         "requires": requirements_of(source),
@@ -432,8 +490,37 @@ def inspect(data: bytes, *, run: bool = True) -> Inspection:
             f"包需要 SDK 接口 v{sdk}，平台提供 v{SDK_API}" + ("" if sdk <= SDK_API else "：请先升级平台"),
         )
     )
-    market = manifest.get("market") or "spot"
-    rep.checks.append(Check("市场类型", market == "spot", "现货" if market == "spot" else f"平台暂不支持 {market}"))
+
+    market = (manifest.get("market") or "spot").lower()
+    contract_type = (manifest.get("contract_type") or ("linear" if market == "perp" else "spot")).lower()
+    market_ok = market in ("spot", "perp")
+    rep.checks.append(
+        Check("市场类型", market_ok, "现货" if market == "spot" else "永续" if market == "perp" else f"不支持 {market}")
+    )
+    packaged_securities = [str(s) for s in (manifest.get("securities") or [])]
+    if market == "perp":
+        expected = {"linear": ":PERP", "inverse": ":INVERSE", "delivery": ":DELIVERY"}.get(contract_type)
+        rep.checks.append(
+            Check(
+                "衍生品合约范围",
+                expected is not None,
+                f"{contract_type}（账本 v2；交易所规则为研究近似）" if expected else f"不支持 {contract_type}",
+            )
+        )
+        if expected and any(not s.upper().endswith(expected) for s in packaged_securities):
+            rep.checks.append(Check("衍生品标的后缀", False, f"{contract_type} 标的必须以 {expected} 结尾"))
+        margin_mode = str(manifest.get("margin_mode") or "isolated").lower()
+        position_mode = str(manifest.get("position_mode") or "one-way").lower()
+        scope_ok = margin_mode in ("isolated", "cross") and position_mode in ("one-way", "hedge")
+        rep.checks.append(
+            Check(
+                "保证金与持仓模式",
+                scope_ok,
+                f"{margin_mode}/{position_mode}" if scope_ok else f"不支持 {margin_mode}/{position_mode}",
+            )
+        )
+        if contract_type == "delivery" and not manifest.get("expiry_ts"):
+            rep.checks.append(Check("交割到期", False, "交割策略包缺少 expiry_ts"))
 
     lang = manifest.get("lang") or lang_of(manifest.get("kind"))
     code_name = "strategy.json" if lang == "dsl" else "strategy.py"
@@ -498,6 +585,10 @@ def inspect(data: bytes, *, run: bool = True) -> Inspection:
                 params=rep.params,
                 data=rep.data,
                 timeframe=timeframe,
+                margin_mode=str(manifest.get("margin_mode") or "isolated"),
+                position_mode=str(manifest.get("position_mode") or "one-way"),
+                contract_type=str(manifest.get("contract_type") or "linear"),
+                expiry_ts=manifest.get("expiry_ts"),
             )
         except Exception as exc:  # 试跑失败不阻止入库：可能是依赖缺失，界面会说清楚
             rep.checks.append(Check("隔离试跑", False, f"{type(exc).__name__}: {str(exc)[:200]}", "warning"))

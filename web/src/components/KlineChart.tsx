@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { ChartExpandButton, ChartFullscreen } from './ChartFullscreen'
 import {
   ColorType,
   CrosshairMode,
@@ -13,7 +14,7 @@ import {
 /** K 线：t 是开盘时间（毫秒）。 */
 export interface KBar { t: number; o: number; h: number; l: number; c: number; v?: number }
 /** 成交标记：画在成交所在那根 K 线上。 */
-export interface KMark { ts: number; side: 'buy' | 'sell' | string; price?: number; amount?: number; text?: string }
+export interface KMark { ts: number; side: 'buy' | 'sell' | string; price?: number; amount?: number; text?: string; detail?: string; positionPct?: number }
 
 /** 从 CSS 变量取色：图表库要具体颜色，主题切换时重新取。 */
 function palette() {
@@ -53,11 +54,27 @@ function alpha(color: string, a: number) {
   return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`
 }
 
+export interface KlineChartProps {
+  bars: KBar[]
+  marks?: KMark[]
+  forming?: KBar | null
+  height?: number
+  /** 一根 K 线的毫秒数：用来把成交时间对到所在 K 线 */
+  stepMs: number
+  ariaLabel?: string
+  /** 全屏标题；不填时使用 ariaLabel */
+  title?: string
+  /** 叠加的均线周期，如 [20, 60] */
+  ma?: number[]
+  /** 显示十字光标读数：时间、开高低收、涨跌、振幅、成交量（鼠标不在图上时显示最新一根） */
+  legend?: boolean
+}
+
 /**
  * 可缩放、可拖动的 K 线图：成交量 + 买卖标记 + 正在形成的那根（forming）。
- * 滚轮缩放、拖动平移、双击回到最新。
+ * 滚轮缩放、拖动平移、双击回到最新；手机上支持触摸拖动/缩放。
  */
-export default function KlineChart({
+function KlineChartInner({
   bars,
   marks = [],
   forming,
@@ -66,19 +83,7 @@ export default function KlineChart({
   ariaLabel = 'K 线图',
   ma = [],
   legend = false,
-}: {
-  bars: KBar[]
-  marks?: KMark[]
-  forming?: KBar | null
-  height?: number
-  /** 一根 K 线的毫秒数：用来把成交时间对到所在 K 线 */
-  stepMs: number
-  ariaLabel?: string
-  /** 叠加的均线周期，如 [20, 60] */
-  ma?: number[]
-  /** 显示十字光标读数：时间、开高低收、涨跌、振幅、成交量（鼠标不在图上时显示最新一根） */
-  legend?: boolean
-}) {
+}: KlineChartProps) {
   const box = useRef<HTMLDivElement>(null)
   const tt = (ms: number) => toChartTime(ms, stepMs)
   const chart = useRef<IChartApi | null>(null)
@@ -88,6 +93,7 @@ export default function KlineChart({
   const fitKey = useRef('')
   const maSeries = useRef<ISeriesApi<'Line'>[]>([])
   const [hoverT, setHoverT] = useState<number | null>(null)
+  const [hoverPos, setHoverPos] = useState<{ x: number; y: number } | null>(null)
   const sorted = useMemo(() => {
     const rows = [...bars].sort((a, b) => a.t - b.t)
     const seen = new Set<number>()
@@ -133,7 +139,11 @@ export default function KlineChart({
     }
     const mo = new MutationObserver(restyle)
     mo.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'data-updown'] })
-    c.subscribeCrosshairMove((param) => setHoverT(param.time !== undefined && param.point ? (param.time as number) : null))
+    c.subscribeCrosshairMove((param) => {
+      const on = param.time !== undefined && !!param.point
+      setHoverT(on ? (param.time as number) : null)
+      setHoverPos(on && param.point ? { x: param.point.x, y: param.point.y } : null)
+    })
     const dbl = () => c.timeScale().scrollToRealTime()
     box.current.addEventListener('dblclick', dbl)
     const el = box.current
@@ -216,10 +226,27 @@ export default function KlineChart({
   const shown = legend && sorted.length ? sorted[hoverT !== null && index.has(hoverT) ? index.get(hoverT)! : sorted.length - 1] : null
   const prev = shown ? sorted[sorted.indexOf(shown) - 1] : undefined
   const mas = shown ? ma.map((n) => movingAverage(sorted.slice(Math.max(0, sorted.indexOf(shown) - n + 1), sorted.indexOf(shown) + 1), n).pop()?.[1]) : []
+  const hoverMarks = hoverT === null ? [] : marks.filter((m) => {
+    const start = fromChartTime(hoverT, stepMs)
+    return m.ts >= start && m.ts < start + stepMs
+  })
+  const tipLeft = hoverPos ? Math.min(Math.max(8, hoverPos.x + 12), Math.max(8, (box.current?.clientWidth || 600) - 286)) : 8
   return (
     <div className="kline-wrap">
       <div ref={box} className="kline" style={{ height }} role="img" aria-label={ariaLabel} />
       {shown && <KLegend bar={shown} prev={prev} ma={ma} maValues={mas} hovering={hoverT !== null} />}
+      {hoverMarks.length > 0 && hoverPos && (
+        <div className="kline-mtip" style={{ left: tipLeft, top: Math.max(8, hoverPos.y + 14) }} role="tooltip">
+          {hoverMarks.map((m, i) => (
+            <div key={i} className="kline-mtip-row">
+              <b className={m.side === 'buy' ? 'up' : 'down'}>{m.text || (m.side === 'buy' ? 'B' : 'S')}</b>
+              {m.price !== undefined && <span>{px(m.price)}</span>}
+              {m.amount !== undefined && <span>× {vol(m.amount)}</span>}
+              {m.detail && <small>{m.detail}</small>}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -260,6 +287,25 @@ function KLegend({ bar, prev, ma, maValues, hovering }: { bar: KBar; prev?: KBar
       {ma.map((n, k) => maValues[k] !== undefined && (
         <span key={n} style={{ color: MA_COLORS[k % MA_COLORS.length] }}>MA{n} <b className="num">{px(maValues[k]!)}</b></span>
       ))}
+    </div>
+  )
+}
+
+/** 行情图表外壳：右上角放大按钮 + 全屏（默认横屏，可切竖屏）。 */
+export default function KlineChart(props: KlineChartProps) {
+  const [full, setFull] = useState(false)
+  const title = props.title || props.ariaLabel || 'K 线图'
+  if (full) {
+    return (
+      <ChartFullscreen title={title} onClose={() => setFull(false)}>
+        {({ height }) => <KlineChartInner {...props} height={Math.max(260, height - 4)} />}
+      </ChartFullscreen>
+    )
+  }
+  return (
+    <div className="kline-expand-host">
+      <KlineChartInner {...props} />
+      <ChartExpandButton onClick={() => setFull(true)} label="全屏查看行情（默认横屏）" />
     </div>
   )
 }

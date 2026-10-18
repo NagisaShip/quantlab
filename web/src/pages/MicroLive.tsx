@@ -5,11 +5,13 @@ import { Markdown } from '../components/markdown'
 import { Callout, EmptyState, Field, Heading, Loading, Modal, Panel, Tag } from '../components/ui'
 import type { PageProps } from './types'
 import { appConfirm } from '../components/dialog'
+import { lang } from '../i18n'
 
 interface Status {
   enabled: boolean; killed: boolean; ready: boolean; blockers: string[]; tiers: number[]; tier_days: number
-  notice: string; notice_current: string; notice_version: string; ack_phrase: string; start_phrase: string
-  server_enabled: boolean; hard_ceiling: number
+  notice: string; notice_en?: string; notice_current: string; notice_version: string
+  ack_phrase: string; ack_phrase_en?: string; start_phrase: string; start_phrase_en?: string
+  server_enabled: boolean; hard_ceiling: number; blockers_en?: string[]
 }
 interface Conn { id: string; exchange: string; label: string; key_mask: string; status: string; env_label: string
   last_test?: { ok?: boolean; checks?: { name: string; ok: boolean; detail: string }[]; balances?: Record<string, string>; error?: string } }
@@ -29,6 +31,11 @@ export default function MicroLivePage({ notify, onNavigate, isAdmin }: PageProps
   useEffect(load, [load])
   if (!d) return <Loading />
   const st = d.status
+  const en = lang === 'en'
+  const notice = en ? st.notice_en || st.notice : st.notice
+  const ackPhrase = en ? st.ack_phrase_en || st.ack_phrase : st.ack_phrase
+  const startPhrase = en ? st.start_phrase_en || st.start_phrase : st.start_phrase
+  const blockers = en ? st.blockers_en || st.blockers : st.blockers
   const act = async (key: string, fn: () => Promise<unknown>, ok: string) => {
     setBusy(key)
     try { await fn(); notify(ok); load() } catch (e) { notify((e as Error).message, true) } finally { setBusy('') }
@@ -41,19 +48,19 @@ export default function MicroLivePage({ notify, onNavigate, isAdmin }: PageProps
 
       <div className={`ml-banner ${st.killed ? 'bad' : st.ready ? 'ok' : 'warn'}`}>
         <strong>{st.killed ? '已一键停止' : st.ready ? '可以启动' : '还不能启动'}</strong>
-        {st.blockers.length > 0 && <ul>{st.blockers.map((b) => <li key={b}>{b}</li>)}</ul>}
-        {st.killed && isAdmin && <RearmInline phrase={st.ack_phrase} onDone={load} notify={notify} />}
+        {blockers.length > 0 && <ul>{blockers.map((b) => <li key={b}>{b}</li>)}</ul>}
+        {st.killed && isAdmin && <RearmInline phrase={ackPhrase} onDone={load} notify={notify} />}
       </div>
 
       <div className="stack">
         {(!st.enabled || st.notice_version !== st.notice_current) && (
           <Panel title="风险告知" subtitle="管理员读完后输入下面那句话，工作区才会打开微实盘。告知内容改版后要重新确认。">
-            <Markdown text={st.notice} />
+            <Markdown text={notice} />
             {isAdmin ? (
               <div className="filter-row">
-                <input value={ack} onChange={(e) => setAck(e.target.value)} placeholder={`输入「${st.ack_phrase}」`} aria-label="确认风险告知" />
-                <button className="button primary" disabled={ack.trim() !== st.ack_phrase || !!busy}
-                  onClick={() => act('enable', () => post('/api/microlive/enable', { phrase: ack, notice_version: st.notice_current }), '已打开微实盘')}>打开微实盘</button>
+                <input value={ack} onChange={(e) => setAck(e.target.value)} placeholder={en ? `Type "${ackPhrase}"` : `输入「${ackPhrase}」`} aria-label="确认风险告知" />
+                <button className="button primary" disabled={ack.trim() !== ackPhrase || !!busy}
+                  onClick={() => act('enable', () => post('/api/microlive/enable', { phrase: ack, notice_version: st.notice_current }), en ? 'Micro live trading enabled' : '已打开微实盘')}>打开微实盘</button>
               </div>
             ) : <p className="hint">只有工作区管理员能打开。</p>}
           </Panel>
@@ -122,7 +129,7 @@ export default function MicroLivePage({ notify, onNavigate, isAdmin }: PageProps
       </div>
 
       {adding && <AddKey exchanges={d.exchanges} notify={notify} onClose={() => setAdding(false)} onDone={() => { setAdding(false); load() }} />}
-      {launch && <Launch row={launch} conns={d.connections.filter((c) => c.status === 'active')} startPhrase={st.start_phrase} notify={notify}
+      {launch && <Launch row={launch} conns={d.connections.filter((c) => c.status === 'active')} startPhrase={startPhrase} notify={notify}
         onClose={() => setLaunch(null)} onDone={(id) => { setLaunch(null); onNavigate(`paper/${id}`) }} />}
       {killAsk && (
         <Modal title="一键停止" onClose={() => setKillAsk(false)} width={440} footer={
@@ -137,11 +144,12 @@ export default function MicroLivePage({ notify, onNavigate, isAdmin }: PageProps
 
 function RearmInline({ phrase, onDone, notify }: { phrase: string; onDone: () => void; notify: PageProps['notify'] }) {
   const [v, setV] = useState('')
+  const en = lang === 'en'
   return (
     <div className="filter-row">
-      <input value={v} onChange={(e) => setV(e.target.value)} placeholder={`输入「${phrase}」解除`} aria-label="解除急停" />
+      <input value={v} onChange={(e) => setV(e.target.value)} placeholder={en ? `Type "${phrase}" to re-arm` : `输入「${phrase}」解除`} aria-label="解除急停" />
       <button className="button small" disabled={v.trim() !== phrase} onClick={async () => {
-        try { await post('/api/microlive/rearm', { phrase: v }); notify('已解除急停'); onDone() } catch (e) { notify((e as Error).message, true) }
+        try { await post('/api/microlive/rearm', { phrase: v }); notify(en ? 'Emergency stop cleared' : '已解除急停'); onDone() } catch (e) { notify((e as Error).message, true) }
       }}>解除急停</button>
     </div>
   )
@@ -188,7 +196,7 @@ function Launch({ row, conns, startPhrase, notify, onClose, onDone }: {
       ? <button className="button primary" disabled={busy || !cid} onClick={() => run(async () => setCh(await post<Challenge>('/api/microlive/prepare', { slug: row.slug, connection_id: cid, symbol, initial_cash: Number(cash), stop_loss: Number(sl) / 100 })))}>{busy ? '检查中…' : '生成启动摘要'}</button>
       : <button className="button danger" disabled={busy || code.trim().length !== 6 || phrase.trim() !== startPhrase} onClick={() => run(async () => {
         const r = await post<{ run_id: string }>('/api/microlive/start', { challenge_id: ch.challenge_id, code, phrase })
-        notify('微实盘已启动'); onDone(r.run_id)
+        notify(lang === 'en' ? 'Micro live session started' : '微实盘已启动'); onDone(r.run_id)
       })}>确认并启动（真实资金）</button>}>
       {!ch ? (
         <>

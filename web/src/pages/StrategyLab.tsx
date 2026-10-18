@@ -12,7 +12,10 @@ import { ActionMenu, AutoIterateRow, ContextStats, Icons, PermissionMenu, useFil
 import { CodeEditor } from '../components/CodeEditor'
 import { DiffView, lineDiff } from '../components/Diff'
 import { Markdown } from '../components/markdown'
+import { GoalCardView, PlanCard, PlanSteps, planMeta } from '../components/lab/LabCards'
 import { RenderErrorCtx, type RenderError } from '../components/blocks/renderErrors'
+import { ParameterHeatmapCard } from '../components/blocks/ParameterHeatmap'
+import { StressTestCard } from '../components/blocks/StressTestCard'
 import { Loading, Modal } from '../components/ui'
 import { condText, domainMeta, fmtGoal, GoalChips, GoalForm, metricsOf, projectItems, projectSpec, useDefaultSpec } from './lab/goal'
 import { FactorCodeCard, FactorPanel, FactorReportCard, FactorVersionMetrics } from './lab/factor'
@@ -36,6 +39,7 @@ import { ShareButton } from '../components/Share'
 import { PresenceBar, ShareToButton, ShareToModal, usePresence } from '../components/Social'
 import { QuotePicker, QuoteTray, quotePrefix, type Quote } from '../components/chat/Quotes'
 import { usePlatformCommands } from '../components/chat/platformCommands'
+import { lang, t } from '../i18n'
 
 export const SYMBOL_PICKS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT', 'DOGE/USDT', 'ADA/USDT', 'AVAX/USDT', 'LINK/USDT', 'TON/USDT']
 /** 设置 · 模型 里的「AI 生成简短建议」开关（本机偏好，默认开） */
@@ -49,7 +53,8 @@ const LEGACY_METRIC: Record<string, string> = { min_sharpe: 'sharpe', max_drawdo
 
 const SOURCE_LABEL: Record<string, string> = { ai: 'AI', fallback: '规则', user: '手动', template: '模板' }
 const TOOL_ICON: Record<string, string> = {
-  run_backtest: '∿', get_market_summary: '⇄', search_templates: '⌕', write_strategy: '✎', convene_team: '⛬',
+  run_backtest: '∿', parameter_heatmap: '▦', stress_test: '⚖', cost_sweep: '≋', get_market_summary: '⇄', search_templates: '⌕', write_strategy: '✎', convene_team: '⛬',
+  calculator: '∑', list_trades: '☷', trade_breakdown: '☷',
   generate: '✦', revise: '↻', explain: '?', save_strategy: '⇩', ask_user: '?',
   search_platform: '⌕', web_search: '⊕', fetch_page: '↗', set_goal: '◎', check_goals: '◎', walk_forward: '⫶',
   write_factor: 'ƒ', evaluate_factor: 'ρ', search_factor_library: '⌕', list_fields: '☰', list_versions: '☰',
@@ -62,7 +67,7 @@ type PanelTab = 'code' | 'versions' | 'context' | 'goals' | 'plan'
 const pct = (v: number | null | undefined, d = 1) => (v === null || v === undefined ? '—' : `${(v * 100).toFixed(d)}%`)
 const num = (v: number | null | undefined, d = 2) => (v === null || v === undefined ? '—' : v.toFixed(d))
 
-export default function StrategyLabPage({ onNavigate, notify, arg }: PageProps & { arg?: string }) {
+export default function StrategyLabPage({ onNavigate, notify, arg, me }: PageProps & { arg?: string }) {
   const [meta, setMeta] = useState<LabMeta | null>(null)
   // 当前对话跟着网址 #/lab/<id> 走；左侧栏的对话列表在 App 里常驻（SidebarConversations）
   const activeId = arg || ''
@@ -86,6 +91,7 @@ export default function StrategyLabPage({ onNavigate, notify, arg }: PageProps &
 
       {activeId ? (
         <ProjectView key={activeId} id={activeId} meta={meta} notify={notify} onNavigate={onNavigate}
+          feedbackCfg={me?.workspace?.settings?.feedback}
           onChanged={refreshList} onDeleted={() => { open(''); refreshList() }} onOpenProject={(pid) => { refreshList(); open(pid) }} />
       ) : (
         <Welcome key={`${newFolder}-${newKey}`} meta={meta} notify={notify} folder={newFolder}
@@ -136,7 +142,7 @@ function labPlusItems(o: PlusOpts): ActionItem[] {
         ...(o.ui && o.onExecutor ? [{ label: '研究小组执行', icon: Icons.team, hint: o.ui.teamHint || '自动迭代时由小组讨论后再实现', checked: !!o.executorTeam, onClick: o.onExecutor, disabled: run }] : []),
         { label: '团队讨论', icon: Icons.team, hint: '/discuss：多个角色发言、质疑、汇总', onClick: o.onDiscuss, disabled: run },
         { label: '快速评审', icon: Icons.team, hint: '/team：召集团队给一份评审结论', onClick: o.onTeam, disabled: run },
-        { label: '夜班', icon: Icons.loop, hint: '/night：放进夜班队列，结果写进晨报', onClick: o.onNight },
+        { label: '定时任务', icon: Icons.loop, hint: '/schedule：加入每日任务队列，按时间自动执行，结果写进晨报', onClick: o.onNight },
         { label: '钉一段材料', icon: Icons.pin, hint: '/pin：钉进上下文，每轮都带给模型', onClick: o.onPin },
         { label: o.saveLabel, icon: Icons.save, hint: o.saveHint ?? '/save', onClick: o.onSave, disabled: run || !o.onSave },
         { label: '联网搜索与模型…', icon: Icons.search, hint: '在设置里配置', onClick: o.onModels },
@@ -158,6 +164,8 @@ interface CmdOpts {
   backtest: Handler
   stress: ArgHandler
   sweep?: ArgHandler
+  heatmap?: ArgHandler
+  stressTest?: ArgHandler
   walkForward: ArgHandler
   auto: ArgHandler
   plan: ArgHandler
@@ -190,12 +198,14 @@ function labCommands(o: CmdOpts): SlashCommand[] {
     c(o.ui ? '/eval' : '/backtest', '运行', evalLabel, o.backtest),
     ...(!o.ui || o.kind === 'factor' ? [c('/stress', '运行', o.ui ? '成本评估（默认 2×，只看，不改成绩）' : '成本压力测试（默认 2×，可写倍数，如 /stress 3）', o.stress, { arg: '[倍数]' })] : []),
     ...(!o.ui ? [c('/sweep', '运行', '成本压力扫描：并行跑多档成本倍数，找出不再满足目标的极限（可写倍数，如 /sweep 1 2 3 5）', o.sweep, { arg: '[倍数…]' })] : []),
+    ...(!o.ui ? [c('/heatmap', '运行', '二维参数敏感度热力图：网格回测 X × Y 参数，识别稳健平原或孤岛尖峰（可写参数名，如 /heatmap fast slow）', o.heatmap, { arg: '[X参数 Y参数]' })] : []),
+    ...(!o.ui ? [c('/overfit', '运行', '一键过拟合压力测试：滚动分段 + 参数敏感性 + 2×/3× 成本压力', o.stressTest)] : []),
     ...(!o.ui ? [c('/walkforward', '运行', '分段回测：检查是否只在某段有效', o.walkForward, { arg: '[段数]' })] : []),
     c('/auto', '迭代', o.hasGoal ? `按目标自动迭代（现在 ${o.rounds} 轮）` : '需要先设定目标（/goal）；没有目标就直接对话', o.auto,
       { arg: '[轮数]', disabled: !o.auto || run || !o.hasGoal }),
     { cmd: '/goal', group: '迭代', arg: '[描述]', help: '设定目标：指标条件、回测范围、轮数（设了目标才能自动迭代）' },
     c('/plan', '迭代', 'AI 列分步计划并一步步执行，全部完成且目标达标才停；不带内容时继续当前计划', o.plan, { arg: '[任务]', disabled: !o.plan || run }),
-    c('/night', '迭代', '放进夜班队列：无人值守地自动研究，结果写进晨报', o.night, { arg: '[想法]', disabled: !o.night }),
+    c('/schedule', '迭代', '加入每日定时任务：按设定时间自动研究，结果写进晨报（旧命令 /night 仍可用）', o.night, { arg: '[想法]', disabled: !o.night }),
     c('/report', '研究', '调研报告：列提纲 → 联网与平台数据调研 → 生成可导出 PDF 的报告', o.report, { arg: '[主题]', disabled: !o.report || run }),
     c('/parallel', '研究', '唤起子 Agent 并行探究多个方向，最后并排对比', o.parallel, { arg: '[方向1 | 方向2 | …]', disabled: !o.parallel || run }),
     c('/explain', '协作', o.ui ? `解释当前${o.ui.noun}的逻辑与风险` : '逐段解释当前策略', o.explain),
@@ -213,14 +223,16 @@ function labCommands(o: CmdOpts): SlashCommand[] {
 }
 
 /** /discuss：建一场团队讨论并挂进对话（发言以气泡显示）。 */
-async function startDiscussionIn(project: Pick<LabProject, 'id' | 'title' | 'idea' | 'team_id' | 'securities' | 'timeframe'>, topic: string) {
+async function startDiscussionIn(project: Pick<LabProject, 'id' | 'title' | 'idea' | 'team_id' | 'securities' | 'timeframe' | 'market_auto'>, topic: string) {
   const directive = (topic || `评审「${project.title}」：${project.idea || '当前研究'}；逻辑是否自洽、证据是否可信、最大风险在哪里、下一步怎么做`).slice(0, 600)
   const presets = await missions.presets()
   // 默认用并行的「研究评审组」：市场、成本执行、代码审计各自独立发言，研究组长汇总
   const teamId = project.team_id || presets.teams.find((t) => t.id === 'lab_review')?.id || presets.teams[0]?.id || null
+  const hasMarket = !project.market_auto && project.securities.length > 0
   const v = await missions.create({
     directive, mode: 'single', team_id: teamId, lab_project_id: project.id,
-    symbol: project.securities[0], timeframe: project.timeframe, include_market_data: true,
+    ...(hasMarket ? { symbol: project.securities[0], include_market_data: true } : { include_market_data: false }),
+    timeframe: project.timeframe,
   })
   await lab.discussion(project.id, v.mission.id, directive)
 }
@@ -284,7 +296,7 @@ function Welcome({ meta, notify, onCreated, folder }: {
     setBusy(true)
     try {
       await rd.addTask({ kind, idea: text, executor: isFactor ? executor : 'solo', symbols: spec.symbols, timeframe: spec.timeframe, rounds: Math.min(8, spec.max_rounds), data_source: source })
-      notify('已加入夜班队列，开班后自动研究，结果在晨报里')
+      notify('已加入每日定时任务，到点自动研究，结果在晨报里')
       setIdea('')
     } catch (e) { notify((e as Error).message, true) } finally { setBusy(false) }
   }
@@ -322,9 +334,9 @@ function Welcome({ meta, notify, onCreated, folder }: {
       } catch (e) { notify((e as Error).message, true) }
       return
     }
-    if (text.startsWith('/night')) {
-      const rest = text.replace(/^\/night\s*/, '').trim()
-      if (!rest) { notify('用法：/night 你的研究想法', true); return }
+    if (text.startsWith('/schedule') || text.startsWith('/night')) {
+      const rest = text.replace(/^\/(?:schedule|night)\s*/, '').trim()
+      if (!rest) { notify('用法：/schedule 你的研究想法（旧命令 /night 仍可用）', true); return }
       await queueNight(rest)
       return
     }
@@ -343,7 +355,7 @@ function Welcome({ meta, notify, onCreated, folder }: {
       const pins = [...(draft?.pins ?? []), ...files.map((f) => ({ kind: f.kind ?? 'file', title: f.title, text: f.text }))]
       const ideaText = discuss ? topic : planned ? planTask : reportCmd ? reportTopic : text.replace(/^\/(team|parallel)\s*/, '') || text
       const v = await lab.create({
-        kind: reportCmd ? 'strategy' : kind, idea: ideaText, securities: goal.symbols, timeframe: goal.timeframe, model, effort, max_rounds: goal.max_rounds,
+        kind: reportCmd ? 'strategy' : kind, idea: ideaText, securities: marketAuto && !goalSet ? [] : goal.symbols, timeframe: goal.timeframe, model, effort, max_rounds: goal.max_rounds,
         bars_limit: goal.bars_limit, data_source: source, permission, approvals, market_auto: marketAuto && !goalSet, suggest: suggestOn(),
         workflow: wf, ...labPrefs(),
         ...(isFactor && !reportCmd ? { horizon: goal.horizon ?? 1, executor, universe } : {}),
@@ -372,10 +384,10 @@ function Welcome({ meta, notify, onCreated, folder }: {
   }
   const welcomeCommands = labCommands({
     ui, kind, hasGoal: goalSet, rounds: spec.max_rounds, executorTeam: executor === 'team', saveLabel: ui ? `存入${ui.libraryName}` : '保存为平台策略',
-    backtest: undefined, stress: undefined, walkForward: undefined, explain: undefined, compact: undefined, context: undefined, save: undefined,
+    backtest: undefined, stress: undefined, sweep: undefined, heatmap: undefined, stressTest: undefined, walkForward: undefined, explain: undefined, compact: undefined, context: undefined, save: undefined,
     auto: (a) => { if (Number(a)) setSpec({ ...spec, max_rounds: Math.min(8, Math.max(1, Number(a))) }); setAuto(true) },
     plan: undefined,
-    night: (a) => { if (a) queueNight(a); else notify('用法：/night 你的研究想法', true) },
+    night: (a) => { if (a) queueNight(a); else notify('用法：/schedule 你的研究想法（旧命令 /night 仍可用）', true) },
     team: (a) => setIdea(`/team ${a}`), discuss: (a) => setIdea(`/discuss ${a}`),
     report: (a) => setIdea(`/report ${a}`), parallel: (a) => setIdea(`/parallel ${a}`),
     crew: isFactor ? () => { const v = executor === 'team' ? 'solo' : 'team'; setExecutor(v); store.set('qa.lab.executor', v) } : undefined,
@@ -388,7 +400,7 @@ function Welcome({ meta, notify, onCreated, folder }: {
     fileHint: '文本、CSV、JSON 会钉进新对话的上下文；图片在对话开始后发送',
     onFiles: pickFiles, onSlash: () => setIdea('/'), onPlan: () => setIdea(`/plan ${stripCmd(idea)}`),
     executorTeam: executor === 'team', onExecutor: isFactor ? () => { const v = executor === 'team' ? 'solo' : 'team'; setExecutor(v); store.set('qa.lab.executor', v) } : undefined,
-    onDiscuss: () => setIdea(`/discuss ${stripCmd(idea)}`), onTeam: () => setIdea(`/team ${stripCmd(idea)}`), onNight: () => setIdea(`/night ${stripCmd(idea)}`),
+    onDiscuss: () => setIdea(`/discuss ${stripCmd(idea)}`), onTeam: () => setIdea(`/team ${stripCmd(idea)}`), onNight: () => setIdea(`/schedule ${stripCmd(idea)}`),
     onPin: () => { addNote() }, onSave: undefined, saveLabel: ui ? `存入${ui.libraryName}` : '保存为平台策略', saveHint: '有代码后可用 · /save',
     onModels: () => { window.location.hash = '#/models' },
     auto: <AutoIterateRow rounds={spec.max_rounds} needsGoal={!goalSet} onSetGoal={() => setGoalOpen({ initial: spec })}
@@ -459,7 +471,7 @@ function Welcome({ meta, notify, onCreated, folder }: {
                 {ui ? `${ui.noun} · ` : ''}{marketLabel}
               </button>
               {market.open && (
-                <div className="cmp-menu cmp-menu-form cmp-menu-right market-menu">
+                <div ref={market.menuRef} className="cmp-menu cmp-menu-form cmp-menu-right market-menu" style={market.menuStyle} data-placement={market.placement} role="dialog">
                   <div className="cmp-menu-label">研究类型</div>
                   <StepSlider options={RESEARCH_TYPES.filter((t) => t.id === 'pipeline' || t.id === 'report' || kinds.some((k) => k.id === t.id))}
                     value={rtype} onChange={setRtype} label="研究类型" compact />
@@ -526,9 +538,10 @@ function Welcome({ meta, notify, onCreated, folder }: {
 /* ------------------------------------------------------------------ */
 /* 项目对话                                                            */
 /* ------------------------------------------------------------------ */
-function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpenProject }: {
+function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpenProject, feedbackCfg }: {
   id: string; meta: LabMeta | null; notify: PageProps['notify']; onNavigate: PageProps['onNavigate']
   onChanged: () => void; onDeleted: () => void; onOpenProject: (id: string) => void
+  feedbackCfg?: { enabled: boolean; every_n_messages: number; auto_close_seconds: number }
 }) {
   const [project, setProject] = useState<LabProject | null>(null)
   const [messages, setMessages] = useState<LabMessage[]>([])
@@ -536,6 +549,7 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
   const [input, setInput] = useDraft(`lab:${id}`)
   const [panel, setPanel] = useState<PanelTab | null>(null)
   const [compacting, setCompacting] = useState(false)
+  const [density, setDensity] = useState<'detailed' | 'concise'>(() => store.get('qa.lab.density', 'detailed') === 'concise' ? 'concise' : 'detailed')
   const [goalOpen, setGoalOpen] = useState<{ initial: GoalSpec; unparsed?: string } | null>(null)
   const [goalBusy, setGoalBusy] = useState(false)
   const [ctxAt, setCtxAt] = useState<number | undefined>()
@@ -558,11 +572,16 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
     wasRunning.current = nowRunning
   }, [nowRunning])
   const [attachments, setAttachments] = useState<Attachment[]>([])
+  const [sendQueue, setSendQueue] = useState<{ text: string; images: Attachment[] }[]>([])
+  const [queueTick, setQueueTick] = useState(0)
+  const sendingQueued = useRef(false)
   const cursor = useRef({ after: 0, since: 0 })
   const scroller = useRef<HTMLDivElement>(null)
   const stick = useRef(true)
   const following = useRef<AbortController | null>(null)
   const panelInit = useRef(false)
+  const knownSubagents = useRef(new Set<string>())
+  const [ratingPrompt, setRatingPrompt] = useState<number | null>(null)
 
   const apply = useCallback((v: { project: LabProject; messages: LabMessage[]; server_time: number; context?: ContextView }, full = false) => {
     setProject(v.project)
@@ -570,7 +589,13 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
     setMessages((prev) => (full ? v.messages : mergeBySeq(prev, v.messages)))
     const maxSeq = v.messages.reduce((a, m) => Math.max(a, m.seq), full ? 0 : cursor.current.after)
     cursor.current = { after: maxSeq, since: v.server_time }
-  }, [])
+    const kids = v.messages.flatMap((m) => (m.kind === 'subagents' ? (m.data?.children || []) : []))
+    const fresh = kids.filter((c: { id?: string }) => c.id && !knownSubagents.current.has(c.id))
+    if (fresh.length) {
+      fresh.forEach((c: { id?: string }) => c.id && knownSubagents.current.add(c.id))
+      onChanged()
+    }
+  }, [onChanged])
 
   const pull = useCallback(async (full = false) => {
     const c = full ? { after: 0, since: 0 } : cursor.current
@@ -642,20 +667,19 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
     }
   }
 
-  const send = async (text?: string) => {
-    const t = (text ?? input).trim()
-    const imgs = text === undefined ? attachments : []
+  const dispatchSend = async (raw: string, imgs: Attachment[], fromQueue = false) => {
+    const t = raw.trim()
     if ((!t && !imgs.length) || !project) return
     const [head, ...restParts] = t.split(/\s+/)
-    const local = text === undefined ? commands.find((c) => c.cmd === head && c.run) : undefined
+    const local = commands.find((c) => c.cmd === head && c.run)
     if (local) {
-      setInput('')
+      if (!fromQueue) setInput('')
       if (local.disabled) { notify(`${local.cmd} 现在不可用`, true); return }
       local.run!(restParts.join(' ').trim())
       return
     }
     if (/^\/goal\b/.test(t)) {
-      setInput('')
+      if (!fromQueue) setInput('')
       const rest = t.replace(/^\/goal\s*/, '')
       if (!rest) { setGoalOpen({ initial: projectSpec(project) }); return }
       try {
@@ -664,22 +688,39 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
       } catch (e) { notify((e as Error).message, true) }
       return
     }
-    setInput('')
+    if (!fromQueue) setInput('')
     stick.current = true
-    // 引用：拼成 Markdown 引用块放在消息前面（整个对话只给 id，AI 自己用 read_conversation 读）
-    const quoted = quotes.length ? quotePrefix(quotes, id) + t : t
-    if (quotes.length) setQuotes([])
-    if (!imgs.length) { await act(() => lab.send(id, quoted, { suggest: suggestOn() })); return }
-    setAttachments([])
+    if (!imgs.length) { await act(() => lab.send(id, t, { suggest: suggestOn() })); return }
+    if (!fromQueue) setAttachments([])
     try {
-      await lab.send(id, quoted, { suggest: suggestOn(), images: imgs.map((a) => ({ data_url: a.url, name: a.name })) })
+      await lab.send(id, t, { suggest: suggestOn(), images: imgs.map((a) => ({ data_url: a.url, name: a.name })) })
       await pull()
       follow()
     } catch (e) {
-      setAttachments(imgs) // 发送失败：附件留在输入框里，可以换模型后重发
-      setInput(t)
+      if (!fromQueue) {
+        setAttachments(imgs) // 发送失败：附件留在输入框里，可以换模型后重发
+        setInput(t)
+      }
       notify((e as Error).message, true)
     }
+  }
+
+  const send = async (text?: string) => {
+    const raw = (text ?? input).trim()
+    const imgs = text === undefined ? attachments : []
+    if ((!raw && !imgs.length) || !project) return
+    // 引用：拼成 Markdown 引用块放在消息前面（整个对话只给 id，AI 自己用 read_conversation 读）
+    const quoted = quotes.length ? quotePrefix(quotes, id) + raw : raw
+    if (running) {
+      setSendQueue((q) => [...q, { text: quoted, images: imgs }])
+      setInput('')
+      setAttachments([])
+      setQuotes([])
+      notify(`已加入发送队列（${sendQueue.length + 1} 条），当前任务结束后自动发送`)
+      return
+    }
+    if (quotes.length) setQuotes([])
+    await dispatchSend(quoted, imgs)
   }
 
   const patch = (p: Partial<LabProject>) => act(() => lab.update(id, p))
@@ -745,11 +786,37 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
   // 多人协作：谁也在看这个对话；有人在输入（草稿非空）时显示为「正在编辑」
   const presence = usePresence('project', id, !!input.trim())
   // 浏览器标题用对话名：从对话跳到其他页面时，「返回对话」能写出是哪个对话
-  useEffect(() => { if (project?.title) document.title = `${project.title} · QuantLab` }, [project?.title])
+  useEffect(() => { if (project?.title) document.title = `${project.title} · QuantLab v 0.1 preview` }, [project?.title])
+  // 必须在任何条件 return 之前注册，避免 hooks 数量在加载前后不一致（React #310）。
+  useEffect(() => {
+    if (nowRunning || sendingQueued.current || !sendQueue.length) return
+    sendingQueued.current = true
+    const next = sendQueue[0]
+    setSendQueue((q) => q.slice(1))
+    void dispatchSend(next.text, next.images, true).finally(() => {
+      sendingQueued.current = false
+      setQueueTick((t) => t + 1)
+    })
+  }, [nowRunning, sendQueue, queueTick]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!feedbackCfg?.enabled || nowRunning) return
+    const done = messages.filter((m) => m.role === 'assistant' && m.kind === 'text' && m.content && !m.data?.streaming)
+    const last = done[done.length - 1]
+    if (!last) return
+    const every = Math.max(1, Number(feedbackCfg.every_n_messages) || 10)
+    if (done.length % every !== 0) return
+    try {
+      const key = `qa.lab.rating.${id}`
+      if (Number(localStorage.getItem(key) || 0) >= last.seq) return
+    } catch { /* 私密模式 */ }
+    setRatingPrompt(last.seq)
+  }, [feedbackCfg?.enabled, feedbackCfg?.every_n_messages, messages, nowRunning, id])
 
   if (!project || !panelSpec) return <section className="lab2-main"><Loading label="正在打开项目" /></section>
 
   const running = project.status === 'running'
+
   const ui = domainUI(project.kind)
   const isFactor = !!ui
   const isModel = project.kind === 'model'
@@ -764,10 +831,14 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
   })
   const roundsNow = rounds ?? project.max_rounds
   const hasGoal = !!project.goal?.items?.length || !!project.goal_set
-  const startAuto = (n: number) => !hasGoal ? setGoalOpen({ initial: projectSpec(project) }) : act(async () => {
-    if (n !== project.max_rounds) await lab.update(id, { max_rounds: n })
-    await lab.autopilot(id, { rounds: n })
-  })
+  const startAuto = (n: number) => {
+    if (project.market_auto || !project.securities.length) { notify('请先设置标的与周期，再开始自动迭代', true); return }
+    if (!hasGoal) { setGoalOpen({ initial: projectSpec(project) }); return }
+    act(async () => {
+      if (n !== project.max_rounds) await lab.update(id, { max_rounds: n })
+      await lab.autopilot(id, { rounds: n })
+    })
+  }
   const setPermission = (p: Permission) => { patch({ permission: p }); notify(`权限模式：${({ auto: '自动', manual: '手动', accept_edits: '接受编辑', plan: '计划', bypass: '完全权限' } as Record<Permission, string>)[p]}`) }
   const setApprovals = (a: ApprovalCategory[]) => patch({ approvals: a })
   const noCode = !project.code
@@ -775,14 +846,17 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
     await startDiscussionIn(project, topic)
     stick.current = true
   })
-  const queueNight = (idea: string) => act(async () => {
-    await rd.addTask({
-      kind: (project.kind ?? 'strategy') as 'strategy', idea: (idea || project.idea || project.title).slice(0, 2000),
-      executor: project.executor ?? 'solo', symbols: project.securities, timeframe: project.timeframe,
-      rounds: Math.min(8, project.max_rounds), data_source: project.data_source,
+  const queueNight = (idea: string) => {
+    if (project.market_auto || !project.securities.length) { notify('请先设置标的与周期，再加入定时任务', true); return }
+    act(async () => {
+      await rd.addTask({
+        kind: (project.kind ?? 'strategy') as 'strategy', idea: (idea || project.idea || project.title).slice(0, 2000),
+        executor: project.executor ?? 'solo', symbols: project.securities, timeframe: project.timeframe,
+        rounds: Math.min(8, project.max_rounds), data_source: project.data_source,
+      })
+      notify('已加入每日定时任务：到点自动研究，结果写进晨报')
     })
-    notify('已加入夜班队列：开班后无人值守地研究，结果写进晨报')
-  })
+  }
   const saveLabel = ui ? `${libId ? '更新' : '存入'}${ui.libraryName}` : (project.slug ? '更新平台策略' : '保存为平台策略')
   const toggleCrew = () => patch({ executor: project.executor === 'team' ? 'solo' : 'team' })
   const commands = labCommands({
@@ -790,6 +864,14 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
     backtest: noCode ? undefined : () => act(() => lab.backtest(id)),
     stress: noCode ? undefined : (a) => act(() => lab.backtest(id, Math.min(20, Math.max(0.5, Number(a) || 2)))),
     sweep: noCode ? undefined : (a) => act(() => lab.costSweep(id, (a.match(/\d+(?:\.\d+)?/g) || []).map(Number).slice(0, 8))),
+    heatmap: noCode ? undefined : (a) => {
+      const names = a.split(/\s+/).filter((x) => /^[A-Za-z_]\w*$/.test(x))
+      return act(() => lab.parameterHeatmap(id, { x_param: names[0] || '', y_param: names[1] || '' }))
+    },
+    stressTest: noCode ? undefined : (a) => {
+      const nums = (a.match(/\d+(?:\.\d+)?/g) || []).map(Number)
+      return act(() => lab.stressTest(id, nums.length ? { segments: Math.max(2, Math.min(6, nums[0])) } : {}))
+    },
     walkForward: noCode ? undefined : (a) => act(() => lab.walkForward(id, Math.min(6, Math.max(2, Number(a) || 3)))),
     auto: (a) => startAuto(Math.min(8, Math.max(1, Number(a) || roundsNow))),
     plan: (a) => { stick.current = true; act(() => lab.plan(id, a)) },
@@ -842,34 +924,59 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
     onPin: (m) => act(async () => { await lab.pin(id, { kind: 'note', title: m.content.replace(/\s+/g, ' ').slice(0, 24), text: m.content.slice(0, 4000) }); notify('已钉进上下文') }),
     onCopy: (m) => { navigator.clipboard?.writeText(m.content).then(() => notify('已复制'), () => notify('复制失败', true)) },
     onQuote: (m) => addQuote({ key: `m:${id}:${m.seq}`, pid: id, title: project.title, seq: m.seq, text: m.content }),
+    onFeedback: (m, rating) => {
+      lab.feedback(id, m.seq, rating).then((r) => {
+        setMessages((prev) => prev.map((x) => (x.seq === m.seq ? { ...x, feedback: r.feedback ?? undefined } : x)))
+        notify(r.feedback ? (rating === 1 ? '已点赞' : '已点踩') : '已取消评价')
+      }).catch((e) => notify((e as Error).message, true))
+    },
     onRenderErrors: (m, errors) => { stick.current = true; lab.renderErrors(id, m.seq, errors).then(() => pull(false)).catch(() => undefined) },
   }
-  askRef.current = (text) => { if (running) notify('AI 正在处理，等这一轮结束再点'); else send(text) }
+  askRef.current = (text) => send(text)
 
   const changes = changeStats(project)
+  const visibleMessages = density === 'concise'
+    ? messages.filter((m) => m.role === 'user' || m.role === 'assistant' || m.kind === 'error' || m.kind === 'ask' || m.kind === 'goal')
+    : messages
+  const hiddenMessages = messages.length - visibleMessages.length
   const lastAsk = [...messages].reverse().find((m) => m.kind === 'ask')
   const streamingNow = messages.some((m) => m.data?.streaming)
   const lastMsg = messages[messages.length - 1]
   const finishOk = !(lastMsg && (lastMsg.kind === 'error' || (lastMsg.kind === 'tool' && lastMsg.data?.status === 'error')))
+  const finishRating = (seq: number) => {
+    try { localStorage.setItem(`qa.lab.rating.${id}`, String(seq)) } catch { /* 私密模式 */ }
+    setRatingPrompt(null)
+  }
 
   return (
     <>
       <section className="lab2-main">
         <header className="lab2-head">
-          <input className="lab2-title" defaultValue={project.title} aria-label="项目名称"
-            onBlur={(e) => e.target.value.trim() && e.target.value !== project.title && patch({ title: e.target.value.trim() })} />
+          <div className="lab2-title-row">
+            <input className="lab2-title" defaultValue={project.title} aria-label="项目名称"
+              onBlur={(e) => e.target.value.trim() && e.target.value !== project.title && patch({ title: e.target.value.trim() })} />
+            {project.workflow && <span className="cb-badge lab2-head-tag">{WORKFLOW_LABEL[project.workflow] || project.workflow}</span>}
+          </div>
           <span className="lab2-sub">
             {isFactor
-              ? <>{ui!.noun}研究 · {project.securities.length} 个标的 · {project.timeframe} · 持有 {project.horizon ?? 1} 期 · {project.executor === 'team' ? '研究小组' : '单个 AI'}</>
+              ? <>{ui!.noun}研究 · {project.market_auto || !project.securities.length ? '标的自动' : `${project.securities.length} 个标的`} · {project.timeframe} · 持有 {project.horizon ?? 1} 期 · {project.executor === 'team' ? '研究小组' : '单个 AI'}</>
               : null}
-            {project.workflow && <span className="cb-badge">{WORKFLOW_LABEL[project.workflow] || project.workflow}</span>}
             {project.subagent_of && <> · <a href={`#/lab/${project.subagent_of}`}>子 Agent · 返回主对话</a></>}
             {project.slug && <> · <a href={`#/editor/${project.slug}`}>已存为策略</a></>}
             {ui && libId && <> · <a href={`#/${ui.libraryRoute(libId)}`}>已存入{ui.libraryName}</a></>}
           </span>
           <span className="lab2-head-gap" />
-          <MarketSwitcher symbols={project.securities} timeframe={project.timeframe} disabled={running} multi
-            onChange={(securities, timeframe) => { patch({ securities, timeframe }); notify(`标的改为 ${securities.join(', ')} · ${timeframe}`) }}
+          <div className="lab2-density" role="group" aria-label="对话视图">
+            <button type="button" className={density === 'detailed' ? 'on' : ''} aria-pressed={density === 'detailed'}
+              onClick={() => { setDensity('detailed'); store.set('qa.lab.density', 'detailed') }}>详细</button>
+            <button type="button" className={density === 'concise' ? 'on' : ''} aria-pressed={density === 'concise'}
+              onClick={() => { setDensity('concise'); store.set('qa.lab.density', 'concise') }}>简略</button>
+          </div>
+          <MarketSwitcher symbols={project.securities} timeframe={project.timeframe} auto={!!project.market_auto || !project.securities.length} disabled={running} multi
+            onChange={(securities, timeframe) => {
+              patch({ securities, timeframe, market_auto: securities.length === 0 })
+              notify(securities.length ? `标的改为 ${securities.join(', ')} · ${timeframe}` : '标的与周期改为自动')
+            }}
             notify={notify} />
           <PresenceBar others={presence} />
           <ShareButton type="project" id={id} notify={notify} compact />
@@ -887,8 +994,12 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
         <div className="lab2-scroll" ref={scroller}
           onScroll={(e) => { const el = e.currentTarget; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80 }}>
           <div className="lab2-thread">
-            {messages.map((m) => (
+            {density === 'concise' && hiddenMessages > 0 && (
+              <div className="lab2-density-note">简略视图已隐藏 {hiddenMessages} 条工具与过程记录，切换回「详细」可查看</div>
+            )}
+            {visibleMessages.map((m) => (
               <MessageView key={m.seq} m={m} project={project} meta={dmeta} active={m === lastAsk && project.status === 'awaiting_user'} actions={msgActions}
+                concise={density === 'concise'}
                 onDecide={(choice, note) => act(() => lab.decide(id, choice, note))}
                 onOpenBacktest={(btId) => onNavigate(`backtest/${btId}`)} onOpenEditor={(slug) => onNavigate(`editor/${slug}`)}
                 onOpenCode={openEditor} onOpenLibrary={(route) => onNavigate(route)} />
@@ -913,10 +1024,18 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
           )}
           <Composer value={input} onChange={setInput} onSend={() => send()} running={running} onStop={() => act(() => lab.stop(id))} onLongText={(f) => onFiles([f])}
             commands={[...commands, ...platformCmds.filter((p) => !commands.some((c) => c.cmd === p.cmd))]}
-            placeholder={running ? '正在处理，可随时停止' : ui ? ui.replyPlaceholder : '回复…'}
+            placeholder={running ? '正在处理；输入消息会加入队列，完成后自动发送' : ui ? ui.replyPlaceholder : '回复…'}
             hasAttachments={attachments.length > 0}
+            queueCount={sendQueue.length}
             onPasteFiles={(files) => onFiles(files)}
-            above={(goalOpen || (running && project.job?.kind === 'autopilot') || attachments.length || quotes.length) ? (<>
+            above={(goalOpen || (running && project.job?.kind === 'autopilot') || attachments.length || quotes.length || sendQueue.length) ? (<>
+              {sendQueue.length > 0 && (
+                <div className="lab-send-queue">
+                  <span><b>待发送 {sendQueue.length} 条</b> · 当前任务结束后自动发送</span>
+                  <small>{sendQueue[0].text.replace(/^> .*\n\n/, '').slice(0, 80)}</small>
+                  <button type="button" className="link" onClick={() => setSendQueue([])}>清空队列</button>
+                </div>
+              )}
               <QuoteTray quotes={quotes} onRemove={(key) => setQuotes((prev) => prev.filter((q) => q.key !== key))} />
               {attachments.length > 0 && (
                 <AttachTray items={attachments} warning={imageBlock}
@@ -962,6 +1081,7 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
               meta={context ? `已使用 ${Math.round((context.total / Math.max(1, context.budget)) * 100)}%` : ''}>
               {context && <ContextTab context={context} updatedAt={ctxAt} compacting={compacting} onCompact={compact}
                 autoCompact={project.auto_compact !== false} onAutoCompact={(v) => patch({ auto_compact: v })}
+                onAutoCompactRatio={(v) => patch({ auto_compact_ratio: v })}
                 onUnpin={(pid) => act(() => lab.unpin(id, pid))}
                 onPin={(title, text) => act(() => lab.pin(id, { kind: 'note', title, text }))} />}
             </SideCard>
@@ -986,6 +1106,11 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
         </aside>
       )}
 
+      {ratingPrompt !== null && feedbackCfg?.enabled && (
+        <RatingPrompt projectId={id} seq={ratingPrompt} cfg={feedbackCfg} notify={notify}
+          onRated={(feedback) => setMessages((prev) => prev.map((m) => (m.seq === ratingPrompt ? { ...m, feedback } : m)))}
+          onDone={() => finishRating(ratingPrompt)} />
+      )}
       {quotePicking && <QuotePicker currentId={id} onPick={addQuote} onClose={() => setQuotePicking(false)} />}
       {sharing && <ShareToModal item={{ type: 'project', id, title: project.title }} notify={notify} onNavigate={onNavigate} onClose={() => setSharing(false)} />}
       {editorOpen && (
@@ -1022,7 +1147,7 @@ function ProjectMenu({ onDelete, onSave, hasCode, saved, saveLabel }: { onDelete
         <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden><circle cx="3.5" cy="8" r="1.2" fill="currentColor" /><circle cx="8" cy="8" r="1.2" fill="currentColor" /><circle cx="12.5" cy="8" r="1.2" fill="currentColor" /></svg>
       </button>
       {pop.open && (
-        <div className="cmp-menu cmp-menu-right" role="menu">
+        <div ref={pop.menuRef} className="cmp-menu cmp-menu-right" style={pop.menuStyle} data-placement={pop.placement} role="menu">
           <button className="cmp-menu-item" role="menuitem" disabled={!hasCode} onClick={() => { onSave(); pop.setOpen(false) }}>
             <span className="cmp-menu-main">{saveLabel ?? (saved ? '更新平台策略' : '保存为平台策略')}</span>
           </button>
@@ -1083,6 +1208,7 @@ interface MessageActions {
   onPin: (m: LabMessage) => void
   onCopy: (m: LabMessage) => void
   onQuote: (m: LabMessage) => void
+  onFeedback: (m: LabMessage, rating: 1 | -1) => void
   onRenderErrors: (m: LabMessage, errors: RenderError[]) => void
 }
 
@@ -1126,14 +1252,114 @@ const MI = {
   copy: <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" aria-hidden><rect x="5" y="5" width="8.5" height="8.5" rx="1.6" /><path d="M11 5V3.6c0-.6-.5-1.1-1.1-1.1H3.6c-.6 0-1.1.5-1.1 1.1v6.3c0 .6.5 1.1 1.1 1.1H5" /></svg>,
   pin: <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M9.8 2.5 13.5 6.2 11 7.4 8.6 9.8 8.2 12.4 3.6 7.8 6.2 7.4 8.6 5Z" /><path d="m5.8 10.2-3.3 3.3" /></svg>,
   quote: <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M3 9.5c0-2.5 1-4.2 3-5M3 9.5h2.6v3H3zM9 9.5c0-2.5 1-4.2 3-5M9 9.5h2.6v3H9z" /></svg>,
+  up: <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M5.5 7.2 8 2.6c.4-.7 1.5-.5 1.6.4l.2 2.4h2.8c.9 0 1.5.8 1.3 1.6l-1 4.6c-.1.5-.6.8-1.1.8H5.5" /><path d="M5.5 7.2v5.2H2.8V7.2z" /></svg>,
+  down: <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M5.5 8.8 8 13.4c.4.7 1.5.5 1.6-.4l.2-2.4h2.8c.9 0 1.5-.8 1.3-1.6l-1-4.6c-.1-.5-.6-.8-1.1-.8H5.5" /><path d="M5.5 8.8V3.6H2.8v5.2z" /></svg>,
 }
 
-function MsgBar({ m, items, align }: { m: LabMessage; items: [keyof typeof MI, string, () => void, boolean?][]; align: 'left' | 'right' }) {
+function StarIcon({ filled }: { filled: boolean }) {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden
+      fill={filled ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round">
+      <path d="m12 3.2 2.7 5.5 6.1.9-4.4 4.3 1 6.1-5.4-2.9-5.4 2.9 1-6.1-4.4-4.3 6.1-.9Z" />
+    </svg>
+  )
+}
+
+/** Agent 完成一段回答后的轻量评分卡：可评分、写意见、主动关闭或按管理员策略自动关闭。 */
+function RatingPrompt({ projectId, seq, cfg, notify, onDone, onRated }: {
+  projectId: string
+  seq: number
+  cfg: { enabled: boolean; every_n_messages: number; auto_close_seconds: number }
+  notify: PageProps['notify']
+  onDone: () => void
+  onRated: (feedback: { rating: 1 | -1; comment: string; score?: number }) => void
+}) {
+  const [score, setScore] = useState(0)
+  const [comment, setComment] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [thanks, setThanks] = useState(false)
+  const seconds = Math.max(0, Number(cfg.auto_close_seconds) || 0)
+  const [remaining, setRemaining] = useState(seconds)
+  const doneRef = useRef(onDone)
+  doneRef.current = onDone
+
+  useEffect(() => {
+    if (!seconds) return
+    const due = Date.now() + seconds * 1000
+    const timer = window.setInterval(() => {
+      const left = Math.max(0, Math.ceil((due - Date.now()) / 1000))
+      setRemaining(left)
+      if (left <= 0) {
+        window.clearInterval(timer)
+        doneRef.current()
+      }
+    }, 250)
+    return () => window.clearInterval(timer)
+  }, [seconds])
+
+  useEffect(() => {
+    if (!thanks) return
+    const timer = window.setTimeout(() => doneRef.current(), 1800)
+    return () => window.clearTimeout(timer)
+  }, [thanks])
+
+  const submit = async () => {
+    if (!score || busy) return
+    setBusy(true)
+    try {
+      const r = await lab.feedback(projectId, seq, score >= 3 ? 1 : -1, comment.trim(), score)
+      if (r.feedback) onRated(r.feedback)
+      setThanks(true)
+    } catch (e) {
+      notify((e as Error).message, true)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const closeHint = seconds > 0 ? (lang === 'en' ? `${remaining}s until close` : `${remaining} 秒后自动关闭`) : ''
+  return (
+    <aside className="rating-prompt" role="dialog" aria-modal="false" aria-labelledby="rating-prompt-title">
+      <div className="rating-prompt-head">
+        <div>
+          <b id="rating-prompt-title">{t('评价这次回答')}</b>
+          <small>{t('这个评价会保存到工作区，帮助我们改进模型。')}</small>
+        </div>
+        <button type="button" className="rating-prompt-x" onClick={() => doneRef.current()} aria-label={t('关闭')} title={t('关闭')}>×</button>
+      </div>
+      {thanks ? (
+        <p className="rating-prompt-thanks">{t('感谢您的评价！您的建议将支持我们改进模型')}</p>
+      ) : (
+        <>
+          <div className="rating-stars" role="radiogroup" aria-label={t('评价这次回答')}>
+            {[1, 2, 3, 4, 5].map((n) => (
+              <button key={n} type="button" role="radio" aria-checked={score === n} aria-label={`${n} ${t('星')}`}
+                className={score >= n ? 'on' : ''} onClick={() => setScore(n)}>
+                <StarIcon filled={score >= n} />
+              </button>
+            ))}
+          </div>
+          <textarea value={comment} onChange={(e) => setComment(e.target.value.slice(0, 2000))}
+            placeholder={t('可以补充具体意见（可选）')} aria-label={t('可以补充具体意见（可选）')} rows={3} />
+          <div className="rating-prompt-foot">
+            <span>{closeHint}</span>
+            <button type="button" className="button small ghost" onClick={() => doneRef.current()}>{t('稍后再说')}</button>
+            <button type="button" className="button small primary" disabled={!score || busy} onClick={submit}>
+              {busy ? (lang === 'en' ? 'Submitting…' : '提交中…') : t('提交评价')}
+            </button>
+          </div>
+        </>
+      )}
+    </aside>
+  )
+}
+
+function MsgBar({ m, items, align }: { m: LabMessage; items: [keyof typeof MI, string, () => void, boolean?, boolean?][]; align: 'left' | 'right' }) {
   const t = msgTime(m)
   return (
     <div className={`msg-bar ${align}`}>
-      {items.map(([icon, label, fn, disabled]) => (
-        <button key={label} type="button" className="msg-act" title={label} aria-label={label} disabled={disabled} onClick={fn}>{MI[icon]}</button>
+      {items.map(([icon, label, fn, disabled, active]) => (
+        <button key={label} type="button" className={`msg-act${active ? ' on' : ''}`} title={label} aria-label={label} disabled={disabled} onClick={fn}>{MI[icon]}</button>
       ))}
       <time className="msg-time" dateTime={new Date((m.updated_at ?? m.created_at) * (m.created_at < 1e12 ? 1000 : 1)).toISOString()} title={t.full}>{t.short}</time>
     </div>
@@ -1184,8 +1410,8 @@ function UserMessage({ m, actions, projectId }: { m: LabMessage; actions: Messag
   )
 }
 
-function MessageView({ m, project, meta, active, actions, onDecide, onOpenBacktest, onOpenEditor, onOpenCode, onOpenLibrary }: {
-  m: LabMessage; project: LabProject; meta: LabMeta | null; active: boolean; actions: MessageActions
+function MessageView({ m, project, meta, active, actions, concise, onDecide, onOpenBacktest, onOpenEditor, onOpenCode, onOpenLibrary }: {
+  m: LabMessage; project: LabProject; meta: LabMeta | null; active: boolean; actions: MessageActions; concise?: boolean
   onOpenLibrary: (route: string) => void
   onDecide: (choice: string, note: string) => Promise<unknown> | void
   onOpenBacktest: (id: string) => void
@@ -1204,7 +1430,7 @@ function MessageView({ m, project, meta, active, actions, onDecide, onOpenBackte
         <div className="msg-wrap ai">
           <RenderRepair enabled={!d.streaming && m.seq === actions.lastSeq && !actions.running && !d.render_repair}
             onErrors={(errs) => actions.onRenderErrors(m, errs)}>
-            <AssistantText content={m.content} thinking={d.thinking} thinkingMs={d.thinking_ms} streaming={!!d.streaming}
+            <AssistantText content={m.content} thinking={concise ? undefined : d.thinking} thinkingMs={concise ? undefined : d.thinking_ms} streaming={!!d.streaming}
               model={m.model} fallback={m.mode === 'fallback'} />
           </RenderRepair>
           {!d.streaming && m.seq === actions.lastSeq && !actions.running && Array.isArray(d.suggestions) && d.suggestions.length > 0 && (
@@ -1214,6 +1440,8 @@ function MessageView({ m, project, meta, active, actions, onDecide, onOpenBackte
           )}
           {!d.streaming && m.content && (
             <MsgBar m={m} align="left" items={[
+              ['up', m.feedback?.rating === 1 ? '已点赞' : '点赞', () => actions.onFeedback(m, 1), false, m.feedback?.rating === 1],
+              ['down', m.feedback?.rating === -1 ? '已点踩' : '点踩', () => actions.onFeedback(m, -1), false, m.feedback?.rating === -1],
               ['copy', '复制', () => actions.onCopy(m)],
               ['quote', '引用到输入框', () => actions.onQuote(m)],
               ['fork', '从这里分叉', () => actions.onFork(m)],
@@ -1249,10 +1477,14 @@ function MessageView({ m, project, meta, active, actions, onDecide, onOpenBackte
       return <BacktestCard m={m} onOpen={onOpenBacktest} metrics={metricsOf(meta)} />
     case 'cost_sweep':
       return <CostSweepCard m={m} onOpen={onOpenBacktest} />
+    case 'parameter_heatmap':
+      return <ParameterHeatmapCard data={d} />
+    case 'stress_test':
+      return <StressTestCard data={d} />
     case 'round':
       return <RoundCard m={m} metrics={metricsOf(meta)} />
     case 'team':
-      return <TeamCard m={m} />
+      return <TeamCard m={m} concise={concise} />
     case 'ask':
       return <AskCard m={m} active={active} onDecide={onDecide} />
     case 'goal':
@@ -1268,7 +1500,7 @@ function MessageView({ m, project, meta, active, actions, onDecide, onOpenBackte
     case 'subagents':
       return <SubagentsCard m={m} onOpen={(cid) => onOpenLibrary(`lab/${cid}`)} />
     case 'discussion':
-      return <DiscussionCard missionId={d.mission_id} topic={m.content} notify={actions.notify}
+      return <DiscussionCard missionId={d.mission_id} topic={m.content} notify={actions.notify} concise={concise}
         onPin={(text) => actions.onPinText(`团队讨论结论 · ${m.content.slice(0, 16)}`, text)} />
     case 'saved':
       return (
@@ -1306,6 +1538,11 @@ function CodeCard({ m, onOpenCode }: { m: LabMessage; onOpenCode: () => void }) 
         <div className="lab2-params">{Object.entries(d.params || {}).slice(0, 8).map(([k, v]) => <code key={k}>{k}={String(v)}</code>)}</div>
       )}
       {(d.experiment || d.diff) && <ExperimentNote experiment={d.experiment} diff={d.diff} />}
+      {(d.warnings || []).length > 0 && (
+        <div className="lab2-warn">
+          {d.warnings.map((w: string) => <div key={w}>性能提示：{w}</div>)}
+        </div>
+      )}
       {open && <DiffView before={d.before || ''} after={d.after || ''} maxHeight={360} />}
     </div>
   )
@@ -1353,6 +1590,9 @@ function BacktestCard({ m, onOpen, metrics }: { m: LabMessage; onOpen: (id: stri
         <b>{d.cost_scale > 1 ? `${d.cost_scale}× 成本回测` : '回测'}</b>
         {ev && <span className={`cb-badge ${ev.passed ? 'ok' : 'warn'}`}>{ev.passed ? '达标' : '未达标'}</span>}
         {d.data_check && <span className={`cb-badge ${d.data_check.formal ? 'ok' : 'warn'}`} title={d.data_check.label}>{d.data_check.formal ? '正式回测' : '非正式回测'}</span>}
+        {(d.cost_source === 'strategy' || d.cost_model?.cost_source === 'strategy') && <span className="cb-badge warn" title="策略里的 set_order_cost 已覆盖 UI 默认成本">代码自定义费率</span>}
+        {d.cost_model?.execution_mode === 'tick' && <span className="cb-badge" title="用 OHLC 路径模拟盘中逐笔成交">逐笔撮合</span>}
+        {d.cost_model?.dynamic_slippage === true && <span className="cb-badge" title="滑点按本根振幅与参与率放大">动态滑点</span>}
         <span className="lab2-card-gap" />
         <span className="lab2-faint">{(d.data_sources || []).join(' / ')}</span>
         {d.bt_id && <button className="link" onClick={() => onOpen(d.bt_id)}>详情</button>}
@@ -1493,8 +1733,8 @@ function RoundCard({ m, metrics }: { m: LabMessage; metrics: ReturnType<typeof m
   )
 }
 
-function TeamCard({ m }: { m: LabMessage }) {
-  const [open, setOpen] = useState(false)
+function TeamCard({ m, concise }: { m: LabMessage; concise?: boolean }) {
+  const [open, setOpen] = useState(!concise)
   const d = m.data
   const steps = (d.steps || []) as { role_id: string; role_name: string; status: string; model: string; output: string }[]
   return (
@@ -1509,9 +1749,12 @@ function TeamCard({ m }: { m: LabMessage }) {
       {open && (
         <div className="lab2-team">
           {steps.map((s, i) => (
-            <div key={i} className="lab2-team-row">
+            <div key={i} className={`lab2-team-row ${s.status === 'error' ? 'error' : ''}`}>
               <Avatar id={s.role_id} size={22} />
-              <div><b>{s.role_name}</b><p>{s.output}</p></div>
+              <div className="lab2-team-bubble">
+                <div className="lab2-team-who"><b>{s.role_name}</b>{s.status === 'error' && <span className="cc-kind">失败</span>}{s.model && <span>{s.model}</span>}</div>
+                <Markdown text={s.output || '（没有产出内容）'} compact />
+              </div>
             </div>
           ))}
         </div>
@@ -1660,9 +1903,30 @@ function VersionsTab({ project, onRestore, onOpenBacktest, metrics }: { project:
   )
 }
 
-function ContextTab({ context, updatedAt, onUnpin, onPin, onCompact, compacting, autoCompact, onAutoCompact }: {
+const fmtCtxTokens = (n: number) => n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : `${Math.round(n / 1000)}k`
+
+function AutoCompactThreshold({ ratio, budget, onChange }: { ratio: number; budget: number; onChange: (v: number) => void }) {
+  const [pct, setPct] = useState(Math.round(ratio * 100))
+  const pctRef = useRef(pct)
+  useEffect(() => { setPct(Math.round(ratio * 100)); pctRef.current = Math.round(ratio * 100) }, [ratio])
+  const set = (v: number) => { pctRef.current = v; setPct(v) }
+  const commit = () => {
+    const next = pctRef.current
+    if (Math.abs(next / 100 - ratio) > 0.001) onChange(next / 100)
+  }
+  return (
+    <div className="auto-compact-threshold">
+      <div className="auto-compact-threshold-head"><span>触发阈值</span><b>{pct}%</b></div>
+      <input type="range" min={50} max={95} step={5} value={pct} aria-label="自动压缩阈值"
+        onChange={(e) => set(Number(e.target.value))} onPointerUp={commit} onKeyUp={commit} onBlur={commit} />
+      <div className="auto-compact-threshold-note">约 {fmtCtxTokens(Math.round(budget * pct / 100))} tokens 时压缩 · 默认 80%</div>
+    </div>
+  )
+}
+
+function ContextTab({ context, updatedAt, onUnpin, onPin, onCompact, compacting, autoCompact, onAutoCompact, onAutoCompactRatio }: {
   context: ContextView; updatedAt?: number; onUnpin: (id: string) => void; onPin: (title: string, text: string) => void; onCompact: () => void; compacting: boolean
-  autoCompact: boolean; onAutoCompact: (v: boolean) => void
+  autoCompact: boolean; onAutoCompact: (v: boolean) => void; onAutoCompactRatio: (v: number) => void
 }) {
   const [title, setTitle] = useState('')
   const [text, setText] = useState('')
@@ -1674,11 +1938,15 @@ function ContextTab({ context, updatedAt, onUnpin, onPin, onCompact, compacting,
         <div>
           <b>自动压缩</b>
           <small>{autoCompact
-            ? `对话原文超过 ${Math.round((context.history_budget ?? 0) * 1.25 / 1000)}k tokens 时，下一回合前先把较早的对话压成摘要`
+            ? '上下文总量达到下方阈值时，下一回合前先把较早的对话压成摘要'
             : '已关闭：较早的对话只按条截断，不生成摘要；可随时手动「压缩历史」'}</small>
         </div>
         <button type="button" role="switch" aria-checked={autoCompact} aria-label="自动压缩" className={`switch${autoCompact ? ' on' : ''}`} onClick={() => onAutoCompact(!autoCompact)}><i /></button>
       </div>
+      {autoCompact && (
+        <AutoCompactThreshold ratio={context.auto_compact_ratio ?? 0.8} budget={context.budget}
+          onChange={onAutoCompactRatio} />
+      )}
       <div className="side-sub">
         <div className="side-sub-head"><b>钉住的材料</b><span>{pins.length ? `${pins.length} 份` : '没有'}</span></div>
         {pins.length > 0 && (
@@ -1761,21 +2029,19 @@ function GoalSummary({ project, metrics, hasGoal, running, rounds, onEdit, onSta
     ? `${spec.start ? new Date(spec.start).toISOString().slice(0, 10) : '最早'} 至 ${spec.end ? new Date(spec.end).toISOString().slice(0, 10) : '最新'}`
     : `最近 ${spec.bars_limit.toLocaleString()} 根 K 线`
   return (
-    <div className="goal-sum">
-      <div className="goal-sum-chips">
-        {spec.items.map((c, i) => <span key={i} className={`goal-chip${c.priority === 'try' ? ' try' : ''}`}>{condText(c, metrics)}</span>)}
-      </div>
-      <dl className="goal-sum-dl">
-        <div><dt>标的</dt><dd>{spec.symbols.join('、')} · {spec.timeframe}</dd></div>
-        <div><dt>区间</dt><dd>{range}</dd></div>
-        <div><dt>轮数</dt><dd>最多 {rounds} 轮</dd></div>
-        {spec.note ? <div><dt>备注</dt><dd>{spec.note}</dd></div> : null}
-      </dl>
-      <div className="goal-sum-actions">
+    <GoalCardView
+      chips={spec.items.map((c) => ({ text: condText(c, metrics), priority: c.priority }))}
+      rows={[
+        { label: '标的', value: `${spec.symbols.join('、')} · ${spec.timeframe}` },
+        { label: '区间', value: range },
+        { label: '轮数', value: `最多 ${rounds} 轮` },
+        ...(spec.note ? [{ label: '备注', value: spec.note }] : []),
+      ]}
+      actions={<>
         <button type="button" className="button small" onClick={onEdit}>编辑目标</button>
         <button type="button" className="button small primary" disabled={running} onClick={onStart}>开始自动迭代</button>
-      </div>
-    </div>
+      </>}
+    />
   )
 }
 
@@ -1804,51 +2070,6 @@ function SideCard({ id, title, meta, focus, children }: { id: PanelTab; title: s
 /* ------------------------------------------------------------------ */
 /* /plan 计划卡片                                                     */
 /* ------------------------------------------------------------------ */
-const STEP_MARK: Record<string, string> = { pending: '', doing: '', done: '✓', skipped: '–', failed: '!' }
-
-function planMeta(plan: LabPlan) {
-  const done = plan.steps.filter((s) => s.status === 'done' || s.status === 'skipped').length
-  return plan.status === 'done' ? `已完成 ${done}/${plan.steps.length}` : `${done}/${plan.steps.length}${plan.status === 'stopped' || !plan.autorun ? ' · 已暂停' : ''}`
-}
-
-function PlanSteps({ plan }: { plan: LabPlan }) {
-  return (
-    <ol className="plan-steps stagger">
-      {plan.steps.map((s, i) => (
-        <li key={i} className={`plan-step ${s.status}`}>
-          <span className="plan-mark" aria-label={s.status}>{s.status === 'doing' ? <span className="cb-spin" /> : STEP_MARK[s.status] || i + 1}</span>
-          <span className="plan-text">
-            {s.text}
-            {s.note && <small>{s.note}</small>}
-          </span>
-        </li>
-      ))}
-    </ol>
-  )
-}
-
-/** 对话里的计划卡片：live 是项目上的最新计划（进度随时更新），没有时用消息里存的那份。 */
-function PlanCard({ plan, live }: { plan: LabPlan; live: LabPlan | null }) {
-  const p = live ?? plan
-  if (!p?.steps?.length) return null
-  const done = p.steps.filter((s) => s.status === 'done' || s.status === 'skipped').length
-  return (
-    <div className={`lab2-card plan-card ${p.status}`}>
-      <div className="lab2-card-head">
-        <b>计划</b>
-        <span className="plan-task">{p.task}</span>
-        <span className="lab2-card-gap" />
-        <span className={`cb-badge ${p.status === 'done' ? 'ok' : p.status === 'stopped' || !p.autorun ? 'warn' : ''}`}>
-          {p.status === 'done' ? '已完成' : p.status === 'stopped' || !p.autorun ? '已暂停' : '执行中'} · {done}/{p.steps.length}
-        </span>
-      </div>
-      <div className="plan-bar" aria-hidden><i style={{ width: `${(done / p.steps.length) * 100}%` }} /></div>
-      <PlanSteps plan={p} />
-      {p.done_when && <div className="lab2-faint">完成标准：{p.done_when}</div>}
-    </div>
-  )
-}
-
 function GoalEvent({ m, metrics }: { m: LabMessage; metrics: ReturnType<typeof metricsOf> }) {
   const d = m.data
   if (d.stage === 'early_stop') {

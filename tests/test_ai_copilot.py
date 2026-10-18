@@ -161,6 +161,40 @@ def test_generate_and_save_as_draft(client):
     assert client.get("/api/ai/history").json()["items"][0]["action"] == "generate"
 
 
+def test_provider_presets_cover_common_providers(client):
+    presets = client.get("/api/config/presets").json()["presets"]
+    names = {p["name"] for p in presets}
+    assert len(presets) >= 20
+    assert len(names) == len(presets)
+    assert {
+        "deepseek",
+        "openai",
+        "anthropic",
+        "gemini",
+        "dashscope",
+        "moonshot",
+        "zhipu",
+        "opencode",
+        "openrouter",
+        "groq",
+        "mistral",
+        "xai",
+        "together",
+        "cerebras",
+        "perplexity",
+        "cohere",
+        "nvidia",
+        "azure-openai",
+        "cloudflare",
+        "modelscope",
+    } <= names
+    for p in presets:
+        assert p["label"] and p["name"] and p["models"]
+        assert p["type"] in {"openai_compatible", "openai_responses", "anthropic", "local"}
+        assert p["base_url"].startswith(("http://", "https://"))
+        assert p["currency"] in {"CNY", "USD"}
+
+
 def test_no_builtin_providers(client):
     """平台不内置服务商：新工作区里一个都没有，AI 走模板降级。"""
     cfg = client.get("/api/config").json()

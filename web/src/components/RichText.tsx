@@ -9,6 +9,8 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type React
 import { collab, fmtSize, uploadFile, uploadUrl, type Ref } from '../apiCollab'
 import { Markdown } from './markdown'
 import { MentionList, filterMentions, mentionQuery, type MentionOption } from './chat/Composer'
+import { QmojiPicker } from './Qmoji'
+import { UPLOAD_ACCEPT } from './uploadAccept'
 import { Modal } from './ui'
 
 const TOKEN = /^\s*\{\{ref:([a-z]+):([^}\s]+)\}\}\s*$/
@@ -363,11 +365,12 @@ export function RichEditor({
           <button key={t.title} type="button" className="rt-btn" title={t.title} aria-label={t.title} onMouseDown={(e) => e.preventDefault()} onClick={t.run}>{t.label}</button>
         ))}
         {!minimalToolbar && <span className="rt-sep" />}
+        <QmojiPicker small={compact} onPick={(code) => edit(() => ({ text: code }))} />
         <RefMenu onPick={(t) => (t === 'code' ? setSnippet(true) : setPicker(t))} />
         <button type="button" className="rt-btn wide" title="上传图片或文件（也可以直接粘贴 / 拖进来）" onClick={() => fileInput.current?.click()}>
           {uploading ? '上传中…' : '⎙ 上传'}
         </button>
-        <input ref={fileInput} type="file" multiple hidden style={{ display: 'none' }} accept="image/*,.pdf,.txt,.log,.csv,.md,.json,.py,.zip"
+        <input ref={fileInput} type="file" multiple style={{ position: 'fixed', left: -9999, top: 0, width: 1, height: 1, opacity: 0 }} accept={UPLOAD_ACCEPT} aria-label="上传图片或文件"
           onChange={(e) => { const f = [...(e.target.files || [])]; e.target.value = ''; if (f.length) upload(f) }} />
         {!compact && (
           <div className="rt-modes seg seg-sm" role="tablist" aria-label="视图">

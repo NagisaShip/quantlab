@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { ago, fmtDate, fmtNum, fmtPct, v3, type FullMetrics, type Optimization, type Params, type StrategyFile } from '../api2'
+import { ago, fmtDate, fmtNum, fmtPct, v3, type FullMetrics, type Optimization, type Params, type StrategyFile } from '../api/research'
 import { Heatmap, Scatter } from '../components/charts2'
 import { Callout, EmptyState, Heading, Loading, Panel, Segments, SourceBanner, Tag } from '../components/ui'
 import type { PageProps } from './types'
+import { RecordPinButton } from '../components/RecordPin'
 
 const OBJECTIVES = [
   { value: 'sharpe', label: '夏普比率' },
@@ -51,7 +52,7 @@ export default function OptimizePage({ slug, onNavigate, notify, setBusy }: Page
   const [source, setSource] = useState<'auto' | 'exchange' | 'synthetic'>('auto')
   const [job, setJob] = useState<{ id: string; done: number; total: number } | null>(null)
   const [result, setResult] = useState<Optimization | null>(null)
-  const [history, setHistory] = useState<{ id: string; objective: string; combinations: number; created_at: number; best_params: Params; method?: string }[]>([])
+  const [history, setHistory] = useState<{ id: string; objective: string; combinations: number; created_at: number; best_params: Params; method?: string; pinned?: boolean }[]>([])
   const [error, setError] = useState('')
   const [view, setView] = useState<'in' | 'out'>('out')
   const [method, setMethod] = useState<'grid' | 'bayes'>('grid')
@@ -258,6 +259,7 @@ export default function OptimizePage({ slug, onNavigate, notify, setBusy }: Page
                         {ago(h.created_at)} · {h.method === 'bayes' ? '智能 · ' : ''}{OBJECTIVES.find((o) => o.value === h.objective)?.label} · {h.combinations} 组
                       </button>
                       <small className="mono">{paramText(h.best_params || {})}</small>
+                      <RecordPinButton type="optimization" id={h.id} pinned={h.pinned} notify={notify} />
                     </li>
                   ))}
                 </ul>

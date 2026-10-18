@@ -11,7 +11,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useDraft } from './draft'
 import { askStream, askAI, type AiAction, type AskContextItem, type AskMeta, type AskTurn, type ToolCatalog, type ToolRecord } from '../apiAskAI'
-import { fmtMoney, fmtNum, fmtPct, type BacktestResult } from '../api2'
+import { fmtMoney, fmtNum, fmtPct, type BacktestResult } from '../api/research'
 import type { ContextView, Effort } from '../apiLab'
 import { Composer, ContextRing, ModelMenu, PlusMenu } from './chat/Composer'
 import { AssistantText, EventLine, UserBubble, Working } from './chat/Blocks'
@@ -124,7 +124,7 @@ function pageSnapshot(route: string): AskAIContext | null {
   clone.querySelectorAll('button, nav, script, style, svg, .ask-fab-group, .hub-tabs').forEach((n) => n.remove())
   const text = (clone.innerText || clone.textContent || '').replace(/\n{3,}/g, '\n\n').trim()
   if (!text) return null
-  const title = document.title.replace(/ · QuantLab$/, '') || route
+  const title = document.title.replace(/ · QuantLab v 0.1 preview$/, '') || route
   return { kind: 'page', title: `「${title}」页面内容`, text: `页面：${title}（#/${window.location.hash.replace(/^#\/?/, '')}）\n\n${text.slice(0, 6000)}` }
 }
 
@@ -330,7 +330,7 @@ export function AskAIPanel() {
   return (
     <>
       {!open && (
-        <div className="ask-fab-group">
+        <div className={`ask-fab-group${route === 'groups' ? ' ask-fab-safe' : ''}`}>
           <button type="button" className="ask-fab-mini" onClick={() => setOpen(true)} title="在侧栏快速提问（不离开本页）" aria-label="在侧栏快速提问">
             <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden><rect x="1.5" y="2" width="11" height="10" rx="2" fill="none" stroke="currentColor" strokeWidth="1.3" /><path d="M8.5 2v10" stroke="currentColor" strokeWidth="1.3" /></svg>
           </button>

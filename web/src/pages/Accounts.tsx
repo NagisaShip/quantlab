@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
-import { fmtTime } from '../api2'
-import { v4, type Connection, type Guide } from '../api3'
+import { fmtTime } from '../api/research'
+import { v4, type Connection, type Guide } from '../api/platform'
 import { ApiError } from '../http'
 import { Callout, EmptyState, Field, Fold, Heading, Loading, Modal, Panel, Rich, Segments, Tag } from '../components/ui'
 import type { PageProps } from './types'
@@ -12,7 +12,7 @@ const STATUS: Record<Connection['status'], [string, string]> = {
 
 /**
  * 只读账户：只读接入向导。
- * 默认只显示接入方法；粘贴 Key 不会启动任何交易（live_enabled=false，平台没有真实下单路径）。
+ * 默认只显示接入方法；粘贴 Key 只建立只读连接，不会启动任何交易。微实盘使用独立页面与独立 Key。
  */
 export default function AccountsPage({ notify, onNavigate, readonly }: PageProps & { readonly?: boolean }) {
   const [guide, setGuide] = useState<{ exchanges: Record<string, Guide>; notes: string[] } | null>(null)
@@ -34,7 +34,7 @@ export default function AccountsPage({ notify, onNavigate, readonly }: PageProps
         actions={!readonly && <button className="button primary" onClick={() => setWizard(true)}>绑定只读账户</button>} />
       <div className="two-columns">
         <div>
-          <Panel title="已绑定的连接" subtitle="管理页只返回掩码与 connection_id；凭证用独立主密钥加密，不进数据库、不进日志。">
+          <Panel title="已绑定的连接" subtitle="页面只显示掩码；凭证加密保存，不会写入日志。">
             {active.length === 0 ? (
               <EmptyState title="未绑定" glyph="⚿">没有账户也能完成策略配置、回测与纸面模拟。需要对照真实成交时再绑定只读 Key，或直接在“实盘对照”导入 CSV。</EmptyState>
             ) : active.map((c) => <ConnectionCard key={c.id} c={c} notify={notify} onChange={load} onNavigate={onNavigate} readonly={readonly} />)}

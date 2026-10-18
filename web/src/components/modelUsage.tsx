@@ -2,41 +2,102 @@
  * 模型用量与限额的共用组件：限额规则编辑、限额进度条、用量统计（日趋势 + 按模型 / 成员拆分）。
  * 「设置 · 模型」「设置 · 额度与用量」「设置 · 成员与邀请」共用。
  */
-import { useState } from 'react'
-import type { LimitMetric, LimitRule, LimitStatus, LimitWindow, ModelUsage } from '../api2'
+import { useEffect, useState } from 'react'
+import type { LimitMetric, LimitRule, LimitStatus, LimitWindow, ModelUsage } from '../api/research'
 
 /** 时间段：自然周期（每日 / 每周 / 每月 / 累计，按工作区时区切分）与滚动时间段。 */
 export const WINDOWS: [LimitWindow, string][] = [
   ['day', '每日'], ['week', '每周'], ['month', '每月'], ['total', '累计（不重置）'],
   ['1h', '滚动 1 小时'], ['5h', '滚动 5 小时'], ['1d', '滚动 24 小时'], ['7d', '滚动 7 天'], ['30d', '滚动 30 天'],
 ]
-export const METRICS: [LimitMetric, string][] = [['tokens', '按 token'], ['cost', '按费用（元）']]
+export const MODEL_METRICS: [LimitMetric, string][] = [['tokens', '按 token'], ['cost', '按费用（元）']]
+export const MEMBER_METRICS: [LimitMetric, string][] = [
+  ...MODEL_METRICS,
+  ['cpu_seconds', '按 CPU 秒'],
+  ['backtests', '按回测次数'],
+  ['optimize_combinations', '按优化组合数'],
+  ['storage_bytes', '按上传存储（MB）'],
+  ['record_units', '按研究记录（单位）'],
+]
+export const METRICS = MODEL_METRICS
+export const METRIC_LABEL: Record<LimitMetric, string> = {
+  tokens: 'token', cost: '费用', cpu_seconds: 'CPU 秒', backtests: '回测次数', optimize_combinations: '优化组合数',
+  storage_bytes: '上传存储', record_units: '研究记录',
+}
+const stockMetric = (m: LimitMetric) => m === 'storage_bytes' || m === 'record_units'
+export const metricUnit = (m: LimitMetric) => m === 'cost' ? '元' : m === 'tokens' ? 'token' : m === 'cpu_seconds' ? '秒' : m === 'backtests' ? '次' : m === 'storage_bytes' ? '' : m === 'record_units' ? '单位' : '组'
+export const editorUnit = (m: LimitMetric) => m === 'storage_bytes' ? 'MB' : metricUnit(m)
+export const fmtStorageBytes = (bytes: string | number) => {
+  let n = Math.max(0, Number(bytes))
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let i = 0
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i += 1 }
+  return `${i === 0 ? n.toFixed(0) : n.toFixed(2)} ${units[i]}`
+}
+export const storageBytesFromInput = (value: string) => {
+  const n = Number(value)
+  return Number.isFinite(n) && n > 0 ? String(Math.round(n * 1024 ** 2)) : ''
+}
+export const storageInputValue = (bytes: string | number) => {
+  const n = Number(bytes) / 1024 ** 2
+  return n > 0 ? String(Number(n.toFixed(3))) : ''
+}
+export const fmtLimitValue = (metric: LimitMetric, value: string | number) => metric === 'cost'
+  ? fmtCost(value)
+  : metric === 'tokens' ? fmtTokens(Number(value)) : metric === 'storage_bytes' ? fmtStorageBytes(value) : Number(value).toLocaleString('zh-CN')
 
 export const fmtTokens = (n: number) =>
   n >= 1e9 ? `${(n / 1e9).toFixed(2)}B` : n >= 1e6 ? `${(n / 1e6).toFixed(2)}M` : n >= 1e4 ? `${(n / 1e3).toFixed(1)}k` : String(n)
 export const fmtCost = (v: string | number) => `¥${Number(v).toFixed(Number(v) >= 100 ? 2 : 4)}`
 
+/** 输入控件保留用户正在敲的原始文本，避免把「0.」这类中间态立刻格式化掉。 */
+function LimitValueInput({ rule, disabled, onChange }: { rule: LimitRule; disabled?: boolean; onChange: (v: string) => void }) {
+  const asText = (r: LimitRule) => r.metric === 'storage_bytes' ? storageInputValue(r.limit) : r.limit
+  const [draft, setDraft] = useState(() => asText(rule))
+  useEffect(() => { setDraft(asText(rule)) }, [rule.metric, rule.limit])
+  const stock = rule.metric === 'storage_bytes' || rule.metric === 'record_units'
+  return (
+    <input type="number" min={0}
+      step={stock ? 1 : rule.metric === 'cost' ? 0.01 : rule.metric === 'tokens' ? 1000 : 1}
+      inputMode="decimal" value={draft} disabled={disabled}
+      onChange={(e) => {
+        setDraft(e.target.value)
+        onChange(rule.metric === 'storage_bytes' ? storageBytesFromInput(e.target.value) : e.target.value)
+      }}
+      placeholder={`上限（${editorUnit(rule.metric)}）`} aria-label="上限" />
+  )
+}
+
 /** 限额规则编辑：每行「计量方式 × 时间段 × 上限」。 */
-export function LimitEditor({ rules, onChange, disabled, empty = '不限额' }: {
-  rules: LimitRule[]; onChange: (r: LimitRule[]) => void; disabled?: boolean; empty?: string
+export function LimitEditor({ rules, onChange, disabled, empty = '不限额', metrics = METRICS }: {
+  rules: LimitRule[]; onChange: (r: LimitRule[]) => void; disabled?: boolean; empty?: string; metrics?: [LimitMetric, string][]
 }) {
   const set = (i: number, patch: Partial<LimitRule>) => onChange(rules.map((r, j) => (j === i ? { ...r, ...patch } : r)))
+  const changeMetric = (i: number, metric: LimitMetric) => {
+    const prev = rules[i]
+    const limit = prev.metric === metric ? prev.limit : ''
+    set(i, { metric, window: stockMetric(metric) ? 'total' : prev.window, limit })
+  }
   return (
     <div className="lim-editor">
-      {rules.map((r, i) => (
+      {rules.map((r, i) => {
+        const stock = r.metric === 'storage_bytes' || r.metric === 'record_units'
+        return (
         <div key={i} className="lim-row anim-in">
-          <select value={r.metric} disabled={disabled} onChange={(e) => set(i, { metric: e.target.value as LimitMetric })} aria-label="计量方式">
-            {METRICS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+          <select value={r.metric} disabled={disabled} onChange={(e) => changeMetric(i, e.target.value as LimitMetric)} aria-label="计量方式">
+            {metrics.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
           </select>
-          <select value={r.window} disabled={disabled} onChange={(e) => set(i, { window: e.target.value as LimitWindow })} aria-label="时间段">
-            <optgroup label="自然周期">{WINDOWS.slice(0, 4).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</optgroup>
-            <optgroup label="滚动时间段">{WINDOWS.slice(4).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</optgroup>
+          <select value={r.window} disabled={disabled || stock} onChange={(e) => set(i, { window: e.target.value as LimitWindow })} aria-label="时间段">
+            {stock ? <option value="total">累计（按当前占用）</option> : <>
+              <optgroup label="自然周期">{WINDOWS.slice(0, 4).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</optgroup>
+              <optgroup label="滚动时间段">{WINDOWS.slice(4).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</optgroup>
+            </>}
           </select>
-          <input type="number" min={0} step={r.metric === 'cost' ? 0.01 : 1000} inputMode="decimal" value={r.limit} disabled={disabled}
-            onChange={(e) => set(i, { limit: e.target.value })} placeholder={r.metric === 'cost' ? '上限（元）' : '上限（token）'} aria-label="上限" />
+          <LimitValueInput rule={r} disabled={disabled} onChange={(limit) => set(i, { limit })} />
           {!disabled && <button type="button" className="icon-btn" aria-label="删除这条限额" onClick={() => onChange(rules.filter((_, j) => j !== i))}>×</button>}
         </div>
-      ))}
+        )
+      })}
       {!rules.length && <div className="lim-empty">{empty}</div>}
       {!disabled && (
         <button type="button" className="button small ghost" onClick={() => onChange([...rules, { metric: 'tokens', window: 'day', limit: '' }])}>＋ 添加限额</button>
@@ -55,8 +116,8 @@ export function LimitBars({ items, compact }: { items: LimitStatus[]; compact?: 
         return (
           <div key={`${s.metric}-${s.window}`} className={`lim-bar ${tone}`} title={s.label}>
             <div className="lim-bar-head">
-              <span>{WINDOWS.find(([k]) => k === s.window)?.[1]}</span>
-              <b>{s.metric === 'cost' ? `${fmtCost(s.used)} / ¥${s.limit}` : `${fmtTokens(Number(s.used))} / ${fmtTokens(Number(s.limit))}`}</b>
+              <span>{s.metric === 'storage_bytes' || s.metric === 'record_units' ? '当前占用' : WINDOWS.find(([k]) => k === s.window)?.[1]} · {METRIC_LABEL[s.metric]}</span>
+              <b>{fmtLimitValue(s.metric, s.used)} / {fmtLimitValue(s.metric, s.limit)}{metricUnit(s.metric) ? ` ${metricUnit(s.metric)}` : ''}</b>
             </div>
             <div className="lim-track"><i style={{ width: `${Math.min(100, s.percent)}%` }} /></div>
           </div>

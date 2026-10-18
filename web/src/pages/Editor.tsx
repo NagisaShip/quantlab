@@ -21,7 +21,7 @@ import {
   type Params,
   type Spec,
   type StrategyFile,
-} from '../api2'
+} from '../api/research'
 import { CodeEditor, CodeView, errorLinesFrom } from '../components/CodeEditor'
 import { COLORS, LineChart } from '../components/charts2'
 import { DiffView } from '../components/Diff'
@@ -29,7 +29,7 @@ import { Markdown } from '../components/markdown'
 import { Callout, EmptyState, Loading, Modal, Segments, Tag } from '../components/ui'
 import { openInLab } from '../components/handoff'
 import { useAskAIContext } from '../components/AskAI'
-import { v4, type DslProblem } from '../api3'
+import { v4, type DslProblem } from '../api/platform'
 import { ruleCode, type RuleFromCode } from '../apiRuleCode'
 import { makeErrAt, RuleForm, type RuleSpec } from './rulecode/RuleForm'
 import type { PageProps } from './types'
@@ -57,6 +57,13 @@ interface RunSettings {
   slippage_bps: number
   spread_bps: number
   fill_at: Spec['fill_at']
+  execution_mode: 'bar' | 'tick'
+  dynamic_slippage: boolean
+  vol_slippage: number
+  impact_a_bps: number
+  impact_b_bps: number
+  limit_move_pct: number
+  min_liquidity_usd: number
   warmup_bars: number
   benchmark: string
   rebalance_pct: number
@@ -77,6 +84,13 @@ function defaultSettings(s: StrategyFile): RunSettings {
     slippage_bps: 5,
     spread_bps: 2,
     fill_at: 'next_open',
+    execution_mode: 'bar',
+    dynamic_slippage: false,
+    vol_slippage: 0.25,
+    impact_a_bps: 0,
+    impact_b_bps: 0,
+    limit_move_pct: 0,
+    min_liquidity_usd: 0,
     warmup_bars: 100,
     benchmark: '',
     rebalance_pct: 0.5,
@@ -87,6 +101,7 @@ const SETTINGS_KEY = (slug: string) => `qa.run.${slug}`
 
 export default function EditorPage({ slug, onNavigate, notify, setBusy }: PageProps & { slug: string }) {
   const [strategy, setStrategy] = useState<StrategyFile | null>(null)
+  const [favorite, setFavorite] = useState(false)
   const [code, setCode] = useState('')
   const [saved, setSaved] = useState('')
   const [name, setName] = useState('')
@@ -95,6 +110,7 @@ export default function EditorPage({ slug, onNavigate, notify, setBusy }: PagePr
   const [versions, setVersions] = useState<{ version: string; file: string; saved_at: number; lines: number }[]>([])
   const [editors, setEditors] = useState<EditorMark[]>([])
   useEffect(() => { collab.editors('strategy').then((r) => setEditors(r.editors[slug] ?? [])).catch(() => undefined) }, [slug, versions.length])
+  useEffect(() => { if (strategy?.slug) v3.isFavorite('strategy', strategy.slug).then((r) => setFavorite(r.favorite)).catch(() => undefined) }, [strategy?.slug])
   const [settings, setSettings] = useState<RunSettings | null>(null)
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [tab, setTab] = useState<Tab>('result')
@@ -281,6 +297,13 @@ export default function EditorPage({ slug, onNavigate, notify, setBusy }: PagePr
       slippage_bps: settings.slippage_bps,
       spread_bps: settings.spread_bps,
       fill_at: settings.fill_at,
+      execution_mode: settings.execution_mode,
+      dynamic_slippage: settings.dynamic_slippage,
+      vol_slippage: settings.vol_slippage,
+      impact_a_bps: settings.impact_a_bps,
+      impact_b_bps: settings.impact_b_bps,
+      limit_move_pct: settings.limit_move_pct,
+      min_liquidity_usd: settings.min_liquidity_usd,
       warmup_bars: settings.warmup_bars,
       benchmark: settings.benchmark.trim().toUpperCase() || null,
       rebalance_tolerance: settings.rebalance_pct / 100,
@@ -377,6 +400,7 @@ export default function EditorPage({ slug, onNavigate, notify, setBusy }: PagePr
         <div className="spacer" />
         <PresenceBar others={presence} />
         <EditorStack editors={editors} />
+        <button type="button" className={`button small${favorite ? ' on' : ''}`} onClick={async () => { try { const r = await v3.toggleFavorite({ object_type: 'strategy', object_id: strategy.slug, title: name, link: `editor/${strategy.slug}`, meta: { version: strategy.version } }); setFavorite(r.favorite); notify(r.favorite ? '已收藏策略' : '已取消收藏') } catch (e) { notify((e as Error).message, true) } }}>{favorite ? '★ 已收藏' : '☆ 收藏'}</button>
         <ShareButton type="strategy" id={strategy.slug} notify={notify} compact />
         <ShareToButton item={{ type: 'strategy', id: strategy.slug, title: name }} notify={notify} onNavigate={onNavigate} />
         <button className="button small" title="版本链、克隆分支与各版本的回测" onClick={() => onNavigate(`lineage/${strategy.slug}`)}>血缘</button>
@@ -440,6 +464,21 @@ export default function EditorPage({ slug, onNavigate, notify, setBusy }: PagePr
                 <option value="close">当根收盘（乐观）</option>
               </select>
             </label>
+            <label>撮合模式
+              <select value={settings.execution_mode} onChange={(e) => set('execution_mode', e.target.value as RunSettings['execution_mode'])}>
+                <option value="bar">Bar 级</option>
+                <option value="tick">逐笔路径（OHLC）</option>
+              </select>
+            </label>
+            <label className="wide" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <input type="checkbox" checked={settings.dynamic_slippage} onChange={(e) => set('dynamic_slippage', e.target.checked)} />
+              动态滑点：基础滑点 + 本根振幅 × 系数
+            </label>
+            <label>振幅滑点系数<input type="number" step={0.05} min={0} max={10} value={settings.vol_slippage} onChange={(e) => set('vol_slippage', Number(e.target.value))} /></label>
+            <label>冲击成本 a（bp）<input type="number" step={0.1} min={0} max={500} value={settings.impact_a_bps} onChange={(e) => set('impact_a_bps', Number(e.target.value))} /></label>
+            <label>冲击成本 b<input type="number" step={0.5} min={0} max={2000} value={settings.impact_b_bps} onChange={(e) => set('impact_b_bps', Number(e.target.value))} /></label>
+            <label>涨跌停幅度<input type="number" step={0.01} min={0} max={1} value={settings.limit_move_pct} onChange={(e) => set('limit_move_pct', Number(e.target.value))} /></label>
+            <label>最低成交额（USD）<input type="number" step={1000} min={0} value={settings.min_liquidity_usd} onChange={(e) => set('min_liquidity_usd', Number(e.target.value))} /></label>
             <label>基准（留空=标的池第一个）<input value={settings.benchmark} onChange={(e) => set('benchmark', e.target.value)} placeholder="BTC/USDT" /></label>
           </div>
         )}
@@ -840,19 +879,21 @@ function VersionsTab({ slug, versions, current, onRestore }: { slug: string; ver
   if (!versions.length) return <EmptyState glyph="◷" title="还没有历史版本">每次保存且内容有变化时，旧版本会自动快照到这里。</EmptyState>
   return (
     <>
-      <table>
-        <thead><tr><th>版本</th><th>保存时间</th><th className="right">行数</th><th /></tr></thead>
-        <tbody>
-          {versions.map((v) => (
-            <tr key={v.file}>
-              <td><code className="inline">{v.version}</code></td>
-              <td>{fmtTime(v.saved_at)}</td>
-              <td className="right">{v.lines}</td>
-              <td><button className="button small" onClick={async () => setView({ file: v.file, code: await v3.version(slug, v.file) })}>查看</button></td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <div className="table-wrap">
+        <table data-mobile-cards="true">
+          <thead><tr><th>版本</th><th>保存时间</th><th className="right">行数</th><th /></tr></thead>
+          <tbody>
+            {versions.map((v) => (
+              <tr key={v.file}>
+                <td className="mobile-card-title" data-label="版本"><code className="inline">{v.version}</code></td>
+                <td data-label="保存时间">{fmtTime(v.saved_at)}</td>
+                <td data-label="行数" className="right">{v.lines}</td>
+                <td className="mobile-card-actions" data-label="操作"><button className="button small" onClick={async () => setView({ file: v.file, code: await v3.version(slug, v.file) })}>查看</button></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
       {view && (
         <Modal title={`历史版本 ${view.file}`} onClose={() => setView(null)} width={980}
           footer={<>
@@ -869,19 +910,21 @@ function VersionsTab({ slug, versions, current, onRestore }: { slug: string; ver
 function HistoryTab({ rows, onOpen }: { rows: BacktestRow[]; onOpen: (id: string) => void }) {
   if (!rows.length) return <EmptyState glyph="∿" title="还没有完整回测">点击「运行回测」生成第一份回测记录。</EmptyState>
   return (
-    <table>
-      <thead><tr><th>时间</th><th>区间</th><th className="right">收益</th><th className="right">回撤</th><th className="right">夏普</th></tr></thead>
-      <tbody>
-        {rows.map((r) => (
-          <tr key={r.id} className="clickable" onClick={() => onOpen(r.id)}>
-            <td>{ago(r.created_at)}<small>{r.version}</small></td>
-            <td>{fmtDate(r.start_ts)}<small>→ {fmtDate(r.end_ts)}</small></td>
-            <td className={`right ${tone(r.metrics.total_return)}`}>{fmtPct(r.metrics.total_return, 2, true)}</td>
-            <td className="right">{fmtPct(r.metrics.max_drawdown)}</td>
-            <td className="right">{fmtNum(r.metrics.sharpe)}<small>{fmtMoney(r.initial_cash, 0)}</small></td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
+    <div className="table-wrap">
+      <table data-mobile-cards="true">
+        <thead><tr><th>时间</th><th>区间</th><th className="right">收益</th><th className="right">回撤</th><th className="right">夏普</th></tr></thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.id} className="clickable" onClick={() => onOpen(r.id)}>
+              <td className="mobile-card-title" data-label="时间">{ago(r.created_at)}<small>{r.version}</small></td>
+              <td data-label="区间">{fmtDate(r.start_ts)}<small>→ {fmtDate(r.end_ts)}</small></td>
+              <td data-label="收益" className={`right ${tone(r.metrics.total_return)}`}>{fmtPct(r.metrics.total_return, 2, true)}</td>
+              <td data-label="回撤" className="right">{fmtPct(r.metrics.max_drawdown)}</td>
+              <td data-label="夏普" className="right">{fmtNum(r.metrics.sharpe)}<small>{fmtMoney(r.initial_cash, 0)}</small></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   )
 }

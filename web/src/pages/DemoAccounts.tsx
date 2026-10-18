@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
-import { fmtTime } from '../api2'
-import { demo, type DemoConnection, type DemoEnv } from '../apiDemo'
+import { fmtTime } from '../api/research'
+import { demo, type ContractVerification, type DemoConnection, type DemoEnv } from '../apiDemo'
 import { Callout, EmptyState, Field, Fold, Heading, Loading, Modal, Panel, Tag } from '../components/ui'
 import type { PageProps } from './types'
 import { appConfirm } from '../components/dialog'
@@ -20,6 +20,10 @@ export default function DemoAccountsPage({ notify, onNavigate, readonly }: PageP
   const [envs, setEnvs] = useState<DemoEnv[] | null>(null)
   const [conns, setConns] = useState<DemoConnection[] | null>(null)
   const [adding, setAdding] = useState<DemoEnv | null>(null)
+  const [verifyConn, setVerifyConn] = useState('')
+  const [verifySymbol, setVerifySymbol] = useState('BTC/USDT:PERP')
+  const [verifyResult, setVerifyResult] = useState<ContractVerification | null>(null)
+  const [verifyBusy, setVerifyBusy] = useState(false)
   const load = useCallback(() => { demo.connections().then((r) => setConns(r.connections)).catch((e) => notify(e.message, true)) }, [notify])
   useEffect(() => {
     demo.environments().then((r) => setEnvs(r.environments)).catch((e) => notify(e.message, true))
@@ -40,6 +44,40 @@ export default function DemoAccountsPage({ notify, onNavigate, readonly }: PageP
         {live.length === 0 ? (
           <EmptyState glyph="◎" title="还没有连接">从下面选一个模拟环境接入。没有连接也能做纸面模拟（平台撮合）。</EmptyState>
         ) : <div className="demo-conn-grid">{live.map((c) => <ConnCard key={c.id} c={c} notify={notify} onChange={load} readonly={readonly} />)}</div>}
+      </Panel>
+
+      <Panel title="永续规则账单核验" subtitle="用 OKX / Bybit 模拟账户的真实账单核对资金费、手续费、保证金模式、杠杆和强平字段；账单没有出现的项目会标记为 unknown。">
+        <div className="form-grid">
+          <Field label="模拟盘连接">
+            <select value={verifyConn || live[0]?.id || ''} onChange={(e) => setVerifyConn(e.target.value)}>
+              {live.map((c) => <option key={c.id} value={c.id}>{c.label} · {EXCHANGE_LABEL[c.exchange] ?? c.exchange}</option>)}
+            </select>
+          </Field>
+          <Field label="永续标的"><input value={verifySymbol} onChange={(e) => setVerifySymbol(e.target.value.toUpperCase())} placeholder="BTC/USDT:PERP" /></Field>
+        </div>
+        <div className="button-row" style={{ marginTop: 10 }}>
+          <button className="button primary" disabled={verifyBusy || !live.length || !verifySymbol.endsWith(':PERP')} onClick={async () => {
+            setVerifyBusy(true); setVerifyResult(null)
+            try { setVerifyResult(await demo.contractBills(verifyConn || live[0].id, verifySymbol)) }
+            catch (e) { notify((e as Error).message, true) }
+            finally { setVerifyBusy(false) }
+          }}>{verifyBusy ? '读取账单中…' : '拉取账单并核验'}</button>
+        </div>
+        {verifyResult && (
+          <div style={{ marginTop: 14 }}>
+            <div className="button-row">
+              <Tag tone={verifyResult.ok ? 'ok' : 'warn'}>通过 {verifyResult.summary.pass}</Tag>
+              <Tag tone="warn">提醒 {verifyResult.summary.warn}</Tag>
+              <Tag tone="fail">失败 {verifyResult.summary.fail}</Tag>
+              <Tag>unknown {verifyResult.summary.unknown}</Tag>
+              <span className="hint">账单 {verifyResult.rows} 行</span>
+            </div>
+            <div className="table-wrap" style={{ marginTop: 8 }}><table><thead><tr><th>检查</th><th>结论</th><th>说明</th></tr></thead><tbody>
+              {verifyResult.checks.map((c) => <tr key={c.name}><td>{c.name}</td><td><Tag tone={c.status === 'pass' ? 'ok' : c.status === 'fail' ? 'fail' : c.status === 'warn' ? 'warn' : ''}>{c.status}</Tag></td><td>{c.detail}</td></tr>)}
+            </tbody></table></div>
+            {verifyResult.assumption_note && <Callout>{verifyResult.assumption_note}</Callout>}
+          </div>
+        )}
       </Panel>
 
       <Panel flush title="可接入的模拟环境" subtitle="价格跟随实盘的环境才能判断策略效果；价格独立的测试网只适合联调接口。">

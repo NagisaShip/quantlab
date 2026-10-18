@@ -75,7 +75,10 @@ async function toError(res: Response): Promise<ApiError> {
     /* 非 JSON 错误体 */
   }
   if (res.status === 401) window.dispatchEvent(new CustomEvent('qa:auth-required'))
-  if (res.status === 403 && code === 'PERMISSION_DENIED' && /工作区/.test(message)) {
+  // 只有中间件明确拒绝了请求头里的 workspace_id 时，才清空本地工作区。
+  // 不能仅凭 403 + 文案里出现“工作区”判断：功能开关关闭也使用 PERMISSION_DENIED，
+  // 误清空会把用户悄悄切回另一个工作区，并让“已关闭”状态看起来像仍然开启。
+  if (res.status === 403 && code === 'PERMISSION_DENIED' && details.workspace_id) {
     setWorkspace('')
     window.dispatchEvent(new CustomEvent('qa:workspace-invalid'))
   }

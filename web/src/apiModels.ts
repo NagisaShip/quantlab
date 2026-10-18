@@ -81,6 +81,7 @@ export interface ModelReport {
 }
 
 export interface ModelRun {
+  pinned?: boolean
   id: string
   spec_hash: string
   model: string
@@ -112,6 +113,7 @@ export interface ModelCard {
 }
 
 export interface ModelRecord {
+  pinned?: boolean
   id: string
   name: string
   run_id: string

@@ -54,6 +54,12 @@ class PaperSession:
     timeframe: str
     initial_cash: float
     started_at: int
+    initial_currency: str = "USDT"
+    margin_mode: str = "isolated"
+    position_mode: str = "one-way"
+    contract_type: str = "linear"
+    expiry_ts: int | None = None
+    ledger_v2: bool = False
     status: str = "running"  # running | paused | stopped | interrupted | completed
     last_update: int = 0
     last_bar_ts: int = 0
@@ -113,6 +119,12 @@ class PaperSession:
             "timeframe": self.timeframe,
             "initial_cash": self.initial_cash,
             "started_at": self.started_at,
+            "initial_currency": self.initial_currency,
+            "margin_mode": self.margin_mode,
+            "position_mode": self.position_mode,
+            "contract_type": self.contract_type,
+            "expiry_ts": self.expiry_ts,
+            "ledger_v2": self.ledger_v2,
             "status": self.status,
             "last_update": self.last_update,
             "last_bar_ts": self.last_bar_ts,
@@ -179,6 +191,12 @@ class PaperTradingEngine:
         symbol: str,
         timeframe: str = "1h",
         initial_cash: float = 10_000.0,
+        initial_currency: str = "USDT",
+        margin_mode: str = "isolated",
+        position_mode: str = "one-way",
+        contract_type: str = "linear",
+        expiry_ts: int | None = None,
+        ledger_v2: bool = False,
         source: str = "exchange",
         now: int | None = None,
     ) -> PaperSession:
@@ -192,6 +210,12 @@ class PaperTradingEngine:
             timeframe=timeframe,
             initial_cash=initial_cash,
             started_at=ts,
+            initial_currency=initial_currency,
+            margin_mode=margin_mode,
+            position_mode=position_mode,
+            contract_type=contract_type,
+            expiry_ts=expiry_ts,
+            ledger_v2=ledger_v2,
             last_update=ts,
             last_sample_ts=ts,
             last_equity_ts=ts,

@@ -70,8 +70,10 @@ def test_strategy_post_requires_attachment(client):
 
 def test_like_favorite_toggle_and_filters(client):
     pid = client.post("/api/community/posts", json={"title": "一篇文章", "tags": ["心得"]}).json()["post"]["id"]
-    assert client.post(f"/api/community/posts/{pid}/like").json() == {"on": True, "count": 1}
-    assert client.post(f"/api/community/posts/{pid}/like").json() == {"on": False, "count": 0}
+    liked = client.post(f"/api/community/posts/{pid}/like").json()
+    assert liked["on"] is True and liked["liked"] is True and liked["count"] == 1
+    unliked = client.post(f"/api/community/posts/{pid}/like").json()
+    assert unliked["on"] is False and unliked["liked"] is False and unliked["count"] == 0
     client.post(f"/api/community/posts/{pid}/favorite")
     fav = client.get("/api/community/posts?favorited=true").json()["items"]
     assert [p["id"] for p in fav] == [pid]
@@ -135,3 +137,92 @@ def test_sorting_modes(client):
     for sort in ("recommend", "latest", "reply", "hot"):
         assert client.get(f"/api/community/posts?sort={sort}").status_code == 200
     assert client.get("/api/community/posts?sort=bogus").status_code == 422
+
+
+def test_dislike_is_mutually_exclusive_with_like(client):
+    pid = client.post("/api/community/posts", json={"title": "点踩测试"}).json()["post"]["id"]
+    liked = client.post(f"/api/community/posts/{pid}/like").json()
+    assert liked["liked"] is True and liked["like_count"] == 1
+    disliked = client.post(f"/api/community/posts/{pid}/dislike").json()
+    assert disliked["liked"] is False and disliked["like_count"] == 0
+    assert disliked["disliked"] is True and disliked["dislike_count"] == 1
+    public = client.get(f"/api/community/posts/{pid}").json()["post"]
+    assert public["liked"] is False and public["disliked"] is True
+    assert public["like_count"] == 0 and public["dislike_count"] == 1
+    liked_again = client.post(f"/api/community/posts/{pid}/like").json()
+    assert liked_again["liked"] is True and liked_again["disliked"] is False
+    assert liked_again["like_count"] == 1 and liked_again["dislike_count"] == 0
+
+
+def test_post_report_admin_review_and_delete(client):
+    pid = client.post("/api/community/posts", json={"title": "待审核帖子", "tags": ["测试"]}).json()["post"]["id"]
+    code = client.post("/api/workspace/invites", json={"role": "member"}).json()["invite"]["code"]
+    with TestClient(client.app) as member:
+        login(member, email="reporter@example.com", password="Member123!", name="举报人", invite_code=code)
+        assert member.get("/api/community/reports").status_code == 403
+        r = member.post(
+            f"/api/community/posts/{pid}/report",
+            json={"reason": "misinformation", "detail": "回测口径与正文不一致"},
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["already_reported"] is False
+        again = member.post(
+            f"/api/community/posts/{pid}/report",
+            json={"reason": "spam", "detail": "重复提交"},
+        )
+        assert again.status_code == 200 and again.json()["already_reported"] is True
+    reports = client.get("/api/community/reports?status=open").json()
+    row = next(r for r in reports["items"] if r["post_id"] == pid)
+    assert row["reason_label"] == "虚假或误导信息"
+    assert row["post_title"] == "待审核帖子"
+    assert reports["counts"]["open"] >= 1
+    decided = client.post(
+        f"/api/community/reports/{row['id']}/decide",
+        json={"status": "resolved", "note": "已核对"},
+    )
+    assert decided.status_code == 200
+    assert decided.json()["report"]["status"] == "resolved"
+    deleted = client.delete(f"/api/community/posts/{pid}")
+    assert deleted.status_code == 200
+    assert client.get(f"/api/community/posts/{pid}").status_code == 404
+
+
+def test_recommendation_penalizes_dislikes_and_rewards_quality():
+    from quant_agent.api.routes_community import _recommend_score
+
+    now = 1_800_000_000.0
+    good = {
+        "created_at": now - 3600,
+        "likes": ["a", "b", "c", "d"],
+        "dislikes": [],
+        "favorites": ["a", "b"],
+        "comment_count": 3,
+        "clones": 1,
+        "views": 400,
+        "tags": ["趋势"],
+    }
+    sparse = {
+        "created_at": now - 3600,
+        "likes": ["a"],
+        "dislikes": [],
+        "favorites": [],
+        "comment_count": 0,
+        "clones": 0,
+        "views": 2,
+        "tags": ["趋势"],
+    }
+    poor = {
+        "created_at": now - 3600,
+        "likes": [],
+        "dislikes": ["a", "b", "c", "d"],
+        "favorites": [],
+        "comment_count": 0,
+        "clones": 0,
+        "views": 400,
+        "tags": ["趋势"],
+    }
+    stale = {**good, "created_at": now - 90 * 86400}
+    args = (now, "me", {"趋势": 4.0}, set())
+    assert _recommend_score(good, *args) > _recommend_score(sparse, *args)
+    assert _recommend_score(sparse, *args) > _recommend_score(poor, *args)
+    assert _recommend_score(good, *args) > _recommend_score(stale, *args)

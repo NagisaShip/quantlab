@@ -31,6 +31,7 @@ import httpx
 
 BINDINGS = "bot_bindings"
 BIND_CODES = "bot_bind_codes"
+BIND_ATTEMPTS = "bot_bind_attempts"
 PENDING = "bot_pending"
 BOTS = "bot_configs"
 CONFIRM_MS = 120_000
@@ -135,10 +136,19 @@ class BotService:
         return "没看懂。" + HELP
 
     def _bind(self, key: str, platform: str, chat_id: str, code: str, sender: str) -> str:
+        fail_key = f"fail:{key}"
+        fail = self.store.get(BIND_ATTEMPTS, fail_key) or {}
+        if fail.get("expires_at", 0) < self.now():
+            fail = {"id": fail_key, "count": 0, "expires_at": 0}
+        if fail.get("count", 0) >= 5:
+            return "绑定尝试次数过多，请 10 分钟后再试，或在平台重新生成绑定码。"
         doc = self.store.get(BIND_CODES, code)
         if not doc or doc["expires_at"] < self.now():
+            fail.update(count=fail.get("count", 0) + 1, expires_at=self.now() + BIND_MS)
+            self.store.upsert(BIND_ATTEMPTS, fail)
             return "绑定码不对或已过期（10 分钟有效），请在平台重新生成。"
         self.store.delete(BIND_CODES, code)
+        self.store.delete(BIND_ATTEMPTS, fail_key)
         self.store.upsert(
             BINDINGS,
             {

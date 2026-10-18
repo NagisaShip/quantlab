@@ -16,6 +16,7 @@ import { PortfolioFullReport, SCHEME_STATUS_TONE, StressTable } from '../compone
 import { EmptyState, Field, Heading, Loading, Panel, Segments, Tag } from '../components/ui'
 import type { PageProps } from './types'
 import { appConfirm } from '../components/dialog'
+import { RecordPinButton } from '../components/RecordPin'
 
 type Tab = 'list' | 'design' | 'risk' | 'runs'
 const TABS: { value: Tab; label: string }[] = [
@@ -64,7 +65,7 @@ function SchemeList({ meta, optLabel, onOpen, notify }: { meta: PortfolioMeta | 
       ) : (
         <div className="table-wrap">
           <table className="fx-table">
-            <thead><tr><th>方案</th><th>状态</th><th className="right">夏普</th><th className="right">等权夏普</th><th className="right">最大回撤</th><th className="right">年化波动</th><th className="right">有效持仓</th><th>更新</th></tr></thead>
+            <thead><tr><th>方案</th><th>状态</th><th className="right">夏普</th><th className="right">等权夏普</th><th className="right">最大回撤</th><th className="right">年化波动</th><th className="right">有效持仓</th><th>更新</th><th>保护</th></tr></thead>
             <tbody>{rows.map((s) => (
               <tr key={s.id} className="clickable" onClick={() => onOpen(s.id)}>
                 <td><strong>{s.name}</strong><span className="ml-sub">{optLabel(s.config.optimizer)} · {s.symbols.length} 个标的 · {s.timeframe}{riskRuleText(s.config) ? ` · ${riskRuleText(s.config)}` : ''}</span></td>
@@ -75,6 +76,7 @@ function SchemeList({ meta, optLabel, onOpen, notify }: { meta: PortfolioMeta | 
                 <td className="right num">{fp(s.summary?.ann_vol, 0)}</td>
                 <td className="right num">{f3(s.summary?.effective_n, 1)}</td>
                 <td className="muted">{when(s.updated_at)}</td>
+                <td onClick={(e) => e.stopPropagation()}><RecordPinButton type="portfolio" id={s.id} pinned={s.pinned} notify={notify} /></td>
               </tr>
             ))}</tbody>
           </table>
@@ -114,6 +116,7 @@ function SchemeDetail({ id, meta, optLabel, notify, onDeleted }: { id: string; m
         <button className="button small" onClick={() => toLab(`改进组合方案「${s.name}」：在不增加回撤的前提下提高夏普`)}>交给 AI 改进</button>
         <button className="button small" onClick={() => toLab(`召集组合小组评审「${s.name}」：风险估计、约束、压力情景`)}>召集团队评审</button>
         <PythonCodeButton kind="portfolio" artifact={{ ...s.config, symbols: s.symbols, timeframe: s.timeframe }} name={s.name} />
+        <RecordPinButton type="portfolio" id={s.id} pinned={s.pinned} notify={notify} />
         <button className="button small danger" onClick={async () => { if (await appConfirm(`删除方案「${s.name}」？试验记录会保留。`)) { await portfolio.remove(id); onDeleted() } }}>删除</button>
       </>}>
         <div className="fx-meta">
@@ -307,7 +310,7 @@ function Runs({ optLabel, onOpen, notify }: { optLabel: (id: string) => string; 
       {data.runs.length === 0 ? <EmptyState glyph="☰" title="还没有试验" /> : (
         <div className="table-wrap">
           <table className="fx-table">
-            <thead><tr><th>方案</th><th className="right">夏普</th><th className="right">等权</th><th className="right">最大回撤</th><th className="right">波动</th><th>检查</th><th>来源</th><th>时间</th></tr></thead>
+            <thead><tr><th>方案</th><th className="right">夏普</th><th className="right">等权</th><th className="right">最大回撤</th><th className="right">波动</th><th>检查</th><th>来源</th><th>时间</th><th>保护</th></tr></thead>
             <tbody>{data.runs.map((r) => (
               <tr key={r.id} className="clickable" onClick={() => onOpen(r.id)}>
                 <td><strong>{optLabel(r.optimizer)}</strong><span className="ml-sub">{r.risk_model} · {r.expected !== 'none' ? `${r.expected} · ` : ''}{r.symbols.length} 个标的 · {r.timeframe}{r.note ? ` · ${r.note}` : ''}</span></td>
@@ -318,6 +321,7 @@ function Runs({ optLabel, onOpen, notify }: { optLabel: (id: string) => string; 
                 <td>{r.admitted ? <Tag tone="ok">可启用</Tag> : <Tag>跑输等权</Tag>}</td>
                 <td className="muted">{r.source === 'lab' ? 'AI 研究室' : '方案设计'}</td>
                 <td className="muted">{when(r.created_at)}</td>
+                <td onClick={(e) => e.stopPropagation()}><RecordPinButton type="portfolio_run" id={r.id} pinned={r.pinned} notify={notify} /></td>
               </tr>
             ))}</tbody>
           </table>
@@ -340,6 +344,7 @@ function RunDetail({ id, optLabel, notify, onSaved }: { id: string; optLabel: (i
   return (
     <Panel title={optLabel(data.run.optimizer)} subtitle={`${when(data.run.created_at)} · ${data.run.symbols.length} 个标的 · ${data.run.timeframe}`} actions={<>
       <input className="fx-search" placeholder="方案名称" value={name} onChange={(e) => setName(e.target.value)} aria-label="方案名称" />
+      <RecordPinButton type="portfolio_run" id={id} pinned={data.run.pinned} notify={notify} />
       <button className="button small" onClick={() => save('candidate')}>存为候选</button>
       <button className="button small primary" disabled={!data.report.admitted} onClick={() => save('active')}>启用</button>
     </>}>

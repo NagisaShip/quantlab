@@ -1,6 +1,6 @@
 /** 新建回测：选策略、设条件、运行，完成后打开回测详情。（原「单策略实验」并入这里） */
 import { useEffect, useState } from 'react'
-import { v3, type StrategyFile } from '../../api2'
+import { v3, type StrategyFile } from '../../api/research'
 import { Panel } from '../../components/ui'
 import type { PageProps } from '../types'
 import { DEFAULT_DRAFT, SettingsForm, toSpec, type SpecDraft } from './SettingsForm'

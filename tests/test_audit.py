@@ -196,3 +196,30 @@ def test_admin_can_export_and_archive(client):
     assert a.status_code == 200, a.text
     assert "archived" in a.json()
     assert client.get("/api/workspace/audit/archived").status_code == 200
+
+
+def test_search_and_cursor_pagination(tmp_path):
+    db = _db(tmp_path)
+    for i in range(5):
+        db.execute(
+            "INSERT INTO audit_log (ts, workspace_id, user_id, action, object_type, object_id, trace_id, ip, details) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                now_ms() - i * 1000,
+                "ws1",
+                "u1",
+                "strategy.save",
+                "strategy",
+                f"needle-{i}",
+                f"trace-{i}",
+                "127.0.0.1",
+                '{"campaign":"needle"}',
+            ),
+        )
+    log = AuditLog(db)
+    first = log.list("ws1", q="needle", limit=2)
+    assert len(first) == 2
+    second = log.list("ws1", q="needle", before_id=first[-1]["id"], limit=2)
+    assert len(second) == 2
+    assert not ({row["id"] for row in first} & {row["id"] for row in second})
+    assert log.list("ws1", q="no-such-record") == []

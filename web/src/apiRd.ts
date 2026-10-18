@@ -1,4 +1,4 @@
-/** 试验台账与自动化的接口：试验台账（DSR / PBO）、紧封测试集、血缘图、夜班、AI 晨报、积木搭建、影子运行、研究流水线。 */
+/** 试验台账与自动化的接口：试验台账（DSR / PBO）、紧封测试集、血缘图、定时任务、AI 晨报、积木搭建、影子运行、研究流水线。 */
 import { del, get, post, put } from './http'
 
 export type Domain = 'strategy' | 'factor' | 'model' | 'portfolio' | 'execution'

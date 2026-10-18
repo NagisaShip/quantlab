@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { ago, v3 } from '../api2'
+import { ago, v3 } from '../api/research'
 import { factors } from '../apiFactors'
 import { models } from '../apiModels'
 import { lab, missions } from '../apiLab'

@@ -12,11 +12,12 @@ import {
   type LlmStatus,
   type SdkTemplate,
   type StrategyFile,
-} from '../api2'
+} from '../api/research'
 import { CodeView } from '../components/CodeEditor'
 import { Markdown } from '../components/markdown'
 import { Callout, EmptyState, Heading, SplitButton, Loading, Modal, Panel, Segments, Tag } from '../components/ui'
 import { ImportPackageModal } from '../components/StrategyPackage'
+import { SharePublicButton } from '../components/PublicShare'
 import { FreqtradeImportModal } from '../components/FreqtradeImport'
 import { get, post } from '../http'
 import type { PageProps } from './types'
@@ -221,6 +222,7 @@ export default function MyStrategiesPage({ onNavigate, notify, setBusy }: PagePr
                         <div className="row-actions">
                           <button className="button small" onClick={() => onNavigate(`editor/${s.slug}`)}>编辑</button>
                           <button className="button small" onClick={() => onNavigate(`backtests/${s.slug}`)}>回测</button>
+                          <SharePublicButton type="strategy" id={s.slug} title={s.name} notify={notify} compact />
                           <button className="button small" onClick={() => clone(s)}>克隆</button>
                           <button className="button small danger" onClick={() => remove(s)}>删除</button>
                         </div>

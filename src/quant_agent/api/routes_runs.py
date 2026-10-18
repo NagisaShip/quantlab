@@ -69,6 +69,10 @@ def enqueue(
     # 上面数的是"登记了多少个 run"，这里数的是"实际消耗了多少资源"（CPU 秒、优化组合数、存储）。
     # 两者都要判：只判前者的话，一个 5000 组的参数网格会被当成 1 次运行放行。
     s.quota.enforce_enqueue(kind, manifest, workspace_id=ws_id)
+    if s.model_hub is not None:
+        blocked = s.model_hub.task_guard(kind, manifest)
+        if blocked:
+            raise AppError(ErrorCode.QUOTA_EXHAUSTED, blocked, details={"kind": kind})
     if kind == "paper":
         paper = s.runs.count_active(ws_id, kind="paper")
         if paper >= int(quotas.get("max_paper_runs", 3)):
@@ -101,11 +105,34 @@ def _public(run: dict[str, Any]) -> dict[str, Any]:
 
 @router.get("")
 def list_runs(
-    kind: str | None = None, mode: str | None = None, state: str | None = None, limit: int = Query(50, ge=1, le=500)
+    kind: str | None = None,
+    mode: str | None = None,
+    state: str | None = None,
+    q: str | None = Query(None, max_length=160),
+    before_created_at: int | None = None,
+    before_id: str | None = None,
+    limit: int = Query(50, ge=1, le=200),
 ) -> dict:
     s = get_services()
-    rows = s.runs.list(context.current_workspace(), kind=kind, mode=mode, state=state, limit=limit)
-    return {"items": [_public(r) for r in rows], "worker_mode": tasks.worker_mode()}
+    rows = s.runs.list(
+        context.current_workspace(),
+        kind=kind,
+        mode=mode,
+        state=state,
+        q=q,
+        before_created_at=before_created_at,
+        before_id=before_id,
+        limit=min(limit + 1, 501),
+    )
+    has_more = len(rows) > limit
+    items = rows[:limit]
+    next_cursor = {"created_at": items[-1]["created_at"], "id": items[-1]["id"]} if has_more and items else None
+    return {
+        "items": [_public(r) for r in items],
+        "worker_mode": tasks.worker_mode(),
+        "has_more": has_more,
+        "next_cursor": next_cursor,
+    }
 
 
 @router.get("/workers")

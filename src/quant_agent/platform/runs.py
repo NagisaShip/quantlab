@@ -159,6 +159,9 @@ class RunService:
         kind: str | None = None,
         mode: str | None = None,
         state: str | None = None,
+        q: str | None = None,
+        before_created_at: int | None = None,
+        before_id: str | None = None,
         limit: int = 50,
     ) -> list[dict[str, Any]]:
         sql = "SELECT * FROM runs WHERE workspace_id=?"
@@ -167,8 +170,19 @@ class RunService:
             if val:
                 sql += f" AND {col}=?"
                 params.append(val)
-        sql += " ORDER BY created_at DESC LIMIT ?"
-        params.append(min(limit, 500))
+        term = (q or "").strip().lower()
+        if term:
+            like = f"%{term}%"
+            sql += (
+                " AND (LOWER(id) LIKE ? OR LOWER(title) LIKE ? OR LOWER(kind) LIKE ? OR LOWER(mode) LIKE ?"
+                " OR LOWER(COALESCE(error, '')) LIKE ?)"
+            )
+            params.extend([like] * 5)
+        if before_created_at is not None and before_id:
+            sql += " AND (created_at < ? OR (created_at = ? AND id < ?))"
+            params.extend([int(before_created_at), int(before_created_at), before_id])
+        sql += " ORDER BY created_at DESC, id DESC LIMIT ?"
+        params.append(min(limit, 501))
         return [self._out(r) for r in self.db.fetchall(sql, params)]
 
     def count_active(self, workspace_id: str, *, kind: str | None = None) -> int:

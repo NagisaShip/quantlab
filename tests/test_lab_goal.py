@@ -132,7 +132,8 @@ def test_goal_endpoints(client):
     parsed = client.post(
         "/api/lab/goal/parse", json={"text": "/goal 夏普>1.5 回撤<12% 4h", "project_id": p["id"]}
     ).json()
-    assert parsed["spec"]["timeframe"] == "4h" and parsed["spec"]["symbols"] == ["BTC/USDT"]
+    assert parsed["spec"]["timeframe"] == "4h" and parsed["spec"]["symbols"] == []
+    assert p["market_auto"] is True
     assert "items" in parsed["parsed_fields"]
     check = client.post(
         "/api/lab/goal/check", json={"spec": {"items": [{"metric": "sharpe", "target": 9}]}, "project_id": p["id"]}
@@ -151,7 +152,7 @@ def test_goal_endpoints(client):
 
 
 def test_goal_set_and_start_runs_autopilot(client):
-    p = _project(client)
+    p = _project(client, securities=["BTC/USDT"], market_auto=False)
     spec = {"items": [{"metric": "sharpe", "target": 0.1}, {"metric": "trades", "target": 1}]}
     r = client.post(
         f"/api/lab/projects/{p['id']}/goal", json={"spec": spec, "review": False, "start": True, "wait": True}

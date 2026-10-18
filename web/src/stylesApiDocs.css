@@ -1,0 +1,82 @@
+/* API 文档：统一的目录、章节卡片与响应式排版 */
+.api-docs { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.api-docs-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin: -2px 0 4px; }
+.api-docs-summary > span {
+  display: inline-flex; align-items: center; gap: 4px; padding: 4px 9px;
+  border: 1px solid var(--line); border-radius: 999px; background: color-mix(in srgb, var(--sheet) 82%, transparent);
+  color: var(--muted); font-size: 10.5px; white-space: nowrap;
+}
+.api-docs-summary .api-docs-count { border-color: var(--accent-line); background: var(--accent-soft); color: var(--accent); }
+.api-docs-summary .api-docs-count b { font-family: var(--num); font-size: 11px; }
+
+.api-docs .docs-layout { display: grid; grid-template-columns: 226px minmax(0, 1fr); gap: 26px; align-items: start; }
+.api-docs .docs-aside { position: sticky; top: calc(var(--tape-h) + var(--top-h) + 18px); min-width: 0; }
+.api-docs .docs-toc-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 0 3px 8px; color: var(--faint); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; }
+.api-docs .docs-toc-head small { letter-spacing: 0; text-transform: none; font-size: 10px; }
+.api-docs .docs-nav {
+  display: flex; flex-direction: column; gap: 2px; padding: 6px;
+  border: 1px solid var(--line); border-radius: 14px;
+  background: color-mix(in srgb, var(--sheet) 76%, transparent);
+  box-shadow: 0 18px 40px -36px rgba(20, 30, 70, .5);
+}
+.api-docs .docs-nav a {
+  display: grid; grid-template-columns: 24px minmax(0, 1fr); align-items: center; gap: 8px;
+  padding: 7px 8px; border: 0; border-radius: 8px; color: var(--muted);
+  font-size: 12px; line-height: 1.35; text-decoration: none;
+  transition: background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out), transform var(--dur-1) var(--ease-out);
+}
+.api-docs .docs-nav a i { color: var(--faint); font-family: var(--num); font-size: 9px; font-style: normal; }
+.api-docs .docs-nav a:hover { background: var(--hover); color: var(--ink); transform: translateX(1px); }
+.api-docs .docs-nav a.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.api-docs .docs-nav a.on i { color: var(--accent); }
+
+.api-docs .docs-body { min-width: 0; }
+.api-docs .docs-section { margin: 0 0 14px; border-radius: 16px; overflow: hidden; }
+.api-docs .docs-section-head {
+  display: flex; align-items: center; gap: 10px; padding: 13px 18px 11px;
+  border-bottom: 1px solid var(--line-2);
+  background: linear-gradient(110deg, color-mix(in srgb, var(--accent-soft) 30%, var(--sheet)), var(--sheet) 70%);
+}
+.api-docs .docs-section-no {
+  display: grid; place-items: center; flex: none; width: 27px; height: 27px;
+  border-radius: 8px; background: var(--accent-soft); color: var(--accent);
+  font-family: var(--num); font-size: 9.5px;
+}
+.api-docs .docs-section-head h2 { flex: 1; min-width: 0; margin: 0; font-size: 15.5px; font-weight: 600; letter-spacing: -.1px; }
+.api-docs .docs-anchor {
+  display: grid; place-items: center; flex: none; width: 24px; height: 24px;
+  border-radius: 7px; color: var(--faint); font-family: var(--num); font-size: 13px; text-decoration: none;
+  opacity: .35; transition: opacity var(--dur-1) var(--ease-out), background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out);
+}
+.api-docs .docs-section:hover .docs-anchor, .api-docs .docs-anchor:focus-visible { opacity: 1; background: var(--hover); color: var(--accent); }
+.api-docs .docs-section .panel-body { padding: 14px 18px 20px; }
+.api-docs .docs-section .panel-body .md { max-width: 88ch; }
+.api-docs .docs-section .panel-body .md > :first-child { margin-top: 0; }
+.api-docs .docs-section .panel-body .md > :last-child { margin-bottom: 0; }
+.api-docs .docs-top {
+  display: inline-flex; align-items: center; gap: 6px; margin: 2px 0 18px;
+  border: 1px solid var(--line); border-radius: 999px; background: var(--sheet);
+  color: var(--muted); padding: 5px 11px; font-size: 11px; cursor: pointer;
+}
+.api-docs .docs-top:hover { color: var(--ink); border-color: var(--accent-line); }
+
+/* 未登录介绍页里的全屏文档阅读器 */
+.lp-docs .api-docs { gap: 10px; }
+.lp-docs .api-docs .docs-layout { padding: 0 clamp(16px, 4vw, 40px) 72px; max-width: 1180px; margin: 0 auto; }
+.lp-docs .api-docs-summary { max-width: 1180px; margin: 0 auto; padding: 0 clamp(16px, 4vw, 40px); box-sizing: border-box; }
+.lp-docs .api-docs .docs-aside { top: 18px; }
+
+@media (max-width: 900px) {
+  .api-docs .docs-layout { grid-template-columns: 1fr; gap: 14px; }
+  .api-docs .docs-aside { position: static; }
+  .api-docs .docs-nav { flex-direction: row; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  .api-docs .docs-nav::-webkit-scrollbar { display: none; }
+  .api-docs .docs-nav a { flex: 0 0 auto; white-space: nowrap; padding: 7px 10px; }
+  .api-docs .docs-section-head { padding: 12px 14px 10px; }
+  .api-docs .docs-section .panel-body { padding: 12px 14px 18px; }
+  .lp-docs .api-docs .docs-layout { padding: 0 16px 56px; }
+  .lp-docs .api-docs-summary { padding: 0 16px; }
+}
+@media (max-width: 560px) {
+  .api-docs-summary > span { font-size: 10px; }
+}

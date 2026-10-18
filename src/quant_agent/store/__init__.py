@@ -343,6 +343,17 @@ class JsonStore:
         ref = (self._blob_raw(kind, item_id) or {}).get("result_ref")
         return dict(ref) if isinstance(ref, dict) else None
 
+    def delete_result(self, kind: str, item_id: str) -> bool:
+        """删除结果大数组与对应 blob；结果引用里记录了真实工作区。"""
+        ref = self.result_ref(kind, item_id)
+        deleted = False
+        if ref and ref.get("workspace_id"):
+            try:
+                deleted = self._results().delete(str(ref["workspace_id"]), item_id)
+            except Exception:
+                deleted = False
+        return self.delete_blob(kind, item_id) or deleted
+
     def result_page(self, kind: str, item_id: str, name: str, *, offset: int = 0, limit: int = 2000) -> dict:
         """分页读一个大数组。工作区 id 从 blob 里的引用取，天然限定在本工作区内。"""
         ref = self.result_ref(kind, item_id)
@@ -385,6 +396,7 @@ class Collections:
     SCHEDULES = "schedules"  # 定时任务（cron → 由 worker 登记 run）
     PIPELINES = "pipelines"  # 指挥台：用户保存的流水线模板
     COMPARE_BATCHES = "compare_batches"  # 回测页「策略对比」：同一冻结条件下的一组回测
+    MESSAGE_FEEDBACK = "lab_message_feedback"  # Agent 消息点赞 / 点踩与意见
 
 
 class WorkspaceStore:

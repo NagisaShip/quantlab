@@ -1,231 +1,298 @@
-# 加密货币量化研究与仿真验证平台（v2.0）
+# QuantLab v 0.1 preview
 
-> 对标聚宽（JoinQuant）的研究体验：**写策略 → 回测 → 参数稳健性检验 → 实时模拟 → 与真实成交对照 → 社区复核**，
-> AI 作为贯穿全流程的副驾驶。v2.0 按 [`plan.md`](plan.md)（2026-10-12 版）把单机单用户工具升级为**多用户、可部署、
-> 账务精确、任务可恢复**的平台。**平台不托管资金、没有真实下单路径；仅为研究结果，非投资建议。**
+<div align="center">
 
-文档索引：
+**以 AI 研究室为核心的加密货币量化研究与仿真验证平台**
 
-| 文档 | 内容 |
-| --- | --- |
-| [docs/v2.0差距对照与验收.md](docs/v2.0差距对照与验收.md) | plan v2.0 的每条要求 → 实现位置 → 守护测试 |
-| [docs/策略协议与数据口径.md](docs/策略协议与数据口径.md) | 事件、Signal / TargetPosition、风险层、撮合、记账、指标口径、研究纪律 |
-| [docs/运维与恢复手册.md](docs/运维与恢复手册.md) | 部署、配置项、日常检查、状态机与恢复、备份、密钥轮换 |
-| [docs/个人账户接入教程.md](docs/个人账户接入教程.md) | CSV 导入与只读 API Key 接入（币安 / OKX） |
-| [docs/测试报告.md](docs/测试报告.md) | 407 项测试、黄金样例、PostgreSQL 复跑、浏览器走查 |
-| [docs/VibeCoding任务包.md](docs/VibeCoding任务包.md) | 12 张可独立领取的后续开发任务卡 |
-| [docs/平台设计说明.md](docs/平台设计说明.md) | **平台完整设计讲解 + 本机运行截图**(面向评审/接手) |
-| [docs/API参考.md](docs/API参考.md) · [docs/openapi.json](docs/openapi.json) | 195 个端点（自动生成） |
+> **Preview release:** interfaces, data conventions and capabilities may change before a stable release.
+> 当前为 `v 0.1 preview`，接口、数据口径与功能边界仍可能调整。
+
+写策略 → 回测 → 参数稳健性检验 → 纸面模拟 → 交易所模拟盘 → 微实盘 → 实盘对照
+
+[中文](README.md) | [English](README.en.md)
+
+[![Python](./docs/images/badges/python.svg)](https://www.python.org/)
+[![TypeScript](./docs/images/badges/typescript.svg)](https://www.typescriptlang.org/)
+[![Backend tests](./docs/images/badges/backend-tests.svg)](docs/测试与验证报告.md)
+[![License](./docs/images/badges/license.svg)](LICENSE)
+
+</div>
+
+---
+
+## ⚠️ 安全边界
+
+- **默认没有任何真实下单路径。** 只读账户、纸面模拟和交易所模拟盘都不会动真钱。
+- 平台内置**微实盘**：一条默认关闭、只支持 Binance / OKX 现货、只允许“已毕业”策略以小额真实资金运行的通道。
+- 打开微实盘需要同时满足：部署者设置 `QAGENT_MICROLIVE=1`、工作区管理员确认风险告知、每次启动输入确认码；交易所止损必挂，支持一键平仓停止。
+- **真实永续**是独立通道：使用 `QAGENT_REAL_PERP=1`，独立密钥目录、管理员确认码、期货账户自检、单笔/总名义/杠杆/日亏限制、交易所止损和 `real_perp.KILL` 自动急停；不复用微实盘开关。
+- 所有回测、模拟和 AI 结论都只用于研究，**不构成投资建议**，也不承诺收益。
+
+> 微实盘与真实永续都是平台设计的一部分，不是隐藏功能；未开启时相关接口整体不可用。
+
+---
+
+## 平台是什么
+
+QuantLab 不是一个“填表单跑回测”的单点工具，而是一个**对话式研究平台**：
+
+- 用户在「AI 研究室」描述研究目标；
+- AI 在平台的 51 个工具上调行情、写策略、跑回测、评估因子、训练模型、做组合优化与执行仿真；
+- 每个结论都落回可复现的记录：代码哈希、参数、数据来源、成本假设、运行清单；
+- 研究通过上线验证后，才进入纸面模拟、模拟盘或微实盘。
+
+![首页](./docs/images/latest/01-home.png)
+
+![研究流程](./docs/images/latest/17-research-flow.png)
+
+研究流程把 **7 个阶段、56 个阶段入口和 27 个跨阶段能力** 放在同一页：数据、因子、策略、模型、组合执行、验证与运行按研究顺序展开；角色库、提示词库、模型服务、AI 研究室、群组任务、通知、问题反馈、收藏和 API 工具参考也按“研究配置 / 协作复用”并入。工作区关闭的能力直接标注“未开启”，客户端入口仍由服务端能力矩阵最终裁决。
+
+---
+
+## 核心能力
+
+### 1. AI 研究室
+
+7 种研究类型：自动、策略、因子、模型、组合、执行、完整流程 / 调研报告。
+
+- 21 个研究室斜杠命令 + 51 个工具命令 + 7 个首页命令；
+- 16 个内置角色，支持并行评审、团队讨论、红队质疑、研究审计；
+- 后台任务完成后主动回到对话汇报；AI 自己查到结果时取消重复跟进；
+- 结构化内容块：回测报告、净值曲线、因子分层、模型诊断、执行仿真、调研报告。
+
+![AI 研究室](./docs/images/latest/02-ai-lab.png)
+
+#### 研究导师
+
+独立的研究导师页面把研究方法拆成七课：假设、数据时点、信号因果、回测与基准、稳健性与多重检验、永续风险、执行与上线。每课包含检查项、练习和红旗，并与回测 Review Gate、Agent 系统提示保持同一套研究边界。工作区关闭课程时会显示明确状态，不再停留在无限加载。
+
+![研究导师](./docs/images/latest/18-mentor.png)
+
+### 2. 策略开发
+
+- **规则 DSL v2**：零代码表单、指标 / 条件 / 轮动 / 风控，表单与 JSON 共用一份 schema；
+- **Python SDK**：聚宽式 API，52 个注入名，支持 `run_daily`、`history`、`order_target_percent`、因子 / 模型预测等；
+- **Freqtrade 导入**：兼容常见策略包；在线性永续上支持 `can_short` 与 `leverage()`，现货仍只做多；
+- 版本不可改写：`DRAFT → VALIDATED → FROZEN → ARCHIVED`，改参数自动生成新版本。
+
+![策略列表](./docs/images/latest/03-strategies.png)
+
+### 3. 回测与优化
+
+- 事件驱动回测，Decimal 复式账本，逐笔可对账；
+- 下一根 bar 开盘价 ± 成本成交，避免未来数据；
+- 参数网格 / Optuna 贝叶斯搜索、多目标优化、样本内 / 样本外、walk-forward、PBO / CSCV；
+- 成本压力测试、检查点恢复、试验台账（按试验次数修正最好成绩）；
+- **Research Review Gate**：每次回测自动生成审查卡（通过 / 有条件通过 / 不通过 / 证据不足），高严重度问题阻断批准与晋级；
+- **双基准**：策略、买入持有、SMA 20/60 简单规则三条曲线同时展示。
+
+![回测列表](./docs/images/latest/05-backtests.png)
+
+![回测详情](./docs/images/latest/16-backtest-detail.png)
+
+### 4. 验证与运行
+
+- **上线验证**：回测、纸面模拟、模拟盘三关，逐关人工确认；
+- **纸面模拟**：真实行情、独立 worker、每根 bar 检查点、崩溃恢复不重复成交；
+- **交易所模拟盘**：Binance / OKX / Bybit 模拟账户，核对真实撮合；
+- **微实盘**：小额真实资金，资金档位、交易所止损、启动确认码、一键停止；
+- **真实永续**：Binance/OKX USDT-M 独立通道，支持全仓/对冲、交易所止损和自动急停；
+- **实盘对照**：CSV / 只读 API，逐笔归因执行缺口、滑点与时机；
+- **研究包**：一键导出代码、数据、资金费、参数、结果与审查报告，可校验并重放哈希。
+
+![上线验证](./docs/images/latest/06-validation.png)
+
+![纸面模拟](./docs/images/latest/07-paper.png)
+
+![微实盘](./docs/images/latest/08-microlive.png)
+
+### 5. 协作与社区
+
+- 工作区、成员、三级角色（admin / member / reviewer）、配额与审计；
+- 群组、私聊、@ 成员、引用回测 / 策略 / 文件、任务摊派；
+- 策略广场：冻结代码 + 回测清单，一键克隆、AI 审稿；
+- 通知中心、问题反馈、在线状态、TOTP 双因素。
+
+![策略广场](./docs/images/latest/10-square.png)
+
+![群组与任务](./docs/images/latest/11-groups.png)
+
+---
+
+## 架构
+
+```
+浏览器（React 18 + TypeScript + Vite）
+   │  SSE（研究室事件）/ WebSocket（run 事件）/ 轮询
+   ▼
+API 进程  qagent serve
+   ├─ 鉴权、工作区隔离、CSRF、幂等
+   ├─ 只入队，不执行长任务
+   └─ 静态站点服务（web/dist）
+        │
+        ▼
+PostgreSQL / SQLite（40 张表）+ JSON 集合存储
+        │
+        ▼
+Worker 进程  qagent worker
+   ├─ 回测 / 优化 / 参数擂台 / 压力演练
+   ├─ 纸面模拟常驻驱动（每 bar 检查点）
+   ├─ AI Agent 回合
+   └─ Python 策略隔离子进程（Linux 下资源上限 / 降权 / 断网）
+```
+
+- 控制面 / 执行面分离，单租约认领 + fencing 心跳；
+- Redis 仅作唤醒通道，缺省退回数据库轮询；
+- 金额、数量、价格在 SQL 中用 `DECIMAL_T`（PG `NUMERIC(38,18)`，SQLite `TEXT`）保存，避免浮点误差。
 
 ---
 
 ## 快速开始
 
-### 生产 / 多人部署：Docker Compose（PostgreSQL + Redis + API + Worker）
+### Docker Compose（推荐）
 
 ```bash
 mkdir -p secrets
 python -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())" > secrets/secret.key
-cp .env.example .env          # 修改 POSTGRES_PASSWORD
+cp .env.example .env
+# 编辑 .env，至少修改 POSTGRES_PASSWORD
 docker compose up -d --build
 ```
 
-打开 <http://127.0.0.1:8000>，**第一个注册的账号成为部署管理员**，之后凭邀请码加入。详见运维手册。
+打开 <http://127.0.0.1:8000>，第一个注册的账号成为部署管理员。
 
-### 单机开发（SQLite，无需 Docker）
+### 单机开发
+
+**Windows:**
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\dev.ps1     # Windows
+powershell -ExecutionPolicy Bypass -File scripts\dev.ps1
 ```
 
+**Linux / macOS:**
+
 ```bash
-bash scripts/dev.sh                                          # Linux / macOS
+bash scripts/dev.sh
 ```
 
-脚本会安装锁定版本的依赖、构建前端、执行迁移，并**同时启动 API 与 worker**
-（API 只受理请求，回测 / 优化 / 实时模拟都由 worker 执行，只开 API 的话任务会一直排队）。
+脚本会安装依赖、构建前端、执行迁移，并启动 API 与 Worker。
 
-手动方式：
+**手动启动：**
 
 ```bash
-pip install -r requirements-dev.lock && pip install --no-deps -e .
+pip install -r requirements-dev.lock
+pip install --no-deps -e .
 cd web && npm ci && npm run build && cd ..
 qagent migrate
-qagent worker &          # 执行面
-qagent serve             # 控制面 http://127.0.0.1:8000 ，API 文档 /docs
+qagent serve --with-worker   # 单机：API + 守护 worker，http://127.0.0.1:8000
+# 或分开部署：qagent worker &  +  qagent serve
+
+# 在回环地址（127.0.0.1 / localhost）启动 serve 时，若没有在线 worker 会自动拉起；
+# 已有外部 worker 时不会重复启动，worker 退出后会由守护线程自动恢复。
 ```
 
-**没有任何模型密钥、没有外网也能完整跑通**：行情回退到明确标注的合成数据；AI 功能走模板与规则降级，界面写明“降级”。
+> 无外网时行情会明确报“未接入数据”，不会用合成数据冒充真实行情。演示页与压力演练中的示意数据会单独标注。
 
-### 配置大模型（任选其一）
+### 配置大模型
 
-- 界面：「模型配置」页（部署管理员）登记服务与密钥；密钥用主密钥加密保存，接口只回显掩码。
-- 环境变量：`DEEPSEEK_API_KEY`、`OPENAI_API_KEY`、`ANTHROPIC_API_KEY`、`DASHSCOPE_API_KEY` 等。
-- 配置文件：复制 `agent.config.example.toml` 为 `agent.config.toml`。
+三种方式任选其一：
 
-支持 DeepSeek、通义千问、Kimi、智谱、OpenAI 兼容接口、Anthropic，以及本地 Ollama / vLLM。
+1. 界面「模型」页登记服务与密钥（部署管理员）；
+2. 环境变量：`DEEPSEEK_API_KEY`、`OPENAI_API_KEY`、`ANTHROPIC_API_KEY` 等；
+3. 复制 `agent.config.example.toml` 为 `agent.config.toml`。
 
----
-
-## v2.0 架构
-
-```
-浏览器 ─▶ API（qagent serve：鉴权、工作区隔离、幂等、只入队）─▶ PostgreSQL ◀─ Worker（qagent worker）
-                    │                                                          ├─ 回测 / 参数优化 / 模板实验 / Agent 任务
-                    └──── Redis（只做唤醒，可缺省）────────────────────────────▶├─ 实时模拟（常驻驱动 + 每 bar 检查点）
-                                                                               ├─ 只读账户同步 / 实盘对照
-                                                                               └─ Python 策略子进程（隔离 + 资源上限）
-```
-
-| 能力 | v2.0 做法 |
-| --- | --- |
-| 用户与工作区 | 注册 / 登录 / 邀请码；管理员、成员、审阅者（只读）；所有数据按工作区隔离；配额；审计日志 |
-| 账务 | `Decimal` 双分录账本，金额在 JSON 中为十进制字符串；黄金样例 `899.9 + 110 − 0.11 = 1009.79` 逐位精确 |
-| 错误与幂等 | 统一 `{code, message, trace_id, details}`；写请求支持 `Idempotency-Key` |
-| 长任务 | 控制面不跑长任务；单租约认领 + fencing；`QUEUED/RUNNING/PAUSED/COMPLETED/FAILED/CANCELED/RECOVERING`；检查点恢复不重复成交 |
-| 存储 | PostgreSQL（或 SQLite）+ Redis 唤醒 + Parquet（或 JSON）K 线缓存；版本化迁移 |
-| 策略 | 规则 DSL v2（零代码，表单 / JSON 双视图）与聚宽式 Python SDK；版本 `DRAFT→VALIDATED→FROZEN→ARCHIVED` 不可改写 |
-| 输出协议 | 确定性 `signal_id` 的 Signal → TargetPosition → 独立风险层 → 撮合；为个人执行器预留目标仓位信封 |
-| 撮合口径 | 下一事件成交；资金不足默认拒绝；保守限价（触价不成交）；止损优先；手续费币种；未平仓不算完成交易 |
-| 指标 | 有出入金时用单位净值（TWR）；回撤峰谷与恢复；最差单日、持仓时长、总手续费；报告附口径声明 |
-| 研究纪律 | 锁定测试区间、purge / embargo、walk-forward |
-| 真实结果 | `imported_live`（CSV）/ `readonly_live`（只读 Key）/ `testnet`；没有真实成交时显示“未接入真实成交”，不用模拟曲线补位 |
-| 个人账户 | 三步只读接入向导；时间、身份、权限、IP 检测；非只读 Key 拒绝且不保存；独立加密；撤销即删除密文 |
-| 事件审计 | 每根 K 线带 `event_ts / receive_ts / sequence / source / instrument_id / raw_ref` |
-| 网络可用性 | 部署地 72 小时实测，未满 72 小时显示“网络可用性待验证” |
-| 安全 | CSV 公式注入防护（导入拒绝、导出中和）；Python 策略独立进程、清空环境变量、CPU/内存/文件上限、降权、可选断网 |
+支持 DeepSeek、通义千问、Kimi、智谱、OpenAI 兼容接口、Anthropic、Ollama、vLLM 等。
 
 ---
 
-## 一次完整的研究流程
+## 当前验证状态（2026-10-18）
 
-1. **我的策略 → 新建策略**：从 10 个模板中选一个（双均线、RSI、布林带、海龟、网格、定投、多币动量轮动、逆波动率配置……），
-   或点「用一句话生成策略」让 AI 写。
-2. **策略编辑器**：带语法高亮的 Python 编辑器；`Ctrl+Enter` 编译运行、`Ctrl+S` 保存。右侧面板有运行结果、日志、
-   AI 助手（修改代码会先展示差异再应用）、参数、历史版本、回测记录。
-3. **运行回测 → 回测详情**：聚宽式收益概述（策略/基准/超额收益、Alpha、Beta、夏普、索提诺、信息比率、波动率、
-   最大回撤、胜率、日胜率、盈亏比……）、策略 vs 基准曲线、超额、回撤、日收益、`record()` 自定义曲线；
-   交易详情、每日持仓&收益、日志、源码快照、运行清单（代码哈希 + 数据摘要 + 成本模型）、AI 解读。
-4. **参数优化**：网格搜索，强制切分**样本内 / 样本外**，给出热力图、内外散点、秩相关与过拟合诊断，可一键写回代码。
-5. **冻结版本 → 实时模拟**：只有 `FROZEN` 的版本能进入实时模拟。worker 每 30 秒采集，策略在每根新收盘 bar 上运行，
-   与回测共用同一套撮合代码；可暂停 / 恢复 / 停止（不平仓）/ 模拟平仓并结束；7 天 / 30 天窗口必须真实经过。
-6. **实盘对照**（可选）：导入成交 CSV 或绑定只读 Key，把真实成交逐笔归因到策略，查看滑点、延迟与置信度。
-7. **分享到策略广场**：帖子附**冻结快照**（代码哈希、参数、回测曲线与清单），读者一键克隆复核；可请 AI 审稿人公开挑刺。
+| 检查 | 结果 |
+|---|---|
+| `ruff check src tests scripts` | ✅ All checks passed |
+| `ruff format --check src tests scripts` | ✅ 338 files already formatted |
+| `tsc -b && vite build`（`web/`） | ✅ 通过 |
+| `pytest -q`（完整套件） | ✅ **1,201 passed / 4 skipped** |
+| 定向后端测试（账本 v2 / 真实永续 / 资金费 / 能力矩阵） | ✅ 60 passed |
+| 英文界面逐页巡检 | ✅ 35 个登录页 + 未登录首页无 UI 中文残留（系统错误文本、运行时路径除外） |
+| 浏览器端 E2E（Microsoft Edge，关闭录像） | ✅ 32 passed |
+| API 快照 | 由 `scripts/gen_api_doc.py` 重新生成（601 个操作 / 511 条路径） |
 
----
-
-## 与聚宽的对照
-
-| 聚宽 | 本平台 | 说明 |
-| --- | --- | --- |
-| 我的策略 / 策略编辑器 | 我的策略 / 策略编辑器 | 同样的 `initialize / run_daily / history / order_target_percent / g / log / record` 写法 |
-| 编译运行 / 运行回测 | 编译运行 / 运行回测 | 编译运行不入库；运行回测生成完整记录 |
-| 回测详情（收益概述、交易详情、每日持仓、日志） | 回测详情 | 指标口径一致；另加运行清单与 AI 解读 |
-| 参数调优 | 参数优化 | 额外强制样本内 / 样本外与过拟合诊断 |
-| 模拟交易 | 模拟交易 | 与回测同一撮合代码；停机不补算 |
-| 社区（文章 / 问答 / 精华 / 标签 / 克隆） | 策略广场 | 分享内容冻结；AI 审稿人 |
-| API 文档 | API 文档 | 应用内 `#/docs` |
-| — | AI 助手 | 生成 → 沙箱检查 → 合成数据试跑 → 自动修复（最多 2 轮） |
-
-与聚宽的主要差异：加密货币 7×24 交易、现货只做多、默认**下一根 bar 开盘价成交**（不会用收盘价决策又按收盘价成交）、
-更严格的策略沙箱。
+完整结果与复现命令见 [测试与验证报告](docs/测试与验证报告.md)。
 
 ---
 
-## 功能清单
+## 规模（当前工作区实测）
 
-| 模块 | 内容 |
-| --- | --- |
-| 策略 SDK | 聚宽式 API；`PARAMS` 参数声明与覆盖；多标的；基准；`run_daily/weekly/monthly`；`record`、`log`、`g` |
-| 撮合与成本 | 下一根开盘成交（可切换当根收盘）；taker 费率 + 半价差 + 滑点；成交量占比上限；调仓容差；资金约束 |
-| 指标 | 累计/年化收益、基准收益、超额、Alpha、Beta、信息比率、跟踪误差、夏普、索提诺、Calmar、波动率、最大回撤与持续时间、胜率、日胜率、盈亏比、利润因子、换手、手续费 |
-| 沙箱 | AST 审查（import 白名单、禁用 eval/exec/open/getattr、禁止下划线属性、禁止文件 IO）+ 受限 `__builtins__` + 独立子进程资源上限 |
-| 数据 | Binance / OKX 公共行情；本地 K 线缓存只补缺口；按起止日期取数；来源可选 自动 / 只用真实 / 合成；数据质量报告 |
-| 回测记录 | 冻结代码、参数、数据摘要与成本模型；详情、对比、导出 JSON / CSV |
-| 参数优化 | 网格（≤150 组）、worker 执行与断点续跑、锁定测试区间、purge / embargo、walk-forward、热力图、写回代码 |
-| 实时模拟 | 真实行情 / 演示行情；worker 常驻驱动；暂停 / 恢复 / 停止 / 模拟平仓并结束；7/30 天窗口；检查点恢复 |
-| 实盘对照 | CSV 导入（全有或全无、公式注入防护）；只读 Key 同步；逐笔归因（订单标签 → 映射 → 订单号 → 启发式 + 置信度） |
-| 规则 DSL | SMA / EMA / RSI / ATR / 通道 / 区间收益；比较、交叉、连续满足、逻辑组合；权重或固定数量；表单与 JSON 双视图 |
-| 平台 | 登录注册、工作区与角色、邀请码、配额、审计日志、运行列表与命令、worker 状态、网络实测 |
-| AI 助手 | 生成、修改、修复、解释、问答、回测解读、审稿；全部有确定性降级；调用留痕（模式、模型、提示词哈希） |
-| 策略广场 | 文章 / 问答 / 策略分享 / 公告；推荐 / 最新 / 回复 / 最热排序；标签、搜索、精华、置顶；点赞、收藏、评论回复、采纳；克隆；贡献榜 |
-| 统一赛道（实验三） | 同一行情、资金与成本下多策略公平比较；7/30 天固定窗口；JSON 规则策略；CSV 导入 |
-| Agent 协作 | 9 个预设角色 + 自定义；流水线 / 并行评审 / 对抗质疑；长期 Agent 与微信类推送 |
-| 模型配置 | 界面登记服务与密钥（持久化）；按用途路由与降级链；连通性测试 |
+| 维度 | 数值 |
+|---|---:|
+| Python 文件 / 行数（`src/quant_agent`） | 217 / 100,338 |
+| 前端 TS/TSX 文件 / 行数 | 166 / 42,624 |
+| CSS 文件 / 行数 | 23 / 7,890 |
+| 测试文件 / 收集用例 | 95 / 1,205 |
+| API 路由模块 / 操作 / 路径 | 35 / 601 / 511 |
+| 前端路由 / 侧栏入口 | 44 / 24 |
+| 数据库迁移 / 表 | 18 / 40 |
+| 内置 Agent 角色 / 工具 | 16 / 51 |
+
+> 行数口径：源文件总行数（含注释与空行），由当前工作区直接统计。
 
 ---
 
-## 目录结构
+## 文档
 
-```
-.
-├── plan.md                         平台设计方案（v2.0）
-├── Dockerfile · docker-compose.yml · deploy/   部署（API 与 worker 同镜像）
-├── requirements.lock · requirements-dev.lock   依赖锁定
-├── docs/                           协议口径 · 运维手册 · 账户接入 · 测试报告 · 任务包 · API 参考
-├── src/quant_agent/
-│   ├── platform/     db.py 数据库与迁移 · auth.py 用户工作区 · runs.py 运行队列与租约 · worker.py · isolation.py 策略隔离
-│   │                 versions.py 策略版本 · netprobe.py 网络实测 · csvsafe.py · errors.py · secretbox.py
-│   ├── sdk/          ledger.py Decimal 账本 · runtimes.py 撮合 / 信号 / 风险层 · api.py 聚宽式 API · sandbox.py
-│   ├── strategies/   dsl.py 规则 DSL v2 · sdk_templates.py 模板库 · repo.py 策略仓库
-│   ├── live/         imports.py CSV 导入 · attribution.py 归因 · accounts.py 只读账户 · envelope.py 目标仓位信封
-│   ├── engine/       research.py 回测与优化 · live.py 实时模拟 · metrics.py 指标口径
-│   ├── data/ · exchanges/   行情服务、K 线缓存（Parquet / JSON）、Binance / OKX 适配器
-│   ├── agents/ · llm/       AI 副驾驶、团队编排、模型路由与降级
-│   └── api/          FastAPI 路由；tasks.py 是 worker 执行的任务处理器
-├── web/src/          React + TypeScript：登录、DSL 编辑器、回测详情、实时模拟、实盘对照、个人账户、设置与审计……
-├── scripts/          dev.ps1 / dev.sh / gen_api_doc.py / mock_llm_server.py
-├── tests/            407 个测试（SQLite 与 PostgreSQL 均通过）
-└── 实验三/           课程实验三的独立原型，保持原样
-```
+| 中文 | English | 内容 |
+|---|---|---|
+| [文档索引](docs/README.md) | [Documentation Index](docs/README.en.md) | 当前有效文档、阅读顺序与能力边界 |
+| [平台介绍](docs/平台介绍.md) | [Platform Introduction](docs/Platform-Introduction.en.md) | **推荐从这里开始**：最新截图、功能地图与使用场景 |
+| [测试与验证报告](docs/测试与验证报告.md) | [Test & Verification Report](docs/Test-and-Verification-Report.en.md) | 静态检查、测试、构建、E2E 与发布清单 |
+| [隔离能力矩阵](docs/隔离能力矩阵.md) | [Isolation Matrix](docs/Isolation-Capability-Matrix.en.md) | Linux / Windows 下各隔离能力的真实状态 |
+| [策略协议与数据口径](docs/策略协议与数据口径.md) | [Strategy Protocol](docs/Strategy-Protocol-and-Data-Conventions.en.md) | 事件模型、信号协议、撮合规则、指标口径 |
+| [运维与恢复手册](docs/运维与恢复手册.md) | [Operations & Recovery](docs/Operations-and-Recovery-Manual.en.md) | 部署、状态机、检查点恢复、备份、微实盘开关 |
+| [API 参考](docs/API参考.md) | [API Reference](docs/API-Reference.en.md) | 601 个操作；英文索引与机器可读版本 [openapi.json](docs/openapi.json) |
+| [个人账户接入教程](docs/个人账户接入教程.md) | [Account Integration](docs/Personal-Account-Integration-Guide.en.md) | CSV 导入与只读 Key 接入 |
+| [交易所模拟盘与策略包](docs/交易所模拟盘与策略包.md) | [Exchange Demo & Packages](docs/Exchange-Demo-Trading-and-Strategy-Packages.en.md) | 模拟盘接入与 `.qstrat` 策略包 |
 
 ---
 
-## 设计要点
+### 永续能力边界
 
-**AI 是副驾驶，不是下单者。** AI 只产出代码草案、解释与报告。生成的策略是草稿，经过回测与人工批准后才能进入模拟交易；
-**批准绑定版本**——代码或参数一改，批准自动失效。实盘权限与 AI 完全隔离。
+| 入口 | 现货 | 永续 |
+|---|---|---|
+| 原生回测 / AI 研究室 | ✅ Binance / OKX / Bybit | ✅ 线性 / 币本位反向 / 交割；逐仓/全仓、单向/对冲 |
+| `.qstrat` 策略包 | ✅ | ✅ 线性 / 反向 / 交割包；导入复核标的后缀、合约类型、模式与标准答案 |
+| Freqtrade 导入 | ✅ 现货多头 | ✅ `can_short` / `leverage()`；需管理员开启开关并使用衍生品标的 |
+| 微实盘 | ✅ Binance / OKX 现货 | ❌ 微实盘保持现货专用 |
+| 真实永续 | — | ✅ Binance / OKX 线性 USDT-M；独立开关、确认码、止损、自动急停 |
 
-**策略只表达目标仓位。** 下单函数与 DSL 都产出 Signal + TargetPosition，经独立风险层后由平台撮合；策略拿不到网络、文件与任何凭证。
+## 工作区功能开关
 
-**可复现优先。** 每次回测生成运行清单：代码 SHA-256、参数、数据摘要、成本与成交模型、平台版本。AI 调用记录模式、模型与提示词哈希。
+![功能开关](./docs/images/latest/14-settings.png)
 
-**数据来源必须可见。** 每个页面写明数据来自真实接口还是合成数据；合成数据的结论会被明确标为"不能作为策略结论"。
-模拟成交、官方测试成交与真实成交三类结果不合并展示。
+工作区管理员可在「设置 → 工作区 → 功能开关与能力边界」动态开关现货、线性/反向/交割永续、全仓、对冲、真实资金现货、真实资金永续、`.qstrat` 永续包、Freqtrade 做空/杠杆与研究导师。前端、API、Agent 工具与文档读取同一份注册表，服务端始终是最终裁决者；未实现或已阻断的能力仍不能打开。
 
-**不伪造停机。** 实时模拟每根 bar 写检查点，worker 崩溃后从检查点恢复、不重复成交；停机期间的 bar 只推进数据，不补算成交。
+## 已知限制
 
-**模拟与真实分开。** 全局横幅始终显示当前模式；没有真实成交数据时实盘面板显示“未接入真实成交”。测试网成交永远标为“测试”。
+1. **隔离能力与操作系统相关**：Linux 下才具备资源上限、降权与网络命名空间；Windows 开发环境只能做到进程隔离，平台会如实显示“部分生效”。
+2. **微实盘只支持 Binance / OKX 现货**，且要求 Key 具备交易权限、关闭提现 / 划转、绑定 IP 白名单；OKX 的 IP 白名单状态依赖交易所接口返回。
+3. **反向/交割与全仓/对冲已有账本 v2 支持，但交易所规则仍是研究近似**：必须用账户账单核验 MMR、标记价、资金费和交割价；不能把研究结果描述成交易所生产级风险引擎。
+4. **只读同步有回溯上限**：Binance 1,000 条、OKX 100 条 / 页；需要完整历史时请用 CSV 导入。
+5. **回测撮合基于 K 线**；盘口队列、冲击与拆单算法在独立的执行仿真模块中，两者不共用。
+6. **前端包体仍可继续拆分**：循环 chunk 警告已消除，页面已按路由拆包，但 `page-research` 共享 chunk 约 624KB，仍有体积提示。
 
 ---
 
-## 测试与质量
+## 贡献与许可
+
+**主要贡献者：GitHub 用户 [jamesusa99](https://github.com/jamesusa99) 与 [NagisaShip](https://github.com/NagisaShip)。**
+
+欢迎贡献！请先阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。安全问题请按 [SECURITY.md](SECURITY.md) 私下报告。联系邮箱：[luoyangyuan110@gmail.com](mailto:luoyangyuan110@gmail.com)。提交前请至少运行：
 
 ```bash
-pytest -q                                                   # 407 个测试（SQLite）
-QAGENT_TEST_PG=postgresql://user@host:5432/db pytest -q     # 同一套测试跑在 PostgreSQL 上
-ruff check src tests scripts                                # 静态检查
-cd web && npm run build                                     # 类型检查 + 构建
-python scripts/gen_api_doc.py                               # 重新生成 docs/API参考.md 与 docs/openapi.json
+ruff check src tests scripts
+ruff format --check src tests scripts
+pytest -q
+cd web && npm run build
 ```
 
-`tests/test_acceptance.py` 逐条对应 plan v2.0 的 10 项必验：未来数据不可见、收盘信号下一事件成交、重复事件不重复成交、
-手续费与出入金、版本不可改写、跨工作区不可读、数据中断不下单、重启一致、无真实数据不显示实盘收益、只读模式无下单路径。
-
----
-
-## 已知局限
-
-- **没有真实下单**：`live_enabled=false`，只读接入只用于对照。目标仓位信封为将来的个人执行器预留。
-- 撮合基于 K 线，不模拟盘口队列与市场冲击；限价单用保守模型（触价不成交），会低估限价成交率。
-- 策略子进程“断网”需要 Linux 网络命名空间：容器内需叠加 `deploy/docker-compose.isolation.yml`（授予 worker `SYS_ADMIN`），
-  Windows 单机开发没有该项与降权，其余（独立进程、清空环境变量）照常。界面会如实显示隔离状态。
-- 只读同步当前单次最多回溯 1000（币安）/ 100（OKX）条成交，分页增量同步见任务包 T01。
-- 本仓库在无 Docker Hub 访问的环境中开发：`docker compose config` 已校验，镜像构建未在本环境执行；
-  同一拓扑（PostgreSQL + Redis + 独立 API 与 worker 进程）已用本地进程完整验证。
-
----
-
-## 许可
-
-内部 / 课程项目，暂不对外开源。
+本项目使用 [MIT License](LICENSE)。

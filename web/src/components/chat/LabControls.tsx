@@ -7,6 +7,7 @@ import { APPROVAL_CATEGORIES, type ApprovalCategory } from '../../apiLab'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { ContextView, Permission } from '../../apiLab'
 import { StepSlider } from '../StepSlider'
+import { UPLOAD_ACCEPT } from '../uploadAccept'
 import { QuantEyes, useBotFlash } from '../QuantBot'
 import { usePopover } from './Composer'
 
@@ -189,8 +190,14 @@ export function useFilePicker(onFiles: (files: File[]) => void) {
     const el = document.createElement('input')
     el.type = 'file'
     el.multiple = true
-    el.accept = '.txt,.md,.csv,.json,.py,.yaml,.yml,.tsv,.log,image/*'
-    el.style.display = 'none'
+    el.accept = UPLOAD_ACCEPT
+    el.style.position = 'fixed'
+    el.style.left = '-9999px'
+    el.style.top = '0'
+    el.style.width = '1px'
+    el.style.height = '1px'
+    el.style.opacity = '0'
+    el.setAttribute('aria-label', '上传图片或文件')
     el.onchange = () => { if (el.files?.length) onFiles([...el.files]); el.value = '' }
     document.body.appendChild(el)
     input.current = el

@@ -25,6 +25,7 @@ from . import (
     routes_ai,
     routes_arena,
     routes_auth,
+    routes_capabilities,
     routes_community,
     routes_config,
     routes_demo,
@@ -35,10 +36,13 @@ from . import (
     routes_live,
     routes_market,
     routes_media,
+    routes_mentor,
     routes_microlive,
     routes_missions,
     routes_node,
     routes_ops,
+    routes_public,
+    routes_realperp,
     routes_research,
     routes_runs,
     routes_strategies,
@@ -52,11 +56,11 @@ WEB_DIST = Path(__file__).resolve().parents[3] / "web" / "dist"
 def create_app(*, with_scheduler: bool = False) -> FastAPI:
     app = FastAPI(
         lifespan=_background if with_scheduler else None,
-        title="加密货币量化交易仿真验证平台 API",
+        title="QuantLab v 0.1 preview API",
         description=(
             "交易所行情接入、策略管理、回测与仿真、Agent 团队调研、长期 Agent 与通知。\n\n仅为研究结果，非投资建议。"
         ),
-        version="0.3.0",
+        version="0.1.0-preview",
     )
 
     # 不开放跨域：前端与 API 同源部署（开发时由 Vite 代理）。需要跨域时由反向代理显式配置白名单。
@@ -77,6 +81,7 @@ def create_app(*, with_scheduler: bool = False) -> FastAPI:
         routes_research.router,
         routes_ai.router,
         routes_community.router,
+        routes_public.router,
         routes_ops.router,
         routes_runs.router,
         routes_dsl.router,
@@ -115,6 +120,7 @@ def create_app(*, with_scheduler: bool = False) -> FastAPI:
         pass
     app.include_router(routes_missions.router)
     app.include_router(routes_community.router)
+    app.include_router(routes_public.router)
     from . import routes_admin, routes_collab
 
     app.include_router(routes_collab.router)
@@ -123,10 +129,17 @@ def create_app(*, with_scheduler: bool = False) -> FastAPI:
     app.include_router(routes_node.router)
     app.include_router(routes_freqtrade.router)
     app.include_router(routes_lifecycle.router)
+    app.include_router(routes_capabilities.router)
     app.include_router(routes_microlive.router)
+    app.include_router(routes_realperp.router)
+    app.include_router(routes_mentor.router)
 
-    if WEB_DIST.exists():
-        app.mount("/assets", StaticFiles(directory=WEB_DIST / "assets"), name="assets")
+    # 构建目录可能正在被 npm/Vite 清空重建；只有 index.html 与 assets 都就绪时才挂静态站点，
+    # 避免测试或 API 启动因为一个瞬时缺失的目录而整体失败。
+    assets_dir = WEB_DIST / "assets"
+    if WEB_DIST.is_dir() and (WEB_DIST / "index.html").is_file():
+        if assets_dir.is_dir():
+            app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
 
         dist_root = WEB_DIST.resolve()
 
@@ -139,7 +152,10 @@ def create_app(*, with_scheduler: bool = False) -> FastAPI:
             # 只服务构建目录内的文件，防止 ../ 路径穿越
             if full_path and candidate.is_file() and str(candidate).startswith(str(dist_root)):
                 return FileResponse(candidate)
-            return FileResponse(WEB_DIST / "index.html")
+            return FileResponse(
+                WEB_DIST / "index.html",
+                headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+            )
     else:
 
         @app.get("/", include_in_schema=False)

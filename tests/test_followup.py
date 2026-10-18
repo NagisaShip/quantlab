@@ -31,7 +31,9 @@ class _Lab:
 
 def test_followup_reports_when_finished_and_waits_while_busy(monkeypatch):
     state = {"done": False}
-    monkeypatch.setattr(F, "_fetch", lambda tool, rid: (state["done"], {"best_params": {"fast": 12}} if state["done"] else {}))
+    monkeypatch.setattr(
+        F, "_fetch", lambda tool, rid: (state["done"], {"best_params": {"fast": 12}} if state["done"] else {})
+    )
     lab = _Lab()
     w = F._Watch(lab, "p1", "start_tuning", "run-1", contextvars.copy_context(), "u1")
     fu = F.FollowUps()

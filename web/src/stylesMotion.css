@@ -57,6 +57,8 @@
 .modal, .sp, .busy-card { animation: m-modal var(--dur-3) var(--ease-out) backwards; }
 .acct-menu, .status-menu, .menu-list, .cmp-menu { animation: m-menu var(--dur-2) var(--ease-out) backwards; transform-origin: top left; }
 .cmp-menu { animation-name: m-menu-up; transform-origin: bottom left; }
+.cmp-menu[data-placement="bottom"] { animation-name: m-menu; transform-origin: top left; }
+.cmp-menu[data-placement="top"] { animation-name: m-menu-up; transform-origin: bottom left; }
 .acct-menu { animation-name: m-menu-up; transform-origin: bottom left; }
 .toast { transition: opacity var(--dur-3) var(--ease-out), transform var(--dur-3) var(--ease-out); }
 details > summary + * { animation: m-expand var(--dur-3) var(--ease-out) backwards; }
@@ -145,6 +147,12 @@ input, select, textarea { transition: border-color var(--dur-2) var(--ease-out),
 .usage-kpi { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; background: var(--sheet); display: grid; gap: 4px; }
 .usage-kpi small { font-size: 12px; color: var(--muted); }
 .usage-kpi b { font-size: 20px; font-weight: 600; font-family: var(--mono); letter-spacing: -.01em; }
+.usage-kpi em { font-style: normal; color: var(--faint); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.retention-switches { display: grid; gap: 8px; margin-top: 8px; }
+.retention-switch { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 11px 0; border-bottom: 1px solid var(--line-2); }
+.retention-switch > span { display: grid; gap: 2px; min-width: 0; }
+.retention-switch b { font-size: 13px; font-weight: 600; }
+.retention-switch small { color: var(--faint); font-size: 11.5px; line-height: 1.55; }
 .usage-chart-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .usage-chart-head small { font-size: 12px; color: var(--muted); }
 .usage-chart { display: flex; align-items: flex-end; gap: 2px; height: 88px; padding: 6px 2px 0; border-bottom: 1px solid var(--line); }
@@ -182,6 +190,46 @@ input, select, textarea { transition: border-color var(--dur-2) var(--ease-out),
 .member-cell b { font-weight: 500; }
 .member-cell small.mono { font-size: 11.5px; color: var(--muted); }
 td select { min-width: 96px; }
+
+/* 成员与邀请：本人用量、存储配额与配额编辑器 */
+.members-page { display: grid; gap: 2px; }
+.members-table.admin { min-width: 1080px; }
+.members-table.compact { min-width: 560px; }
+.members-table-wrap { margin-top: 12px; }
+.member-storage-cell { min-width: 150px; }
+.member-storage-cell b, .member-storage-cell small { display: block; }
+.member-storage-cell small { color: var(--faint); font-size: 11px; margin-top: 1px; }
+.member-storage-cell .tag { margin-top: 5px; }
+.quota-link { display: grid; gap: 1px; padding: 0; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.quota-link b { font-size: 12.5px; font-weight: 500; color: var(--accent); }
+.quota-link small { font-size: 11px; color: var(--faint); }
+.quota-link:hover b { text-decoration: underline; }
+.member-self-usage { margin-top: 14px; padding: 14px; border: 1px solid var(--line); border-radius: 14px; background: var(--sheet); }
+.member-self-usage .set-section-note { margin: 2px 0 0; }
+.member-self-usage .usage-kpi em { font-style: normal; font-size: 11px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.member-self-usage .lim-bars { margin-top: 12px; }
+.member-usage-note { margin: 10px 0 0; }
+.member-quota-overview { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 12px 0; }
+.member-quota-overview > span { display: grid; gap: 2px; padding: 11px 12px; border: 1px solid var(--line); border-radius: 11px; background: var(--canvas, transparent); }
+.member-quota-overview small { color: var(--muted); font-size: 11.5px; }
+.member-quota-overview b { font-family: var(--mono); font-size: 16px; font-weight: 600; }
+.member-quota-overview em { font-style: normal; color: var(--faint); font-size: 11px; }
+.storage-quota-box { display: grid; gap: 8px; margin: 14px 0; padding: 13px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--canvas, transparent); }
+.storage-quota-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.storage-quota-head > div { display: grid; gap: 2px; }
+.storage-quota-head b { font-size: 13px; font-weight: 600; }
+.storage-quota-head small { color: var(--faint); font-size: 11.5px; line-height: 1.5; }
+.storage-quota-row { display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 8px; }
+.storage-quota-row input { width: 100%; }
+.storage-quota-row > span { color: var(--muted); font-size: 12px; }
+.lim-editor-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin: 16px 0 6px; }
+.lim-editor-head b { font-size: 13px; font-weight: 600; }
+.lim-editor-head small { color: var(--faint); font-size: 11.5px; }
+@media (max-width: 720px) {
+  .member-quota-overview { grid-template-columns: 1fr; }
+  .storage-quota-head { flex-direction: column; }
+  .lim-editor-head { flex-direction: column; gap: 2px; }
+}
 
 /* 分段按钮不折行；区块标题在窄屏允许换行 */
 .seg button { white-space: nowrap; }

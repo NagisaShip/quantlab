@@ -41,7 +41,10 @@ def send(to: str, subject: str, text: str, html: str | None = None) -> str:
     """发一封邮件，返回发送方式。失败抛 AppError（不吞掉，调用方要让用户知道没发出去）。"""
     mode = configured()
     if not mode:
-        raise AppError(ErrorCode.UNSUPPORTED_CAPABILITY, "部署没有配置发信服务（QAGENT_SMTP_HOST），暂时无法发送验证码，请联系部署管理员")
+        raise AppError(
+            ErrorCode.UNSUPPORTED_CAPABILITY,
+            "部署没有配置发信服务（QAGENT_SMTP_HOST），暂时无法发送验证码，请联系部署管理员",
+        )
     sender = os.environ.get("QAGENT_SMTP_FROM") or os.environ.get("QAGENT_SMTP_USER") or "quantlab@localhost"
     msg = EmailMessage()
     msg["Subject"] = subject
@@ -72,5 +75,7 @@ def send(to: str, subject: str, text: str, html: str | None = None) -> str:
                 server.login(user, password)
             server.send_message(msg)
     except (OSError, smtplib.SMTPException) as exc:
-        raise AppError(ErrorCode.UPSTREAM_UNAVAILABLE, f"邮件发送失败：{type(exc).__name__}，请稍后再试或联系部署管理员") from exc
+        raise AppError(
+            ErrorCode.UPSTREAM_UNAVAILABLE, f"邮件发送失败：{type(exc).__name__}，请稍后再试或联系部署管理员"
+        ) from exc
     return mode

@@ -15,6 +15,8 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from ..platform import backtest_retention as BR
+from ..platform import context
 from ..research import goals as RG
 from ..research import learners as L
 from ..research import models as M
@@ -140,7 +142,7 @@ def models_meta() -> dict:
     }
 
 
-def _train_job(jid: str, spec: dict[str, Any], note: str) -> None:
+def _train_job(jid: str, spec: dict[str, Any], note: str, created_by: str) -> None:
     job = _JOBS[jid]
 
     def stop() -> None:
@@ -155,7 +157,7 @@ def _train_job(jid: str, spec: dict[str, Any], note: str) -> None:
         panel = _panel(spec)
         lib = _lib()
         out = M.train_and_evaluate(spec, panel, stop=stop, progress=progress, trials=lib.trial_count() + 1)
-        rec = lib.record_run(spec, out["report"], out["state"], source="models", note=note)
+        rec = lib.record_run(spec, out["report"], out["state"], source="models", note=note, created_by=created_by)
         job.update(status="done", run_id=rec["id"], phase="完成")
     except M.Stopped:
         job.update(status="cancelled", phase="已取消")
@@ -176,6 +178,20 @@ def train(payload: TrainIn) -> dict:
         L.make_learner(spec["model"], spec["params"], M.LABELS[spec["label"]]["task"])
     except (M.ModelError, L.LearnerError) as exc:
         raise HTTPException(400, str(exc)) from exc
+    services = get_services()
+    app_ctx = context.current()
+    user_id = app_ctx.user_id or "user"
+    BR.guard_new_record(
+        services.store,
+        services.auth,
+        context.current_workspace(),
+        app_ctx.user_id or "",
+        app_ctx.role,
+        "model_run",
+        max_units=BR.effective_limit(
+            services.auth, services.model_hub, context.current_workspace(), app_ctx.user_id or "", app_ctx.role
+        ),
+    )
     jid = f"j_{uuid.uuid4().hex[:10]}"
     with _JOBS_LOCK:
         running = [j for j in _JOBS.values() if j["status"] == "running"]
@@ -183,11 +199,11 @@ def train(payload: TrainIn) -> dict:
             raise HTTPException(409, "已经有两个训练在进行，请等它们结束")
         _JOBS[jid] = {"id": jid, "status": "running", "phase": "排队", "spec": spec, "started_at": time.time()}
     if payload.wait:
-        _train_job(jid, spec, payload.note)
+        _train_job(jid, spec, payload.note, user_id)
     else:
-        ctx = contextvars.copy_context()
+        run_ctx = contextvars.copy_context()
         threading.Thread(
-            target=ctx.run, args=(_train_job, jid, spec, payload.note), daemon=True, name=f"train-{jid}"
+            target=run_ctx.run, args=(_train_job, jid, spec, payload.note, user_id), daemon=True, name=f"train-{jid}"
         ).start()
     return {"job": _job_view(jid)}
 
@@ -286,10 +302,28 @@ def list_models(status: str | None = None) -> dict:
 
 @router.post("", summary="把一次实验存为模型（带模型卡）")
 def save_model(payload: SaveIn) -> dict:
+    services = get_services()
+    ctx = context.current()
+    BR.guard_new_record(
+        services.store,
+        services.auth,
+        context.current_workspace(),
+        ctx.user_id or "",
+        ctx.role,
+        "model",
+        max_units=BR.effective_limit(
+            services.auth, services.model_hub, context.current_workspace(), ctx.user_id or "", ctx.role
+        ),
+    )
     lib = _lib()
     try:
         rec = lib.save_from_run(
-            payload.run_id, name=payload.name, status=payload.status, note=payload.note, model_id=payload.model_id
+            payload.run_id,
+            name=payload.name,
+            status=payload.status,
+            note=payload.note,
+            model_id=payload.model_id,
+            created_by=ctx.user_id or "user",
         )
     except KeyError as exc:
         raise HTTPException(404, str(exc)) from exc

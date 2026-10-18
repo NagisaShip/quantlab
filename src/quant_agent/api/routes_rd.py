@@ -11,7 +11,6 @@ import time
 from types import SimpleNamespace
 from typing import Any, Literal
 
-from ..timeframes import is_timeframe
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
@@ -22,6 +21,7 @@ from ..research import discipline as D
 from ..research import lineage as LN
 from ..research import nightshift as NS
 from ..research import shadow as SH
+from ..timeframes import is_timeframe
 from .deps import get_services
 
 router = APIRouter(prefix="/api/rd", tags=["研究纪律与自动化"])
@@ -430,7 +430,7 @@ def lineage(node: str | None = None) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 夜班
+# 定时任务
 # ---------------------------------------------------------------------------
 def _tokens() -> float:
     s = get_services()
@@ -528,7 +528,7 @@ def run_nightshift(trigger: str = "manual") -> dict[str, Any]:
     )
 
 
-@router.get("/nightshift", summary="夜班：预算设置、任务队列、正在跑的班次与历史")
+@router.get("/nightshift", summary="定时任务：预算设置、任务队列、正在执行的批次与历史")
 def nightshift() -> dict:
     st = _store()
     return {
@@ -552,7 +552,7 @@ class NightConfigIn(BaseModel):
     channel: str | None = Field(None, max_length=40)
 
 
-@router.put("/nightshift/config", summary="修改夜班预算与时间")
+@router.put("/nightshift/config", summary="修改定时任务预算与执行时间")
 def nightshift_config(payload: NightConfigIn) -> dict:
     return {"config": NS.save_config(_store(), payload.model_dump(exclude_none=True))}
 
@@ -567,7 +567,7 @@ class NightTaskIn(BaseModel):
     data_source: Literal["auto", "exchange", "synthetic"] = "auto"
 
 
-@router.post("/nightshift/tasks", summary="往夜班队列里加一个研究任务")
+@router.post("/nightshift/tasks", summary="往定时任务队列里加一个研究任务")
 def add_night_task(payload: NightTaskIn) -> dict:
     try:
         return {"task": NS.add_task(_store(), user=_user(), **payload.model_dump())}
@@ -586,7 +586,7 @@ class RunNowIn(BaseModel):
     wait: bool = False
 
 
-@router.post("/nightshift/run", summary="立即开始一个班次（后台运行）")
+@router.post("/nightshift/run", summary="立即执行一次定时任务（后台运行）")
 def nightshift_run(payload: RunNowIn) -> dict:
     st = _store()
     if NS.running_shift(st):
@@ -605,12 +605,12 @@ def nightshift_run(payload: RunNowIn) -> dict:
     return {"shift": None}
 
 
-@router.post("/nightshift/stop", summary="停止正在跑的班次（当前项目保留到最近一版）")
+@router.post("/nightshift/stop", summary="停止正在执行的定时任务（当前项目保留到最近一版）")
 def nightshift_stop() -> dict:
     return {"ok": NS.request_stop(_store())}
 
 
-@router.get("/nightshift/shifts/{sid}", summary="一个班次的详情")
+@router.get("/nightshift/shifts/{sid}", summary="一次定时任务执行的详情")
 def nightshift_detail(sid: str) -> dict:
     rec = NS.shift(_store(), sid)
     if rec is None:
@@ -995,7 +995,7 @@ def end_shadow(sid: str) -> dict:
 # ---------------------------------------------------------------------------
 # 研究流水线摘要（总览页一行）
 # ---------------------------------------------------------------------------
-@router.get("/pipeline", summary="总览页的研究流水线：因子、模型、组合、执行、夜班与纪律各一格")
+@router.get("/pipeline", summary="总览页的研究流水线：因子、模型、组合、执行、定时任务与纪律各一格")
 def pipeline() -> dict:
     st = _store()
     fs = st.list("factors")
@@ -1044,7 +1044,7 @@ def pipeline() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 定时：worker 每分钟检查一次夜班是否到点
+# 定时：worker 每分钟检查一次每日任务是否到点
 # ---------------------------------------------------------------------------
 def nightshift_due() -> bool:
     st = _store()

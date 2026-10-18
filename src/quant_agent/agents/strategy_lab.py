@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import contextvars
 import json
+import math
 import re
 import threading
 import time
@@ -31,32 +32,28 @@ from ..context.manager import _approx_tokens
 from ..llm.base import LLMError, Message, Tool
 from ..sdk import declared_params
 from ..strategies.params_util import ParamsError, rewrite_params
+from . import backtest_audit as BA
 from . import lab_goal as G
+from .blocks_protocol import BLOCKS_GUIDE
 from .copilot import SYSTEM as COPILOT_SYSTEM
 from .copilot import StrategyCopilot, extract_code, smoke_test, static_explain
-from . import backtest_audit as BA
-from ..timeframes import is_timeframe
-from .blocks_protocol import BLOCKS_GUIDE
+from .lab_state import (
+    AUTO_COMPACT_DEFAULT_RATIO,
+    AUTO_COMPACT_MAX_RATIO,
+    AUTO_COMPACT_MIN_RATIO,
+    COLLECTION,
+    DEFAULT_GOALS,
+    GOAL_LABELS,
+    HISTORY_TOKEN_BUDGET,
+    IMAGES,
+    REPORTS,
+    THREADS,
+    LabStore,
+    _lock,
+    _now,
+    new_project,
+)
 from .rigor import RIGOR_RULES
-
-COLLECTION = "lab_projects"
-THREADS = "lab_threads"
-REPORTS = "lab_reports"  # 调研报告正文（/report）
-IMAGES = "lab_images"  # 对话里附带的图片：每张单独一个 blob，消息里只留引用，免得线程 blob 越来越大
-
-DEFAULT_GOALS: dict[str, float | None] = {
-    "min_sharpe": 1.0,  # 夏普下限
-    "max_drawdown": 0.25,  # 最大回撤上限（正数，0.25 = 25%）
-    "min_trades": 10,  # 完整交易笔数下限（太少没有统计意义）
-    "min_excess": None,  # 超额收益下限（相对买入持有基准），None 表示不要求
-}
-GOAL_LABELS = {
-    "min_sharpe": ("夏普", "≥"),
-    "max_drawdown": ("最大回撤", "≤"),
-    "min_trades": ("交易笔数", "≥"),
-    "min_excess": ("超额收益", "≥"),
-}
-HISTORY_TOKEN_BUDGET = 6_000
 
 LAB_SYSTEM = (
     COPILOT_SYSTEM + """
@@ -87,193 +84,7 @@ LAB_SYSTEM = (
 )
 
 
-# ---------------------------------------------------------------------------
-# 存储：项目在集合里，对话在 blob 里（对话可能很长）
-# ---------------------------------------------------------------------------
-_LOCKS: dict[str, threading.Lock] = {}
-_LOCKS_GUARD = threading.Lock()
-
-
-def _lock(key: str) -> threading.Lock:
-    with _LOCKS_GUARD:
-        return _LOCKS.setdefault(key, threading.Lock())
-
-
-def _now() -> float:
-    return time.time()
-
-
-class LabStore:
-    def __init__(self, store: Any) -> None:
-        self.store = store  # JsonStore 或 WorkspaceStore（按请求上下文解析工作区）
-
-    # ---- 项目 ----
-    def list(self) -> list[dict[str, Any]]:
-        rows = self.store.list(COLLECTION)
-        return sorted(rows, key=lambda r: r.get("updated_at", 0), reverse=True)
-
-    def get(self, pid: str) -> dict[str, Any] | None:
-        return self.store.get(COLLECTION, pid)
-
-    def save(self, project: dict[str, Any]) -> dict[str, Any]:
-        project["updated_at"] = _now()
-        self.store.upsert(COLLECTION, project)
-        return project
-
-    def patch(self, pid: str, **changes: Any) -> dict[str, Any] | None:
-        with _lock(f"p:{pid}"):
-            cur = self.get(pid)
-            if cur is None:
-                return None
-            cur.update(changes)
-            return self.save(cur)
-
-    def delete(self, pid: str) -> bool:
-        for m in self.messages(pid):
-            self._drop_images(pid, m)
-        self.store.delete_blob(THREADS, pid)
-        return self.store.delete(COLLECTION, pid)
-
-    # ---- 对话 ----
-    def messages(self, pid: str, after: int = 0, since: float = 0.0) -> list[dict[str, Any]]:
-        """after：只要序号更大的新消息；since：同时带上此时刻之后被更新过的旧消息（工具卡片状态变化）。"""
-        data = self.store.get_blob(THREADS, pid) or {}
-        return [m for m in data.get("messages", []) if m["seq"] > after or (since and m.get("updated_at", 0) > since)]
-
-    # ---- 图片附件 ----
-    def put_image(self, pid: str, data_url: str, *, name: str = "") -> dict[str, Any]:
-        """存一张图片（data URL），返回消息里引用它的 {id, mime, name}。"""
-        mime = data_url[5 : data_url.index(";")]
-        iid = f"{pid}-{uuid.uuid4().hex[:12]}"
-        self.store.put_blob(IMAGES, iid, {"pid": pid, "mime": mime, "url": data_url})
-        return {"id": iid, "mime": mime, "name": name}
-
-    def get_image(self, pid: str, iid: str) -> dict[str, Any] | None:
-        blob = self.store.get_blob(IMAGES, iid)
-        return blob if blob and blob.get("pid") == pid else None
-
-    def _drop_images(self, pid: str, msg: dict[str, Any], keep: set[str] | frozenset[str] = frozenset()) -> None:
-        """删掉这条消息引用的、属于本对话的图片（分叉出去的对话有自己的副本，不受影响）。"""
-        for img in (msg.get("data") or {}).get("images") or []:
-            if img["id"] not in keep and self.get_image(pid, img["id"]) is not None:
-                self.store.delete_blob(IMAGES, img["id"])
-
-    def append(self, pid: str, msg: dict[str, Any]) -> dict[str, Any]:
-        with _lock(f"t:{pid}"):
-            data = self.store.get_blob(THREADS, pid) or {"messages": []}
-            # 序号只增不减：编辑 / 重试删掉的序号不再复用，前端按「序号更大」增量拉取才不会漏消息
-            seq = max(int(data.get("next_seq") or 0), (data["messages"][-1]["seq"] if data["messages"] else 0) + 1)
-            row = {"seq": seq, "created_at": _now(), "data": {}, "content": "", **msg}
-            row["seq"] = seq
-            data["messages"].append(row)
-            data["next_seq"] = seq + 1
-            self.store.put_blob(THREADS, pid, data)
-            return row
-
-    def truncate(self, pid: str, from_seq: int, *, keep_images: set[str] | frozenset[str] = frozenset()) -> int:
-        """删掉 seq >= from_seq 的消息（编辑 / 重试用户消息时回到那一刻），返回删掉的条数。
-        被删消息的附图一并删除，keep_images 里的除外（重试时要把原图再发一次）。"""
-        with _lock(f"t:{pid}"):
-            data = self.store.get_blob(THREADS, pid) or {"messages": []}
-            keep = [m for m in data["messages"] if m["seq"] < from_seq]
-            gone = [m for m in data["messages"] if m["seq"] >= from_seq]
-            top = max((m["seq"] for m in data["messages"]), default=0)
-            data["next_seq"] = max(int(data.get("next_seq") or 0), top + 1)
-            data["messages"] = keep
-            self.store.put_blob(THREADS, pid, data)
-        for m in gone:
-            self._drop_images(pid, m, keep_images)
-        return len(gone)
-
-    def copy_thread(self, src: str, dst: str, upto: int | None = None) -> int:
-        """把 src 的对话（到 upto 为止，含）复制给 dst，序号保持不变。"""
-        data = self.store.get_blob(THREADS, src) or {"messages": []}
-        rows = [dict(m) for m in data["messages"] if upto is None or m["seq"] <= upto]
-        for m in rows:
-            m["data"] = dict(m.get("data") or {})
-            m["data"].pop("streaming", None)
-            # 附图复制一份给新对话：各自持有，删掉任何一边都不影响另一边
-            refs = []
-            for img in m["data"].get("images") or []:
-                blob = self.get_image(src, img["id"])
-                if blob is not None:
-                    refs.append(self.put_image(dst, blob["url"], name=img.get("name", "")))
-            if refs:
-                m["data"]["images"] = refs
-        self.store.put_blob(THREADS, dst, {"messages": rows, "next_seq": (rows[-1]["seq"] + 1) if rows else 1})
-        return len(rows)
-
-    def update(self, pid: str, seq: int, **changes: Any) -> None:
-        """更新已有消息（工具卡片从“进行中”变为“完成”）。改动后 seq 不变，但给它一个新的 rev 让前端刷新。"""
-        with _lock(f"t:{pid}"):
-            data = self.store.get_blob(THREADS, pid) or {"messages": []}
-            for m in data["messages"]:
-                if m["seq"] == seq:
-                    if "data" in changes:
-                        m["data"] = {**m.get("data", {}), **changes.pop("data")}
-                    m.update(changes)
-                    m["rev"] = m.get("rev", 0) + 1
-                    m["updated_at"] = _now()
-            self.store.put_blob(THREADS, pid, data)
-
-
-def new_project(payload: dict[str, Any]) -> dict[str, Any]:
-    goals = {**DEFAULT_GOALS, **{k: v for k, v in (payload.get("goals") or {}).items() if k in DEFAULT_GOALS}}
-    idea = (payload.get("idea") or "").strip()
-    title = (payload.get("title") or "").strip() or (re.sub(r"\s+", " ", idea)[:24] if idea else "未命名策略项目")
-    title_auto = not (payload.get("title") or "").strip()
-    return {
-        "id": uuid.uuid4().hex[:12],
-        "title": title[:60],
-        "title_auto": title_auto,  # 标题由 AI 在首轮回答后总结；研究者改过标题后不再自动改
-        "idea": idea,
-        "securities": [s.strip().upper() for s in payload.get("securities") or [] if s.strip()] or ["BTC/USDT"],
-        "timeframe": payload.get("timeframe") or "1h",
-        "model": payload.get("model") or "",
-        "effort": payload.get("effort") or "medium",  # 思考努力程度：low | medium | high | max
-        "goals": goals,
-        "goal": None,  # 结构化目标（/goal）；为空时按旧字段 goals 评估
-        "goal_set": bool(payload.get("goals")),  # 研究者或 AI 设过目标后才能自动迭代
-        # 对话管理：置顶、所属项目（文件夹）、分叉来源；上下文超出原文预算时自动压缩
-        "pinned": False,
-        "folder": (payload.get("folder") or "").strip()[:40],
-        "parent_id": payload.get("parent_id"),
-        "fork_seq": payload.get("fork_seq"),
-        "auto_compact": True,
-        # 标的与周期交给 AI 根据对话决定（新对话里选「自动」时）；AI 用 set_market 设好后清掉
-        "market_auto": bool(payload.get("market_auto")),
-        # 回答末尾附 2-3 条简短的后续建议（设置里可关）
-        "suggest": payload.get("suggest", True) is not False,
-        # 单轮最多调用多少次工具（设置里可改，默认 1000）
-        "max_tool_calls": int(payload.get("max_tool_calls") or DEFAULT_MAX_TOOL_CALLS),
-        # 研究流程：空 = 普通对话；pipeline = 完整流程（选标的→因子→策略→模型→组合→执行）；report = 调研报告
-        "workflow": payload.get("workflow") or "",
-        # 团队讨论 / 评审的结论自动钉进上下文（默认开）
-        "auto_team_context": payload.get("auto_team_context", True) is not False,
-        "reports": [],
-        "start": payload.get("start"),
-        "end": payload.get("end"),
-        "max_rounds": int(payload.get("max_rounds") or 4),
-        # 权限模式：auto 自动 | manual 手动（改动与运行都先问）| accept_edits 自动接受代码改动、运行先问
-        # | plan 先出计划再动手 | bypass 跳过一切确认（含开始迭代前的目标检查）
-        "permission": payload.get("permission") or "auto",
-        # 完全权限（bypass）下仍要先审批的类别，研究者自选；见 platform_tools.APPROVAL_CATEGORIES
-        "approvals": list(payload.get("approvals") or DEFAULT_BYPASS_APPROVALS),
-        "bars_limit": int(payload.get("bars_limit") or 1500),
-        "data_source": payload.get("data_source") or "auto",  # auto | exchange | synthetic
-        "code": "",
-        "current_v": 0,
-        "versions": [],
-        "pins": [],
-        "status": "idle",  # idle | running | awaiting_user
-        "job": None,
-        "stop_requested": False,
-        "slug": None,  # 保存为平台策略后的 slug
-        "archived": False,
-        "compacted_before": 0,  # 序号 ≤ 它的对话已压缩成摘要（钉在上下文里），不再原文发给模型
-        "created_at": _now(),
-        "updated_at": _now(),
-    }
+# 存储与项目默认字段在 lab_state.py；_lock/_now 仍从这里兼容再导出。
 
 
 # ---------------------------------------------------------------------------
@@ -325,6 +136,20 @@ def goals_text(goals: dict[str, Any]) -> str:
 SWEEP_DEFAULT = (1.0, 1.5, 2.0, 3.0, 4.0, 6.0)
 SWEEP_WORKERS = 4
 SWEEP_METRICS = ("total_return", "excess_return", "sharpe", "max_drawdown", "trades", "win_rate", "total_fees")
+
+#: 参数热力图支持的目标指标：key -> (中文名, 前端格式, 是否越小越好)
+HEATMAP_METRICS: dict[str, tuple[str, str, bool]] = {
+    "sharpe": ("Sharpe", "ratio", False),
+    "total_return": ("总收益率", "pct_signed", False),
+    "annualized_return": ("年化收益", "pct_signed", False),
+    "excess_return": ("超额收益", "pct_signed", False),
+    "max_drawdown": ("最大回撤", "pct", True),
+    "calmar": ("Calmar", "ratio", False),
+    "sortino": ("Sortino", "ratio", False),
+    "win_rate": ("胜率", "pct", False),
+    "profit_factor": ("盈亏因子", "ratio", False),
+}
+PARAM_SCAN_MAX = 49
 
 
 def cost_fee_check(base: dict[str, Any] | None, stressed: dict[str, Any] | None, scale: float) -> dict[str, Any] | None:
@@ -566,7 +391,9 @@ class _Streamer:
         if self.seq is None:
             if not (self.text or self.thinking):
                 return
-            row = self.lab._post(self.pid, role="assistant", kind="text", content=_visible(self.text), mode="llm", data=data)
+            row = self.lab._post(
+                self.pid, role="assistant", kind="text", content=_visible(self.text), mode="llm", data=data
+            )
             self.seq = row["seq"]
         else:
             self.lab.store.update(self.pid, self.seq, content=_visible(self.text), data=data)
@@ -593,7 +420,12 @@ class _Streamer:
         self.dead = True
         if self.seq is not None:
             text = _visible(self.text).rstrip()
-            data = {"streaming": False, "stopped": True, "thinking": self.thinking[-6000:], "thinking_ms": self.thinking_ms}
+            data = {
+                "streaming": False,
+                "stopped": True,
+                "thinking": self.thinking[-6000:],
+                "thinking_ms": self.thinking_ms,
+            }
             self.lab.store.update(self.pid, self.seq, content=text, data=data)
             self.seq = None
 
@@ -608,6 +440,8 @@ QUOTA_MARKERS = ("配额已耗尽", "限额", "额度已用完")
 #: 每个对话的停止信号（进程内）：按下停止立刻置位，正在等模型输出的回合不必等到下一个检查点
 _STOP_EVENTS: dict[str, threading.Event] = {}
 _STOP_GUARD = threading.Lock()
+_ACTIVE_RUNS: set[str] = set()
+_RUNS_GUARD = threading.Lock()
 
 
 def stop_event(pid: str) -> threading.Event:
@@ -642,6 +476,8 @@ RUN_TOOLS = frozenset(
     {
         "run_backtest",
         "cost_sweep",
+        "parameter_heatmap",
+        "stress_test",
         "walk_forward",
         "stability_report",
         "evaluate_factor",
@@ -674,6 +510,11 @@ TOOL_CATEGORY: dict[str, str] = {
     "save_factor": "save",
     "save_model": "save",
     "run_stage": "run",
+    "calculator": "run",
+    "list_trades": "run",
+    "trade_breakdown": "run",
+    "schedule_task": "run",
+    "queue_night": "run",
 }
 #: 各权限模式下需要先审批的类别；bypass（完全权限）由研究者在项目里自选（approvals），默认只审批删除
 MODE_APPROVALS: dict[str, frozenset[str]] = {
@@ -703,23 +544,31 @@ TOOL_GUIDE = (
     "- set_goal / check_goals（/goal）：研究者给出达标要求时记下来；不达标时先看差距再改\n"
     "- start_autopilot（/auto）：已有目标、研究者要求连续自动改进时\n"
     "- 回测 / 评估工具（/backtest、/eval），run_backtest(cost_scale=N) 做 N 倍成本压力测试（/stress N），"
+    'run_backtest(execution_mode="tick", dynamic_slippage=True, impact_a_bps=2, impact_b_bps=8, '
+    "min_liquidity_usd=50000, limit_move_pct=0.1) 可切换逐笔撮合并模拟动态滑点、冲击成本、涨跌停与流动性枯竭；"
     "walk_forward 分段回测（/walkforward）：验证结果与稳健性\n"
     "- walk_forward 的 mode：sliced（一次全区间回测按时间切段，连续复利、可复原全区间收益，默认）/ "
     "independent（每段重置资金，只比较稳定性，不能复原全区间）；attribution 选交易按平仓 close 还是开仓 open 归段。"
     "结果里的 semantics 是口径说明，报告引用分段结果时必须照抄这些字段；data_role=development 的段已参与开发，"
     "不得称为样本外验证\n"
     "- stability_report：滚动窗口、收益分布、基准对照、参数敏感性；准备下结论或保存前做一次\n"
+    "- parameter_heatmap：二维网格参数扫描（默认围绕当前参数取 5×5），返回参数平原热力图；"
+    "研究者问「快慢均线怎么配」「参数是不是过拟合」或要调优时用。x_param / y_param 填 PARAMS 里的数值键，"
+    "x_values / y_values 可选；调用后对话流先显示进行中卡片，完成后原地更新为热力图，"
+    "需要引用同一份数据时再用 ql:parameter_heatmap\n"
     "- run_backtest(cost_scale=N) 返回 cost_audit：conclusion_allowed.cost_not_binding=false 时不得说「成本不是约束」，"
     "consistent=false 时报告必须写明「成本口径异常」\n"
     "- cost_sweep（/sweep）：并行跑多档成本倍数，找出不再满足目标的成本极限；策略接近达标、准备保存或上线前，"
     "或者研究者问「成本再高一点还行不行」时用。倍数按情况自己定（例如交易频繁时多测 1.2–2 倍之间）\n"
+    "- stress_test：一键过拟合压力测试，串联滚动分段、稳定性 / 参数敏感性、2× 与 3× 成本；"
+    "研究者问「会不会过拟合」「能不能上线」「帮我做压力测试」时优先用它，最后按 checks 逐项解释\n"
     "- convene_team（/team）：要一份快速的团队评审结论时；"
     "start_discussion（/discuss）：需要多个角色充分辩论、相互质疑时（发言以气泡显示在对话里，讨论在后台进行；"
     "之后用 discussion_status 查进度或等结论，不要说自己没法查看讨论状态）\n"
     "- list_conversations / read_conversation / send_to_conversation / create_conversation：跨对话协作——"
     "研究者提到「之前那个对话」「另一个因子研究」时先查找并阅读；需要另一个对话复现、补充或并行研究时直接调起它，"
     "或新建对话把子问题拆出去；引用别的对话的结论要注明出处\n"
-    "- queue_night（/night）：耗时长、可以无人值守的研究，放进夜班队列，结果写进晨报\n"
+    "- schedule_task（/schedule，旧别名 queue_night /night）：耗时长、可以无人值守的研究，加入每日定时任务队列，按设定时间自动执行，结果写进晨报\n"
     "- start_tuning / start_stress_drill / run_checkup 是后台任务：发起后不用反复查询，任务结束时平台会自动叫你回到这个对话汇报"
     "（消息以「【后台任务完成】」开头），那时直接给结论与下一步\n"
     "- share_to（/share）：研究者要把对话、回测、报告、策略发给某人 / 某个群 / 策略广场时；先用 list_members / list_groups 查对象；"
@@ -743,6 +592,7 @@ TOOL_GUIDE = (
     "不要为了调用而调用；调用了什么、结果如何，在回答里简短说明。"
 )
 
+CANCELLABLE_TOOLS = frozenset({"web_search", "fetch_page"})
 DEFAULT_MAX_TOOL_CALLS = 1000  # 单轮对话最多调用的工具次数（设置 → AI 研究室 可改）
 MAX_TOOL_CALLS_CAP = 5000
 TOOL_OUTPUT_BUDGET = 160_000  # 本回合工具输出累计超过这么多字时，较早的输出只保留摘要，防止撑爆上下文
@@ -776,8 +626,8 @@ WORKFLOWS: dict[str, dict[str, str]] = {
             "【研究类型：自动】研究者没有指定研究类型。先根据对话的实际内容判断要做什么，再调用对应的平台工具：\n"
             "- 闲聊、概念解释、平台用法、看行情 / 新闻：直接回答，需要时用 market_summary、web_search，不要写策略代码；\n"
             "- 交易规则与回测：写策略并回测（策略工具）；\n"
-            "- 找信号、因子有效性：用 run_stage(stage=\"factor\") 或因子相关的平台工具；\n"
-            "- 预测模型、组合权重、拆单执行：分别用 run_stage(stage=\"model\" / \"portfolio\" / \"execution\")；\n"
+            '- 找信号、因子有效性：用 run_stage(stage="factor") 或因子相关的平台工具；\n'
+            '- 预测模型、组合权重、拆单执行：分别用 run_stage(stage="model" / "portfolio" / "execution")；\n'
             "- 要调研报告：按调研流程收集资料，最后 write_report；多步任务先 set_plan；\n"
             "判断不了就用 ask_user 给 2-4 个选项让研究者选。回答开头用一句话说明你把这个问题当成了哪类研究、为什么。"
         ),
@@ -790,10 +640,10 @@ WORKFLOWS: dict[str, dict[str, str]] = {
             "2. 选标的：说明候选池与筛选依据（流动性、数据覆盖），数据不足先 sync_market_data；\n"
             "3. 因子：给出 3-10 个候选因子并说明经济含义，用 factor_correlation 检查多重共线性（相关系数 / VIF），"
             "对高度相关的因子做取舍、正交化或合成；\n"
-            "   因子阶段用 run_stage(stage=\"factor\") 交给因子研究室真正写表达式并做 IC / 分层 / 样本外评估；\n"
+            '   因子阶段用 run_stage(stage="factor") 交给因子研究室真正写表达式并做 IC / 分层 / 样本外评估；\n'
             "4. 策略：把通过检查的因子写成平台策略并回测（单变量迭代、样本外检查、2 倍成本）；\n"
-            "5. 模型 / 组合 / 执行**必须真正执行，不能只写说明**：依次调用 run_stage(stage=\"model\")、"
-            "run_stage(stage=\"portfolio\")、run_stage(stage=\"execution\")，brief 里写清这一阶段的输入（因子、标的、周期、"
+            '5. 模型 / 组合 / 执行**必须真正执行，不能只写说明**：依次调用 run_stage(stage="model")、'
+            'run_stage(stage="portfolio")、run_stage(stage="execution")，brief 里写清这一阶段的输入（因子、标的、周期、'
             "上一阶段的结论）与完成标准；每个阶段结束后读它返回的成绩与结论，再决定下一阶段；"
             "某阶段数据不足或不适用时，如实写原因并在计划里标记 skipped，不要假装完成；\n"
             "6. 最后用 write_report 写一份完整的研究报告，逐阶段引用各研究室的真实成绩。"
@@ -906,6 +756,8 @@ TOOL_PHASE = {
     "set_market": "设定标的",
     "ask_user": "提问",
     "cost_sweep": "成本压力扫描",
+    "parameter_heatmap": "参数热力图",
+    "stress_test": "过拟合压力测试",
     "set_plan": "列计划",
     "update_plan_step": "更新计划进度",
     "start_discussion": "团队讨论",
@@ -945,6 +797,10 @@ def _describe_call(name: str, args: dict[str, Any]) -> str:
         what = "召集团队讨论"
     elif name == "walk_forward":
         what = "做分段回测"
+    elif name == "stress_test":
+        what = "做过拟合压力测试"
+    elif name == "parameter_heatmap":
+        what = "跑参数热力图"
     else:
         scale = args.get("cost_scale")
         what = "运行回测 / 评估" + (f"（{scale}× 成本）" if scale and float(scale) != 1 else "")
@@ -981,6 +837,8 @@ class StrategyLab:
             pid, status="running", stop_requested=False, job={"kind": kind, "started_at": _now(), "phase": "准备中"}
         )
         stop_event(pid).clear()
+        with _RUNS_GUARD:
+            _ACTIVE_RUNS.add(pid)
 
         def body() -> None:
             final = "idle"
@@ -997,6 +855,8 @@ class StrategyLab:
                 self._pause_plan(pid)
                 self._post(pid, role="event", kind="error", content=f"本轮执行出错：{type(exc).__name__}: {exc}")
             finally:
+                with _RUNS_GUARD:
+                    _ACTIVE_RUNS.discard(pid)
                 cur = self.store.get(pid) or {}
                 status = "awaiting_user" if cur.get("status") == "awaiting_user" or keep_ask else final
                 self.store.patch(pid, status=status, job=None, stop_requested=False)
@@ -1008,7 +868,28 @@ class StrategyLab:
             threading.Thread(target=ctx.run, args=(body,), daemon=True, name=f"lab-{pid}").start()
         return self.store.get(pid) or {}
 
+    def recover_stale(self, pid: str) -> bool:
+        """服务重启后清理已经不存在执行线程的 running 项目，避免前端永远显示“运行中”。"""
+        project = self.store.get(pid)
+        if project is None or project.get("status") != "running":
+            return False
+        with _RUNS_GUARD:
+            if pid in _ACTIVE_RUNS:
+                return False
+        self.store.patch(pid, status="idle", job=None, stop_requested=False)
+        for m in self.store.messages(pid):
+            if m.get("kind") == "tool" and (m.get("data") or {}).get("status") == "running":
+                data = dict(m.get("data") or {})
+                data.update(status="stopped", error="服务重启，任务已中断")
+                self.store.update(pid, m["seq"], data=data)
+        self._post(pid, role="event", kind="text", content="上一轮任务在服务重启时被中断，已恢复为可继续对话。")
+        return True
+
     def _check_stop(self, pid: str) -> None:
+        with _RUNS_GUARD:
+            active = pid in _ACTIVE_RUNS
+        if not active:
+            self.recover_stale(pid)
         if stop_event(pid).is_set():
             raise StopRequested()
         cur = self.store.get(pid) or {}
@@ -1018,6 +899,10 @@ class StrategyLab:
     def request_stop(self, pid: str) -> None:
         """按下停止：进程内信号立刻生效（正在输出的模型调用马上中断），同时落库给其他检查点看。"""
         stop_event(pid).set()
+        with _RUNS_GUARD:
+            active = pid in _ACTIVE_RUNS
+        if not active and self.recover_stale(pid):
+            return
         self.store.patch(pid, stop_requested=True)
 
     def _interruptible(self, pid: str, fn: Callable[[], Any], stream: _Streamer | None = None) -> Any:
@@ -1031,7 +916,7 @@ class StrategyLab:
         def run() -> None:
             try:
                 box["result"] = fn()
-            except BaseException as exc:  # noqa: BLE001 - 原样交回主线程
+            except BaseException as exc:
                 box["error"] = exc
             finally:
                 done.set()
@@ -1126,7 +1011,16 @@ class StrategyLab:
         self._phase(pid, label, " · ".join(f"{k} {v}" for k, v in args.items() if v not in (None, ""))[:160])
         t0 = time.perf_counter()
         try:
-            out = fn()
+            out = self._interruptible(pid, fn) if name in CANCELLABLE_TOOLS else fn()
+            if name not in CANCELLABLE_TOOLS:
+                self._check_stop(pid)
+        except StopRequested:
+            self.store.update(
+                pid,
+                card["seq"],
+                data={"status": "stopped", "error": "已停止", "elapsed_ms": int((time.perf_counter() - t0) * 1000)},
+            )
+            raise
         except Exception as exc:
             self.store.update(
                 pid,
@@ -1143,19 +1037,51 @@ class StrategyLab:
         return out
 
     # ---------------- 平台回测 ----------------
-    def backtest_current(self, pid: str, *, cost_scale: float = 1.0, label: str = "") -> dict[str, Any]:
+    def backtest_current(
+        self,
+        pid: str,
+        *,
+        cost_scale: float = 1.0,
+        label: str = "",
+        execution_mode: str = "bar",
+        dynamic_slippage: bool = False,
+        vol_slippage: float = 0.25,
+        impact_a_bps: float = 0.0,
+        impact_b_bps: float = 0.0,
+        limit_move_pct: float = 0.0,
+        min_liquidity_usd: float = 0.0,
+    ) -> dict[str, Any]:
         project = self.store.get(pid) or {}
         code = project.get("code") or ""
         if not code:
             return {"ok": False, "error": "当前还没有代码"}
         v = project.get("current_v") or 0
         title = "平台回测" if cost_scale == 1.0 else f"压力回测（{cost_scale:g}× 成本）"
+        if execution_mode == "tick":
+            title += " · 逐笔撮合"
         out = self._tool(
             pid,
             "run_backtest",
             title,
-            {"版本": f"v{v}", "标的": ",".join(project["securities"]), "周期": project["timeframe"]},
-            lambda: self.tools.backtest(project, code, cost_scale=cost_scale, label=label or f"策略室 v{v}"),
+            {
+                "版本": f"v{v}",
+                "标的": ",".join(project["securities"]),
+                "周期": project["timeframe"],
+                "撮合": "逐笔" if execution_mode == "tick" else "bar",
+            },
+            lambda: self.tools.backtest(
+                project,
+                code,
+                cost_scale=cost_scale,
+                label=label or f"策略室 v{v}",
+                execution_mode=execution_mode,
+                dynamic_slippage=dynamic_slippage,
+                vol_slippage=vol_slippage,
+                impact_a_bps=impact_a_bps,
+                impact_b_bps=impact_b_bps,
+                limit_move_pct=limit_move_pct,
+                min_liquidity_usd=min_liquidity_usd,
+            ),
         )
         if not out.get("ok"):
             self._post(pid, role="event", kind="error", content=f"{title}没有完成：{out.get('error', '未知原因')}")
@@ -1223,6 +1149,7 @@ class StrategyLab:
     ) -> None:
         """记下当前版本看过哪段数据的结果；之后再改代码，这段就算「已参与开发」。"""
         if start is None or end is None:
+
             def ms(v: Any) -> int | None:
                 try:
                     return int(v)
@@ -1311,8 +1238,15 @@ class StrategyLab:
         bad = [r["scale"] for r in rows if (r.get("cost_audit") or {}).get("consistent") is False]
         if bad:
             summary += f"【成本口径异常】{'、'.join(f'{x:g}×' for x in bad)} 的扣费与倍数对不上，不能据此判断成本是否构成约束。"
-        result = {"ok": True, "v": v, "criterion": criterion, "rows": rows, "limit": limit, "summary": summary,
-                  "cost_consistent": not bad}
+        result = {
+            "ok": True,
+            "v": v,
+            "criterion": criterion,
+            "rows": rows,
+            "limit": limit,
+            "summary": summary,
+            "cost_consistent": not bad,
+        }
         self._post(pid, role="tool", kind="cost_sweep", content=summary, data=result)
         return result
 
@@ -1348,6 +1282,18 @@ class StrategyLab:
             nums = [float(x) for x in re.findall(r"\d+(?:\.\d+)?", rest)]
             self.cost_sweep(pid, nums or None)
             return
+        if head in ("/heatmap", "/热力图", "/参数热力图"):
+            names = [x for x in rest.split() if re.fullmatch(r"[A-Za-z_]\w*", x)]
+            self.parameter_heatmap(
+                pid,
+                x_param=names[0] if names else "",
+                y_param=names[1] if len(names) > 1 else "",
+            )
+            return
+        if head in ("/overfit", "/stresstest", "/过拟合", "/压力测试"):
+            nums = [int(float(x)) for x in re.findall(r"\d+(?:\.\d+)?", rest)]
+            self.stress_test(pid, segments=nums[0] if nums else 3)
+            return
         if head in ("/解释", "/explain"):
             self._explain(pid)
             return
@@ -1374,7 +1320,9 @@ class StrategyLab:
         except LLMError as exc:
             if any(k in str(exc) for k in QUOTA_MARKERS):
                 # 额度用完不是「模型暂时不可用」：不降级成模板回复，如实告诉研究者
-                self._post(pid, role="event", kind="error", content=f"模型额度已用完，本轮没有调用模型。{_short(str(exc))}")
+                self._post(
+                    pid, role="event", kind="error", content=f"模型额度已用完，本轮没有调用模型。{_short(str(exc))}"
+                )
                 return
             self._chat_fallback(pid, text, str(exc))
 
@@ -1396,6 +1344,9 @@ class StrategyLab:
         extra_rules.append(BLOCKS_GUIDE)
         if self.tools.platform_tools:
             extra_rules.append(self._platform_prompt(project, mode))
+        from . import platform_tools as PT
+
+        extra_rules.append(PT.capability_note())
         extra_rules.append(RIGOR_RULES)
         if (wf := WORKFLOWS.get(project.get("workflow") or "")) is not None:
             extra_rules.append(wf["rules"])
@@ -1565,7 +1516,11 @@ class StrategyLab:
 
                 FOLLOWUPS.watch(self, pid, _t.name, out)
                 FOLLOWUPS.seen(pid, _t.name, out)
-                if isinstance(out, dict) and out.get("run_id") and _t.name in ("start_tuning", "start_stress_drill", "run_checkup"):
+                if (
+                    isinstance(out, dict)
+                    and out.get("run_id")
+                    and _t.name in ("start_tuning", "start_stress_drill", "run_checkup")
+                ):
                     out = {**out, "followup": "任务完成后平台会自动叫你回到这个对话汇报结果，不需要反复查询"}
                 return out
 
@@ -1645,6 +1600,8 @@ class StrategyLab:
         parent = self.store.get(pid) or {}
         if parent.get("subagent_of"):
             return {"ok": False, "error": "子 Agent 不能再分派阶段"}
+        if parent.get("market_auto") or not parent.get("securities"):
+            return {"ok": False, "error": "请先设置标的与周期，再分派因子 / 模型 / 组合 / 执行阶段"}
         names = {"factor": "因子", "model": "模型", "portfolio": "组合", "execution": "执行"}
         payload = {
             "idea": brief[:2000],
@@ -1715,7 +1672,11 @@ class StrategyLab:
             "title": cp.get("title"),
             "v": cp.get("current_v"),
             "passed": (cur.get("evaluation") or {}).get("passed"),
-            "metrics": {k: v for k, v in (cur.get("metrics") or cur.get("summary") or {}).items() if not isinstance(v, (list, dict))},
+            "metrics": {
+                k: v
+                for k, v in (cur.get("metrics") or cur.get("summary") or {}).items()
+                if not isinstance(v, (list, dict))
+            },
             "summary": last[-800:],
         }
         self.store.update(pid, card["seq"], data={"children": [row], "status": "done"})
@@ -1733,267 +1694,9 @@ class StrategyLab:
         return bool(auto)
 
     def _chat_tools(self, pid: str) -> dict[str, Tool]:
-        def market(symbol: str = "", timeframe: str = "") -> Any:
-            p = self.store.get(pid) or {}
-            sym = symbol or p["securities"][0]
-            tf = timeframe or p["timeframe"]
-            n = int(p.get("bars_limit") or 1500)  # 与回测同一个窗口
-            return self._tool(
-                pid,
-                "get_market_summary",
-                "查看行情摘要",
-                {"标的": sym, "周期": tf, "K 线": n},
-                lambda: _call_market(self.tools.market, sym, tf, n),
-            )
+        from .lab_tools import chat_tools
 
-        def templates(query: str = "") -> Any:
-            return self._tool(
-                pid,
-                "search_templates",
-                "搜索策略模板",
-                {"关键词": query or "全部"},
-                lambda: [{k: t.get(k) for k in ("name", "label", "description")} for t in self.tools.templates(query)][
-                    :8
-                ],
-            )
-
-        def write(
-            code: str = "", note: str = "", hypothesis: str = "", change_type: str = "", expected: str = ""
-        ) -> Any:
-            experiment = {
-                k: v.strip()[:300]
-                for k, v in {"hypothesis": hypothesis, "change_type": change_type, "expected": expected}.items()
-                if isinstance(v, str) and v.strip()
-            }
-            out = self._submit_code(pid, code, note=note or "模型提交", model="", experiment=experiment)
-            p = self.store.get(pid) or {}
-            if out.get("ok") and int(p.get("current_v") or 0) > 1 and not experiment.get("hypothesis"):
-                out["reminder"] = (
-                    "这一版没有写 hypothesis / change_type / expected：按研究纪律补充说明，并确认只改了一类变量"
-                )
-            return out
-
-        def backtest(cost_scale: float = 1.0) -> Any:
-            out = self.backtest_current(pid, cost_scale=float(cost_scale or 1.0))
-            if not out.get("ok"):
-                return {"ok": False, "error": out.get("error")}
-            return {
-                "ok": True,
-                "metrics": out.get("metrics"),
-                "evaluation": out.get("evaluation"),
-                "data_check": out.get("data_check"),
-                "definitions": out.get("definitions"),
-                "consistency": out.get("consistency"),
-                "zero_trade_diagnosis": out.get("zero_trade_diagnosis"),
-                "experiment": out.get("experiment"),
-                "warnings": out.get("warnings"),
-                "errors": out.get("errors"),
-            }
-
-        def versions() -> Any:
-            p = self.store.get(pid) or {}
-            return [
-                {
-                    "v": r["v"],
-                    "note": r["note"],
-                    "source": r["source"],
-                    "metrics": {
-                        k: (r.get("metrics") or {}).get(k)
-                        for k in ("sharpe", "max_drawdown", "trades", "total_return", "excess_return")
-                    },
-                    "passed": (r.get("evaluation") or {}).get("passed"),
-                }
-                for r in p.get("versions") or []
-            ]
-
-        def set_goal(**kw: Any) -> Any:
-            out = self.set_goal(pid, kw, source="model")
-            return {
-                "ok": True,
-                "goal": out["spec"],
-                "check": {k: out["check"][k] for k in ("verdict", "issues", "summary")},
-            }
-
-        def check_goals() -> Any:
-            p = self.store.get(pid) or {}
-            items = G.project_items(p)
-            ev = _latest_eval(p)
-            spec = G.project_spec(p)
-            return {
-                "goal": G.items_text(items) if project_has_goal(p) else goal_line(p),
-                "goal_set": project_has_goal(p),
-                "range": _range_text(spec),
-                "latest": ev and {"passed": ev["passed"], "items": ev["items"], "gaps": G.gap_report(ev)},
-                "reasonableness": G.check_spec(spec, history=_history_metrics(p)),
-            }
-
-        def walk_forward(segments: int = 3, mode: str = "sliced", attribution: str = "close") -> Any:
-            return self.walk_forward(pid, segments=int(segments or 3), mode=mode, attribution=attribution)
-
-        def stability(windows: int = 6, sensitivity: bool = True) -> Any:
-            return self.stability(pid, windows=int(windows or 6), sensitivity=bool(sensitivity))
-
-        def team(topic: str = "", team_id: str = "") -> Any:
-            return self._convene(pid, topic or "评审当前策略", team_id=team_id or None)
-
-        def ask(question: str = "", options: list[str] | None = None) -> Any:
-            self._ask(pid, question or "你对当前结果满意吗？", options)
-            return {"ok": True, "note": "已向研究者提问，本轮结束"}
-
-        obj = {"type": "object"}
-        shared = self._shared_tools(pid)
-        return {
-            **shared,
-            "get_market_summary": Tool(
-                "get_market_summary",
-                "查看标的行情摘要（价格、波动、区间、数据来源）",
-                {**obj, "properties": {"symbol": {"type": "string"}, "timeframe": {"type": "string"}}},
-                market,
-            ),
-            "search_templates": Tool(
-                "search_templates",
-                "按关键词搜索平台内置策略模板",
-                {**obj, "properties": {"query": {"type": "string"}}},
-                templates,
-            ),
-            "write_strategy": Tool(
-                "write_strategy",
-                "提交一版完整的平台 SDK 策略代码，平台会做沙箱检查与试跑",
-                {
-                    **obj,
-                    "properties": {
-                        "code": {"type": "string", "description": "完整 Python 代码"},
-                        "note": {"type": "string", "description": "这一版改了什么（代码差异的一句话摘要）"},
-                        "hypothesis": {"type": "string", "description": "修改假设：为什么这样改会更好"},
-                        "change_type": {
-                            "type": "string",
-                            "enum": ["initial", "entry", "exit", "filter", "risk", "params", "other"],
-                            "description": "这一版只改了哪一类变量（一次只改一类）",
-                        },
-                        "expected": {"type": "string", "description": "预期影响，例如“交易数减少约一半、回撤下降”"},
-                    },
-                    "required": ["code"],
-                },
-                write,
-            ),
-            "run_backtest": Tool(
-                "run_backtest",
-                "用平台真实回测跑当前代码；cost_scale=2 表示 2 倍成本压力测试。"
-                "返回指标、data_check（数据核验，formal=false 为非正式回测）、definitions（指标口径）、"
-                "consistency（指标一致性）、zero_trade_diagnosis（零交易诊断）",
-                {**obj, "properties": {"cost_scale": {"type": "number"}}},
-                backtest,
-            ),
-            "cost_sweep": Tool(
-                "cost_sweep",
-                "成本压力扫描（等同 /sweep）：并行跑多档成本倍数（手续费、价差、滑点一起放大）的回测，"
-                "找出策略不再满足目标（没设目标时为总收益转负）的成本极限，并核对各档手续费是否按倍数放大。"
-                "scales 不填默认 1、1.5、2、3、4、6 倍；找到区间后会自动在区间内再细分。只展示，不改版本成绩",
-                {
-                    **obj,
-                    "properties": {
-                        "scales": {
-                            "type": "array",
-                            "items": {"type": "number"},
-                            "description": "成本倍数列表，0.5–20，最多 8 个",
-                        }
-                    },
-                },
-                lambda scales=None: self.cost_sweep(pid, scales),
-            ),
-            "list_versions": Tool(
-                "list_versions", "列出本项目历次版本及其回测成绩", {**obj, "properties": {}}, versions
-            ),
-            "set_goal": Tool(
-                "set_goal",
-                "设定或修改本项目的目标：指标条件（must 必达 / try 尽量）与回测范围。"
-                "比例用小数（回撤 0.2 = 20%）；只传要改的字段。设定后平台会做合理性检查并返回建议",
-                {
-                    **obj,
-                    "properties": {
-                        "items": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "metric": {"type": "string", "enum": list(G.METRICS)},
-                                    "op": {"type": "string", "enum": [">=", "<="]},
-                                    "target": {"type": "number"},
-                                    "priority": {"type": "string", "enum": ["must", "try"]},
-                                },
-                                "required": ["metric", "target"],
-                            },
-                        },
-                        "symbols": {"type": "array", "items": {"type": "string"}},
-                        "timeframe": {"type": "string", "enum": list(G.TIMEFRAMES)},
-                        "start": {"type": "string", "description": "YYYY-MM-DD，可空"},
-                        "end": {"type": "string", "description": "YYYY-MM-DD，可空"},
-                        "max_rounds": {"type": "integer"},
-                    },
-                },
-                set_goal,
-            ),
-            "check_goals": Tool(
-                "check_goals",
-                "查看当前目标、最近一次回测与每个条件的差距，以及目标是否合理",
-                {**obj, "properties": {}},
-                check_goals,
-            ),
-            "walk_forward": Tool(
-                "walk_forward",
-                "分段回测：把回测区间切成几段，检查策略是否只在某一段有效。返回 semantics（是否连续复利、是否重置资金、"
-                "跨段持仓、交易归段方式、能否复原全区间收益）、reconcile（复原核对）与每段的 data_role（是否已参与开发）",
-                {
-                    **obj,
-                    "properties": {
-                        "segments": {"type": "integer", "minimum": 2, "maximum": 6},
-                        "mode": {
-                            "type": "string",
-                            "enum": ["sliced", "independent"],
-                            "description": "sliced 连续切片（默认）；independent 每段重置资金单独回测",
-                        },
-                        "attribution": {
-                            "type": "string",
-                            "enum": ["close", "open"],
-                            "description": "完整交易按平仓（默认）还是开仓时间归段，只对 sliced 生效",
-                        },
-                    },
-                },
-                walk_forward,
-            ),
-            "stability_report": Tool(
-                "stability_report",
-                "稳定性报告：滚动窗口收益 / 夏普 / 超额、收益分布（偏度、峰度、分位数、极端收益占比）、基准对照，"
-                "以及参数上下挪 20% 的敏感性（并行回测）。下结论或保存前做一次",
-                {
-                    **obj,
-                    "properties": {
-                        "windows": {"type": "integer", "minimum": 3, "maximum": 12},
-                        "sensitivity": {"type": "boolean", "description": "是否做参数敏感性（多跑若干次回测）"},
-                    },
-                },
-                stability,
-            ),
-            "convene_team": Tool(
-                "convene_team",
-                "召集 Agent 团队对当前策略开评审会，返回团队结论",
-                {**obj, "properties": {"topic": {"type": "string"}, "team_id": {"type": "string"}}},
-                team,
-            ),
-            "ask_user": Tool(
-                "ask_user",
-                "向研究者提问并结束本轮，options 为可点选的简短选项",
-                {
-                    **obj,
-                    "properties": {
-                        "question": {"type": "string"},
-                        "options": {"type": "array", "items": {"type": "string"}},
-                    },
-                    "required": ["question"],
-                },
-                ask,
-            ),
-        }
+        return chat_tools(self, pid)
 
     # ---------------- 跨对话：像研究者一样查找、阅读、调起其他对话 ----------------
     #: 对话之间互相转发的最大跳数：A→B→C→D 之后不再转发，防止两个 Agent 来回喊话停不下来
@@ -2004,227 +1707,15 @@ class StrategyLab:
         return int(((last or {}).get("data") or {}).get("relay_hops") or 0)
 
     def _conversation_tools(self, pid: str, obj: dict[str, Any]) -> dict[str, Tool]:
-        conv = self.tools.conversations
+        from .lab_tools import conversation_tools
 
-        def visible(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-            # 只看研究者有权看到的对话（协作空间里别人的私有对话不可见）
-            return conv["visible"](rows) if conv and conv.get("visible") else rows
-
-        def find(cid: str) -> dict[str, Any] | None:
-            p = self.store.get(cid)
-            return p if p is not None and visible([p]) else None
-
-        def brief(p: dict[str, Any]) -> dict[str, Any]:
-            last = next(
-                (m for m in reversed(self.store.messages(p["id"])) if m.get("role") == "assistant" and m.get("content")),
-                None,
-            )
-            return {
-                "id": p["id"],
-                "title": p.get("title"),
-                "kind": p.get("kind") or "strategy",
-                "status": p.get("status"),
-                "folder": p.get("folder") or "",
-                "securities": p.get("securities"),
-                "timeframe": p.get("timeframe"),
-                "versions": len(p.get("versions") or []),
-                "updated_at": p.get("updated_at"),
-                "current": p["id"] == pid,
-                "last_reply": " ".join((last or {}).get("content", "").split())[:200],
-            }
-
-        def list_conversations(query: str = "", kind: str = "", limit: int = 20, search_messages: bool = False) -> Any:
-            q = (query or "").strip().lower()
-            rows = [p for p in visible(self.store.list()) if not p.get("archived") and (not kind or (p.get("kind") or "strategy") == kind)]
-            hits = []
-            for p in rows:
-                text = f"{p.get('title') or ''} {p.get('idea') or ''} {p.get('folder') or ''}".lower()
-                matched = not q or q in text
-                snippet = ""
-                if q and not matched and search_messages:
-                    for m in self.store.messages(p["id"]):
-                        c = str(m.get("content") or "")
-                        i = c.lower().find(q)
-                        if i >= 0:
-                            matched, snippet = True, c[max(0, i - 60) : i + 120]
-                            break
-                if matched:
-                    hits.append({**brief(p), **({"match": snippet} if snippet else {})})
-            hits.sort(key=lambda x: x.get("updated_at") or 0, reverse=True)
-            return {"total": len(hits), "conversations": hits[: max(1, min(int(limit or 20), 50))]}
-
-        def read_conversation(conversation_id: str, last_n: int = 20) -> Any:
-            p = find(conversation_id)
-            if p is None:
-                return {"ok": False, "error": f"找不到对话 {conversation_id}，先用 list_conversations 查找"}
-            msgs = [
-                {
-                    "seq": m.get("seq"),
-                    "role": m.get("role"),
-                    "kind": m.get("kind"),
-                    "content": str(m.get("content") or "")[:1200],
-                }
-                for m in self.store.messages(conversation_id)
-                if m.get("kind") in ("text", "ask", "team", "backtest", "round", "error") and m.get("content")
-            ][-max(1, min(int(last_n or 20), 60)) :]
-            return {
-                "ok": True,
-                **brief(p),
-                "idea": (p.get("idea") or "")[:600],
-                "goal": goal_line(p),
-                "latest_metrics": _latest_metrics(p),
-                "messages": msgs,
-                "link": f"#/lab/{conversation_id}",
-            }
-
-        def send_to_conversation(conversation_id: str, message: str, wait_seconds: int = 0) -> Any:
-            if conv is None:
-                return {"ok": False, "error": "当前环境不能调起其他对话"}
-            if conversation_id == pid:
-                return {"ok": False, "error": "不能给自己发消息"}
-            target = find(conversation_id)
-            if target is None:
-                return {"ok": False, "error": f"找不到对话 {conversation_id}"}
-            if target.get("status") == "running":
-                return {"ok": False, "error": "那个对话正在运行，稍后再试，或先 read_conversation 看它在做什么"}
-            hops = self._relay_hops(pid) + 1
-            if hops > self.MAX_RELAY_HOPS:
-                return {"ok": False, "error": f"对话之间已经转发了 {hops - 1} 次，为避免来回喊话不再继续转发；请在本对话里直接回答"}
-            here = self.store.get(pid) or {}
-            text = (message or "").strip()[:4000]
-            if not text:
-                return {"ok": False, "error": "message 不能为空"}
-            self.store.append(
-                conversation_id,
-                {
-                    "role": "user",
-                    "kind": "text",
-                    "content": f"【来自对话「{here.get('title') or pid}」的 Agent】{text}",
-                    "data": {"from_conversation": pid, "from_title": here.get("title"), "relay_hops": hops},
-                },
-            )
-            conv["start"](conversation_id, text)
-            self._post(
-                pid,
-                role="event",
-                kind="text",
-                content=f"已把消息发到对话「{target.get('title')}」，它在后台开始处理",
-                data={"link": f"lab/{conversation_id}"},
-            )
-            out: dict[str, Any] = {"ok": True, "conversation_id": conversation_id, "link": f"#/lab/{conversation_id}"}
-            deadline = time.time() + max(0, min(int(wait_seconds or 0), 180))
-            if deadline > time.time():
-                seq0 = max((m.get("seq") or 0) for m in self.store.messages(conversation_id))
-                time.sleep(1.0)
-                while time.time() < deadline and (self.store.get(conversation_id) or {}).get("status") == "running":
-                    self._check_stop(pid)
-                    time.sleep(1.5)
-                reply = [
-                    m for m in self.store.messages(conversation_id)
-                    if (m.get("seq") or 0) > seq0 and m.get("role") == "assistant" and m.get("content")
-                ]
-                out["finished"] = (self.store.get(conversation_id) or {}).get("status") != "running"
-                out["reply"] = reply[-1]["content"][:3000] if reply else ""
-            else:
-                out["note"] = "对方在后台处理；需要结果时用 read_conversation 查看，或 wait_seconds>0 等它回复"
-            return out
-
-        def create_conversation(idea: str, kind: str = "strategy", message: str = "", workflow: str = "") -> Any:
-            if conv is None:
-                return {"ok": False, "error": "当前环境不能新建对话"}
-            here = self.store.get(pid) or {}
-            p = conv["create"](
-                {
-                    "kind": kind if kind in ("strategy", "factor", "model", "portfolio", "execution") else "strategy",
-                    "idea": (idea or "").strip()[:600],
-                    "workflow": workflow if workflow in ("", "auto", "pipeline", "report") else "",
-                    "folder": here.get("folder") or "",
-                    "market_auto": True,
-                    "model": here.get("model") or "",
-                }
-            )
-            cid = p["id"]
-            first = (message or "").strip()
-            self._post(pid, role="event", kind="text", content=f"已新建对话「{p.get('title')}」", data={"link": f"lab/{cid}"})
-            if first:
-                return {**send_to_conversation(cid, first), "created": True}
-            return {"ok": True, "conversation_id": cid, "title": p.get("title"), "link": f"#/lab/{cid}"}
-
-        return {
-            "list_conversations": Tool(
-                "list_conversations",
-                "查找研究者的其他对话（AI 研究室里的全部对话）：按关键词匹配标题 / 想法 / 文件夹，"
-                "search_messages=true 时连消息正文一起搜；返回 id、类型、状态、版本数、最后一条回复摘要",
-                {
-                    **obj,
-                    "properties": {
-                        "query": {"type": "string"},
-                        "kind": {"type": "string", "enum": ["", "strategy", "factor", "model", "portfolio", "execution"]},
-                        "limit": {"type": "integer", "minimum": 1, "maximum": 50},
-                        "search_messages": {"type": "boolean"},
-                    },
-                },
-                list_conversations,
-            ),
-            "read_conversation": Tool(
-                "read_conversation",
-                "阅读另一个对话：项目信息、目标、最近成绩与最近 last_n 条消息。引用其中的结论时注明来自哪个对话",
-                {
-                    **obj,
-                    "properties": {"conversation_id": {"type": "string"}, "last_n": {"type": "integer", "minimum": 1, "maximum": 60}},
-                    "required": ["conversation_id"],
-                },
-                read_conversation,
-            ),
-            "send_to_conversation": Tool(
-                "send_to_conversation",
-                "调起另一个对话：把一条消息发过去，让那个对话的 Agent 在后台处理（例如请因子对话验证一个想法、"
-                "让另一个策略对话用同一数据复现结果）。wait_seconds>0（≤180）时等它回复并带回结果",
-                {
-                    **obj,
-                    "properties": {
-                        "conversation_id": {"type": "string"},
-                        "message": {"type": "string"},
-                        "wait_seconds": {"type": "integer", "minimum": 0, "maximum": 180},
-                    },
-                    "required": ["conversation_id", "message"],
-                },
-                send_to_conversation,
-            ),
-            "create_conversation": Tool(
-                "create_conversation",
-                "新建一个对话（可选研究类型），可附第一条消息让它立即开始；适合把一个子问题拆出去单独研究",
-                {
-                    **obj,
-                    "properties": {
-                        "idea": {"type": "string"},
-                        "kind": {"type": "string", "enum": ["strategy", "factor", "model", "portfolio", "execution"]},
-                        "message": {"type": "string"},
-                        "workflow": {"type": "string", "enum": ["", "auto", "pipeline", "report"]},
-                    },
-                    "required": ["idea"],
-                },
-                create_conversation,
-            ),
-        }
+        return conversation_tools(self, pid, obj)
 
     # ---------------- 共享工具：站内搜索 / 联网搜索 / 网页抓取 ----------------
     def _shared_tools(self, pid: str) -> dict[str, Tool]:
-        reg = self.tools.registry
-        if reg is None:
-            return {}
-        out: dict[str, Tool] = {}
-        for name in SHARED_TOOLS:
-            spec = reg.spec(name)
-            if spec is None or not spec.get("parameters"):
-                continue
+        from .lab_tools import shared_tools
 
-            def handler(_name: str = name, _spec: dict = spec, **kw: Any) -> Any:
-                shown = {k: str(v)[:60] for k, v in kw.items() if v not in (None, "")}
-                return self._tool(pid, _name, _spec.get("label") or _name, shown, lambda: _spec["handler"](**kw))
-
-            out[name] = Tool(name, spec["description"], spec["parameters"], handler)
-        return out
+        return shared_tools(self, pid)
 
     # ---------------- 目标 ----------------
     def set_goal(self, pid: str, raw: dict[str, Any], *, source: str = "user", review: bool = False) -> dict[str, Any]:
@@ -2351,10 +1842,14 @@ class StrategyLab:
                 )
             cur = next((r for r in project.get("versions") or [] if r.get("v") == project.get("current_v")), {}) or {}
             full_metrics = cur.get("metrics") or {}
-            recon = BA.reconcile(rows, full_metrics, "independent") if full_metrics else {
-                "reconstructs": False,
-                "issues": ["独立分段口径：各段收益不能复原全区间收益"],
-            }
+            recon = (
+                BA.reconcile(rows, full_metrics, "independent")
+                if full_metrics
+                else {
+                    "reconstructs": False,
+                    "issues": ["独立分段口径：各段收益不能复原全区间收益"],
+                }
+            )
         rows = BA.tag_development(project, rows)
         good = [r for r in rows if r["ok"] and ((r.get("metrics") or {}).get("total_return") or 0) > 0]
         verdict = "稳定" if len(good) == len(rows) else ("部分有效" if good else "各段都不赚钱")
@@ -2421,8 +1916,15 @@ class StrategyLab:
                         return {"param": k, "value": val, "error": str(exc)[:120]}
                     out = self.tools.backtest(project, variant, cost_scale=1.0, label=f"敏感性 {k}={val}")
                     m = out.get("metrics") or {}
-                    return {"param": k, "value": val, "ok": bool(out.get("ok")), "sharpe": m.get("sharpe"),
-                            "total_return": m.get("total_return"), "max_drawdown": m.get("max_drawdown"), "trades": m.get("trades")}
+                    return {
+                        "param": k,
+                        "value": val,
+                        "ok": bool(out.get("ok")),
+                        "sharpe": m.get("sharpe"),
+                        "total_return": m.get("total_return"),
+                        "max_drawdown": m.get("max_drawdown"),
+                        "trades": m.get("trades"),
+                    }
 
                 runs = self._parallel(pid, one, [float(i) for i in range(len(grid))])
                 base = (full.get("metrics") or {}).get("sharpe")
@@ -2439,6 +1941,448 @@ class StrategyLab:
             data=rep,
         )
         return rep
+
+    def parameter_heatmap(
+        self,
+        pid: str,
+        *,
+        x_param: str = "",
+        y_param: str = "",
+        x_values: list[Any] | None = None,
+        y_values: list[Any] | None = None,
+        metric: str = "sharpe",
+    ) -> dict[str, Any]:
+        """二维网格参数扫描：并行回测 x × y 组合，返回可直接渲染的热力图数据。"""
+        project = self.store.get(pid) or {}
+        code = project.get("code") or ""
+        if not code:
+            return {"ok": False, "error": "当前还没有代码"}
+        try:
+            params = declared_params(code)
+        except Exception as exc:
+            return {"ok": False, "error": f"读取 PARAMS 失败：{exc}"}
+        numeric = {
+            k: v
+            for k, v in params.items()
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(float(v))
+        }
+        if len(numeric) < 2:
+            return {"ok": False, "error": "策略至少需要两个数值型 PARAMS 才能画二维参数热力图"}
+        x_name = x_param or ("fast" if "fast" in numeric else next(iter(numeric)))
+        remaining = [k for k in numeric if k != x_name]
+        y_name = y_param or ("slow" if "slow" in remaining else (remaining[0] if remaining else ""))
+        if x_name == y_name or x_name not in numeric or y_name not in numeric:
+            return {"ok": False, "error": f"x_param / y_param 必须是两个不同的数值参数（当前：{x_name}, {y_name}）"}
+        metric = metric if metric in HEATMAP_METRICS else "sharpe"
+
+        def around(value: float, is_int: bool) -> list[Any]:
+            if is_int:
+                base = max(1, round(value))
+                step = max(1, round(base * 0.15))
+                vals = [max(1, base + i * step) for i in (-2, -1, 0, 1, 2)]
+            else:
+                step = abs(float(value)) * 0.2 or 0.05
+                vals = [round(float(value) + i * step, 6) for i in (-2, -1, 0, 1, 2)]
+            return list(dict.fromkeys(vals))
+
+        def normalize(raw: list[Any] | None, sample: float, is_int: bool) -> list[Any]:
+            vals = raw if raw else around(float(sample), is_int)
+            out: list[Any] = []
+            for v in vals[:8]:
+                try:
+                    n = float(v)
+                except (TypeError, ValueError):
+                    continue
+                if not math.isfinite(n):
+                    continue
+                out.append(round(n) if is_int else round(n, 6))
+            out = list(dict.fromkeys(out))
+            if len(out) > 7:
+                idx = [round(i * (len(out) - 1) / 6) for i in range(7)]
+                out = [out[i] for i in dict.fromkeys(idx)]
+            return out
+
+        x_is_int = isinstance(numeric[x_name], int)
+        y_is_int = isinstance(numeric[y_name], int)
+        xs = normalize(x_values, float(numeric[x_name]), x_is_int)
+        ys = normalize(y_values, float(numeric[y_name]), y_is_int)
+        if len(xs) < 2 or len(ys) < 2:
+            return {"ok": False, "error": "每个轴至少需要两个不同取值"}
+        if len(xs) * len(ys) > PARAM_SCAN_MAX:
+            return {"ok": False, "error": f"组合数 {len(xs) * len(ys)} 超过上限 {PARAM_SCAN_MAX}，请减少候选值"}
+        combos = [(x, y) for y in ys for x in xs]
+        label, fmt, lower_better = HEATMAP_METRICS[metric]
+        title = f"{x_name} × {y_name} 参数敏感度"
+        # 先落一张“进行中”的卡片：Agent 主动调用后研究者立刻能看到网格规模与轴，
+        # 不需要等几十组回测全部跑完才出现内容。
+        card = self._post(
+            pid,
+            role="tool",
+            kind="parameter_heatmap",
+            content=f"{title}：准备中",
+            data={
+                "status": "running",
+                "title": title,
+                "x_param": x_name,
+                "y_param": y_name,
+                "x": xs,
+                "y": ys,
+                "metric": metric,
+                "metric_label": label,
+                "format": fmt,
+                "total": len(combos),
+            },
+        )
+        self._phase(pid, f"参数热力图 · {len(combos)} 组并行", f"{x_name} × {y_name} · {label}")
+
+        def one(i: float) -> dict[str, Any]:
+            xv, yv = combos[int(i)]
+            try:
+                variant = rewrite_params(code, {x_name: xv, y_name: yv})
+            except Exception as exc:
+                return {"x": xv, "y": yv, "ok": False, "error": str(exc)[:120]}
+            out = self.tools.backtest(project, variant, cost_scale=1.0, label=f"参数扫描 {x_name}={xv} {y_name}={yv}")
+            m = out.get("metrics") or {}
+            return {
+                "x": xv,
+                "y": yv,
+                "ok": bool(out.get("ok")),
+                "error": (out.get("error") or "")[:120] if not out.get("ok") else "",
+                "value": m.get(metric),
+                "total_return": m.get("total_return"),
+                "max_drawdown": m.get("max_drawdown"),
+                "trades": m.get("trades"),
+                "bt_id": out.get("bt_id"),
+            }
+
+        try:
+            runs = self._parallel(pid, one, [float(i) for i in range(len(combos))])
+        except Exception as exc:
+            msg = f"{title} 执行失败：{type(exc).__name__}: {exc}"
+            self.store.update(pid, card["seq"], content=msg, data={"status": "error", "error": str(exc)[:300]})
+            return {"ok": False, "error": msg}
+        by_key = {(r.get("x"), r.get("y")): r for r in runs}
+        z: list[list[float | None]] = []
+        for y in ys:
+            z.append([(by_key.get((x, y)) or {}).get("value") for x in xs])
+        scored: list[tuple[float, int, int, float]] = []
+        for yi, row in enumerate(z):
+            for xi, v in enumerate(row):
+                if isinstance(v, (int, float)) and math.isfinite(float(v)):
+                    quality = -float(v) if lower_better else float(v)
+                    scored.append((quality, yi, xi, float(v)))
+        best = None
+        robustness: dict[str, Any] = {"verdict": "unavailable", "note": "没有可用的扫描结果"}
+        if scored:
+            quality, by, bx, bv = max(scored, key=lambda t: t[0])
+            best = {"x": xs[bx], "y": ys[by], "value": bv}
+            neighbor = [
+                z[by + dy][bx + dx]
+                for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1))
+                if 0 <= by + dy < len(ys) and 0 <= bx + dx < len(xs) and isinstance(z[by + dy][bx + dx], (int, float))
+            ]
+            quality_of = lambda v: -float(v) if lower_better else float(v)  # noqa: E731
+            neigh_q = sum(quality_of(v) for v in neighbor) / len(neighbor) if neighbor else quality
+            neigh_raw = sum(float(v) for v in neighbor) / len(neighbor) if neighbor else bv
+            all_q = [
+                quality_of(v) for row_ in z for v in row_ if isinstance(v, (int, float)) and math.isfinite(float(v))
+            ]
+            # 与最佳值相差不超过 20% 的格点占比：越高越像连续平原
+            live = [q for q in all_q if math.isfinite(q)]
+            if live and abs(quality) > 1e-12:
+                near = sum(1 for q in live if q >= quality - 0.2 * abs(quality))
+                share = near / len(live)
+            else:
+                share = 0.0
+            drop = 1.0 - (neigh_q / quality) if abs(quality) > 1e-12 else 1.0
+            if share >= 0.35 and drop <= 0.25:
+                verdict = "plateau"
+                note = f"{share:.0%} 的格点与最佳值相差不超过 20%，邻域表现接近，更像连续平原而不是孤岛尖峰"
+            elif drop >= 0.45 or share < 0.15:
+                verdict = "spike"
+                note = (
+                    f"最佳点邻域明显变差（邻域均值约为最佳的 {max(0.0, 1 - drop):.0%}），更像孤岛尖峰，存在过拟合风险"
+                )
+            else:
+                verdict = "mixed"
+                note = f"{share:.0%} 的格点接近最佳值，邻域均值约为最佳的 {max(0.0, 1 - drop):.0%}，稳健性一般"
+            robustness = {
+                "verdict": verdict,
+                "note": note,
+                "best_value": bv,
+                "neighbor_mean": round(neigh_raw, 6),
+                "plateau_share": round(share, 3),
+            }
+        data = {
+            "title": title,
+            "x_param": x_name,
+            "y_param": y_name,
+            "x": xs,
+            "y": ys,
+            "z": z,
+            "metric": metric,
+            "metric_label": label,
+            "format": fmt,
+            "best": best,
+            "robustness": robustness,
+            "runs": runs,
+            "evidence": "measured",
+            "source": {"label": f"{len(combos)} 组平台回测 · {x_name} × {y_name}"},
+            "status": "done",
+        }
+        summary = (
+            f"{title}：{label} 最佳 {x_name}={best['x']}、{y_name}={best['y']}" if best else f"{title}：没有可用结果"
+        )
+        self.store.update(pid, card["seq"], content=summary, data=data)
+        # 工具返回值只给模型紧凑版：完整卡片已经落进对话流，runs 不需要再回灌一遍，
+        # 否则 49 组网格很容易超过工具输出上限，反而让模型收到被截断的 JSON。
+        compact = {
+            k: data[k]
+            for k in (
+                "title",
+                "x_param",
+                "y_param",
+                "x",
+                "y",
+                "z",
+                "metric",
+                "metric_label",
+                "format",
+                "best",
+                "robustness",
+                "status",
+                "evidence",
+                "source",
+            )
+        }
+        return {
+            "ok": True,
+            **compact,
+            "note": "热力图卡片已显示在对话流；引用同一份数据时可用 ql:parameter_heatmap，runs 不重复返回",
+        }
+
+    def stress_test(
+        self,
+        pid: str,
+        *,
+        segments: int = 3,
+        windows: int = 4,
+        cost_scales: list[float] | None = None,
+        sensitivity: bool = True,
+    ) -> dict[str, Any]:
+        """一键过拟合压力测试：滚动分段 + 稳定性/参数敏感性 + 成本压力。
+
+        这是给 Agent 用的“审查员”工具：不挑参数、不改版本成绩，只回答
+        1）策略在不同时间段是否都能赚钱；2）参数挪动后是否立刻失效；
+        3）成本放大后策略是否还成立。三部分各自保留明细，最后给一个总体结论。
+        """
+        project = self.store.get(pid) or {}
+        code = project.get("code") or ""
+        if not code:
+            return {"ok": False, "error": "当前还没有代码"}
+        v = project.get("current_v") or 0
+        segments = max(2, min(int(segments or 3), 6))
+        windows = max(3, min(int(windows or 4), 12))
+        scales = sorted({round(min(20.0, max(0.5, float(x))), 2) for x in (cost_scales or [1.0, 2.0, 3.0])})
+        card = self._post(
+            pid,
+            role="tool",
+            kind="stress_test",
+            content="过拟合压力测试：准备中",
+            data={"status": "running", "v": v, "segments": segments, "windows": windows, "cost_scales": scales},
+        )
+        self._phase(
+            pid, "过拟合压力测试 · 滚动分段", f"v{v} · {segments} 段 · 成本 {'/'.join(f'{x:g}×' for x in scales)}"
+        )
+        try:
+            wf = self.walk_forward(pid, segments=segments, mode="sliced")
+            self._phase(pid, "过拟合压力测试 · 稳定性与参数敏感性", f"{windows} 个滚动窗口")
+            st = self.stability(pid, windows=windows, sensitivity=bool(sensitivity))
+            self._phase(pid, "过拟合压力测试 · 成本压力", " / ".join(f"{x:g}×" for x in scales))
+            cs = self.cost_sweep(pid, scales=scales, refine=False)
+            # 样本内 / 样本外：按 70/30 切分同一段历史，样本外只验一次，不参与任何参数选择。
+            tf_ms = G.TF_MS.get(project.get("timeframe") or "1h", 3_600_000)
+            end_ts = int(project.get("end") or time.time() * 1000)
+            start_ts = int(project.get("start") or (end_ts - int(project.get("bars_limit") or 1500) * tf_ms))
+            cut_ts = start_ts + int((end_ts - start_ts) * 0.7)
+            split_ok = end_ts - start_ts >= max(tf_ms * 100, 1)
+            is_out = (
+                self.tools.backtest(
+                    {**project, "start": start_ts, "end": cut_ts}, code, cost_scale=1.0, label="压力测试 · 样本内"
+                )
+                if split_ok
+                else {"ok": False, "error": "区间太短，无法切样本内 / 样本外"}
+            )
+            oos_out = (
+                self.tools.backtest(
+                    {**project, "start": cut_ts, "end": end_ts}, code, cost_scale=1.0, label="压力测试 · 样本外"
+                )
+                if split_ok
+                else {"ok": False, "error": "区间太短，无法切样本内 / 样本外"}
+            )
+        except Exception as exc:
+            msg = f"过拟合压力测试失败：{type(exc).__name__}: {exc}"
+            self.store.update(pid, card["seq"], content=msg, data={"status": "error", "error": str(exc)[:400]})
+            return {"ok": False, "error": msg}
+
+        seg_rows = wf.get("segments") or []
+        positive = [r for r in seg_rows if (r.get("metrics") or {}).get("total_return", 0) > 0]
+        positive_share = len(positive) / len(seg_rows) if seg_rows else 0.0
+        recon = bool((wf.get("reconcile") or {}).get("reconstructs"))
+        flags = [str(x) for x in (st.get("flags") or [])]
+        sens = st.get("sensitivity") or {}
+        sens_fragile = bool(sens.get("fragile"))
+        cost_rows = cs.get("rows") or []
+        cost_2x = next((r for r in cost_rows if abs(float(r.get("scale", 0)) - 2.0) < 1e-9), None)
+        cost_ok = bool(cost_2x and cost_2x.get("passed"))
+        is_ret = (is_out.get("metrics") or {}).get("total_return") if is_out.get("ok") else None
+        oos_ret = (oos_out.get("metrics") or {}).get("total_return") if oos_out.get("ok") else None
+        retention = (
+            (oos_ret / is_ret)
+            if isinstance(is_ret, (int, float)) and abs(is_ret) > 1e-12 and isinstance(oos_ret, (int, float))
+            else None
+        )
+        oos_ok = bool(
+            isinstance(is_ret, (int, float))
+            and is_ret > 0
+            and isinstance(oos_ret, (int, float))
+            and oos_ret > 0
+            and (retention or 0) >= 0.25
+        )
+        checks = [
+            {
+                "key": "walk_forward",
+                "label": "滚动分段",
+                "ok": len(seg_rows) >= 2 and positive_share >= 0.67,
+                "value": f"{len(positive)}/{len(seg_rows)} 段为正" if seg_rows else "无分段结果",
+                "note": "至少 2/3 的独立时间段应为正；只看单段历史很容易过拟合",
+            },
+            {
+                "key": "reconcile",
+                "label": "分段可复原",
+                "ok": recon,
+                "value": "连续切片可复原" if recon else "不能复原全区间",
+                "note": "连续切片模式下，各段收益应能复利还原全区间收益",
+            },
+            {
+                "key": "oos",
+                "label": "样本外",
+                "ok": oos_ok,
+                "value": (
+                    f"样本内 {is_ret:+.1%} → 样本外 {oos_ret:+.1%}，保留 {retention:.0%}"
+                    if isinstance(is_ret, (int, float)) and isinstance(oos_ret, (int, float)) and retention is not None
+                    else "未跑出样本内 / 样本外结果"
+                ),
+                "note": "按 70/30 切分，样本外只验一次；样本外收益转负或保留率低于 25% 视为过拟合信号",
+            },
+            {
+                "key": "stability",
+                "label": "稳定性",
+                "ok": not flags,
+                "value": "无明显告警" if not flags else "；".join(flags[:2]),
+                "note": "滚动窗口收益、分布尾部、基准对照综合判断",
+            },
+            {
+                "key": "sensitivity",
+                "label": "参数敏感性",
+                "ok": not sens_fragile,
+                "value": "参数邻域稳定" if not sens_fragile else "参数挪动后明显失效",
+                "note": "参数上下挪 20% 后仍应保持方向，不依赖单点最优",
+            },
+            {
+                "key": "cost_2x",
+                "label": "2× 成本",
+                "ok": cost_ok,
+                "value": "仍达标" if cost_ok else ("不达标" if cost_2x else "未跑出结果"),
+                "note": "成本翻倍后仍成立，才不是靠低成本假设赚的钱",
+            },
+        ]
+        passed = sum(1 for c in checks if c["ok"])
+        by_key = {c["key"]: c for c in checks}
+        if not seg_rows or not cost_rows:
+            verdict = "fail"
+        elif passed == len(checks):
+            verdict = "pass"
+        elif not by_key["walk_forward"]["ok"] or not by_key["oos"]["ok"] or not by_key["cost_2x"]["ok"] or sens_fragile:
+            verdict = "fail"
+        else:
+            verdict = "warn"
+        data = {
+            "status": "done",
+            "v": v,
+            "verdict": verdict,
+            "score": round(passed / len(checks), 3),
+            "checks": checks,
+            "walk_forward": {
+                "verdict": wf.get("verdict"),
+                "positive_share": round(positive_share, 3),
+                "segments": [
+                    {
+                        "segment": r.get("segment"),
+                        "start": r.get("start"),
+                        "end": r.get("end"),
+                        "total_return": (r.get("metrics") or {}).get("total_return"),
+                        "sharpe": (r.get("metrics") or {}).get("sharpe"),
+                        "max_drawdown": (r.get("metrics") or {}).get("max_drawdown"),
+                        "trades": (r.get("metrics") or {}).get("trades"),
+                        "data_role": r.get("data_role"),
+                    }
+                    for r in seg_rows
+                ],
+                "reconcile": wf.get("reconcile"),
+            },
+            "sample_split": {
+                "split": 0.7,
+                "in_sample": {"ok": bool(is_out.get("ok")), "total_return": is_ret},
+                "out_of_sample": {"ok": bool(oos_out.get("ok")), "total_return": oos_ret},
+                "retention": retention,
+            },
+            "stability": {"flags": flags, "sensitivity": sens},
+            "cost": {
+                "limit": cs.get("limit"),
+                "summary": cs.get("summary"),
+                "rows": [
+                    {
+                        "scale": r.get("scale"),
+                        "passed": r.get("passed"),
+                        "total_return": (r.get("metrics") or {}).get("total_return"),
+                        "sharpe": (r.get("metrics") or {}).get("sharpe"),
+                    }
+                    for r in cost_rows
+                ],
+            },
+            "generated_at": _now(),
+        }
+        summary = {
+            "pass": "过拟合压力测试通过：分段、参数邻域与 2× 成本均未发现硬伤",
+            "warn": "过拟合压力测试有告警：部分检查不通过，需要看明细后再决定是否继续",
+            "fail": "过拟合压力测试未通过：分段、参数敏感性或 2× 成本至少一项明显失效",
+        }[verdict]
+        self.store.update(pid, card["seq"], content=summary, data=data)
+        # 给模型的返回值保持紧凑：完整明细已经在对话卡片里，避免工具输出被 6000 字符截断。
+        compact = {
+            "status": "done",
+            "v": v,
+            "verdict": verdict,
+            "score": data["score"],
+            "checks": checks,
+            "sample_split": data["sample_split"],
+            "walk_forward": {
+                "verdict": data["walk_forward"]["verdict"],
+                "positive_share": data["walk_forward"]["positive_share"],
+                "segments": data["walk_forward"]["segments"],
+            },
+            "stability": {
+                "flags": flags,
+                "sensitivity": {
+                    "fragile": sens_fragile,
+                    "note": sens.get("note") if isinstance(sens, dict) else "",
+                },
+            },
+            "cost": data["cost"],
+            "note": "完整压力测试卡片已显示在对话流；引用时可用 ql:stress_report",
+        }
+        return {"ok": True, **compact}
 
     def _submit_code(
         self,
@@ -2475,6 +2419,7 @@ class StrategyLab:
                 "after": code,
                 "params": row["params"],
                 "fills": checks.get("fills"),
+                "warnings": checks.get("warnings") or [],
                 "experiment": experiment or None,
                 "diff": diff,
             },
@@ -2484,6 +2429,7 @@ class StrategyLab:
             "version": row["v"],
             "params": row["params"],
             "smoke_fills": checks.get("fills"),
+            "performance_warnings": checks.get("warnings") or [],
             "diff": diff,
         }
 
@@ -2590,26 +2536,41 @@ class StrategyLab:
         if failed:  # 把失败原因交给模型，别让它对着空结论重试同样的调用
             out["failed_roles"] = [{"role": s.get("role_name"), "error": (s.get("error") or "")[:200]} for s in failed]
         if not out["synthesis"]:
-            out["error"] = "所有角色都没有产出（多半是模型服务不可用或额度用完），请检查 设置 → 模型 后再试，不要立即重复召集"
+            out["error"] = (
+                "所有角色都没有产出（多半是模型服务不可用或额度用完），请检查 设置 → 模型 后再试，不要立即重复召集"
+            )
         return out
 
     # ---------------- 对话管理：自动压缩、分叉、回到某条消息 ----------------
-    AUTO_COMPACT_RATIO = 1.25
+    def auto_compact_ratio(self, project: dict[str, Any]) -> float:
+        """自动压缩阈值占模型上下文窗口的比例；旧项目缺省按 80%。"""
+        try:
+            ratio = float(project.get("auto_compact_ratio") or AUTO_COMPACT_DEFAULT_RATIO)
+        except (TypeError, ValueError):
+            ratio = AUTO_COMPACT_DEFAULT_RATIO
+        return min(AUTO_COMPACT_MAX_RATIO, max(AUTO_COMPACT_MIN_RATIO, ratio))
+
+    def auto_compact_tokens(self, project: dict[str, Any]) -> int:
+        return max(1, int(self.context_window(project) * self.auto_compact_ratio(project)))
+
+    def _fixed_context_tokens(self, project: dict[str, Any]) -> int:
+        """系统提示与项目材料（含代码、钉住内容）的近似 token 数。"""
+        return _approx_tokens(self.system_prompt) + _approx_tokens(self._context_block(project))
 
     def has_goal(self, project: dict[str, Any]) -> bool:
         """设过目标（研究者 /goal、AI set_goal、或建项目时给了目标）才能自动迭代；没有目标就正常对话。"""
         return project_has_goal(project)
 
     def _maybe_autocompact(self, pid: str) -> bool:
-        """对话原文超过预算的 1.25 倍时，先把较早的对话压成摘要（与 /compact 相同），再开始这一回合。"""
+        """上下文总量达到用户设定比例时，先把较早对话压成摘要，再开始这一回合。"""
         project = self.store.get(pid) or {}
         if project.get("auto_compact") is False:
             return False
         history = self._history(project)
         if len(history) < 6:
             return False
-        used = sum(_approx_tokens(m["content"]) for m in history)
-        if used <= self.history_budget(project) * self.AUTO_COMPACT_RATIO:
+        used = self._fixed_context_tokens(project) + sum(_approx_tokens(m["content"]) for m in history)
+        if used <= self.auto_compact_tokens(project):
             return False
         out = self.compact(pid)
         return bool(out.get("ok"))
@@ -2717,7 +2678,11 @@ class StrategyLab:
         project = self.store.get(pid) or {}
         msgs = self.store.messages(pid)
         cur = next((r for r in project.get("versions") or [] if r.get("v") == project.get("current_v")), {}) or {}
-        trades = {int(r["metrics"]["trades"]) for r in project.get("versions") or [] if (r.get("metrics") or {}).get("trades") is not None}
+        trades = {
+            int(r["metrics"]["trades"])
+            for r in project.get("versions") or []
+            if (r.get("metrics") or {}).get("trades") is not None
+        }
         bars = set()
         for m in msgs:
             if m.get("kind") == "backtest":
@@ -2738,20 +2703,46 @@ class StrategyLab:
             code=project.get("code") or "",
             report=markdown,
             factor_expr=" ".join(e for e in exprs if e),
-            facts={"trades": trades or ({cur["metrics"]["trades"]} if (cur.get("metrics") or {}).get("trades") is not None else None),
-                   "bars": bars or None, "segments": segs},
+            facts={
+                "trades": trades
+                or ({cur["metrics"]["trades"]} if (cur.get("metrics") or {}).get("trades") is not None else None),
+                "bars": bars or None,
+                "segments": segs,
+            },
         )
-        if wf and (wf.get("data") or {}).get("semantics", {}).get("reconstructs_full") is False and re.search(r"(分段|各段).{0,20}(合计|累计|加总|相加)", markdown or ""):
+        if (
+            wf
+            and (wf.get("data") or {}).get("semantics", {}).get("reconstructs_full") is False
+            and re.search(r"(分段|各段).{0,20}(合计|累计|加总|相加)", markdown or "")
+        ):
             out["issues"].append("分段回测是独立口径（每段重置资金），各段收益不能加总或连乘成全区间收益")
             out["ok"] = False
-        dev = [r["segment"] for r in ((wf or {}).get("data") or {}).get("segments") or [] if r.get("data_role") == "development"]
+        dev = [
+            r["segment"]
+            for r in ((wf or {}).get("data") or {}).get("segments") or []
+            if r.get("data_role") == "development"
+        ]
         if dev and affirms(markdown or "", r"样本外|out[- ]of[- ]sample|独立验证"):
-            out["issues"].append(f"分段回测第 {'、'.join(map(str, dev))} 段已参与开发，报告不能把它称为样本外 / 独立验证")
+            out["issues"].append(
+                f"分段回测第 {'、'.join(map(str, dev))} 段已参与开发，报告不能把它称为样本外 / 独立验证"
+            )
             out["ok"] = False
-        bt = next((m for m in reversed(msgs) if m.get("kind") == "backtest" and (m.get("data") or {}).get("cost_audit")), None)
+        bt = next(
+            (m for m in reversed(msgs) if m.get("kind") == "backtest" and (m.get("data") or {}).get("cost_audit")), None
+        )
         ca = ((bt or {}).get("data") or {}).get("cost_audit") or {}
-        if ca and not (ca.get("conclusion_allowed") or {}).get("cost_not_binding") and re.search(r"成本(不是|并非|不构成)(主要)?约束|cost is not (a )?(binding|constraint)", markdown or "", re.I):
-            out["issues"].append("成本核对" + ("未通过" if not ca.get("consistent") else "显示收益随成本明显下降") + "，报告不能下「成本不是约束」的结论")
+        if (
+            ca
+            and not (ca.get("conclusion_allowed") or {}).get("cost_not_binding")
+            and re.search(
+                r"成本(不是|并非|不构成)(主要)?约束|cost is not (a )?(binding|constraint)", markdown or "", re.I
+            )
+        ):
+            out["issues"].append(
+                "成本核对"
+                + ("未通过" if not ca.get("consistent") else "显示收益随成本明显下降")
+                + "，报告不能下「成本不是约束」的结论"
+            )
             out["ok"] = False
         return out
 
@@ -2863,524 +2854,64 @@ class StrategyLab:
         }
 
     def _slash_tools(self, pid: str) -> dict[str, Tool]:
-        """斜杠命令对应的工具：模型可以根据对话主动调用（受权限模式约束）。"""
-        obj = {"type": "object"}
+        from .lab_tools import slash_tools
 
-        def autopilot(rounds: int = 0) -> Any:
-            project = self.store.get(pid) or {}
-            if not self.has_goal(project):
-                return {"ok": False, "error": "还没有设定目标，不能自动迭代；先用 set_goal 设目标，或继续正常对话"}
-            self.autopilot(pid, rounds=int(rounds) or None, force=True)
-            p = self.store.get(pid) or {}
-            return {"ok": True, "current_v": p.get("current_v"), "status": p.get("status")}
-
-        def pin_note(title: str = "", text: str = "") -> Any:
-            if not text.strip():
-                return {"ok": False, "error": "text 不能为空"}
-            item = self.pin(pid, kind="note", title=(title or text)[:40], text=text)
-            return {"ok": True, "pin_id": item["id"]}
-
-        def compact_history() -> Any:
-            return self.compact(pid)
-
-        def set_market(symbols: list[str] | str = "", timeframe: str = "") -> Any:
-            if isinstance(symbols, str):
-                symbols = [x for x in re.split(r"[,，\s]+", symbols) if x]
-            syms = [s.strip().upper() for s in symbols or [] if s.strip()][:20]
-            tf = timeframe if is_timeframe(timeframe) else ""
-            if not syms and not tf:
-                return {"ok": False, "error": "至少给出标的或周期"}
-            project = self.store.get(pid) or {}
-            changes: dict[str, Any] = {"market_auto": False}
-            if syms:
-                changes["securities"] = syms
-            if tf:
-                changes["timeframe"] = tf
-            self.store.patch(pid, **changes)
-            p = self.store.get(pid) or project
-            self._post(
-                pid, role="event", kind="text", content=f"AI 把标的设为 {', '.join(p['securities'])} · {p['timeframe']}"
-            )
-            return {"ok": True, "securities": p["securities"], "timeframe": p["timeframe"]}
-
-        def set_plan(steps: list[Any] | str = "", task: str = "", done_when: str = "", execute: bool = True) -> Any:
-            if isinstance(steps, str):
-                steps = [x for x in re.split(r"\n+", steps) if x.strip()]
-            items = [re.sub(r"^\s*(?:\d+[.、)]|[-*•])\s*", "", _step_text(x)).strip()[:200] for x in steps or []]
-            items = [x for x in items if x][:12]
-            if not items:
-                return {"ok": False, "error": "steps 不能为空：给出 3-8 个可验证的步骤"}
-            plan = self.set_plan(pid, items, task=task, done_when=done_when, execute=bool(execute))
-            return {"ok": True, "steps": len(plan["steps"]), "plan": plan_text(plan)}
-
-        def update_plan_step(
-            index: int = 0, status: str = "done", note: str = "", add_steps: list[str] | None = None
-        ) -> Any:
-            return self.update_plan_step(pid, int(index or 0), status=status, note=note, add_steps=add_steps or [])
-
-        def start_discussion(topic: str = "") -> Any:
-            if self.tools.discuss is None:
-                return {"ok": False, "error": "当前环境不能发起团队讨论"}
-            project = self.store.get(pid) or {}
-            topic = (
-                topic or f"评审「{project.get('title')}」：逻辑是否自洽、证据是否可信、最大风险在哪里、下一步怎么做"
-            )[:600]
-            out = self.tools.discuss(project, topic)
-            self._post(pid, role="event", kind="discussion", content=topic, data={"mission_id": out["mission_id"]})
-            return {
-                "ok": True,
-                "mission_id": out["mission_id"],
-                "note": "讨论在后台进行，发言会显示在对话里；用 discussion_status(mission_id, wait_seconds) 查看进度或等结论",
-            }
-
-        def read_pinned_file(pin_id: str, offset: int = 0, length: int = 6000) -> Any:
-            pin = next((p for p in (self.store.get(pid) or {}).get("pins") or [] if p.get("id") == pin_id), None)
-            if pin is None:
-                return {"ok": False, "error": f"没有钉住材料 {pin_id}"}
-            text = pin.get("text") or ""
-            start = max(0, int(offset or 0))
-            size = max(500, min(int(length or 6000), 8000))
-            chunk = text[start : start + size]
-            return {
-                "ok": True,
-                "title": pin.get("title"),
-                "total_chars": len(text),
-                "offset": start,
-                "text": chunk,
-                "next_offset": start + len(chunk) if start + len(chunk) < len(text) else None,
-            }
-
-        def discussion_status(mission_id: str = "", wait_seconds: int = 0) -> Any:
-            if self.tools.discussion_status is None:
-                return {"ok": False, "error": "当前环境不能查询团队讨论"}
-            if not mission_id:  # 没给 id 就查本对话最近一次发起的讨论
-                ev = next(
-                    (
-                        m
-                        for m in reversed(self.store.messages(pid))
-                        if m.get("kind") == "discussion" and (m.get("data") or {}).get("mission_id")
-                    ),
-                    None,
-                )
-                if ev is None:
-                    return {"ok": False, "error": "本对话还没有发起过团队讨论"}
-                mission_id = ev["data"]["mission_id"]
-            self._check_stop(pid)
-            return self.tools.discussion_status(mission_id, max(0, min(120, int(wait_seconds or 0))))
-
-        def queue_night(idea: str = "") -> Any:
-            if self.tools.night is None:
-                return {"ok": False, "error": "当前环境没有夜班队列"}
-            project = self.store.get(pid) or {}
-            text = (idea or project.get("idea") or project.get("title") or "").strip()
-            if len(text) < 2:
-                return {"ok": False, "error": "idea 不能为空"}
-            out = self.tools.night(project, text[:600])
-            self._post(pid, role="event", kind="text", content=f"已放进夜班队列：{text[:60]}（结果写进晨报）")
-            return {"ok": True, **out}
-
-        def context_usage() -> Any:
-            v = self.context_view(self.store.get(pid) or {})
-            return {
-                "used": v.get("total"),
-                "budget": v.get("budget"),
-                "percent": round(100 * (v.get("total") or 0) / max(1, v.get("budget") or 1), 1),
-                "pins": len(v.get("pins") or []),
-            }
-
-        plan_tools = {
-            "set_plan": Tool(
-                "set_plan",
-                "列出 / 重新列出分步计划（等同 /plan）：多步任务先列 3-8 个可验证的步骤；"
-                "execute=true 时列完就一步步执行，"
-                "直到全部完成且目标达标才停",
-                {
-                    **obj,
-                    "properties": {
-                        "task": {"type": "string", "description": "这个计划要完成的任务，一句话"},
-                        "steps": {"type": "array", "items": {"type": "string"}, "description": "按顺序的步骤"},
-                        "done_when": {"type": "string", "description": "完成标准，例如“夏普 ≥ 1.5 且回撤 ≤ 15%”"},
-                        "execute": {"type": "boolean", "description": "列完后是否立即连续执行（默认 true）"},
-                    },
-                    "required": ["steps"],
-                },
-                set_plan,
-            ),
-            "update_plan_step": Tool(
-                "update_plan_step",
-                "更新计划进度：index 从 1 开始；status 为 doing / done / skipped / failed；note 写结果要点；"
-                "add_steps 在末尾追加新步骤（例如步骤做完了但目标没达标）",
-                {
-                    **obj,
-                    "properties": {
-                        "index": {"type": "integer"},
-                        "status": {"type": "string", "enum": list(PLAN_STATUSES)},
-                        "note": {"type": "string"},
-                        "add_steps": {"type": "array", "items": {"type": "string"}},
-                    },
-                },
-                update_plan_step,
-            ),
-            "start_discussion": Tool(
-                "start_discussion",
-                "发起团队讨论（等同 /discuss）：多个角色依次发言、相互质疑、最后汇总；讨论在后台进行",
-                {**obj, "properties": {"topic": {"type": "string", "description": "讨论议题"}}},
-                start_discussion,
-            ),
-            **self._conversation_tools(pid, obj),
-            "read_pinned_file": Tool(
-                "read_pinned_file",
-                "分段读取钉住的长材料（上传的 txt、超长消息自动转成的文件）：上下文里只有开头 2000 字，"
-                "需要全文时按 offset 逐段读，每段最多 8000 字",
-                {
-                    **obj,
-                    "properties": {
-                        "pin_id": {"type": "string"},
-                        "offset": {"type": "integer", "minimum": 0},
-                        "length": {"type": "integer", "minimum": 500, "maximum": 8000},
-                    },
-                    "required": ["pin_id"],
-                },
-                read_pinned_file,
-            ),
-            "discussion_status": Tool(
-                "discussion_status",
-                "查询团队讨论（start_discussion / /discuss）的进度：状态、阶段、已完成的发言要点与最终结论。"
-                "mission_id 省略时查本对话最近一次讨论；wait_seconds（≤120）> 0 时最多等这么久直到讨论结束",
-                {
-                    **obj,
-                    "properties": {
-                        "mission_id": {"type": "string"},
-                        "wait_seconds": {"type": "integer", "minimum": 0, "maximum": 120},
-                    },
-                },
-                discussion_status,
-            ),
-            "queue_night": Tool(
-                "queue_night",
-                "把一个研究想法放进夜班队列（等同 /night）：无人值守地自动研究，结果写进晨报",
-                {**obj, "properties": {"idea": {"type": "string"}}, "required": ["idea"]},
-                queue_night,
-            ),
-            "context_usage": Tool(
-                "context_usage",
-                "查看上下文用量（等同 /context）：已用 / 预算 token 与钉住的材料数",
-                {**obj, "properties": {}},
-                context_usage,
-            ),
-        }
-
-        def write_report(
-            title: str = "", markdown: str = "", summary: str = "", sources: list[str] | None = None
-        ) -> Any:
-            if len((markdown or "").strip()) < 80:
-                return {"ok": False, "error": "markdown 太短：请提交完整报告正文（Markdown）"}
-            audit = self.audit_report(pid, markdown)
-            if audit["issues"]:
-                markdown = markdown.rstrip() + "\n\n## 平台核验\n\n" + "\n".join(f"- ⚠ {x}" for x in audit["issues"])
-            rep = self.write_report(pid, title=title, markdown=markdown, summary=summary, sources=sources or [])
-            return {
-                "ok": True,
-                "report_id": rep["id"],
-                "audit": audit,
-                "note": "报告已生成，研究者可以在对话里查看并导出 PDF"
-                + ("；平台核验发现问题，已附在报告末尾，请在回答里说明并修正" if audit["issues"] else ""),
-            }
-
-        def spawn_subagents(topic: str = "", variants: list[str] | None = None, max_tool_calls: int = 40) -> Any:
-            return self.spawn_subagents(pid, topic=topic, variants=variants or [], max_tool_calls=max_tool_calls)
-
-        def factor_correlation(
-            factors: list[dict[str, str]] | None = None, symbols: list[str] | None = None, horizon: int = 1
-        ) -> Any:
-            if self.tools.collinearity is None:
-                return {"ok": False, "error": "当前环境不能做因子共线性诊断（需要 numpy）"}
-            p = self.store.get(pid) or {}
-            syms = [s.upper() for s in symbols or []] or p.get("securities") or ["BTC/USDT"]
-            facs = [f for f in factors or [] if isinstance(f, dict) and f.get("expr")]
-            return self._tool(
-                pid,
-                "factor_correlation",
-                "因子共线性诊断",
-                {"因子": len(facs), "标的": len(syms)},
-                lambda: self.tools.collinearity(
-                    syms,
-                    p.get("timeframe") or "1h",
-                    factors=facs,
-                    horizon=int(horizon or 1),
-                    bars_limit=int(p.get("bars_limit") or 1500),
-                ),
-            )
-
-        research_tools = {
-            "write_report": Tool(
-                "write_report",
-                "提交调研报告（等同 /report 的最后一步）："
-                "Markdown 正文，含摘要、背景、数据与方法、发现、风险、结论与下一步、参考来源。"
-                "报告会显示在对话里，可以导出为带平台标识的 PDF",
-                {
-                    **obj,
-                    "properties": {
-                        "title": {"type": "string"},
-                        "summary": {"type": "string", "description": "三句话以内的结论摘要"},
-                        "markdown": {"type": "string", "description": "完整报告正文（Markdown）"},
-                        "sources": {"type": "array", "items": {"type": "string"}, "description": "参考来源链接"},
-                    },
-                    "required": ["title", "markdown"],
-                },
-                write_report,
-            ),
-            "spawn_subagents": Tool(
-                "spawn_subagents",
-                "唤起多个子 Agent 并行探究同一研究主题的不同方向（2-5 个），每个子 Agent 在独立的子对话里写策略、回测、"
-                "做 2 倍成本检查，最后返回并排对比。适合「比较几种思路哪个更好」；不要用于简单任务",
-                {
-                    **obj,
-                    "properties": {
-                        "topic": {"type": "string", "description": "研究主题"},
-                        "variants": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": '每个子 Agent 负责的方向，例如 ["均线趋势", "布林均值回归", "波动率突破"]',
-                        },
-                        "max_tool_calls": {"type": "integer", "description": "每个子 Agent 的工具调用上限，默认 40"},
-                    },
-                    "required": ["topic", "variants"],
-                },
-                spawn_subagents,
-            ),
-            "factor_correlation": Tool(
-                "factor_correlation",
-                "多因子共线性诊断：对一组因子表达式算两两相关、VIF、条件数、高相关簇，并给出建议保留 / 剔除的因子。"
-                "多因子研究（尤其因子数量多时）在合成或建模前必须先做",
-                {
-                    **obj,
-                    "properties": {
-                        "factors": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {"name": {"type": "string"}, "expr": {"type": "string"}},
-                                "required": ["expr"],
-                            },
-                            "description": "因子表达式，语法同因子研究，例如 ts_mean(close, 20) / close - 1",
-                        },
-                        "symbols": {"type": "array", "items": {"type": "string"}},
-                        "horizon": {"type": "integer", "description": "计算 IC 用的持有期（K 线数）"},
-                    },
-                    "required": ["factors"],
-                },
-                factor_correlation,
-            ),
-        }
-        if (self.store.get(pid) or {}).get("subagent_of"):
-            research_tools.pop("spawn_subagents")  # 子 Agent 不再嵌套唤起子 Agent
-        return {
-            **plan_tools,
-            **research_tools,
-            "start_autopilot": Tool(
-                "start_autopilot",
-                "按已设定的目标自动迭代若干轮（等同 /auto）。没有目标时不可用；研究者明确要求连续改进时再用",
-                {**obj, "properties": {"rounds": {"type": "integer", "description": "轮数 1-8，不填用项目设置"}}},
-                autopilot,
-            ),
-            "pin_note": Tool(
-                "pin_note",
-                "把一段重要材料钉进上下文（等同 /pin）：研究者给的约束、调研结论、需要长期记住的事实",
-                {**obj, "properties": {"title": {"type": "string"}, "text": {"type": "string"}}, "required": ["text"]},
-                pin_note,
-            ),
-            "compact_history": Tool(
-                "compact_history",
-                "把较早的对话压缩成摘要（等同 /compact），对话很长、上下文吃紧时用",
-                {**obj, "properties": {}},
-                compact_history,
-            ),
-            "set_market": Tool(
-                "set_market",
-                "设置研究的标的与 K 线周期（研究者没指定、或对话里改了主意时用）",
-                {
-                    **obj,
-                    "properties": {
-                        "symbols": {"type": "array", "items": {"type": "string"}, "description": '如 ["BTC/USDT"]'},
-                        "timeframe": {"type": "string", "description": "周期：数字+单位，例如 100ms、250ms、1s、5s、1m、15m、1h、4h、1d（秒级 / 毫秒级只有 Binance 现货，由 1s K 线或逐笔成交聚合）"},
-                    },
-                },
-                set_market,
-            ),
-            "save_work": Tool(
-                "save_work",
-                "保存当前成果（等同 /save）：策略存为平台策略草稿，因子 / 模型 / 方案存进对应的库。研究者认可后再用",
-                {**obj, "properties": {}},
-                lambda: self.save_work(pid),
-            ),
-        }
+        return slash_tools(self, pid)
 
     # ---------------- 计划 /plan ----------------
     def set_plan(
         self, pid: str, steps: list[str], *, task: str = "", done_when: str = "", execute: bool = True
     ) -> dict[str, Any]:
-        """列出 / 重列计划：卡片发进对话，之后进度更新都改这张卡片。"""
-        project = self.store.get(pid) or {}
-        old = project.get("plan") or {}
-        plan = {
-            "task": (task or old.get("task") or project.get("idea") or "")[:300],
-            "done_when": (done_when or old.get("done_when") or "")[:300],
-            "steps": [{"text": t, "status": "pending", "note": ""} for t in steps],
-            "status": "active",
-            "autorun": bool(execute),
-            "turns": 0,
-            "created_at": _now(),
-        }
-        card = self._post(pid, role="assistant", kind="plan", content=plan["task"], data={"plan": plan})
-        plan["seq"] = card["seq"]
-        self.store.patch(pid, plan=plan)
-        return plan
+        from .lab_plan import set_plan as _set_plan
+
+        return _set_plan(self, pid, steps, task=task, done_when=done_when, execute=execute)
 
     def _save_plan(self, pid: str, plan: dict[str, Any]) -> None:
-        self.store.patch(pid, plan=plan)
-        if plan.get("seq"):
-            self.store.update(pid, plan["seq"], data={"plan": plan})
+        from .lab_plan import _save_plan as _save
+
+        _save(self, pid, plan)
 
     def update_plan_step(
         self, pid: str, index: int, *, status: str = "done", note: str = "", add_steps: list[str] | None = None
     ) -> dict[str, Any]:
-        project = self.store.get(pid) or {}
-        plan = project.get("plan")
-        if not plan:
-            return {"ok": False, "error": "还没有计划，先用 set_plan 列计划"}
-        steps = plan["steps"]
-        if index:
-            if not 1 <= index <= len(steps):
-                return {"ok": False, "error": f"index 超出范围（1-{len(steps)}）"}
-            if status not in PLAN_STATUSES:
-                return {"ok": False, "error": f"status 只能是 {'/'.join(PLAN_STATUSES)}"}
-            steps[index - 1]["status"] = status
-            if note:
-                steps[index - 1]["note"] = note[:200]
-        for t in add_steps or []:
-            if str(t).strip() and len(steps) < 16:
-                steps.append({"text": str(t).strip()[:200], "status": "pending", "note": ""})
-        self._save_plan(pid, plan)
-        left = [i + 1 for i, s in enumerate(steps) if s["status"] not in ("done", "skipped")]
-        return {"ok": True, "remaining": left, "plan": plan_text(plan)}
+        from .lab_plan import update_plan_step as _update
+
+        return _update(self, pid, index, status=status, note=note, add_steps=add_steps)
 
     def _plan_goal_ok(self, project: dict[str, Any]) -> bool | None:
-        """有目标时看当前版本是否达标；没有目标返回 None（按计划步骤是否完成判断）。"""
-        if not self.has_goal(project):
-            return None
-        cur = next((r for r in project.get("versions") or [] if r.get("v") == project.get("current_v")), None)
-        return bool(((cur or {}).get("evaluation") or {}).get("passed"))
+        from .lab_plan import _plan_goal_ok as _goal_ok
+
+        return _goal_ok(self, project)
 
     def run_plan(self, pid: str, task: str = "") -> None:
-        """/plan：让 AI 列计划（或接着已有计划），然后一步步执行，直到全部完成且目标达标。"""
-        project = self.store.get(pid) or {}
-        plan = project.get("plan") or {}
-        if task or plan.get("status") != "active":
-            what = task or project.get("idea") or project.get("title") or "当前研究"
-            self._phase(pid, "列计划", what[:80])
-            self._plan_turn(
-                pid,
-                f"/plan {what}\n请先用 set_plan 列出完成这个任务的分步计划"
-                "（3-8 步，每步可验证，写清完成标准 done_when），"
-                "然后立即开始执行第 1 步。",
-            )
-        else:
-            plan["autorun"] = True
-            self.store.patch(pid, plan=plan)
-        self._plan_loop(pid)
+        from .lab_plan import run_plan as _run
+
+        _run(self, pid, task)
 
     def _continue_plan(self, pid: str) -> None:
-        """普通对话里 AI 用 set_plan(execute=true) 列了计划：这一回合结束后接着推进。"""
-        plan = (self.store.get(pid) or {}).get("plan") or {}
-        if plan.get("status") == "active" and plan.get("autorun"):
-            self._plan_loop(pid)
+        from .lab_plan import _continue_plan as _continue
+
+        _continue(self, pid)
 
     def _plan_turn(self, pid: str, text: str) -> None:
-        try:
-            self._chat_llm(pid, text)
-        except LLMError as exc:
-            self._post(pid, role="event", kind="error", content=f"计划执行中模型调用失败：{exc}")
-            plan = (self.store.get(pid) or {}).get("plan")
-            if plan:
-                plan["status"] = "stopped"
-                self._save_plan(pid, plan)
+        from .lab_plan import _plan_turn as _turn
+
+        _turn(self, pid, text)
 
     def _plan_loop(self, pid: str) -> None:
-        stalled = 0
-        for _ in range(PLAN_MAX_TURNS):
-            self._check_stop(pid)
-            project = self.store.get(pid) or {}
-            plan = project.get("plan")
-            if not plan or plan.get("status") != "active" or not plan.get("autorun"):
-                return
-            if project.get("status") == "awaiting_user":  # AI 提问或等审批：等研究者回答
-                return
-            steps = plan["steps"]
-            left = [i for i, s in enumerate(steps) if s["status"] not in ("done", "skipped")]
-            goal_ok = self._plan_goal_ok(project)
-            if not left and goal_ok is not False:
-                plan["status"] = "done"
-                self._save_plan(pid, plan)
-                self._post(
-                    pid,
-                    role="event",
-                    kind="text",
-                    content=f"计划完成：{len(steps)} 步全部做完" + ("，目标已达标" if goal_ok else ""),
-                )
-                return
-            if not left:
-                gap = self.goal_text(project)
-                prompt = (
-                    f"计划里的步骤都做完了，但目标还没达标（目标：{gap}）。先 check_goals 看差距，"
-                    "再用 update_plan_step 的 add_steps 补充新步骤并继续执行；"
-                    "如果目标确实不现实，说明原因并用 ask_user 问我是否放宽。"
-                )
-                self._phase(pid, "计划：步骤做完但未达标，补充步骤", gap[:120])
-            else:
-                i = left[0]
-                if steps[i]["status"] != "doing":
-                    steps[i]["status"] = "doing"
-                    self._save_plan(pid, plan)
-                prompt = (
-                    f"继续执行计划第 {i + 1} 步：{steps[i]['text']}。完成后用 update_plan_step 标记（写上结果要点），"
-                    "然后接着做下一步。不要停下来等我确认，除非确实需要我做决定。"
-                )
-                self._phase(pid, f"执行计划 · 第 {i + 1}/{len(steps)} 步", steps[i]["text"][:160])
-            before = (
-                [s["status"] for s in steps],
-                project.get("current_v"),
-                len(steps),
-            )
-            plan["turns"] = int(plan.get("turns") or 0) + 1
-            self.store.patch(pid, plan=plan)
-            self._plan_turn(pid, prompt)
-            after_p = self.store.get(pid) or {}
-            after_plan = after_p.get("plan") or {}
-            after = (
-                [s["status"] for s in after_plan.get("steps") or []],
-                after_p.get("current_v"),
-                len(after_plan.get("steps") or []),
-            )
-            stalled = stalled + 1 if after == before else 0
-            if stalled >= 2:
-                self._stop_plan(pid, "连续两轮没有进展，先停在这里。可以补充要求后输入 /plan 继续。")
-                return
-        self._stop_plan(pid, f"已连续推进 {PLAN_MAX_TURNS} 轮还没完成，先停在这里。输入 /plan 继续。")
+        from .lab_plan import _plan_loop as _loop
+
+        _loop(self, pid)
 
     def _pause_plan(self, pid: str) -> None:
-        """回合被停止或出错：计划暂停，之后的普通对话不会自动接着推进（/plan 或「继续执行」恢复）。"""
-        plan = (self.store.get(pid) or {}).get("plan")
-        if plan and plan.get("status") == "active" and plan.get("autorun"):
-            plan["autorun"] = False
-            self._save_plan(pid, plan)
+        from .lab_plan import _pause_plan as _pause
+
+        _pause(self, pid)
 
     def _stop_plan(self, pid: str, why: str) -> None:
-        plan = (self.store.get(pid) or {}).get("plan")
-        if plan:
-            plan["autorun"] = False
-            self._save_plan(pid, plan)
-        self._post(pid, role="event", kind="text", content=why)
+        from .lab_plan import _stop_plan as _stop
+
+        _stop(self, pid, why)
 
     # ---------------- 权限：审批 ----------------
     def _ask_approval(self, pid: str, pending: list[dict[str, Any]]) -> None:
@@ -3442,8 +2973,12 @@ class StrategyLab:
             # 让模型接着刚才的思路继续（带上真实返回）；仍按项目的权限模式，后续操作照样要审批
             self._chat_or_note_llm(
                 pid,
-                "我批准了，执行结果：" + "；".join(done) + "。\n工具返回：\n" + "\n".join(details)
-                + "\n请按真实结果继续；失败的要说明被拦在哪一步、怎么解决，不要当成已完成。" + (note or ""),
+                "我批准了，执行结果："
+                + "；".join(done)
+                + "。\n工具返回：\n"
+                + "\n".join(details)
+                + "\n请按真实结果继续；失败的要说明被拦在哪一步、怎么解决，不要当成已完成。"
+                + (note or ""),
             )
             return True
         if data.get("plan") and choice in (PLAN_GO, PLAN_EDIT):
@@ -3605,7 +3140,7 @@ class StrategyLab:
         ]
         for p in project.get("pins") or []:
             more = (
-                f"\n……（共 {len(p['text'])} 字，只显示开头；完整内容用 read_pinned_file(pin_id=\"{p['id']}\", offset) 分段读取）"
+                f'\n……（共 {len(p["text"])} 字，只显示开头；完整内容用 read_pinned_file(pin_id="{p["id"]}", offset) 分段读取）'
                 if len(p["text"]) > 2000
                 else ""
             )
@@ -3676,6 +3211,8 @@ class StrategyLab:
             "history_tokens": total_hist,
             "budget": self.context_window(project),
             "history_budget": budget,
+            "auto_compact_ratio": self.auto_compact_ratio(project),
+            "auto_compact_tokens": self.auto_compact_tokens(project),
             "model": self.model_target(project),
         }
 
@@ -3691,366 +3228,33 @@ class StrategyLab:
         team_id: str | None = None,
         force: bool = False,
     ) -> None:
-        project = self.store.get(pid) or {}
-        items = G.project_items(project)
-        spec = G.project_spec(project)
-        # 开始前先看目标是否合理：明显不合理就停下来问，而不是带着不可能的目标空转几轮
-        check = G.check_spec(spec, history=_history_metrics(project))
-        if check["verdict"] == "unreasonable" and not force and project.get("permission") != "bypass":
-            self._post(
-                pid,
-                role="event",
-                kind="goal",
-                content="目标需要调整",
-                data={
-                    "stage": "check",
-                    "spec": spec,
-                    "range": _range_text(spec),
-                    "check": check,
-                    "resume": {"rounds": rounds, "research": research, "team_id": team_id},
-                },
-            )
-            self._ask(
-                pid,
-                f"开始前检查了一下目标：{check['summary']}要怎么处理？",
-                ["按建议修改后开始", "仍然开始", "先不开始"],
-                decision=True,
-            )
-            return
-        max_rounds = max(1, min(int(rounds or project.get("max_rounds") or 4), 8))
-        copilot = self._copilot(project)
-        self._post(
-            pid,
-            role="event",
-            kind="round",
-            content="开始自动迭代",
-            data={
-                "stage": "start",
-                "goals": project.get("goals"),
-                "goals_text": G.items_text(items),
-                "rounds": max_rounds,
-                "range": _range_text(spec),
-                "research": research,
-            },
-        )
+        from .lab_autopilot import autopilot as _autopilot
 
-        # ---- 0. 调研 ----
-        research_notes = ""
-        if research in ("market", "team"):
-            self._phase(pid, "调研行情")
-            sym, tf = project["securities"][0], project["timeframe"]
-            summary = self._tool(
-                pid,
-                "get_market_summary",
-                "调研：行情摘要",
-                {"标的": sym, "周期": tf, "K 线": int(project.get("bars_limit") or 1500)},
-                lambda: _call_market(self.tools.market, sym, tf, int(project.get("bars_limit") or 1500)),
-            )
-            research_notes += f"行情摘要：{json.dumps(summary, ensure_ascii=False, default=str)[:1500]}\n"
-        if research == "team" and self.tools.team is not None:
-            self._check_stop(pid)
-            topic = (
-                f"为这个想法做策略调研：{project.get('idea') or project.get('title')}。"
-                "给出适配的策略类型、关键参数区间与主要风险。"
-            )
-            out = self._convene(pid, topic, team_id=team_id)
-            research_notes += f"团队调研结论：{out.get('synthesis', '')[:2000]}\n"
-
-        # ---- 1..N 轮 ----
-        history: list[str] = []
-        scores: list[float] = []
-        for r in range(1, max_rounds + 1):
-            self._check_stop(pid)
-            project = self.store.get(pid) or {}
-            code = project.get("code") or ""
-            last = _latest_eval(project)
-            if not code:
-                self._phase(pid, f"第 {r} 轮 · 生成代码")
-                idea = project.get("idea") or project.get("title")
-                desc = (
-                    idea
-                    + (f"\n\n调研参考：\n{research_notes}" if research_notes else "")
-                    + "".join(f"\n\n{p['title']}：{p['text'][:1500]}" for p in project.get("pins") or [])
-                )
-                # 同样把循环变量绑定进闭包：`_tool` 目前是同步调用 `fn()`，
-                # 晚绑定暂时不出错，但一旦改成延迟执行就会静默用错标的。
-                result = self._tool(
-                    pid,
-                    "generate",
-                    f"第 {r} 轮：生成策略",
-                    {"想法": idea[:40]},
-                    lambda desc=desc, secs=project["securities"], tf=project["timeframe"]: copilot.generate(
-                        desc, securities=secs, timeframe=tf
-                    ),
-                )
-                note = "模板降级生成" if result.mode == "fallback" else "根据想法生成"
-                if result.content:
-                    self._post(
-                        pid, role="assistant", kind="text", content=result.content, mode=result.mode, model=result.model
-                    )
-                if not result.code or not (result.checks or {}).get("ok"):
-                    self._post(pid, role="event", kind="error", content="生成的代码没有通过平台检查，自动迭代停止。")
-                    return
-                self._commit(pid, result.code, note=note, mode=result.mode, model=result.model, before="")
-            elif last is not None and last.get("passed") and r == 1:
-                self._post(pid, role="event", kind="text", content="当前版本已经达标，直接进入压力测试。")
-                break
-            else:
-                self._phase(pid, f"第 {r} 轮 · 改进代码")
-                evaluation = last or G.evaluate_items(None, items)
-                failing = [
-                    f"{i['label']} 目标 {i['op']} {G.fmt_value(i['metric'], i['target'])}"
-                    f"{'（尽量）' if i['priority'] == 'try' else ''}，"
-                    f"实际 {G.fmt_value(i['metric'], i['actual'])}"
-                    for i in evaluation["items"]
-                    if not i["ok"]
-                ]
-                instruction = (
-                    f"这是自动迭代第 {r} 轮。最近一次平台回测：{metrics_text(_latest_metrics(project))}。\n"
-                    f"未达成的验收目标：{'；'.join(failing) or '无'}。\n"
-                    + ("之前几轮尝试过：\n" + "\n".join(history[-4:]) + "\n" if history else "")
-                    + "请分析原因并有针对性地改进策略逻辑或参数，避免简单堆参数导致过拟合，保持风险约束。"
-                    + (f"\n调研参考：{research_notes[:1500]}" if research_notes else "")
-                )
-                # 用默认参数把 code / instruction / project 的值**绑定**进闭包：
-                # 它们是循环变量，每轮都会被重新赋值，晚绑定的闭包会读到最后一轮的值。
-                result = self._tool(
-                    pid,
-                    "revise",
-                    f"第 {r} 轮：改进策略",
-                    {"未达标": len(failing)},
-                    lambda code=code, instruction=instruction, secs=project["securities"], tf=project["timeframe"]: (
-                        copilot.edit(code, instruction, securities=secs, timeframe=tf)
-                    ),
-                )
-                if result.mode == "llm" and result.code and (result.checks or {}).get("ok"):
-                    if result.content:
-                        self._post(
-                            pid, role="assistant", kind="text", content=result.content, mode="llm", model=result.model
-                        )
-                    self._commit(pid, result.code, note=f"第 {r} 轮改进", mode="llm", model=result.model, before=code)
-                    first_line = (result.content or "").splitlines()[0][:80] if result.content else "模型修改"
-                    history.append(f"- 第 {r} 轮：{first_line}")
-                else:
-                    new_code, notes = rule_revise(code, evaluation, r)
-                    if new_code == code:
-                        self._post(
-                            pid,
-                            role="assistant",
-                            kind="text",
-                            mode="fallback",
-                            content=(
-                                "**规则降级**：参数规则已经没有可调的方向了。可以配置模型让 AI 改策略逻辑，"
-                                "或者召集团队讨论换一个策略类型。"
-                            ),
-                        )
-                        break
-                    self._post(
-                        pid,
-                        role="assistant",
-                        kind="text",
-                        mode="fallback",
-                        content="**规则降级改进**（未调用大模型）：\n\n" + "\n".join(f"- {n}" for n in notes),
-                    )
-                    self._commit(pid, new_code, note=f"第 {r} 轮规则调参", mode="fallback", model="", before=code)
-                    history.append(f"- 第 {r} 轮：" + "；".join(notes)[:120])
-
-            self._check_stop(pid)
-            self._phase(pid, f"第 {r} 轮 · 平台回测")
-            bt = self.backtest_current(pid, label=f"策略室自动迭代 第{r}轮")
-            if not bt.get("ok"):
-                return
-            ev = bt["evaluation"]
-            self._post(
-                pid,
-                role="event",
-                kind="round",
-                content=f"第 {r} 轮结束",
-                data={
-                    "stage": "round",
-                    "round": r,
-                    "v": (self.store.get(pid) or {}).get("current_v"),
-                    "passed": ev["passed"],
-                    "items": ev["items"],
-                    "metrics": bt.get("metrics"),
-                },
-            )
-            if ev["passed"]:
-                break
-            scores.append(ev["score"])
-            if reason := _hopeless(ev, scores, r):
-                self._post(
-                    pid,
-                    role="event",
-                    kind="goal",
-                    content="提前结束迭代",
-                    data={"stage": "early_stop", "reason": reason, "gaps": G.gap_report(ev)},
-                )
-                break
-
-        # ---- 收尾：选最佳版本 + 压力测试 + 询问 ----
-        self._finish(pid)
+        _autopilot(self, pid, rounds=rounds, research=research, team_id=team_id, force=force)
 
     def _commit(self, pid: str, code: str, *, note: str, mode: str, model: str, before: str) -> None:
-        project = self.store.get(pid) or {}
-        checks = smoke_test(code, project.get("securities"), project.get("timeframe") or "1h")
-        row = self.add_version(
-            pid, code, source="fallback" if mode == "fallback" else "ai", note=note, checks=checks, model=model
-        )
-        self._post(
-            pid,
-            role="tool",
-            kind="code",
-            content=note,
-            data={
-                "v": row["v"],
-                "before": before,
-                "after": code,
-                "params": row["params"],
-                "fills": checks.get("fills"),
-            },
-        )
+        from .lab_autopilot import _commit as _commit_version
+
+        _commit_version(self, pid, code, note=note, mode=mode, model=model, before=before)
 
     def _finish(self, pid: str) -> None:
-        project = self.store.get(pid) or {}
-        scored = [r for r in project.get("versions") or [] if r.get("evaluation")]
-        if not scored:
-            return
-        best = max(scored, key=lambda r: r["evaluation"]["score"])
-        if best["v"] != project.get("current_v"):
-            self.restore(pid, best["v"], note="自动迭代：回到成绩最好的一版")
-        self._check_stop(pid)
-        self._phase(pid, "压力测试")
-        stress = self.backtest_current(pid, cost_scale=2.0, label=f"策略室 v{best['v']} 2倍成本")
-        warn = []
-        base = best.get("metrics") or {}
-        if stress.get("ok"):
-            sm = stress.get("metrics") or {}
-            if (sm.get("total_return") or 0) < 0 <= (base.get("total_return") or 0):
-                warn.append("2 倍成本下收益转负：策略对手续费/滑点非常敏感")
-            elif (base.get("sharpe") or 0) > 0 and (sm.get("sharpe") or 0) < (base.get("sharpe") or 0) * 0.5:
-                warn.append("2 倍成本下夏普下降超过一半")
-        if len(best.get("params") or {}) >= 7:
-            warn.append(f"参数多达 {len(best['params'])} 个，注意过拟合")
-        if (base.get("trades") or 0) < 10:
-            warn.append("交易笔数少于 10，统计意义有限")
-        if best.get("formal") is False:
-            warn.append("数据核验未通过（覆盖不足或数据不新鲜），这是非正式回测，不能据此判断策略是否有效")
-        passed = best["evaluation"]["passed"]
-        self._post(
-            pid,
-            role="event",
-            kind="round",
-            content="迭代完成",
-            data={
-                "stage": "done",
-                "best_v": best["v"],
-                "passed": passed,
-                "items": best["evaluation"]["items"],
-                "metrics": base,
-                "stress": stress.get("metrics") if stress.get("ok") else None,
-                "warnings": warn,
-            },
-        )
-        verdict = "已达成全部验收目标" if passed else "还没有全部达标"
-        tail = f"{'；'.join(warn)}。" if warn else ""
-        self._ask(
-            pid,
-            f"迭代结束：v{best['v']} {verdict}。{tail}你对这个结果满意吗？",
-            ["满意，保存为策略", "继续优化", "换个方向"],
-            decision=True,
-        )
+        from .lab_autopilot import _finish as _finish_run
+
+        _finish_run(self, pid)
 
     # ---------------- 用户决定 ----------------
     def decide(self, pid: str, choice: str, note: str = "") -> None:
-        if self._decide_permission(pid, choice, note):
-            return
-        msgs = [m for m in self.store.messages(pid) if m["kind"] == "ask" and m["data"].get("answered") is None]
-        open_ask = msgs[-1]["data"] if msgs else {}
-        for m in msgs:
-            self.store.update(pid, m["seq"], data={"answered": choice})
-        self._answered(pid)
-        self._post(pid, role="user", kind="text", content=choice + (f"：{note}" if note else ""))
-        text = choice + (f"。{note}" if note else "")
-        # AI 用 ask_user 提的问题（例如选研究方向），或研究者自己写的回答：都交回模型接着做
-        if not open_ask.get("decision") or choice not in (open_ask.get("options") or []):
-            self.chat(pid, text)
-            return
-        if choice.startswith("按建议修改") or choice == "仍然开始":
-            pending = next(
-                (
-                    m["data"].get("resume") or {}
-                    for m in reversed(self.store.messages(pid))
-                    if m["kind"] == "goal" and m["data"].get("stage") == "check"
-                ),
-                {},
-            )
-            if choice != "仍然开始":
-                project = self.store.get(pid) or {}
-                spec = G.project_spec(project)
-                self.set_goal(
-                    pid,
-                    G.apply_suggestions(spec, G.check_spec(spec, history=_history_metrics(project))),
-                    source="suggest",
-                )
-            self.autopilot(
-                pid,
-                force=True,
-                rounds=pending.get("rounds"),
-                research=pending.get("research") or "none",
-                team_id=pending.get("team_id"),
-            )
-            return
-        if choice == "先不开始":
-            self._post(pid, role="assistant", kind="text", content="好的，先不开始。可以输入 `/goal` 重新设定目标。")
-            return
-        if choice.startswith("满意"):
-            if self.tools.save_strategy is None:
-                return
-            project = self.store.get(pid) or {}
-            rec = self._tool(
-                pid,
-                "save_strategy",
-                "保存为平台策略",
-                {"版本": f"v{project.get('current_v')}"},
-                lambda: self.tools.save_strategy(project),
-            )
-            self.store.patch(pid, slug=rec.get("slug"))
-            self._post(pid, role="event", kind="saved", content="已保存为策略草稿", data=rec)
-        elif choice.startswith("继续"):
-            if note:
-                self._chat_or_note(pid, note)
-            self.autopilot(pid, rounds=2)
-        elif choice.startswith("换"):
-            if note:
-                self.store.patch(pid, idea=note)
-                project = self.store.get(pid) or {}
-                self.pin(pid, kind="note", title="研究者的新方向", text=note)
-                self._post(
-                    pid,
-                    role="assistant",
-                    kind="text",
-                    content=f"好的，按新方向重新开始：{note}。我会保留之前的版本以便对比。",
-                )
-                self.store.patch(pid, code="", current_v=project.get("current_v"))
-                self.autopilot(pid)
-            else:
-                # 没写新方向：让模型基于目前结果提几个方向给研究者点选
-                self.chat(pid, "我想换个研究方向。请结合目前的结果提出 2-3 个明显不同的新方向，用 ask_user 让我选。")
-        else:
-            self.chat(pid, text)
+        from .lab_autopilot import decide as _decide
+
+        _decide(self, pid, choice, note)
 
     def _chat_or_note(self, pid: str, note: str) -> None:
         self.pin(pid, kind="note", title="研究者的补充要求", text=note)
 
     def restore(self, pid: str, v: int, *, note: str = "") -> dict[str, Any] | None:
-        project = self.store.get(pid) or {}
-        row = next((r for r in project.get("versions") or [] if r["v"] == v), None)
-        if row is None:
-            return None
-        self.store.patch(pid, code=row["code"], current_v=v)
-        self._post(pid, role="event", kind="text", content=note or f"已切换到 v{v}")
-        return row
+        from .lab_autopilot import restore as _restore
+
+        return _restore(self, pid, v, note=note)
 
 
 # ---------------------------------------------------------------------------
@@ -4139,7 +3343,14 @@ NO_GOAL_TEXT = (
 
 
 def goal_line(project: dict[str, Any]) -> str:
-    return G.items_text(G.project_items(project)) if project_has_goal(project) else NO_GOAL_TEXT
+    symbols = (
+        "自动（尚未设置）"
+        if project.get("market_auto") or not project.get("securities")
+        else ",".join(project["securities"])
+    )
+    if not project_has_goal(project):
+        return NO_GOAL_TEXT
+    return f"标的 {symbols} · {G.items_text(G.project_items(project))}"
 
 
 def _call_market(fn: Callable[..., dict[str, Any]], symbol: str, timeframe: str, bars: int) -> dict[str, Any]:
@@ -4308,10 +3519,16 @@ def _short(reason: str) -> str:
 
 
 __all__ = [
+    "COLLECTION",
     "DEFAULT_GOALS",
+    "IMAGES",
+    "REPORTS",
+    "THREADS",
     "LabStore",
     "LabTools",
     "StrategyLab",
+    "_lock",
+    "_now",
     "evaluate_goals",
     "new_project",
     "rule_revise",

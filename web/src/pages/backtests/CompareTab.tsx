@@ -1,6 +1,6 @@
 /** 策略对比：几个策略在同一份冻结条件（标的、区间、资金、成本）下各跑一次，曲线与指标并排。 */
 import { useCallback, useEffect, useState } from 'react'
-import { ago, v3, type StrategyFile } from '../../api2'
+import { ago, v3, type StrategyFile } from '../../api/research'
 import { compareApi, type CompareBatch, type CompareItem } from '../../apiCompare'
 import { EmptyState, Loading, Panel } from '../../components/ui'
 import type { PageProps } from '../types'

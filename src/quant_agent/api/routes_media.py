@@ -55,7 +55,9 @@ def _download(websearch, url: str) -> tuple[bytes, str]:
         with httpx.Client(timeout=15.0, follow_redirects=False) as client:
             for _ in range(4):
                 websearch._check_url(current)
-                with client.stream("GET", current, headers={"User-Agent": "QuantLab-Media/1.0", "Accept": "image/*"}) as res:
+                with client.stream(
+                    "GET", current, headers={"User-Agent": "QuantLab-Media/1.0", "Accept": "image/*"}
+                ) as res:
                     if res.status_code in (301, 302, 303, 307, 308) and res.headers.get("location"):
                         current = str(httpx.URL(current).join(res.headers["location"]))
                         continue

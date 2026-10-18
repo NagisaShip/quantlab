@@ -531,7 +531,9 @@ class DataHub:
             except Exception as exc:
                 errors.append(f"{conn}: {exc}"[:160])
         result = {"groups": len(groups), "datasets": len(synced), "errors": errors[:10], "at": now}
-        self.store.upsert(CATALOG, {"id": self.AUTO_ID, "kind": "settings", **st, "last_run": now, "last_result": result})
+        self.store.upsert(
+            CATALOG, {"id": self.AUTO_ID, "kind": "settings", **st, "last_run": now, "last_result": result}
+        )
         return result
 
     def sync_async(self, connector: str, **kw: Any) -> None:

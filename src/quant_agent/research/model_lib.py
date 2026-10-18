@@ -45,6 +45,7 @@ class ModelLibrary:
         source: str = "",
         project_id: str = "",
         note: str = "",
+        created_by: str = "user",
     ) -> dict[str, Any]:
         rid = f"r_{uuid.uuid4().hex[:10]}"
         s = report.get("summary") or {}
@@ -65,6 +66,7 @@ class ModelLibrary:
             "project_id": project_id,
             "note": note[:200],
             "synthetic": bool((report.get("panel") or {}).get("synthetic")),
+            "created_by": created_by,
             "created_at": _now(),
         }
         self.store.upsert(RUNS, rec)

@@ -156,3 +156,17 @@ class DemoConnectionService:
         if doc.get("status") == "revoked" or not doc.get("secret_ref"):
             raise AppError(ErrorCode.CREDENTIAL_REVOKED, "模拟盘连接已撤销")
         return self._out(doc), broker_factory(doc["exchange"], doc["env"], self._read_secret(doc["secret_ref"]))
+
+    def bills(self, cid: str, symbol: str, start: int | None = None, end: int | None = None) -> dict[str, Any]:
+        """拉取模拟账户账单，供合约规则核验；密钥只在服务端解密。"""
+        doc, broker = self.broker(cid)
+        try:
+            rows = broker.bills(symbol, start, end)
+            return {
+                "connection": {k: doc.get(k) for k in ("id", "exchange", "env", "env_label", "label")},
+                "rows": rows,
+            }
+        except Exception as exc:
+            raise AppError(ErrorCode.UPSTREAM_UNAVAILABLE, f"读取 {doc.get('label') or cid} 账单失败：{exc}") from exc
+        finally:
+            broker.close()

@@ -1,0 +1,24 @@
+/* README 全页阅读器 */
+.lp-readme { position: fixed; inset: 0; z-index: 80; display: flex; flex-direction: column; background: var(--canvas); color: var(--ink); animation: m-fade var(--dur-2) var(--ease-out); }
+.lp-readme-bar { flex: none; display: flex; align-items: center; gap: 12px; padding: 10px clamp(16px, 4vw, 32px); border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--canvas) 86%, transparent); backdrop-filter: blur(14px); }
+.lp-readme-back { border: 1px solid var(--line); border-radius: 8px; background: var(--sheet); color: var(--ink-2); height: 30px; padding: 0 10px; font-size: 12px; cursor: pointer; }
+.lp-readme-title { display: grid; gap: 1px; min-width: 0; }
+.lp-readme-title b { font-size: 13.5px; }
+.lp-readme-title span { font-size: 10.5px; color: var(--faint); }
+.lp-readme-lang { display: flex; gap: 2px; margin-left: auto; padding: 2px; border-radius: 8px; background: var(--sunken); }
+.lp-readme-lang button { border: 0; background: none; border-radius: 6px; padding: 4px 9px; font-size: 11px; color: var(--muted); cursor: pointer; }
+.lp-readme-lang button.on { background: var(--sheet); color: var(--ink); box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+.lp-readme-scroll { flex: 1; min-height: 0; overflow: auto; }
+.lp-readme-doc { max-width: 920px; margin: 0 auto; padding: 32px clamp(18px, 4vw, 48px) 80px; font-size: 14px; line-height: 1.78; }
+.lp-readme-doc .md h1 { margin-top: 0; }
+.lp-readme-doc .md h2 { margin-top: 32px; padding-bottom: 7px; border-bottom: 1px solid var(--line); }
+.lp-readme-doc .md img { max-width: 100%; border-radius: 10px; }
+@media (max-width: 640px) {
+  .lp-readme-bar { flex-wrap: wrap; gap: 8px; }
+  .lp-readme-title { order: 3; flex-basis: 100%; }
+  .lp-readme-doc { padding: 22px 16px 64px; font-size: 13px; }
+}
+
+/* API 文档：未登录也能从介绍页直接阅读 */
+.lp-docs .lp-readme-scroll { padding: 0; }
+.lp-docs .lp-readme-bar { position: sticky; top: 0; z-index: 2; }

@@ -30,6 +30,7 @@ class OrderRequest:
     # 限价单：GTC 挂到过期 | IOC 只在下一根开盘能成交就成交、否则撤 | post_only 只做挂单方
     time_in_force: str = "GTC"
     on_expire: str = "cancel"  # 限价单到期：cancel 撤单 | market 改市价 | chase 按开盘价重挂（最多 3 次）
+    position_side: str = ""  # hedge 模式：long | short；空表示按 action 推断
 
 
 @dataclass

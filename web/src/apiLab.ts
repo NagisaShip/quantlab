@@ -105,6 +105,8 @@ export interface LabProject {
   /** /plan 的分步计划：AI 一步步执行，直到全部完成且目标达标 */
   plan?: LabPlan | null
   auto_compact?: boolean
+  /** 自动压缩阈值：模型上下文窗口的比例，默认 0.8（80%） */
+  auto_compact_ratio?: number
   market_auto?: boolean
   suggest?: boolean
   /** 单轮最多调用工具的次数（设置里可改，默认 1000） */
@@ -157,11 +159,12 @@ export interface LabMessage {
   role: 'user' | 'assistant' | 'tool' | 'event'
   kind: 'text' | 'tool' | 'code' | 'backtest' | 'round' | 'team' | 'ask' | 'error' | 'saved' | 'goal' | 'walkforward' |
     'factor_code' | 'factor_report' | 'model_spec' | 'model_report' | 'portfolio_spec' | 'portfolio_report' | 'execution_spec' | 'execution_report' | 'discussion' | 'plan' |
-    'report' | 'subagents' | 'cost_sweep' | 'stability'
+    'report' | 'subagents' | 'cost_sweep' | 'stability' | 'parameter_heatmap' | 'stress_test'
   content: string
   data: Record<string, any>
   mode?: 'llm' | 'fallback'
   model?: string
+  feedback?: { rating: 1 | -1; comment?: string; score?: number }
   created_at: number
   updated_at?: number
   rev?: number
@@ -172,6 +175,9 @@ export interface ContextView {
   items: ContextItem[]; total: number; history_tokens: number
   budget: number            // 当前模型的上下文窗口
   history_budget?: number   // 对话原文的保留额度
+  auto_compact?: boolean
+  auto_compact_ratio?: number
+  auto_compact_tokens?: number
   model?: string
 }
 
@@ -236,6 +242,8 @@ export const lab = {
   remove: (id: string, cascade = false) => del<{ ok: boolean; deleted?: string[] }>(`/api/lab/projects/${id}${cascade ? '?cascade=true' : ''}`),
   send: (id: string, text: string, opts: { model?: string; effort?: Effort; suggest?: boolean; images?: { data_url: string; name?: string }[] } = {}) =>
     post<LabView>(`/api/lab/projects/${id}/messages`, { text, ...labPrefs(), ...opts }),
+  feedback: (id: string, seq: number, rating: 1 | -1, comment = '', score?: number) =>
+    post<{ ok: boolean; feedback: { rating: 1 | -1; comment: string; score?: number } | null }>(`/api/lab/projects/${id}/messages/${seq}/feedback`, { rating, comment, score }),
   /** /report：调研报告流程（列提纲 → 搜集资料 → 分析 → 生成报告） */
   report: (id: string, text = '') => post<LabView>(`/api/lab/projects/${id}/report`, { text }),
   getReport: (id: string, rid: string) => get<{ report: Report; project: Pick<LabProject, 'id' | 'title' | 'securities' | 'timeframe'> }>(`/api/lab/projects/${id}/reports/${rid}`),
@@ -266,6 +274,10 @@ export const lab = {
   backtest: (id: string, cost_scale = 1) => post<LabView>(`/api/lab/projects/${id}/backtest`, { cost_scale }),
   /** 成本压力扫描：并行回测多档成本倍数，找出不再满足目标的极限 */
   costSweep: (id: string, scales: number[] = []) => post<LabView>(`/api/lab/projects/${id}/cost-sweep`, { scales }),
+  parameterHeatmap: (id: string, p: { x_param?: string; y_param?: string; x_values?: number[]; y_values?: number[]; metric?: string } = {}) =>
+    post<LabView>(`/api/lab/projects/${id}/parameter-heatmap`, p),
+  stressTest: (id: string, p: { segments?: number; windows?: number; cost_scales?: number[]; sensitivity?: boolean } = {}) =>
+    post<LabView>(`/api/lab/projects/${id}/stress-test`, p),
   saveCode: (id: string, code: string, note = '手动编辑') => post<LabView>(`/api/lab/projects/${id}/code`, { code, note }),
   restore: (id: string, v: number) => post<LabView>(`/api/lab/projects/${id}/versions/${v}/restore`),
   pin: (id: string, p: { kind?: string; title: string; text: string }) => post<{ pin: Pin; context: ContextView }>(`/api/lab/projects/${id}/pins`, p),

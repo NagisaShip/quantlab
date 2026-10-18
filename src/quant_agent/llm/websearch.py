@@ -14,7 +14,9 @@ import html
 import ipaddress
 import re
 import socket
+import time
 from collections.abc import Callable
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from typing import Any
 from urllib.parse import urlparse
 
@@ -51,6 +53,8 @@ _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like
 SECRET_PREFIX = "search:"
 MAX_PAGE_BYTES = 1_500_000
 MAX_TEXT = 12_000
+SEARCH_DEADLINE = 8.0
+SEARCH_WORKERS = 4
 
 
 class WebSearchError(RuntimeError):
@@ -69,11 +73,11 @@ class WebSearch:
 
         self._read = read_secrets
         self.cache: Any = None  # DbCache：同样的搜索 / 网页在一段时间内直接用缓存，不重复请求外部服务
-        self._client = client_factory or (lambda: httpx.Client(timeout=20, follow_redirects=False))
+        self._client = client_factory or (lambda: httpx.Client(timeout=12, follow_redirects=False))
         # 搜索结果页来自固定的公开搜索引擎域名，可以跟随跳转；测试注入的 client_factory 同样用于这里
         self._web = client_factory or (
             lambda: httpx.Client(
-                timeout=15,
+                timeout=8,
                 follow_redirects=True,
                 headers={"User-Agent": _UA, "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.6"},
             )
@@ -180,8 +184,13 @@ class WebSearch:
         if self.cache is None or not (query or "").strip():
             return self._search(query, max_results, topic, source)
         key = f"{source}|{topic}|{max_results}|{(query or '').strip().lower()}"
-        out = self.cache.remember("websearch", key, self.SEARCH_TTL, lambda: self._search(query, max_results, topic, source),
-                                  keep=lambda v: bool(v.get("ok")))
+        out = self.cache.remember(
+            "websearch",
+            key,
+            self.SEARCH_TTL,
+            lambda: self._search(query, max_results, topic, source),
+            keep=lambda v: bool(v.get("ok")),
+        )
         return out
 
     def _search(
@@ -222,7 +231,9 @@ class WebSearch:
             plan = (["serper"] if serper else []) + (["google_cse"] if cse else [])
             if not plan:  # 没有 Google 密钥：如实说明，并用免密钥来源顶上
                 plan = [s for s in ("google_news", "bing", "duckduckgo") if s in free]
-                note = "Google 搜索没有配置密钥（设置 → 模型 → 联网搜索：Serper 或 Google 可编程搜索），已改用免密钥来源"
+                note = (
+                    "Google 搜索没有配置密钥（设置 → 模型 → 联网搜索：Serper 或 Google 可编程搜索），已改用免密钥来源"
+                )
         elif source == "news":
             plan = (["tavily_news"] if tavily else []) + [s for s in ("google_news", "baidu_news") if s in free]
         elif source == "all":
@@ -257,22 +268,47 @@ class WebSearch:
         used: list[str] = []
         seen: set[str] = set()
         merge_all = source in ("all", "news")
-        for name in plan:
-            try:
-                got = self._one(name, query, n, tavily=tavily, serper=serper, news=topic == "news", ctx=ctx)
-            except Exception as exc:  # 单个来源失败不影响其他来源
-                errors[name] = f"{exc.__class__.__name__}: {str(exc)[:120]}"
-                continue
-            if isinstance(got, str):
-                errors[name] = got
-                continue
-            used.append(name)
-            for r in got:
-                if r["url"] and r["url"] not in seen:
-                    seen.add(r["url"])
-                    results.append({**r, "source": r.get("source") or _source_label(name)})
-            if not merge_all and len(results) >= n:
-                break
+        # 搜索页通常 1-3 秒返回，但个别来源会卡到超时。并行探测、整体限时，
+        # 避免按计划串行等待多个 8-15 秒超时。结果仍按完成顺序合并去重。
+        plan = plan[: max(1, SEARCH_WORKERS * 2)]
+        deadline = time.monotonic() + SEARCH_DEADLINE
+        pool = ThreadPoolExecutor(max_workers=min(SEARCH_WORKERS, len(plan)))
+        futures = {
+            pool.submit(self._one, name, query, n, tavily=tavily, serper=serper, news=topic == "news", ctx=ctx): name
+            for name in plan
+        }
+        timed_out = False
+        try:
+            while futures:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    timed_out = True
+                    break
+                done, _ = wait(futures, timeout=min(0.25, remaining), return_when=FIRST_COMPLETED)
+                for fut in done:
+                    name = futures.pop(fut)
+                    try:
+                        got = fut.result()
+                    except Exception as exc:  # 单个来源失败不影响其他来源
+                        errors[name] = f"{exc.__class__.__name__}: {str(exc)[:120]}"
+                        continue
+                    if isinstance(got, str):
+                        errors[name] = got
+                        continue
+                    used.append(name)
+                    for r in got:
+                        if r["url"] and r["url"] not in seen:
+                            seen.add(r["url"])
+                            results.append({**r, "source": r.get("source") or _source_label(name)})
+                if not merge_all and len(results) >= n:
+                    break
+            if timed_out:
+                for _fut, name in futures.items():
+                    errors.setdefault(name, f"超时（>{SEARCH_DEADLINE:g}s）")
+        finally:
+            for fut in futures:
+                fut.cancel()
+            pool.shutdown(wait=False, cancel_futures=True)
         if not results:
             msg = "；".join(f"{_source_label(k)}：{v}" for k, v in errors.items()) or "没有找到结果"
             if not (tavily or serper or cse or brave or custom):
@@ -455,8 +491,13 @@ class WebSearch:
     # ---------------- 抓取 ----------------
     def fetch(self, url: str = "", max_chars: int = 6000) -> dict[str, Any]:
         if self.cache is not None and (url or "").strip():
-            return self.cache.remember("fetch_page", f"{max_chars}|{url.strip()}", self.FETCH_TTL,
-                                       lambda: self._fetch(url, max_chars), keep=lambda v: bool(v.get("ok")))
+            return self.cache.remember(
+                "fetch_page",
+                f"{max_chars}|{url.strip()}",
+                self.FETCH_TTL,
+                lambda: self._fetch(url, max_chars),
+                keep=lambda v: bool(v.get("ok")),
+            )
         return self._fetch(url, max_chars)
 
     def _fetch(self, url: str = "", max_chars: int = 6000) -> dict[str, Any]:

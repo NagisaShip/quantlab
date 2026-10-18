@@ -93,8 +93,9 @@ export default function LabPrefsTab({ notify }: Pick<PageProps, 'notify'>) {
             ))}
           </div>
         </div>
+        <p className="set-section-note">红涨绿跌：红色代表上涨，绿色代表下跌；绿涨红跌相反。只影响颜色显示，不改变任何数值。</p>
         <div className="set-row">
-          <div><b>主题</b><small>跟随系统时会随系统的深浅色切换</small></div>
+          <div><b>主题</b><small>浅色 / 夜间 / 跟随系统；跟随系统时会随系统的深浅色切换</small></div>
           <div className="cmp-seg" role="group" aria-label="主题" style={{ gridTemplateColumns: 'repeat(3, 1fr)', width: 240 }}>
             {([['light', '浅色'], ['dark', '夜间'], ['system', '跟随系统']] as [ThemePref, string][]).map(([v, l]) => (
               <button key={v} type="button" className={theme === v ? 'on' : ''} aria-pressed={theme === v}

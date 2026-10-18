@@ -402,6 +402,15 @@ export async function importFills(
  * 而 E2E 里每个 spec 用的是自己新建的工作区。所以登录前先把 `qa.workspace` 写成目标工作区，
  * 保证界面上的读写与 API 准备阶段落在同一个工作区。
  */
+async function openAuthDrawer(page: Page): Promise<void> {
+  const drawer = page.locator('.lp-drawer')
+  if (!(await drawer.count()) || !(await drawer.isVisible())) {
+    // 介绍页把登录 / 注册放在右侧抽屉里；未 bootstrap 或带邀请码时会自动打开。
+    await page.getByRole('button', { name: '登录 / 注册' }).first().click()
+    await expect(drawer, '登录 / 注册抽屉没有打开').toBeVisible({ timeout: 30_000 })
+  }
+}
+
 export async function uiLogin(page: Page, session: { email: string; password: string; workspaceId?: string }): Promise<void> {
   // 先访问一次同源页面，才能写该源的 localStorage。
   await page.goto('/')
@@ -415,15 +424,16 @@ export async function uiLogin(page: Page, session: { email: string; password: st
     await page.waitForLoadState('domcontentloaded')
   }
 
-  const email = page.locator('input[type="email"]')
-  await expect(email, '登录页没有渲染出邮箱输入框').toBeVisible({ timeout: 30_000 })
-
-  // 注册模式才有邀请码输入框；有的话切回登录。
+  // 登录模式现在支持“用户名或邮箱”，输入框是 autocomplete=username（不是 type=email）。
+  // 注册模式才有邀请码输入框；有的话先切回登录，再定位账号输入框。
+  await openAuthDrawer(page)
   const invite = page.locator('input[placeholder="必填"], input[placeholder="可选：加入已有工作区"]')
   if (await invite.count()) {
     await page.locator('.auth-switch button').click()
     await expect(invite).toHaveCount(0)
   }
+  const email = page.locator('input[autocomplete="username"]').first()
+  await expect(email, '登录页没有渲染出账号输入框').toBeVisible({ timeout: 30_000 })
 
   await email.fill(session.email)
   await page.locator('input[type="password"]').fill(session.password)
@@ -451,15 +461,18 @@ export async function uiRegister(page: Page, session: { email: string; password:
   await page.goto('/')
   await page.waitForLoadState('domcontentloaded')
 
+  // 登录模式只有账号输入框；注册模式才有 type=email。先确保切到注册模式。
+  await openAuthDrawer(page)
+  const account = page.locator('input[autocomplete="username"]').first()
+  await expect(account).toBeVisible({ timeout: 30_000 })
   const email = page.locator('input[type="email"]')
-  await expect(email).toBeVisible({ timeout: 30_000 })
-
-  // 若当前是登录模式，点“注册”切过去。
-  if (!(await page.locator('input[placeholder="可选"]').count())) {
+  if (!(await email.count())) {
     await page.locator('.auth-switch button').click()
+    await expect(email).toBeVisible({ timeout: 30_000 })
   }
+  await account.fill('e2e' + Date.now().toString(36))
   await email.fill(session.email)
-  const name = page.locator('input[placeholder="可选"]')
+  const name = page.locator('input[placeholder^="可选"]')
   if (await name.count()) await name.fill(session.name || 'E2E 用户')
   await page.locator('input[type="password"]').fill(session.password)
   await page.locator('form button[type="submit"], form button.primary').first().click()
@@ -485,7 +498,7 @@ export async function uiStartPaper(
   // 报 `strict mode violation ... resolved to 2 elements`。
   // 页面标题是唯一的 `<h1 data-section="PAPER TRADING">`，用精确名 + 级别锁定它。
   await expect(
-    page.getByRole('heading', { name: '模拟交易', exact: true, level: 1 }),
+    page.getByRole('heading', { name: '纸面模拟', exact: true, level: 1 }),
   ).toBeVisible({ timeout: 30_000 })
 
   // 策略下拉：option 的 value 就是 slug，按 value 精确选中。
@@ -498,7 +511,7 @@ export async function uiStartPaper(
   await strategySelect.selectOption(opts.slug)
 
   if (opts.source === 'demo') {
-    await page.locator('.side-column select').nth(1).selectOption('demo')
+    await page.locator('.side-column select').nth(2).selectOption('demo') // 策略 / 成交方式 / 行情 / 交易所
     await expect(page.getByText('演示行情由时间函数生成', { exact: false })).toBeVisible()
   }
 
@@ -647,14 +660,15 @@ export async function waitPaperRunState(
  * 等实时模拟产生至少 `count` 笔成交。
  *
  * 实时模拟只在**新的已收盘 bar** 上调用策略，所以这里必须真的等一根 bar 过去：
- * 用 1 分钟周期时最长约 60 秒。返回成交数组。
+ * 用 1 分钟周期时最长约 60 秒；CI / 低配机器上 worker 认领与 tick 调度可能更慢，
+ * 因此留 240 秒预算，避免把“慢”误判成“没有成交”。返回成交数组。
  */
 export async function waitPaperFills(
   request: APIRequestContext,
   workspaceId: string,
   id: string,
   count = 1,
-  timeoutMs = 150_000,
+  timeoutMs = 240_000,
 ): Promise<any[]> {
   const deadline = Date.now() + timeoutMs
   let last: any[] = []

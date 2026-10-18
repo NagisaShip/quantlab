@@ -1,51 +1,51 @@
-import { useCallback, useEffect, useState } from 'react'
-import { fmtTime, v3, type LimitMetric, type LimitRule, type LimitWindow, type MemberModelPolicy, type ModelUsage, type QuotaRequest } from '../api2'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { fmtTime, v3, type LimitMetric, type LimitRule, type LimitWindow, type MemberModelPolicy, type ModelUsage, type ProviderQuotaCard, type QuotaRequest, type RecordRetention, type RecordTypeUsage, type ResearchRecordRow } from '../api/research'
 import {
   KIND_LABEL, MODE_LABEL, RUN_STATE, v4,
   type Account, type AuditItem, type Invite, type Me, type Member, type NetworkStatus, type Role, type Run, type RunEvent,
   type TotpStatus, type UsageItem, type UsagePanel as UsagePanelData,
-} from '../api3'
-import { LimitBars, LimitEditor, METRICS, UsageSummary, WINDOWS, fmtCost, fmtTokens } from '../components/modelUsage'
+} from '../api/platform'
+import { LimitBars, LimitEditor, MEMBER_METRICS, METRIC_LABEL, UsageSummary, WINDOWS, fmtCost, fmtTokens, fmtLimitValue, metricUnit, fmtStorageBytes, editorUnit, storageBytesFromInput, storageInputValue } from '../components/modelUsage'
 import { Callout, EmptyState, Field, Heading, Loading, Modal, Panel, Tag } from '../components/ui'
+import { SETTINGS_GROUPS } from '../components/SettingsShell'
 import NodeTab from './NodeTab'
 import LabPrefsTab from './settings/LabPrefs'
+import PrivacyTab from './settings/Privacy'
 import type { PageProps } from './types'
 import { appConfirm } from '../components/dialog'
+import { tData } from '../i18n'
 import { memberDefaults } from '../apiCollab'
+import { useDebouncedValue } from '../useDebouncedValue'
 
-type Tab = 'workspace' | 'quota' | 'members' | 'runs' | 'node' | 'audit' | 'system' | 'account' | 'lab'
-const TABS: { key: Tab; label: string }[] = [
-  { key: 'workspace', label: '工作区' },
-  { key: 'quota', label: '额度与升级' },
-  { key: 'members', label: '成员与邀请' },
-  { key: 'runs', label: '任务与运行' },
-  { key: 'node', label: '运行节点与机器人' },
-  { key: 'audit', label: '审计日志' },
-  { key: 'system', label: '网络与隔离' },
-  { key: 'account', label: '我的账号' },
-  { key: 'lab', label: '研究偏好' },
-]
+type Tab = 'workspace' | 'quota' | 'retention' | 'members' | 'runs' | 'node' | 'audit' | 'system' | 'account' | 'lab' | 'privacy'
+// 从设置侧栏的单一导航定义派生页面标签，避免再次出现“页面已实现但入口没加”的漂移。
+const TABS: { key: Tab; label: string }[] = SETTINGS_GROUPS
+  .flatMap((group) => group.items)
+  .filter((item) => item.key.startsWith('settings/'))
+  .map((item) => ({ key: item.key.slice('settings/'.length) as Tab, label: item.label }))
 const ROLE_LABEL: Record<Role, string> = { admin: '管理员', member: '成员', reviewer: '审阅者（只读）' }
 
 export default function SettingsPage({ tab, me, onNavigate, notify, onMeChanged }: PageProps & { tab?: string; me: Me; onMeChanged: () => void }) {
   const current = (TABS.find((t) => t.key === tab)?.key ?? 'workspace') as Tab
   const isAdmin = me.workspace?.role === 'admin'
   return (
-    <>
+    <div className="settings-page">
       <Heading
         title={TABS.find((t) => t.key === current)!.label}
-        description={current === 'account' ? undefined : current === 'lab' ? '只保存在这台设备的浏览器里，和对话框底栏里的开关同步' : <>工作区「{me.workspace?.name}」· 你的角色：{ROLE_LABEL[me.workspace?.role ?? 'member']}。权限在服务端校验。</>}
+        description={current === 'account' ? undefined : current === 'lab' ? '只保存在这台设备的浏览器里，和对话框底栏里的开关同步' : <>工作区「{me.workspace?.name}」· 你的角色：{ROLE_LABEL[me.workspace?.role ?? 'member']}。</>}
       />
       {current === 'workspace' && <WorkspaceTab me={me} isAdmin={isAdmin} notify={notify} onSaved={onMeChanged} />}
       {current === 'quota' && <QuotaTab me={me} isAdmin={isAdmin} notify={notify} onSaved={onMeChanged} onNavigate={onNavigate} />}
-      {current === 'members' && <MembersTab me={me} isAdmin={isAdmin} notify={notify} />}
+      {current === 'retention' && <RecordRetentionTab isAdmin={isAdmin} notify={notify} />}
+      {current === 'members' && <MembersTab me={me} isAdmin={isAdmin} notify={notify} onNavigate={onNavigate} />}
       {current === 'runs' && <RunsTab notify={notify} onNavigate={onNavigate} readonly={me.workspace?.role === 'reviewer'} />}
       {current === 'node' && <NodeTab notify={notify} isAdmin={isAdmin} onNavigate={onNavigate} />}
       {current === 'audit' && (isAdmin ? <AuditTab notify={notify} /> : <Callout tone="warn">只有工作区管理员可以查看审计日志。</Callout>)}
       {current === 'system' && <SystemTab notify={notify} />}
       {current === 'account' && <AccountTab me={me} notify={notify} onSaved={onMeChanged} />}
       {current === 'lab' && <LabPrefsTab notify={notify} />}
-    </>
+      {current === 'privacy' && (isAdmin ? <PrivacyTab me={me} isAdmin={isAdmin} notify={notify} onSaved={onMeChanged} /> : <Callout tone="warn">只有工作区管理员可以查看隐私与存储设置。</Callout>)}
+    </div>
   )
 }
 
@@ -55,6 +55,20 @@ function WorkspaceTab({ me, isAdmin, notify, onSaved }: { me: Me; isAdmin: boole
   const [tz, setTz] = useState(ws.settings.timezone ?? 'UTC')
   const [newWs, setNewWs] = useState('')
   const [code, setCode] = useState('')
+  const [featureData, setFeatureData] = useState<Awaited<ReturnType<typeof v4.workspaceFeatures>> | null>(null)
+  const [featureBusy, setFeatureBusy] = useState('')
+  const loadFeatures = useCallback(async () => {
+    try { setFeatureData(await v4.workspaceFeatures()) } catch { /* 非管理员也应能读取状态 */ }
+  }, [])
+  useEffect(() => { loadFeatures() }, [loadFeatures])
+  const toggleFeature = async (key: string, on: boolean) => {
+    setFeatureBusy(key)
+    try {
+      const r = await v4.updateWorkspaceFeatures({ [key]: on })
+      setFeatureData((cur) => cur ? { ...cur, enabled: r.enabled } : cur)
+      notify(on ? '功能已开启' : '功能已关闭')
+    } catch (e) { notify((e as Error).message, true) } finally { setFeatureBusy('') }
+  }
   const save = async () => {
     try {
       await v4.updateSettings({ name, timezone: tz })
@@ -62,7 +76,14 @@ function WorkspaceTab({ me, isAdmin, notify, onSaved }: { me: Me; isAdmin: boole
       onSaved()
     } catch (e) { notify((e as Error).message, true) }
   }
+  const featureRows = featureData ? Object.values(featureData.registry) : []
+  const featureGroups = featureRows.reduce<Record<string, typeof featureRows>>((out, row) => {
+    (out[row.group] ||= []).push(row)
+    return out
+  }, {})
+  const statusTone: Record<string, string> = { ready: 'pass', research: 'warn', partial: 'warn', not_implemented: 'fail', blocked: 'fail' }
   return (
+    <>
     <div className="two-columns anim-fade">
       <div>
         <h3 className="section-title">基本信息</h3>
@@ -96,15 +117,128 @@ function WorkspaceTab({ me, isAdmin, notify, onSaved }: { me: Me; isAdmin: boole
         </div>
       </div>
     </div>
+    <Panel title="功能开关与能力边界" subtitle="工作区管理员可以动态开关现货、永续与导入能力；未实现或已阻断的能力不会被开放，也不会用近似模型冒充。">
+      {!featureData ? <Loading label="读取能力开关" /> : (
+        <div className="feature-switches">
+          {Object.entries(featureGroups).map(([group, rows]) => (
+            <section key={group} className="feature-group">
+              <h4>{group}</h4>
+              {rows.map((row) => {
+                const on = !!featureData.enabled[row.key]
+                const locked = !isAdmin || row.implementation === 'not_implemented' || row.implementation === 'blocked'
+                return (
+                  <div className="feature-row" key={row.key}>
+                    <div className="feature-copy">
+                      <div><b>{row.label}</b> <Tag tone={statusTone[row.implementation]}>{row.implementation}</Tag></div>
+                      {row.note && <small>{row.note}</small>}
+                    </div>
+                    <button type="button" role="switch" aria-checked={on} aria-label={`${row.label}${on ? '已开启' : '已关闭'}`}
+                      className={`switch${on ? ' on' : ''}`} disabled={locked || featureBusy === row.key}
+                      title={locked ? (isAdmin ? '该能力尚未实现或已阻断' : '只有工作区管理员可以修改') : ''}
+                      onClick={() => toggleFeature(row.key, !on)}><i /></button>
+                  </div>
+                )
+              })}
+            </section>
+          ))}
+          <Callout tone="info">
+            关闭永续后，Agent、回测、策略包导入和 Freqtrade 做空/杠杆入口都会在服务端拒绝。
+            真实资金永续保持阻断；微实盘目前只支持 Binance / OKX 现货。
+          </Callout>
+        </div>
+      )}
+    </Panel>
+    </>
   )
 }
 
 const STATUS_LABEL: Record<QuotaRequest['status'], [string, string]> = { pending: ['待处理', 'warn'], approved: ['已批准', 'pass'], denied: ['已拒绝', 'fail'] }
 const ruleText = (r: LimitRule) =>
-  `${WINDOWS.find(([k]) => k === r.window)?.[1]} ${r.metric === 'cost' ? `¥${r.limit}` : `${fmtTokens(Number(r.limit))} token`}`
+  `${WINDOWS.find(([k]) => k === r.window)?.[1]} ${METRIC_LABEL[r.metric]} ${fmtLimitValue(r.metric, r.limit)}${r.metric === 'cost' ? '' : metricUnit(r.metric)}`
+
+const PROVIDER_STATE: Record<ProviderQuotaCard['state'], [string, string]> = {
+  active: ['正常', 'pass'], near: ['接近上限', 'warn'], exhausted: ['已超限', 'fail'], missing: ['未配置密钥', 'warn'],
+}
+
+function ProviderQuotaCards({ cards, note, loading }: { cards: ProviderQuotaCard[]; note: string; loading: boolean }) {
+  if (loading && !cards.length) return <Loading label="正在汇总模型来源额度" />
+  if (!cards.length) return <Callout tone="warn">还没有可查询的模型来源，请先在「模型」里添加服务商。</Callout>
+  return (
+    <>
+      <div className="pq-grid">
+        {cards.map((c) => (
+          <article className="pq-card anim-rise" key={`${c.scope}-${c.name}`}>
+            <header className="pq-head">
+              <div><b>{c.label}</b><small>{c.name} · {c.models.length} 个模型</small></div>
+              <span className={`scope-tag ${c.scope}`}>{c.scope === 'workspace' ? '工作区' : '个人'}</span>
+              <Tag tone={PROVIDER_STATE[c.state][1]}>{PROVIDER_STATE[c.state][0]}</Tag>
+            </header>
+            <div className="pq-billing">
+              <span className={`pq-bill ${c.billing}`}>{c.billing === 'subscription' ? (c.remote?.available ? '订阅额度 · 实时' : '订阅额度') : 'API 按量计费'}</span>
+              <span>均价 {c.avg_cost_per_call ? fmtCost(c.avg_cost_per_call) : '—'} / 次</span>
+            </div>
+            {c.remote?.available ? (
+              <div className="pq-remote">
+                <div className="pq-remote-head">
+                  <span><i className={`pq-live-dot ${c.remote.windows.month?.status === 'ok' ? 'ok' : 'warn'}`} />OpenCode 实时额度</span>
+                  <small>{c.remote.updated_at_text || fmtTime(c.remote.updated_at)} 更新</small>
+                </div>
+                <div className="pq-windows">
+                  {(['5h', 'week', 'month'] as const).map((k) => {
+                    const w = c.remote?.windows[k]
+                    if (!w) return null
+                    const pct = Math.max(0, Math.min(100, w.used_pct))
+                    return (
+                      <div key={k} className={`pq-window pq-window-quota ${pct >= 80 ? 'warn' : ''}`}>
+                        <small>{w.label || ({ '5h': '5 小时', week: '本周', month: '本月' }[k])}</small>
+                        <b>{Math.round(w.remaining_pct)}%</b>
+                        <span>剩余 · 已用 {Math.round(w.used_pct)}%</span>
+                        <div className="pq-meter" title={`已用 ${pct.toFixed(1)}%`}><i style={{ width: `${pct}%` }} /></div>
+                        <span className="pq-reset">{w.resets_at_text ? `刷新 ${w.resets_at_text}` : '刷新时间未知'}</span>
+                      </div>
+                    )
+                  })}
+                </div>
+                <div className="pq-remote-meta">
+                  数据来自 OpenCode Go{c.remote.timezone ? ` · ${c.remote.timezone}` : ''}
+                </div>
+              </div>
+            ) : (
+              <>
+                <div className="pq-windows">
+                  {([['5h', '5 小时'], ['week', '本周'], ['month', '本月']] as const).map(([k, label]) => {
+                    const w = c.windows[k]
+                    return <div key={k} className="pq-window"><small>{label}</small><b>{fmtCost(w.cost)}</b><span>{w.calls} 次 · {fmtTokens(w.tokens)} token</span></div>
+                  })}
+                </div>
+                {c.remote && !c.remote.available && <div className="pq-remote-error">实时额度暂不可用：{c.remote.reason || '服务商未返回数据'}</div>}
+              </>
+            )}
+            {c.remote?.available && (
+              <div className="pq-platform-line">
+                平台记账：5 小时 {fmtCost(c.windows['5h'].cost)} · 本周 {fmtCost(c.windows.week.cost)} · 本月 {fmtCost(c.windows.month.cost)}
+              </div>
+            )}
+            <div className="pq-total">
+              <span>累计计费</span><b>{fmtCost(c.total.cost)}</b>
+              <small>{c.total.calls.toLocaleString()} 次 · {fmtTokens(c.total.tokens)} token</small>
+            </div>
+            <div className="pq-mix">
+              输入 {fmtTokens(c.total.input_tokens)} · 输出 {fmtTokens(c.total.output_tokens)}
+              {c.total.input_tokens > 0 && <> · 缓存命中 {(c.total.cache_read_tokens / c.total.input_tokens * 100).toFixed(1)}%</>}
+            </div>
+            {c.limits.length > 0 && <LimitBars items={c.limits} compact />}
+            <footer>最近使用：{c.last_used ? fmtTime(c.last_used) : '暂无调用'}</footer>
+          </article>
+        ))}
+      </div>
+      <p className="hint" style={{ marginTop: 10 }}>{note}</p>
+    </>
+  )
+}
 
 /**
- * 额度与升级：AI 模型额度——成员看自己的限额并申请提升，管理员审批（批准后自动更新该成员的限额）
+ * 额度与用量：AI 模型额度——成员看自己的限额并申请提升，管理员审批（批准后自动更新该成员的限额）
  * 并查看整个工作区的模型用量与费用；下面是运行额度（管理员设置）与平台用量。
  */
 function QuotaTab({ me, isAdmin, notify, onSaved, onNavigate }: {
@@ -114,13 +248,18 @@ function QuotaTab({ me, isAdmin, notify, onSaved, onNavigate }: {
   const [mine, setMine] = useState<ModelUsage | null>(null)
   const [wsUsage, setWsUsage] = useState<ModelUsage | null>(null)
   const [requests, setRequests] = useState<QuotaRequest[]>([])
+  const [providerCards, setProviderCards] = useState<ProviderQuotaCard[]>([])
+  const [providerNote, setProviderNote] = useState('')
+  const [providerLoading, setProviderLoading] = useState(true)
   const [ask, setAsk] = useState<{ metric: LimitMetric; window: LimitWindow; limit: string; reason: string }>({ metric: 'tokens', window: '1d', limit: '', reason: '' })
-  const load = useCallback(() => {
+  const load = useCallback((refresh = false) => {
     v3.modelUsage(30, 'me').then(setMine).catch(() => undefined)
     v3.quotaRequests().then((r) => setRequests(r.requests)).catch(() => undefined)
     if (isAdmin) v3.modelUsage(30, 'workspace').then(setWsUsage).catch(() => undefined)
-  }, [isAdmin])
-  useEffect(load, [load])
+    setProviderLoading(true)
+    v3.providerQuotas(refresh).then((r) => { setProviderCards(r.cards); setProviderNote(r.note) }).catch((e) => notify((e as Error).message, true)).finally(() => setProviderLoading(false))
+  }, [isAdmin, notify])
+  useEffect(() => { load(false) }, [load])
   const num = (k: keyof typeof q) => (
     <input type="number" min={0} value={Number(q[k])} disabled={!isAdmin} onChange={(e) => setQ({ ...q, [k]: Number(e.target.value) })} />
   )
@@ -129,7 +268,9 @@ function QuotaTab({ me, isAdmin, notify, onSaved, onNavigate }: {
   }
   const submit = async () => {
     try {
-      await v3.requestQuota(ask)
+      const limit = ask.metric === 'storage_bytes' ? storageBytesFromInput(ask.limit) : ask.limit
+      if (!limit) throw new Error('请填写希望的上限')
+      await v3.requestQuota({ ...ask, limit })
       setAsk({ ...ask, limit: '', reason: '' })
       notify('已提交，等待管理员审批')
       load()
@@ -147,6 +288,15 @@ function QuotaTab({ me, isAdmin, notify, onSaved, onNavigate }: {
     <div className="quota-page anim-fade">
       <section className="set-section">
         <div className="set-section-head">
+          <h3>模型来源额度</h3>
+          <button className="button small ghost" disabled={providerLoading} onClick={() => load(true)}>{providerLoading ? '更新中…' : '更新'}</button>
+        </div>
+        <p className="set-section-note">OpenCode 来源显示服务商实时 5 小时 / 本周 / 本月剩余额度与刷新时间；其他来源按平台真实记账数据汇总 5 小时、本周、本月与累计调用。</p>
+        <ProviderQuotaCards cards={providerCards} note={providerNote} loading={providerLoading} />
+      </section>
+
+      <section className="set-section">
+        <div className="set-section-head">
           <h3>AI 模型额度</h3>
           <button className="button small ghost" onClick={() => onNavigate('models')}>模型设置 →</button>
         </div>
@@ -160,14 +310,17 @@ function QuotaTab({ me, isAdmin, notify, onSaved, onNavigate }: {
           <div className="quota-ask anim-rise">
             <b>申请提升额度</b>
             <div className="quota-ask-row">
-              <select value={ask.metric} onChange={(e) => setAsk({ ...ask, metric: e.target.value as LimitMetric })} aria-label="计量方式">
-                {METRICS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+              <select value={ask.metric} onChange={(e) => {
+                const metric = e.target.value as LimitMetric
+                setAsk({ ...ask, metric, window: metric === 'storage_bytes' ? 'total' : ask.window })
+              }} aria-label="计量方式">
+                {MEMBER_METRICS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
               </select>
-              <select value={ask.window} onChange={(e) => setAsk({ ...ask, window: e.target.value as LimitWindow })} aria-label="时间段">
+              <select value={ask.window} disabled={ask.metric === 'storage_bytes'} onChange={(e) => setAsk({ ...ask, window: e.target.value as LimitWindow })} aria-label="时间段">
                 {WINDOWS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
               </select>
               <input type="number" min={0} value={ask.limit} onChange={(e) => setAsk({ ...ask, limit: e.target.value })}
-                placeholder={ask.metric === 'cost' ? '希望的上限（元）' : '希望的上限（token）'} aria-label="希望的上限" />
+                placeholder={`希望的上限（${editorUnit(ask.metric)}）`} aria-label="希望的上限" />
             </div>
             <textarea rows={2} value={ask.reason} maxLength={300} onChange={(e) => setAsk({ ...ask, reason: e.target.value })} placeholder="用途说明（可选），例如：本周要跑多轮策略调研" />
             <div className="button-row"><button className="button primary small" disabled={!(Number(ask.limit) > 0)} onClick={submit}>提交申请</button></div>
@@ -249,7 +402,7 @@ function QuotaTab({ me, isAdmin, notify, onSaved, onNavigate }: {
  * 字节数的展示格式。**只影响显示**：后端给的是十进制字符串，这里除以 1024 只为可读，
  * 页面上仍同时保留原始字节数（`title`），避免"看起来约等于"掩盖真实用量。
  */
-function fmtBytes(v: string): { text: string; exact: string } {
+function fmtBytesWithExact(v: string): { text: string; exact: string } {
   const n = Number(v)
   if (!Number.isFinite(n) || n < 1024) return { text: `${v} 字节`, exact: `${v} 字节` }
   const units = ['KB', 'MB', 'GB', 'TB']
@@ -322,7 +475,7 @@ function UsagePanel({ isAdmin, notify }: { isAdmin: boolean; notify: PageProps['
           <tbody>
             {data.items.map((it) => {
               const isBytes = it.unit === '字节'
-              const used = isBytes ? fmtBytes(it.used) : { text: `${it.used} ${it.unit}`, exact: `${it.used} ${it.unit}` }
+              const used = isBytes ? fmtBytesWithExact(it.used) : { text: `${it.used} ${it.unit}`, exact: `${it.used} ${it.unit}` }
               return (
                 <tr key={it.metric}>
                   <td>{it.label}</td>
@@ -334,7 +487,7 @@ function UsagePanel({ isAdmin, notify }: { isAdmin: boolean; notify: PageProps['
                           onChange={(e) => setDraft({ ...draft, [it.quota_key]: e.target.value })} style={{ width: 120, textAlign: 'right' }} />
                         <small className="muted"> {isBytes ? 'GB' : it.unit}</small>
                       </span>
-                    ) : it.limit === null ? '不限' : (isBytes ? fmtBytes(it.limit).text : it.limit)}
+                    ) : it.limit === null ? '不限' : (isBytes ? fmtBytesWithExact(it.limit).text : it.limit)}
                   </td>
                   <td className="right">
                     {it.used_percent === null ? '—' : (
@@ -355,8 +508,11 @@ function UsagePanel({ isAdmin, notify }: { isAdmin: boolean; notify: PageProps['
   )
 }
 
-function MembersTab({ me, isAdmin, notify }: { me: Me; isAdmin: boolean; notify: PageProps['notify'] }) {
+function MembersTab({ me, isAdmin, notify, onNavigate }: {
+  me: Me; isAdmin: boolean; notify: PageProps['notify']; onNavigate: (k: string) => void
+}) {
   const [data, setData] = useState<{ members: Member[]; invites: Invite[] } | null>(null)
+  const [mine, setMine] = useState<ModelUsage | null>(null)
   const [role, setRole] = useState<Role>('member')
   const [email, setEmail] = useState('')
   const [created, setCreated] = useState<Invite | null>(null)
@@ -364,6 +520,7 @@ function MembersTab({ me, isAdmin, notify }: { me: Me; isAdmin: boolean; notify:
   const [editing, setEditing] = useState<{ m: MemberModelPolicy; limits: LimitRule[] } | null>(null)
   const load = useCallback(() => {
     v4.members().then(setData).catch((e) => notify(e.message, true))
+    v3.modelUsage(30, 'me').then(setMine).catch(() => undefined)
     if (isAdmin) v3.memberPolicies().then((r) => setPolicies(Object.fromEntries(r.members.map((m) => [m.user_id, m])))).catch(() => undefined)
   }, [notify, isAdmin])
   useEffect(load, [load])
@@ -373,19 +530,27 @@ function MembersTab({ me, isAdmin, notify }: { me: Me; isAdmin: boolean; notify:
   }
   const toggle = (pol: MemberModelPolicy, key: 'use_workspace_models' | 'allow_personal_models') =>
     act(() => v3.setMemberPolicy(pol.user_id, { [key]: !pol[key] }), '模型权限已更新')
+  const setStorageLimit = (bytes: string) => {
+    if (!editing) return
+    const limits = editing.limits.filter((r) => r.metric !== 'storage_bytes')
+    if (bytes) limits.push({ metric: 'storage_bytes', window: 'total', limit: bytes })
+    setEditing({ ...editing, limits })
+  }
   return (
-    <div className="anim-fade">
-      {isAdmin && (
-        <p className="hint" style={{ marginTop: 0 }}>
-          「用共享模型」打开时，成员的 AI 调用走你在「模型」里共享的服务商（使用你的 API 密钥）；限额按滚动时间段计算，超额后该成员暂时不能用共享模型，可在「额度与升级」里申请提升。
-        </p>
-      )}
-      <div className="table-wrap">
-        <table>
+    <div className="anim-fade members-page">
+      <p className="hint" style={{ marginTop: 0 }}>
+        成员配额按“所有规则同时生效”计算：可以组合 token、费用、CPU 秒、回测次数、优化组合数与上传存储空间。
+        {isAdmin ? ' 单独设置的成员使用自己的规则；没有单独设置的成员继承“新成员默认限额”。' : ' 你可以在下方查看自己的真实占用；完整模型用量在「额度与用量」中。'}
+      </p>
+
+      {mine && <MemberUsagePanel data={mine} isAdmin={isAdmin} onNavigate={onNavigate} />}
+
+      <div className="table-wrap members-table-wrap">
+        <table className={`settings-table members-table${isAdmin ? '' : ' compact'}`}>
           <thead>
             <tr>
               <th>成员</th><th>角色</th>
-              {isAdmin && <><th>用共享模型</th><th>个人服务商</th><th>模型限额</th><th className="right">近 30 天</th></>}
+              {isAdmin && <><th>共享模型</th><th>个人服务商</th><th>存储占用</th><th>配额</th><th className="right">近 30 天模型</th></>}
               <th>最近登录</th>{isAdmin && <th />}
             </tr>
           </thead>
@@ -417,15 +582,23 @@ function MembersTab({ me, isAdmin, notify }: { me: Me; isAdmin: boolean; notify:
                       <button type="button" role="switch" aria-checked={pol.allow_personal_models} aria-label="允许添加个人服务商"
                         className={`switch${pol.allow_personal_models ? ' on' : ''}`} onClick={() => toggle(pol, 'allow_personal_models')}><i /></button>
                     </td>
+                    <td className="member-storage-cell">
+                      <b>{fmtStorageBytes(pol.storage?.used_bytes ?? 0)}</b>
+                      <small>{pol.storage?.file_count ?? 0} 个文件 · 含缩略图</small>
+                      {pol.limit_status.some((s) => s.metric === 'storage_bytes' && s.exceeded) && <Tag tone="fail">已超限</Tag>}
+                    </td>
                     <td>
-                      <button type="button" className="link-btn" onClick={() => setEditing({ m: pol, limits: pol.limits })}>
-                        {pol.limits.length ? pol.limits.map(ruleText).join('；') : '不限额'}
-                      </button>
-                      {pol.limit_status.some((s) => s.exceeded) && <> <Tag tone="fail">已超额</Tag></>}
+                      {m.role === 'admin' ? <span className="muted">管理员不受成员配额约束</span> : (
+                        <button type="button" className="quota-link" onClick={() => setEditing({ m: pol, limits: pol.limits })}>
+                          <b>{pol.limits.length ? `${pol.limits.length} 条叠加规则` : '不限额'}</b>
+                          <small>{pol.custom_limits ? '单独设置' : '继承默认'}</small>
+                        </button>
+                      )}
+                      {pol.limit_status.some((s) => s.exceeded) && m.role !== 'admin' && <> <Tag tone="fail">已超额</Tag></>}
                     </td>
                     <td className="right mono" title={`${pol.usage_30d.calls} 次调用 · ${fmtTokens(pol.usage_30d.tokens)} token`}>{fmtCost(pol.usage_30d.cost)}</td>
                   </>
-                ) : <><td /><td /><td /><td /></>)}
+                ) : <><td /><td /><td /><td /><td /></>)}
                 <td>{m.last_login_at ? fmtTime(m.last_login_at) : '—'}</td>
                 {isAdmin && <td className="right">{m.user_id !== me.user.id && (
                   <button className="button small danger" onClick={async () => await appConfirm(`移出 ${m.email}？`) && act(() => v4.removeMember(m.user_id), '已移出')}>移出</button>
@@ -477,19 +650,86 @@ function MembersTab({ me, isAdmin, notify }: { me: Me; isAdmin: boolean; notify:
         </Modal>
       )}
       {editing && (
-        <Modal title={`${editing.m.name || editing.m.email} 的模型限额`} onClose={() => setEditing(null)} width={560}>
-          <p className="hint" style={{ marginTop: 0 }}>只约束该成员使用工作区共享模型的用量；滚动时间段，按 token 或按费用（按服务商上填写的价格折算）。</p>
+        <Modal title={`${editing.m.name || editing.m.email} · 配额设置`} onClose={() => setEditing(null)} width={660}>
+          <p className="hint" style={{ marginTop: 0 }}>
+            所有规则同时生效，任一规则超限即拒绝。存储配额按当前上传原文件与缩略图的合计占用计算；模型与计算类规则按各自时间窗口计算。
+          </p>
+          <div className="member-quota-overview">
+            <span><small>上传存储</small><b>{fmtStorageBytes(editing.m.storage?.used_bytes ?? 0)}</b><em>{editing.m.storage?.file_count ?? 0} 个文件</em></span>
+            <span><small>近 30 天模型调用</small><b>{editing.m.usage_30d.calls.toLocaleString()}</b><em>{fmtTokens(editing.m.usage_30d.tokens)} token · {fmtCost(editing.m.usage_30d.cost)}</em></span>
+          </div>
           <LimitBars items={editing.m.limit_status} />
-          <LimitEditor rules={editing.limits} onChange={(limits) => setEditing({ ...editing, limits })} />
+          <StorageQuotaQuick
+            value={editing.limits.find((r) => r.metric === 'storage_bytes')?.limit ?? ''}
+            usedBytes={editing.m.storage?.used_bytes ?? 0}
+            fileCount={editing.m.storage?.file_count ?? 0}
+            onChange={setStorageLimit}
+          />
+          <div className="lim-editor-head"><b>叠加限额</b><small>每条规则独立判定；同一计量方式可设置每日、每周、累计或滚动窗口。</small></div>
+          <LimitEditor rules={editing.limits.filter((r) => r.metric !== 'storage_bytes')} metrics={MEMBER_METRICS.filter(([k]) => k !== 'storage_bytes')}
+            onChange={(limits) => setEditing({
+              ...editing,
+              limits: [...limits, ...editing.limits.filter((r) => r.metric === 'storage_bytes')],
+            })} />
           <div className="button-row" style={{ marginTop: 14, justifyContent: 'flex-end' }}>
             <button className="button" onClick={() => setEditing(null)}>取消</button>
             <button className="button primary" onClick={async () => {
-              await act(() => v3.setMemberPolicy(editing.m.user_id, { limits: editing.limits.filter((r) => Number(r.limit) > 0) }), '限额已更新')
+              await act(() => v3.setMemberPolicy(editing.m.user_id, { limits: editing.limits.filter((r) => Number(r.limit) > 0) }), '配额已更新')
               setEditing(null)
             }}>保存</button>
           </div>
         </Modal>
       )}
+    </div>
+  )
+}
+
+function MemberUsagePanel({ data, isAdmin, onNavigate }: { data: ModelUsage; isAdmin: boolean; onNavigate: (k: string) => void }) {
+  const storageRules = data.my_limits.filter((s) => s.metric === 'storage_bytes')
+  return (
+    <section className="set-section member-self-usage">
+      <div className="set-section-head">
+        <div><h3>我的用量</h3><p className="set-section-note">服务端按当前登录成员统计，其他人的用量不会在这里暴露。</p></div>
+        <button className="button small ghost" onClick={() => onNavigate('quota')}>额度与用量 →</button>
+      </div>
+      <div className="usage-kpis">
+        <div className="usage-kpi anim-rise"><small>上传存储</small><b>{fmtStorageBytes(data.storage?.used_bytes ?? 0)}</b><em>{data.storage?.file_count ?? 0} 个文件（含缩略图）</em></div>
+        <div className="usage-kpi anim-rise" style={{ animationDelay: '40ms' }}><small>近 30 天模型调用</small><b>{data.total.calls.toLocaleString()}</b><em>{fmtCost(data.total.cost)}</em></div>
+        <div className="usage-kpi anim-rise" style={{ animationDelay: '80ms' }}><small>近 30 天 token</small><b>{fmtTokens(data.total.tokens)}</b><em>输入缓存命中 {data.total.cache_hit_rate == null ? '—' : `${(data.total.cache_hit_rate * 100).toFixed(1)}%`}</em></div>
+        <div className="usage-kpi anim-rise" style={{ animationDelay: '120ms' }}><small>近 30 天计算任务</small><b>{Number(data.tasks?.backtests ?? 0).toLocaleString()} 次回测</b><em>CPU {Number(data.tasks?.cpu_seconds ?? 0).toFixed(1)} 秒 · 优化 {Number(data.tasks?.optimize_combinations ?? 0)} 组</em></div>
+      </div>
+      {storageRules.length ? <LimitBars items={storageRules} /> : (
+        <p className="hint member-usage-note">{isAdmin ? '管理员上传不受成员存储配额限制。' : '当前没有设置上传存储上限。'}</p>
+      )}
+    </section>
+  )
+}
+
+function StorageQuotaQuick({ value, usedBytes, fileCount, onChange, disabled }: {
+  value: string; usedBytes: number; fileCount: number; onChange: (bytes: string) => void; disabled?: boolean
+}) {
+  const [draft, setDraft] = useState(() => storageInputValue(value))
+  useEffect(() => { setDraft(storageInputValue(value)) }, [value])
+  const presets: [string, number][] = [['512 MB', 512], ['1 GB', 1024], ['5 GB', 5120], ['10 GB', 10240]]
+  return (
+    <div className="storage-quota-box">
+      <div className="storage-quota-head">
+        <div><b>上传存储限额</b><small>当前 {fmtStorageBytes(usedBytes)} · {fileCount} 个文件；统计原文件 + 服务端缩略图</small></div>
+        <span className="tag">存量配额</span>
+      </div>
+      <div className="storage-quota-row">
+        <input type="number" min={0} step={1} inputMode="decimal" value={draft} disabled={disabled}
+          onChange={(e) => { setDraft(e.target.value); onChange(storageBytesFromInput(e.target.value)) }}
+          placeholder="例如 512" aria-label="上传存储上限（MB）" />
+        <span>MB</span>
+        <button type="button" className="button small ghost" disabled={disabled || !value} onClick={() => onChange('')}>不限额</button>
+      </div>
+      <div className="button-row tight">
+        {presets.map(([label, gb]) => (
+          <button type="button" key={label} className="button small ghost" disabled={disabled}
+            onClick={() => onChange(String(Math.round(gb * 1024 ** 2)))}>{label}</button>
+        ))}
+      </div>
     </div>
   )
 }
@@ -502,84 +742,401 @@ function DefaultLimits({ notify }: { notify: PageProps['notify'] }) {
   return (
     <section className="set-section" style={{ marginTop: 22 }}>
       <h3 className="section-title">新成员默认限额</h3>
-      <p className="hint" style={{ marginTop: 0 }}>你邀请来的成员使用工作区共享模型（你的 API 密钥）时，没有单独设过限额的都按这里计算。可以组合多条，例如「每日 ¥5 + 每周 ¥20 + 累计 ¥200」。单独设置过的成员以表格里的为准。</p>
-      <LimitEditor rules={rules} onChange={setRules} empty="不限额" />
+      <p className="hint" style={{ marginTop: 0 }}>没有单独设置过配额的成员继承这里。多条规则会同时生效，例如「每日 ¥5 + 每周 ¥20 + 累计 ¥200 + 上传存储 2 GB + 研究记录 500 单位」。研究记录按回测、因子、模型、组合和执行产物的倍率折算；PIN 只防止自动清理/删除，不会减少已占用单位。单独设置过的成员以成员表格里的配额为准。</p>
+      <LimitEditor rules={rules} metrics={MEMBER_METRICS} onChange={setRules} empty="不限额" />
       <button type="button" className="button small primary" style={{ marginTop: 8 }} onClick={async () => {
-        try { setRules((await memberDefaults.save(rules.filter((r) => Number(r.limit) > 0))).limits); notify('默认限额已保存') } catch (e) { notify((e as Error).message, true) }
-      }}>保存默认限额</button>
+        try { setRules((await memberDefaults.save(rules.filter((r) => Number(r.limit) > 0))).limits); notify('默认配额已保存') } catch (e) { notify((e as Error).message, true) }
+      }}>保存默认配额</button>
     </section>
+  )
+}
+
+function RecordRetentionTab({ isAdmin, notify }: { isAdmin: boolean; notify: PageProps['notify'] }) {
+  const [data, setData] = useState<RecordRetention | null>(null)
+  const [records, setRecords] = useState<ResearchRecordRow[]>([])
+  const [recordType, setRecordType] = useState('')
+  const [query, setQuery] = useState('')
+  const debouncedQuery = useDebouncedValue(query)
+  const [recordsLoading, setRecordsLoading] = useState(false)
+  const [recordsHasMore, setRecordsHasMore] = useState(false)
+  const [recordsNext, setRecordsNext] = useState<{ time: number; id: string } | null>(null)
+  const recordsRequest = useRef(0)
+  const [autoDelete, setAutoDelete] = useState(false)
+  const [perStrategy, setPerStrategy] = useState(5)
+  const [autoStrategy, setAutoStrategy] = useState(true)
+  const [adminMax, setAdminMax] = useState(100000)
+  const [multipliers, setMultipliers] = useState<Record<string, number>>({})
+  const [saving, setSaving] = useState('')
+
+  const apply = (next: RecordRetention) => {
+    setData(next)
+    setAutoDelete(next.user.auto_delete_oldest)
+    setPerStrategy(next.user.per_strategy_limit)
+    setAutoStrategy(next.user.auto_delete_strategy_oldest)
+    setAdminMax(next.workspace.max_units_per_user)
+    setMultipliers(Object.fromEntries(next.usage.types.map((item) => [item.key, item.multiplier])))
+  }
+
+  const loadData = useCallback(async () => {
+    setSaving('load')
+    try {
+      apply(await v3.recordRetention())
+    } catch (e) {
+      notify((e as Error).message, true)
+    } finally {
+      setSaving('')
+    }
+  }, [notify])
+
+  const loadRecords = useCallback(async (cursor?: { time: number; id: string } | null, append = false) => {
+    const request = ++recordsRequest.current
+    setRecordsLoading(true)
+    try {
+      const page = await v3.recordRetentionRecords({
+        type: recordType || undefined,
+        q: debouncedQuery || undefined,
+        before_time: cursor?.time,
+        before_id: cursor?.id,
+        limit: 100,
+      })
+      if (request !== recordsRequest.current) return
+      setRecords((prev) => append ? [...prev, ...page.items] : page.items)
+      setRecordsHasMore(page.has_more)
+      setRecordsNext(page.next_cursor)
+    } catch (e) {
+      if (request === recordsRequest.current) notify((e as Error).message, true)
+    } finally {
+      if (request === recordsRequest.current) setRecordsLoading(false)
+    }
+  }, [debouncedQuery, notify, recordType])
+
+  useEffect(() => { void loadData() }, [loadData])
+  useEffect(() => { void loadRecords() }, [loadRecords])
+
+  if (!data) return <Loading label="读取研究记录设置" />
+  const u = data.usage
+  const fmtUnits = (value: number) => value.toLocaleString(undefined, { maximumFractionDigits: 2 })
+  const fmtApprox = (bytes?: number) => bytes ? `约 ${(bytes / 1024).toFixed(0)} KB` : '—'
+  const over = u.total_units > u.max_units_per_user
+
+  const saveUser = async () => {
+    setSaving('user')
+    try {
+      apply(await v3.saveRecordRetention({
+        auto_delete_oldest: autoDelete,
+        per_strategy_limit: Math.max(1, Math.min(100, Math.round(perStrategy || 5))),
+        auto_delete_strategy_oldest: autoStrategy,
+      }))
+      notify('研究记录清理设置已保存')
+    } catch (e) { notify((e as Error).message, true) } finally { setSaving('') }
+  }
+
+  const saveWorkspace = async () => {
+    setSaving('workspace')
+    try {
+      apply(await v3.saveRecordWorkspaceRetention(Math.max(1, Math.min(1000000, Math.round(adminMax || 100000)))))
+      notify('每名成员的研究记录单位上限已保存')
+    } catch (e) { notify((e as Error).message, true) } finally { setSaving('') }
+  }
+
+  const saveMultipliers = async () => {
+    setSaving('multipliers')
+    try {
+      const normalized = Object.fromEntries(
+        Object.entries(multipliers).map(([key, value]) => [
+          key,
+          Math.round(Math.max(0.01, Math.min(20, Number(value) || 0.01)) * 1000) / 1000,
+        ]),
+      )
+      await v3.saveRecordMultipliers(normalized)
+      await Promise.all([loadData(), loadRecords()])
+      notify('记录类型倍率已保存')
+    } catch (e) { notify((e as Error).message, true) } finally { setSaving('') }
+  }
+
+  const cleanup = async () => {
+    if (!await appConfirm('按当前设置立即删除超出记录单位上限的最旧未 PIN 记录？此操作会同时清理报告与结果文件，不能恢复。', { danger: true })) return
+    setSaving('cleanup')
+    try {
+      const result = await v3.cleanupRecordRetention()
+      await Promise.all([loadData(), loadRecords()])
+      notify(result.deleted ? `已清理 ${result.deleted} 条记录` : '当前没有可自动清理的记录')
+    } catch (e) { notify((e as Error).message, true) } finally { setSaving('') }
+  }
+
+  const togglePin = async (row: ResearchRecordRow) => {
+    try {
+      await v3.pinRetentionRecord(row.record_type, row.id)
+      await Promise.all([loadData(), loadRecords()])
+      notify(row.pinned ? '已取消 PIN 保护' : '已 PIN 保护')
+    } catch (e) { notify((e as Error).message, true) }
+  }
+
+  const remove = async (row: ResearchRecordRow) => {
+    if (!await appConfirm(`删除「${row.record_title || row.id}」？报告与结果文件会一并清理，不能恢复。`, { danger: true })) return
+    try {
+      await v3.deleteRetentionRecord(row.record_type, row.id)
+      await Promise.all([loadData(), loadRecords()])
+      notify('记录已删除')
+    } catch (e) { notify((e as Error).message, true) }
+  }
+
+  return (
+    <div className="quota-page anim-fade">
+      <section className="set-section">
+        <div className="set-section-head"><h3>研究记录总览</h3><button className="button small ghost" disabled={saving === 'load'} onClick={() => void Promise.all([loadData(), loadRecords()])}>{saving === 'load' ? '刷新中…' : '刷新'}</button></div>
+        <p className="set-section-note">回测、参数优化、因子、模型、组合和执行记录统一折算为「记录单位」。倍率默认按当前工作区的典型落盘体积估算，管理员可在下方逐项调整。PIN 保护的记录不会被自动清理。</p>
+        <div className="usage-kpis">
+          <div className="usage-kpi anim-rise"><small>记录单位占用</small><b>{fmtUnits(u.total_units)}</b><em>上限 {fmtUnits(u.max_units_per_user)} 单位</em></div>
+          <div className="usage-kpi anim-rise" style={{ animationDelay: '40ms' }}><small>剩余配额</small><b>{fmtUnits(u.remaining_units)}</b><em>{over ? '已超额，需要清理' : '按工作区上限计算'}</em></div>
+          <div className="usage-kpi anim-rise" style={{ animationDelay: '80ms' }}><small>记录总数</small><b>{u.total_records.toLocaleString()}</b><em>跨 {u.types.filter((t) => t.count > 0).length} 种记录类型</em></div>
+          <div className="usage-kpi anim-rise" style={{ animationDelay: '120ms' }}><small>PIN 保护</small><b>{u.pinned_records.toLocaleString()}</b><em>不参与自动清理</em></div>
+        </div>
+        {over && <Callout tone="warn">当前已超过工作区单位上限。自动清理关闭时，新研究记录会在创建前被拒绝，直到删除足够的历史记录。</Callout>}
+      </section>
+
+      <section className="set-section">
+        <div className="set-section-head">
+          <h3>按记录类型统计</h3>
+          {isAdmin && <button className="button small primary" disabled={saving === 'multipliers'} onClick={saveMultipliers}>{saving === 'multipliers' ? '保存中…' : '保存倍率'}</button>}
+        </div>
+        <p className="set-section-note">倍率是相对回测记录的存储成本。默认以约 350 KB / 回测为 1.0 单位；其他类型按报告、状态和索引文件合计体积估算。范围为 0.01–20。</p>
+        <div className="table-wrap">
+          <table>
+            <thead><tr><th>类型</th><th className="right">数量</th><th className="right">PIN</th><th className="right">当前倍率</th><th className="right">默认倍率</th><th className="right">占用单位</th><th>典型体积</th></tr></thead>
+            <tbody>
+              {u.types.map((row: RecordTypeUsage) => (
+                <tr key={row.key} className="anim-in">
+                  <td><b>{row.label}</b><div className="hint mono" style={{ margin: '2px 0 0' }}>{row.key}</div></td>
+                  <td className="right mono">{row.count.toLocaleString()}</td>
+                  <td className="right mono">{row.pinned.toLocaleString()}</td>
+                  <td className="right">
+                    {isAdmin ? (
+                      <input
+                        type="number"
+                        min={0.01}
+                        max={20}
+                        step={0.01}
+                        aria-label={`${row.label}倍率`}
+                        value={multipliers[row.key] ?? row.multiplier}
+                        onChange={(e) => setMultipliers((cur) => ({ ...cur, [row.key]: Number(e.target.value) }))}
+                        style={{ width: 88, textAlign: 'right' }}
+                      />
+                    ) : <span className="mono">{row.multiplier.toFixed(2)}</span>}
+                  </td>
+                  <td className="right mono muted">{row.default_multiplier.toFixed(2)}</td>
+                  <td className="right mono">{fmtUnits(row.units)}</td>
+                  <td className="muted">{fmtApprox(row.approx_bytes)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className="set-section">
+        <div className="set-section-head"><h3>我的自动清理设置</h3><button className="button small primary" disabled={saving === 'user'} onClick={saveUser}>{saving === 'user' ? '保存中…' : '保存设置'}</button></div>
+        <div className="retention-switches">
+          <label className="retention-switch">
+            <span><b>总量达到上限时自动删除最久远记录</b><small>超过工作区记录单位上限时，自动删除自己最旧的未 PIN 记录；关闭则必须先手动删除。</small></span>
+            <button type="button" role="switch" aria-checked={autoDelete} className={`switch${autoDelete ? ' on' : ''}`} onClick={() => setAutoDelete(!autoDelete)}><i /></button>
+          </label>
+          <label className="retention-switch">
+            <span><b>单策略回测自动清理最旧记录</b><small>同一策略达到下方上限后，自动删除该策略最旧的未 PIN 回测。</small></span>
+            <button type="button" role="switch" aria-checked={autoStrategy} className={`switch${autoStrategy ? ' on' : ''}`} onClick={() => setAutoStrategy(!autoStrategy)}><i /></button>
+          </label>
+          <Field label="单策略保留回测数" hint="默认 5 次；仅影响回测记录">
+            <input type="number" min={1} max={100} value={perStrategy} onChange={(e) => setPerStrategy(Number(e.target.value))} />
+          </Field>
+        </div>
+        <div className="button-row" style={{ marginTop: 12 }}>
+          <button className="button small" disabled={saving === 'cleanup'} onClick={cleanup}>{saving === 'cleanup' ? '清理中…' : '按当前设置立即清理'}</button>
+        </div>
+      </section>
+
+      {isAdmin && (
+        <section className="set-section">
+          <div className="set-section-head"><h3>工作区记录单位上限</h3><button className="button small primary" disabled={saving === 'workspace'} onClick={saveWorkspace}>{saving === 'workspace' ? '保存中…' : '保存上限'}</button></div>
+          <p className="set-section-note">每名成员独立计算。默认 100,000 单位（约 35 GB 的回测等效体积），可按工作区存储策略调整。倍率变化会立即影响所有人的用量统计。</p>
+          <Field label="每名成员记录单位上限" hint="1–1,000,000 单位，默认 100,000"><input type="number" min={1} max={1000000} value={adminMax} onChange={(e) => setAdminMax(Number(e.target.value))} /></Field>
+        </section>
+      )}
+
+      {!!u.strategies?.length && (
+        <section className="set-section">
+          <div className="set-section-head"><h3>回测按策略使用情况</h3></div>
+          <div className="table-wrap">
+            <table>
+              <thead><tr><th>策略</th><th className="right">记录数</th><th className="right">PIN</th><th className="right">单策略上限</th><th>状态</th></tr></thead>
+              <tbody>
+                {u.strategies.map((row) => (
+                  <tr key={row.key}>
+                    <td>{row.name}</td><td className="right mono">{row.count}</td><td className="right mono">{row.pinned}</td><td className="right mono">{row.limit}</td>
+                    <td>{row.over_limit ? <Tag tone="warn">超出上限</Tag> : <Tag tone="pass">正常</Tag>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
+      <section className="set-section">
+        <div className="set-section-head settings-record-head">
+          <h3>记录明细</h3>
+          <div className="settings-filter-row">
+            <input type="search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索标题、ID、类型或策略" aria-label="搜索研究记录" />
+            <select value={recordType} onChange={(e) => setRecordType(e.target.value)} aria-label="按记录类型筛选">
+              <option value="">全部类型</option>
+              {u.types.map((row) => <option key={row.key} value={row.key}>{row.label}</option>)}
+            </select>
+          </div>
+        </div>
+        {recordsLoading && !records.length ? <Loading label="正在查找研究记录" /> : !records.length ? (
+          <EmptyState title={debouncedQuery || recordType ? '没有匹配的研究记录' : '还没有研究记录'}>回测、因子、模型、组合和执行产物会在这里统一显示。</EmptyState>
+        ) : (
+          <>
+            <div className="table-wrap" aria-busy={recordsLoading}>
+              <table className="settings-table records-table">
+                <thead><tr><th>记录</th><th>类型</th><th>创建时间</th><th className="right">单位</th><th>保护</th><th /></tr></thead>
+                <tbody>
+                  {records.map((row) => (
+                    <tr key={`${row.record_type}:${row.id}`} className="anim-in">
+                      <td><b>{row.record_title || row.id}</b><div className="hint mono" style={{ margin: '2px 0 0' }}>{row.id}</div></td>
+                      <td><Tag>{row.record_type_label}</Tag></td>
+                      <td className="muted">{fmtTime(((row.created_at ?? row.updated_at ?? 0) * 1000))}</td>
+                      <td className="right mono">{row.record_units.toFixed(2)}</td>
+                      <td>{row.pinned ? <Tag tone="warn">已 PIN</Tag> : <span className="muted">普通</span>}</td>
+                      <td className="right">
+                        <span className="button-row tight">
+                          <button className="button small ghost" onClick={() => void togglePin(row)}>{row.pinned ? '取消 PIN' : 'PIN'}</button>
+                          <button className="button small danger" disabled={!isAdmin && !!row.pinned} onClick={() => void remove(row)}>删除</button>
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="settings-pagination">
+              <span className="hint">已显示 {records.length} 条{recordsHasMore ? '，还有更多记录' : ''}</span>
+              {recordsHasMore && <button className="button small" disabled={recordsLoading} onClick={() => void loadRecords(recordsNext, true)}>{recordsLoading ? '加载中…' : '加载更多'}</button>}
+            </div>
+          </>
+        )}
+      </section>
+    </div>
   )
 }
 
 function RunsTab({ notify, onNavigate, readonly }: { notify: PageProps['notify']; onNavigate: (k: string) => void; readonly: boolean }) {
   const [runs, setRuns] = useState<Run[] | null>(null)
   const [mode, setMode] = useState('')
+  const [query, setQuery] = useState('')
+  const debouncedQuery = useDebouncedValue(query)
+  const [loading, setLoading] = useState(false)
+  const [hasMore, setHasMore] = useState(false)
+  const [nextCursor, setNextCursor] = useState<{ created_at: number; id: string } | null>(null)
+  const requestRef = useRef(0)
   const [open, setOpen] = useState<Run | null>(null)
   const [events, setEvents] = useState<RunEvent[]>([])
-  const load = useCallback(() => {
-    v4.runs({ mode }).then((r) => setRuns(r.items)).catch((e) => notify(e.message, true))
-  }, [mode, notify])
-  useEffect(() => { load(); const t = setInterval(load, 8000); return () => clearInterval(t) }, [load])
+
+  const loadPage = useCallback(async (cursor?: { created_at: number; id: string } | null, append = false) => {
+    const request = ++requestRef.current
+    setLoading(true)
+    try {
+      const page = await v4.runs({
+        mode: mode || undefined,
+        q: debouncedQuery || undefined,
+        before_created_at: cursor?.created_at,
+        before_id: cursor?.id,
+        limit: 50,
+      })
+      if (request !== requestRef.current) return
+      setRuns((prev) => append ? [...(prev ?? []), ...page.items] : page.items)
+      setHasMore(page.has_more)
+      setNextCursor(page.next_cursor)
+    } catch (e) {
+      if (request === requestRef.current) notify((e as Error).message, true)
+    } finally {
+      if (request === requestRef.current) setLoading(false)
+    }
+  }, [debouncedQuery, mode, notify])
+
+  useEffect(() => {
+    setRuns(null)
+    void loadPage()
+  }, [loadPage])
   useEffect(() => { if (open) v4.runEvents(open.id).then((r) => setEvents(r.items)).catch(() => setEvents([])) }, [open])
+
   const cmd = async (r: Run, c: 'pause' | 'resume' | 'cancel' | 'liquidate_and_stop') => {
-    try { await v4.runCommand(r.id, c); notify('命令已提交'); load() } catch (e) { notify((e as Error).message, true) }
+    try { await v4.runCommand(r.id, c); notify('命令已提交'); await loadPage() } catch (e) { notify((e as Error).message, true) }
   }
   if (!runs) return <Loading />
   return (
     <>
-      <div className="button-row" style={{ marginBottom: 12 }}>
-        <select value={mode} onChange={(e) => setMode(e.target.value)}>
+      <div className="button-row settings-filter-row" style={{ marginBottom: 12 }}>
+        <input type="search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索运行标题、ID、类型或错误" aria-label="搜索运行记录" />
+        <select value={mode} onChange={(e) => setMode(e.target.value)} aria-label="按模式筛选运行">
           <option value="">全部模式</option>
           {Object.entries(MODE_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
         </select>
-        <span className="hint" style={{ margin: 0 }}>长任务都由独立 worker 执行；每个运行同时只有一个 worker 持有租约，崩溃后从检查点恢复。</span>
+        <button className="button small" disabled={loading} onClick={() => void loadPage()}>{loading ? '刷新中…' : '刷新'}</button>
+        <span className="hint" style={{ margin: 0 }}>长任务由独立 worker 执行；每位成员同时只持有一个租约，崩溃后从检查点恢复。</span>
       </div>
-      {runs.length === 0 ? <EmptyState title="还没有运行记录" /> : (
-        <div className="table-wrap">
-          <table>
-            <thead><tr><th>运行</th><th>类型</th><th>模式</th><th>状态</th><th>进度</th><th>认领</th><th>创建</th><th /></tr></thead>
-            <tbody>
-              {runs.map((r) => {
-                const [label, cls] = RUN_STATE[r.state]
-                return (
-                  <tr key={r.id}>
-                    <td><button className="button ghost small" onClick={() => setOpen(r)}>{r.title || r.id}</button></td>
-                    <td>{KIND_LABEL[r.kind] ?? r.kind}</td>
-                    <td><Tag tone={r.mode === 'testnet' ? 'warn' : undefined}>{MODE_LABEL[r.mode] ?? r.mode}</Tag></td>
-                    <td><span className={`table-pill ${cls}`}>{label}</span>{r.error && <small title={r.error}> {r.error_code}</small>}</td>
-                    <td>{r.progress.total ? `${r.progress.done}/${r.progress.total}` : '—'}</td>
-                    <td>{r.attempts}</td>
-                    <td>{fmtTime(r.created_at)}</td>
-                    <td className="right">
-                      {!readonly && !r.terminal && r.kind === 'paper' && (r.state === 'PAUSED'
-                        ? <button className="button small" onClick={() => cmd(r, 'resume')}>恢复</button>
-                        : <button className="button small" onClick={() => cmd(r, 'pause')}>暂停</button>)}
-                      {!readonly && !r.terminal && <button className="button small danger" onClick={() => cmd(r, 'cancel')}>取消</button>}
-                      {r.kind === 'paper' && <button className="button small ghost" onClick={() => onNavigate(`paper/${r.id}`)}>打开</button>}
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
+      {runs.length === 0 ? <EmptyState title={debouncedQuery || mode ? '没有匹配的运行记录' : '还没有运行记录'} /> : (
+        <>
+          <div className="table-wrap" aria-busy={loading}>
+            <table className="settings-table runs-table">
+              <thead><tr><th>运行</th><th>类型</th><th>模式</th><th>状态</th><th>进度</th><th>认领</th><th>创建</th><th /></tr></thead>
+              <tbody>
+                {runs.map((r) => {
+                  const [label, cls] = RUN_STATE[r.state]
+                  return (
+                    <tr key={r.id}>
+                      <td><button className="button ghost small" onClick={() => setOpen(r)}>{r.title || r.id}</button></td>
+                      <td>{KIND_LABEL[r.kind] ?? r.kind}</td>
+                      <td><Tag tone={r.mode === 'testnet' ? 'warn' : undefined}>{MODE_LABEL[r.mode] ?? r.mode}</Tag></td>
+                      <td><span className={`table-pill ${cls}`}>{label}</span>{r.error && <small title={r.error}> {r.error_code}</small>}</td>
+                      <td>{r.progress.total ? `${r.progress.done}/${r.progress.total}` : '—'}</td>
+                      <td>{r.attempts}</td>
+                      <td>{fmtTime(r.created_at)}</td>
+                      <td className="right">
+                        {!readonly && !r.terminal && r.kind === 'paper' && (r.state === 'PAUSED'
+                          ? <button className="button small" onClick={() => cmd(r, 'resume')}>恢复</button>
+                          : <button className="button small" onClick={() => cmd(r, 'pause')}>暂停</button>)}
+                        {!readonly && !r.terminal && <button className="button small danger" onClick={() => cmd(r, 'cancel')}>取消</button>}
+                        {r.kind === 'paper' && <button className="button small ghost" onClick={() => onNavigate(`paper/${r.id}`)}>打开</button>}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div className="settings-pagination">
+            <span className="hint">已显示 {runs.length} 条{hasMore ? '，还有更多运行' : ''}</span>
+            {hasMore && <button className="button small" disabled={loading} onClick={() => void loadPage(nextCursor, true)}>{loading ? '加载中…' : '加载更多'}</button>}
+          </div>
+        </>
       )}
       {open && (
-        <Modal title={open.title || open.id} onClose={() => setOpen(null)} width={760}>
+        <Modal title={open.title || open.id} onClose={() => setOpen(null)} width={820}>
           <dl className="kv">
-            <dt>运行 ID</dt><dd className="mono">{open.id}</dd>
-            <dt>状态</dt><dd>{RUN_STATE[open.state][0]}（第 {open.attempts} 次认领）</dd>
-            <dt>策略版本</dt><dd className="mono">{open.strategy_version_id ?? '—'}</dd>
-            <dt>租约</dt><dd className="mono">{open.lease_owner ?? '—'}</dd>
-            {open.error && <><dt>错误</dt><dd>{open.error_code}：{open.error}</dd></>}
+            <dt>状态</dt><dd>{RUN_STATE[open.state]?.[0] ?? open.state}</dd>
+            <dt>类型</dt><dd>{KIND_LABEL[open.kind] ?? open.kind}</dd>
+            <dt>模式</dt><dd>{MODE_LABEL[open.mode] ?? open.mode}</dd>
+            <dt>创建</dt><dd>{fmtTime(open.created_at)}</dd>
+            <dt>认领次数</dt><dd>{open.attempts}</dd>
+            {open.error && <><dt>错误</dt><dd className="negative">{open.error}</dd></>}
           </dl>
-          <h3 className="section-title" style={{ marginTop: 16 }}>事件流</h3>
+          <h3 className="set-sub">事件</h3>
           <div className="table-wrap" style={{ maxHeight: 320, overflow: 'auto' }}>
             <table>
+              <thead><tr><th>时间</th><th>类型</th><th>数据</th></tr></thead>
               <tbody>
                 {events.map((e) => (
-                  <tr key={e.id}><td className="mono">{e.id}</td><td>{fmtTime(e.ts)}</td><td>{e.type}</td>
-                    <td className="mono wrap" style={{ fontSize: 11.5 }}>{JSON.stringify(e.data).slice(0, 220)}</td></tr>
+                  <tr key={e.id}><td>{fmtTime(e.ts)}</td><td>{e.type}</td><td className="mono wrap" style={{ fontSize: 11.5 }}>{JSON.stringify(e.data).slice(0, 220)}</td></tr>
                 ))}
               </tbody>
             </table>
@@ -593,32 +1150,72 @@ function RunsTab({ notify, onNavigate, readonly }: { notify: PageProps['notify']
 function AuditTab({ notify }: { notify: PageProps['notify'] }) {
   const [items, setItems] = useState<AuditItem[] | null>(null)
   const [action, setAction] = useState('')
-  useEffect(() => { v4.audit(action || undefined).then((r) => setItems(r.items)).catch((e) => notify(e.message, true)) }, [action, notify])
+  const [query, setQuery] = useState('')
+  const debouncedQuery = useDebouncedValue(query)
+  const [loading, setLoading] = useState(false)
+  const [hasMore, setHasMore] = useState(false)
+  const [nextBeforeId, setNextBeforeId] = useState<number | null>(null)
+  const requestRef = useRef(0)
+
+  const loadPage = useCallback(async (beforeId?: number | null, append = false) => {
+    const request = ++requestRef.current
+    setLoading(true)
+    try {
+      const page = await v4.audit({
+        action: action || undefined,
+        q: debouncedQuery || undefined,
+        before_id: beforeId ?? undefined,
+        limit: 100,
+      })
+      if (request !== requestRef.current) return
+      setItems((prev) => append ? [...(prev ?? []), ...page.items] : page.items)
+      setHasMore(page.has_more)
+      setNextBeforeId(page.next_before_id)
+    } catch (e) {
+      if (request === requestRef.current) notify((e as Error).message, true)
+    } finally {
+      if (request === requestRef.current) setLoading(false)
+    }
+  }, [action, debouncedQuery, notify])
+
+  useEffect(() => {
+    setItems(null)
+    void loadPage()
+  }, [loadPage])
+
   return (
     <>
-      <div className="button-row" style={{ marginBottom: 12 }}>
-        <select value={action} onChange={(e) => setAction(e.target.value)}>
+      <div className="button-row settings-filter-row" style={{ marginBottom: 12 }}>
+        <input type="search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索操作、对象、操作者、trace_id 或详情" aria-label="搜索审计日志" />
+        <select value={action} onChange={(e) => setAction(e.target.value)} aria-label="按操作类型筛选">
           <option value="">全部操作</option>
           {['user.', 'member.', 'workspace.', 'run.', 'strategy.', 'account.', 'live.', 'config.'].map((a) => <option key={a} value={a}>{a}*</option>)}
         </select>
-        <span className="hint" style={{ margin: 0 }}>审计记录写入前统一过滤凭证类字段，导出与错误信息中不含明文密钥。</span>
+        <button className="button small" disabled={loading} onClick={() => void loadPage()}>{loading ? '查找中…' : '刷新'}</button>
+        <span className="hint" style={{ margin: 0 }}>输入停止 350ms 后才查询；记录按游标分页，每次最多读取 100 条。</span>
       </div>
-      {!items ? <Loading /> : items.length === 0 ? <EmptyState title="暂无审计记录" /> : (
-        <div className="table-wrap">
-          <table>
-            <thead><tr><th>时间 UTC</th><th>操作者</th><th>操作</th><th>对象</th><th>IP</th><th>trace_id</th><th>详情</th></tr></thead>
-            <tbody>
-              {items.map((i) => (
-                <tr key={i.id}>
-                  <td>{fmtTime(i.ts)}</td><td>{i.user_name ?? '—'}</td><td className="mono">{i.action}</td>
-                  <td className="mono">{i.object_type}{i.object_id ? `:${i.object_id}` : ''}</td><td className="mono">{i.ip}</td>
-                  <td className="mono">{i.trace_id}</td>
-                  <td className="mono wrap" style={{ fontSize: 11.5 }}>{Object.keys(i.details).length ? JSON.stringify(i.details) : ''}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+      {!items ? <Loading label="正在查找审计记录" /> : items.length === 0 ? <EmptyState title={debouncedQuery || action ? '没有匹配的审计记录' : '暂无审计记录'} /> : (
+        <>
+          <div className="table-wrap" aria-busy={loading}>
+            <table className="settings-table audit-table">
+              <thead><tr><th>时间 UTC</th><th>操作者</th><th>操作</th><th>对象</th><th>IP</th><th>trace_id</th><th>详情</th></tr></thead>
+              <tbody>
+                {items.map((i) => (
+                  <tr key={i.id}>
+                    <td>{fmtTime(i.ts)}</td><td>{i.user_name ?? '—'}</td><td className="mono">{i.action}</td>
+                    <td className="mono">{i.object_type}{i.object_id ? `:${i.object_id}` : ''}</td><td className="mono">{i.ip}</td>
+                    <td className="mono">{i.trace_id}</td>
+                    <td className="mono wrap" style={{ fontSize: 11.5 }}>{Object.keys(i.details).length ? JSON.stringify(tData(i.details)) : ''}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="settings-pagination">
+            <span className="hint">已显示 {items.length} 条{hasMore ? '，还有更多记录' : ''}</span>
+            {hasMore && <button className="button small" disabled={loading} onClick={() => void loadPage(nextBeforeId, true)}>{loading ? '加载中…' : '加载更多'}</button>}
+          </div>
+        </>
       )}
     </>
   )
@@ -649,18 +1246,20 @@ function SystemTab({ notify }: { notify: PageProps['notify'] }) {
               worker 每 5 分钟探测一次各行情接口；连续 72 小时成功率 ≥ 99% 才判定为可用。
             </Callout>
             {net.providers.length === 0 ? <p className="hint">还没有探测记录：启动 worker 或点击“立即探测”。</p> : (
-              <table>
-                <thead><tr><th>接口</th><th>判定</th><th>已观测</th><th>72h 成功率</th><th>中位延迟</th></tr></thead>
-                <tbody>
-                  {net.providers.map((p) => (
-                    <tr key={p.provider}>
-                      <td>{p.provider}</td><td><span className={`table-pill ${VERDICT[p.verdict]?.[1] ?? ''}`}>{VERDICT[p.verdict]?.[0] ?? p.verdict}</span></td>
-                      <td>{p.observed_hours} 小时</td><td>{p.success_rate_72h === null ? '—' : `${(p.success_rate_72h * 100).toFixed(2)}%`}</td>
-                      <td>{p.p50_latency_ms ?? '—'} ms</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <div className="table-wrap">
+                <table className="settings-table network-table">
+                  <thead><tr><th>接口</th><th>判定</th><th>已观测</th><th>72h 成功率</th><th>中位延迟</th></tr></thead>
+                  <tbody>
+                    {net.providers.map((p) => (
+                      <tr key={p.provider}>
+                        <td>{p.provider}</td><td><span className={`table-pill ${VERDICT[p.verdict]?.[1] ?? ''}`}>{VERDICT[p.verdict]?.[0] ?? p.verdict}</span></td>
+                        <td>{p.observed_hours} 小时</td><td>{p.success_rate_72h === null ? '—' : `${(p.success_rate_72h * 100).toFixed(2)}%`}</td>
+                        <td>{p.p50_latency_ms ?? '—'} ms</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )}
           </>
         )}

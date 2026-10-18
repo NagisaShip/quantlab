@@ -19,6 +19,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from .calculator import calculate
+
 ACTIONS = "ai_actions"
 SCENES: dict[str, dict[str, str]] = {
     "strategy": {"label": "策略与回测", "hint": "查策略、说明书、回测成绩、交易分解与保护规则；跑一次回测"},
@@ -26,7 +28,10 @@ SCENES: dict[str, dict[str, str]] = {
     "trading": {"label": "模拟交易", "hint": "纸面模拟与交易所模拟盘：查看、启动、停止"},
     "validation": {"label": "上线验证", "hint": "晋级关卡、真实度报告、压力演练、值守员"},
     "checkup": {"label": "策略体检与调参", "hint": "未来函数、预热、成本翻倍、参数平台、红队意见；智能调参"},
-    "library": {"label": "研究库与台账", "hint": "因子库、模型库、组合与执行方案、试验台账、实盘对照；删除记录（需审批）"},
+    "library": {
+        "label": "研究库与台账",
+        "hint": "因子库、模型库、组合与执行方案、试验台账、实盘对照；删除记录（需审批）",
+    },
     "collab": {"label": "协作与广场", "hint": "发帖到策略广场、在群组里发消息、查看与更新指派给我的任务"},
 }
 # 页面 → 默认加载的场景
@@ -495,7 +500,10 @@ def t_checkup_result(run_id: str = "", slug: str = "") -> Any:
     if not run_id:
         rows = V.checkup_list(slug or None)["runs"][:10]
         return [
-            {k: r.get(k) for k in ("id", "strategy_id", "status", "overall", "sample", "progress", "created_at", "items")}
+            {
+                k: r.get(k)
+                for k in ("id", "strategy_id", "status", "overall", "sample", "progress", "created_at", "items")
+            }
             for r in rows
         ]
     got = _call(lambda: V.checkup_get(run_id))
@@ -614,7 +622,10 @@ def t_tuning_result(opt_id: str = "", slug: str = "") -> Any:
     if not opt_id:
         rows = sorted(R.list_optimizations(slug or None)["optimizations"], key=lambda r: -(r.get("created_at") or 0))
         done = [
-            {k: r.get(k) for k in ("id", "run_id", "slug", "method", "objective", "combinations", "best_params", "created_at")}
+            {
+                k: r.get(k)
+                for k in ("id", "run_id", "slug", "method", "objective", "combinations", "best_params", "created_at")
+            }
             for r in rows[:10]
         ]
         pending = _tuning_runs(slug)
@@ -656,6 +667,32 @@ def t_trade_breakdown(backtest_id: str, by: str = "") -> Any:
             return {"error": f"by 只能是 {', '.join(bd)}"}
         return {"backtest_id": backtest_id, "by": by, "rows": bd[by]}
     return {"backtest_id": backtest_id, **{k: v[:12] for k, v in bd.items()}}
+
+
+def t_list_trades(backtest_id: str, limit: int = 50, offset: int = 0) -> Any:
+    """一次回测的完整交易（round_trips）与逐笔成交（fills）明细。"""
+    from ..store import Collections
+
+    rec = _svc().store.get(Collections.BACKTESTS, backtest_id)
+    if rec is None:
+        return {"error": "回测记录不存在"}
+    blob = _svc().store.get_blob("backtests", backtest_id) or {}
+    trips = list(blob.get("round_trips") or [])
+    fills = list(blob.get("fills") or [])
+    if not trips and not fills:
+        return {"backtest_id": backtest_id, "note": "这次回测没有成交明细；可能是零交易或旧记录未保存明细"}
+    n = max(1, min(int(limit or 50), 200))
+    off = max(0, int(offset or 0))
+    return {
+        "backtest_id": backtest_id,
+        "totals": {"round_trips": len(trips), "fills": len(fills)},
+        "offset": off,
+        "limit": n,
+        "has_more": off + n < max(len(trips), len(fills)),
+        "round_trips": trips[off : off + n],
+        "fills": fills[off : off + n],
+        "note": "round_trips 是开仓到平仓的完整交易；fills 是逐笔成交，fees/realized 已是该回测的实际口径",
+    }
 
 
 def t_guards_report(backtest_id: str) -> Any:
@@ -830,8 +867,13 @@ def _agent_source(conversation: str = "") -> dict[str, Any]:
     from ..platform import context
 
     ctx = context.current()
-    return {"kind": "agent", "label": AGENT_NAME, "on_behalf_of": ctx.user_name or "", "user_id": ctx.user_id or "",
-            "conversation": conversation}
+    return {
+        "kind": "agent",
+        "label": AGENT_NAME,
+        "on_behalf_of": ctx.user_name or "",
+        "user_id": ctx.user_id or "",
+        "conversation": conversation,
+    }
 
 
 def _agent_name() -> str:
@@ -841,16 +883,25 @@ def _agent_name() -> str:
 
 
 def t_community_post(
-    title: str, body: str, type: str = "article", tags: list[str] | None = None, strategy_slug: str = "",
-    backtest_id: str = "", refs: list[dict[str, Any]] | None = None,
+    title: str,
+    body: str,
+    type: str = "article",
+    tags: list[str] | None = None,
+    strategy_slug: str = "",
+    backtest_id: str = "",
+    refs: list[dict[str, Any]] | None = None,
 ) -> Any:
     from ..api.routes_community import publish
     from ..api.schemas import PostIn
 
     def go() -> Any:
         payload = PostIn(
-            type=type if type in ("article", "question", "strategy") else "article", title=title, body=body,
-            tags=list(tags or [])[:8], strategy_slug=strategy_slug or None, backtest_id=backtest_id or None,
+            type=type if type in ("article", "question", "strategy") else "article",
+            title=title,
+            body=body,
+            tags=list(tags or [])[:8],
+            strategy_slug=strategy_slug or None,
+            backtest_id=backtest_id or None,
             refs=list(refs or []),
         )
         post = publish(payload, _agent_source())
@@ -865,8 +916,14 @@ def t_list_groups() -> Any:
     ctx = context.current()
     groups = _svc().collab.list_groups(context.current_workspace(), ctx.user_id or "")
     return [
-        {"id": g["id"], "name": g["name"], "joined": bool(g["my_role"]), "members": g["member_count"],
-         "open_tasks": g["open_tasks"], "unread": g["unread"]}
+        {
+            "id": g["id"],
+            "name": g["name"],
+            "joined": bool(g["my_role"]),
+            "members": g["member_count"],
+            "open_tasks": g["open_tasks"],
+            "unread": g["unread"],
+        }
         for g in groups
     ]
 
@@ -880,8 +937,14 @@ def t_group_message(group_id: str, body: str, refs: list[dict[str, Any]] | None 
         ctx = context.current()
         c = _svc().collab
         c.require_group_member(group_id, ctx.user_id or "", ws=context.current_workspace())
-        msg = c.post_message(group_id, author_id=ctx.user_id or "", author_name=_agent_name(), body=body,
-                             refs=_resolve_refs(list(refs or [])), author_kind="agent")
+        msg = c.post_message(
+            group_id,
+            author_id=ctx.user_id or "",
+            author_name=_agent_name(),
+            body=body,
+            refs=_resolve_refs(list(refs or [])),
+            author_kind="agent",
+        )
         return {"message_id": msg["id"], "group_id": group_id}
 
     return _call(go)
@@ -891,8 +954,9 @@ def t_my_tasks(include_closed: bool = False) -> Any:
     from ..platform import context
 
     ctx = context.current()
-    rows = _svc().collab.tasks(assignee_id=ctx.user_id or "", ws=context.current_workspace(),
-                               include_closed=include_closed)
+    rows = _svc().collab.tasks(
+        assignee_id=ctx.user_id or "", ws=context.current_workspace(), include_closed=include_closed
+    )
     keys = ("id", "title", "status", "priority", "due_at", "group_id", "creator_name", "description", "overdue")
     return [{k: t[k] for k in keys} for t in rows]
 
@@ -905,14 +969,101 @@ def t_update_task(task_id: str, status: str = "", note: str = "") -> Any:
         c = _svc().collab
         task = c.task(task_id)
         mod = c.group_role(task["group_id"], ctx.user_id or "") in ("owner", "admin")
-        out = c.update_task(task_id, {"status": status} if status else {}, by=ctx.user_id or "",
-                            by_name=_agent_name(), moderator=mod)
+        out = c.update_task(
+            task_id, {"status": status} if status else {}, by=ctx.user_id or "", by_name=_agent_name(), moderator=mod
+        )
         if note:
-            c.post_message(task["group_id"], author_id=ctx.user_id or "", author_name=_agent_name(), body=note,
-                           refs=[{"type": "task", "id": task_id, "title": task["title"]}], author_kind="agent")
+            c.post_message(
+                task["group_id"],
+                author_id=ctx.user_id or "",
+                author_name=_agent_name(),
+                body=note,
+                refs=[{"type": "task", "id": task_id, "title": task["title"]}],
+                author_kind="agent",
+            )
         return {"id": out["id"], "status": out["status"]}
 
     return _call(go)
+
+
+def t_workspace_capabilities() -> dict[str, Any]:
+    """Return the effective workspace switches and whether each feature is real."""
+    from ..platform.features import current, registry
+
+    try:
+        enabled = current()
+    except Exception:
+        enabled = {}
+    return {
+        "enabled": enabled,
+        "registry": registry(),
+        "hard_scope": {
+            "perp_contracts": ["linear", "inverse", "delivery"],
+            "perp_exchanges": ["binance", "okx", "bybit"],
+            "margin_modes": ["isolated", "cross"],
+            "position_modes": ["one-way", "hedge"],
+            "cross_margin": True,
+            "hedge_mode": True,
+            "inverse": True,
+            "delivery": True,
+            "real_money_perp": "linear USDT-M on Binance/OKX, separate server flag and approval",
+        },
+        "rule": "回答必须同时说明合约类型、保证金模式、持仓模式、结算币种和数据来源；研究近似不能描述成交易所生产规则。",
+    }
+
+
+def capability_note() -> str:
+    """A short, dynamic boundary block appended to every research prompt."""
+    from ..platform.features import FEATURES, current
+
+    try:
+        enabled = current()
+    except Exception:
+        enabled = {k: bool(v["default"]) for k, v in FEATURES.items()}
+    disabled = [str(v["label"]) for k, v in FEATURES.items() if not enabled.get(k)]
+    base = (
+        "【市场能力边界】回测账本 v2 支持线性 USDT-M、币本位反向与交割合约，支持逐仓/全仓、单向/对冲；"
+        "反向与交割的交易所规则仍是研究近似，必须用账单核验；真实资金永续只支持 Binance/OKX 线性 USDT-M，"
+        "且必须通过独立服务器开关、管理员确认码、期货 Key 自检、止损和自动急停。"
+        "引用回测结果时必须同时说明交易所、合约类型、保证金/持仓模式、结算币种和数据来源。"
+    )
+    if disabled:
+        base += " 当前工作区关闭或不可用的能力：" + "、".join(disabled) + "。"
+    return base
+
+
+def t_contract_bill_check(
+    connection_id: str, symbol: str = "BTC/USDT:PERP", start: int = 0, end: int = 0
+) -> dict[str, Any]:
+    """Pull demo-account bills and compare them with the contract assumptions."""
+    from ..exchanges.contract_verification import verify_bills
+    from ..exchanges.contracts import is_derivative, spec_for
+
+    if not is_derivative(str(symbol)):
+        return {"error": "只接受衍生品标的（:PERP / :INVERSE / :DELIVERY）"}
+    got = _svc().demo.bills(connection_id, symbol, int(start) or None, int(end) or None)
+    conn = got.get("connection") or {}
+    spec = spec_for(str(conn.get("exchange") or ""), symbol)
+    report = verify_bills(exchange=str(conn.get("exchange") or ""), spec=spec, rows=got.get("rows") or [])
+    return {**report, "connection": conn, "fetched_rows": len(got.get("rows") or [])}
+
+
+def t_realperp_status() -> dict[str, Any]:
+    """Read real-perpetual safety state without exposing credentials."""
+    from ..live import real_perp as RP
+    from ..platform import context
+
+    s = _svc()
+    st = RP.status(s.store, s.home)
+    return {
+        "status": {k: v for k, v in st.items() if k not in ("notice", "notice_en")},
+        "connections": [
+            {k: c.get(k) for k in ("id", "exchange", "label", "key_mask", "status", "last_test")}
+            for c in RP.connections(s).list()
+        ],
+        "workspace": context.current_workspace(),
+        "rule": "Agent 只能查看；真实永续启动必须由管理员生成确认码并输入，Agent 不能代替用户下单或解除急停。",
+    }
 
 
 def _S(t: str, d: str, **kw: Any) -> dict[str, Any]:
@@ -969,6 +1120,57 @@ def build() -> dict[str, PlatformTool]:
             required=["slug"],
         ),
         PlatformTool(
+            "contract_bill_check",
+            "用交易所账单核验永续规则",
+            "validation",
+            "从已接入的 OKX / Bybit 模拟盘拉取账户账单，核验资金费结算、标记价、手续费、保证金模式、杠杆和强平字段。"
+            "账单没有出现的 MMR/强平场景会明确标为 unknown。",
+            "研究者要求核验合约规则，或准备扩大实盘/模拟盘规模时",
+            "read",
+            {
+                "connection_id": _S("string", "模拟盘连接 id"),
+                "symbol": _S("string", "永续标的，如 BTC/USDT:PERP"),
+                "start": _S("integer", "起始毫秒时间戳，可空"),
+                "end": _S("integer", "结束毫秒时间戳，可空"),
+            },
+            t_contract_bill_check,
+            required=["connection_id"],
+        ),
+        PlatformTool(
+            "realperp_status",
+            "真实永续安全状态",
+            "validation",
+            "读取真实永续的独立服务器开关、工作区确认、急停、连接状态与最后期货账户自检结果；不返回密钥。"
+            "Agent 不得代替用户启动或急停真实资金操作。",
+            "涉及真实资金永续、扩大规模或排查启动阻断时",
+            "read",
+            {},
+            t_realperp_status,
+        ),
+        PlatformTool(
+            "workspace_capabilities",
+            "查看功能开关与能力边界",
+            "strategy",
+            "读取当前工作区的现货/永续/真实资金/导入导出开关，以及每项能力的实现状态。"
+            "在承诺永续、做空、杠杆或真实资金操作前必须先查。",
+            "涉及市场类型、杠杆或真实资金时",
+            "read",
+            {},
+            t_workspace_capabilities,
+        ),
+        PlatformTool(
+            "calculator",
+            "计算器",
+            "strategy",
+            "安全计算数学表达式：四则运算、幂、括号、sqrt/log/exp 等函数，以及 percent(18, 80) 这样的百分比换算。"
+            "用于核对成本、收益、仓位、额度和复利，不执行代码。",
+            "需要做算术或百分比换算时",
+            "read",
+            {"expression": _S("string", "数学表达式，例如 (1+0.08)^5 或 percent(18, 80)")},
+            calculate,
+            required=["expression"],
+        ),
+        PlatformTool(
             "trade_breakdown",
             "交易分解",
             "strategy",
@@ -983,6 +1185,22 @@ def build() -> dict[str, PlatformTool]:
                 ),
             },
             t_trade_breakdown,
+            required=["backtest_id"],
+        ),
+        PlatformTool(
+            "list_trades",
+            "逐笔交易",
+            "strategy",
+            "一次回测的完整交易（round_trips）与逐笔成交（fills）明细：时间、方向、数量、价格、手续费、盈亏、"
+            "入场标签与出场原因。用来核对团队评审所说的每一笔交易，而不是只看汇总指标。",
+            "知道回测 id 时（list_backtests 可查）",
+            "read",
+            {
+                "backtest_id": _S("string", "回测 id"),
+                "limit": _S("integer", "每次返回多少条，默认 50，最多 200"),
+                "offset": _S("integer", "从第几条开始，默认 0"),
+            },
+            t_list_trades,
             required=["backtest_id"],
         ),
         PlatformTool(
@@ -1480,7 +1698,9 @@ def build() -> dict[str, PlatformTool]:
                 "note": _S("string", "附言 Markdown"),
             },
             t_share_to,
-            summary=lambda a: f"分享 {a.get('ref_type')}:{a.get('ref_id')} 到{ {'group': '群组', 'dm': '私聊', 'square': '策略广场'}.get(str(a.get('target')), a.get('target'))}",
+            summary=lambda a: (
+                f"分享 {a.get('ref_type')}:{a.get('ref_id')} 到{ {'group': '群组', 'dm': '私聊', 'square': '策略广场'}.get(str(a.get('target')), a.get('target')) }"
+            ),
             required=["target", "ref_type", "ref_id"],
             category="save",
         ),
@@ -1491,7 +1711,11 @@ def build() -> dict[str, PlatformTool]:
             "给当前研究者发一条站内通知（头像会出现红点），用于长任务完成、发现需要研究者决定的事。不要用来闲聊。",
             "需要研究者注意，但对方可能不在这个页面时",
             "read",
-            {"title": _S("string", "一句话标题"), "body": _S("string", "详情，可空"), "link": _S("string", "站内路由，可空，如 lab/<id>")},
+            {
+                "title": _S("string", "一句话标题"),
+                "body": _S("string", "详情，可空"),
+                "link": _S("string", "站内路由，可空，如 lab/<id>"),
+            },
             t_notify_user,
             required=["title"],
         ),
@@ -1505,15 +1729,18 @@ def t_list_members(q: str = "") -> Any:
     return [{k: m.get(k) for k in ("user_id", "name", "username", "online")} for m in C.members(q)["members"]][:30]
 
 
-def t_share_to(
-    target: str, ref_type: str, ref_id: str, target_id: str = "", title: str = "", note: str = ""
-) -> Any:
+def t_share_to(target: str, ref_type: str, ref_id: str, target_id: str = "", title: str = "", note: str = "") -> Any:
     from ..api import routes_collab as C
 
     body = _call(
         lambda: C.share_to(
-            C.ShareToIn(target=target, target_id=target_id or "", ref={"type": ref_type, "id": ref_id, "title": title},
-                        note=note or "", title=title or "")
+            C.ShareToIn(
+                target=target,
+                target_id=target_id or "",
+                ref={"type": ref_type, "id": ref_id, "title": title},
+                note=note or "",
+                title=title or "",
+            )
         )
     )
     if isinstance(body, dict) and body.get("ok"):
@@ -1526,8 +1753,14 @@ def t_notify_user(title: str, body: str = "", link: str = "") -> Any:
 
     ctx = context.current()
     n = _svc().collab.notify(
-        [ctx.user_id], kind="system", title=f"QuantBot：{title}"[:200], body=body, link=link,
-        actor_id="agent", actor_name="QuantBot", workspace_id=ctx.workspace_id,
+        [ctx.user_id],
+        kind="system",
+        title=f"QuantBot：{title}"[:200],
+        body=body,
+        link=link,
+        actor_id="agent",
+        actor_name="QuantBot",
+        workspace_id=ctx.workspace_id,
     )
     return {"ok": bool(n)}
 
@@ -1562,6 +1795,7 @@ def prompt_block(scenes: list[str]) -> str:
         "用工具拿真实数据再回答，不要编造数字；需要 id 时先用列表类工具查。",
         "风险级别为「需要你确认」的工具不会立即执行：调用后会给用户一张确认卡片，你要在回答里说明要做什么、为什么，等用户确认。",
         "平台没有实盘下单能力，也不要建议绕过模拟盘。",
+        capability_note(),
     ]
     for t in tools:
         lines.append(f"- {t.name}（{t.title}，{RISK_LABEL[t.risk]}）：{t.description} 可用时机：{t.when}。")
@@ -1666,4 +1900,16 @@ def catalog() -> dict[str, Any]:
     }
 
 
-__all__ = ["ACTIONS", "APPROVAL_CATEGORIES", "RULE_REQUIRED", "SCENES", "catalog", "confirm", "invoke", "prompt_block", "registry", "scenes_for", "tools_for"]
+__all__ = [
+    "ACTIONS",
+    "APPROVAL_CATEGORIES",
+    "RULE_REQUIRED",
+    "SCENES",
+    "catalog",
+    "confirm",
+    "invoke",
+    "prompt_block",
+    "registry",
+    "scenes_for",
+    "tools_for",
+]

@@ -48,6 +48,28 @@ from .schemas import (
 router = APIRouter(prefix="/api/studio", tags=["策略工作室"])
 
 
+def _ensure_market_features(spec: BacktestSpec) -> None:
+    from ..platform import features
+
+    for sec in spec.securities:
+        features.require_market(sec, spec.exchange)
+
+
+def _review_gate(slug: str, *, stage: str = "paper") -> None:
+    """高严重度研究审查只阻断真实资金/晋级；纸面与模拟盘是补证据的步骤，不阻断。"""
+    from ..research.review import latest_review
+
+    if stage not in ("live", "graduation"):
+        return
+    rv = latest_review(get_services().store, slug)
+    if rv and rv.get("blocks_promotion"):
+        raise AppError(
+            ErrorCode.PERMISSION_DENIED,
+            "研究审查未通过：存在高严重度问题，不能批准或启动。请在回测详情查看审查卡并修正。",
+            details={"review": rv},
+        )
+
+
 def _repo() -> StrategyRepository:
     services = get_services()
     root = services.store.root / "strategies"
@@ -233,6 +255,9 @@ def export_package(slug: str) -> Response:
             notes=rec.meta.notes,
             spec=repo.read_spec(slug) or None,
             lineage=_lineage_for(slug),
+            margin_mode="cross" if 'set_margin_mode("cross"' in rec.source else "isolated",
+            position_mode="hedge" if 'set_position_mode("hedge"' in rec.source else "one-way",
+            expiry_ts=(rec.meta.package or {}).get("expiry_ts") if getattr(rec.meta, "package", None) else None,
         )
     except Exception as exc:
         raise HTTPException(400, f"打包失败：{type(exc).__name__}: {exc}") from exc
@@ -290,6 +315,10 @@ async def import_package(request: Request, name: str | None = Query(None), slug:
             details={"report": rep.to_dict()},
         )
     m = rep.manifest
+    if str(m.get("market") or "spot").lower() == "perp":
+        from ..platform import features
+
+        features.require("package.qstrat_perp")
     repo = _repo()
     target = slug or (m.get("slug") if m.get("slug") and not repo.exists(str(m.get("slug"))) else None)
     target = target or repo.unique_slug(str(m.get("slug") or m.get("name") or "imported"))
@@ -460,6 +489,7 @@ def studio_backtest(payload: StudioBacktestIn) -> Any:
         spread_bps=payload.spread_bps,
         rebalance_tolerance=payload.rebalance_tolerance,
     )
+    _ensure_market_features(spec)
     m = {
         "source": source,
         "module_name": "studio",
@@ -543,6 +573,11 @@ def start_session(payload: PaperStartIn, *, live: dict[str, Any] | None = None) 
     rec = _repo().get(payload.slug)
     if rec is None:
         raise HTTPException(404, "策略不存在")
+    _review_gate(payload.slug, stage="live" if live else "paper")
+    from ..platform import features
+
+    for sec in payload.securities or rec.meta.securities or [rec.meta.symbol]:
+        features.require_market(str(sec), payload.exchange)
     if not rec.meta.human_approved:
         raise HTTPException(400, "该策略版本尚未人工批准。平台红线：未批准的版本不能进入实时模拟。")
     lang = L.lang_of(rec.meta.kind)
@@ -573,14 +608,17 @@ def start_session(payload: PaperStartIn, *, live: dict[str, Any] | None = None) 
     demo_conn: dict[str, Any] | None = None
     if payload.execution == "demo":
         demo_conn = _check_demo_start(payload, rec)
-    execution = "live" if live else payload.execution
+    real_perp = bool(live and live.get("real_perp"))
+    execution = "live_realperp" if real_perp else ("live" if live else payload.execution)
     extra = {"live_connection_id": live["connection"]["id"], "micro": live["micro"]} if live else {}
+    if real_perp:
+        extra["real_perp"] = live["real_perp"]
     risk = payload.risk.model_dump() if getattr(payload, "risk", None) else {}
     if live:
         risk = {**risk, "stop_loss": risk.get("stop_loss") or live["micro"]["stop_loss"]}
     run = enqueue(
         kind="paper",
-        mode="micro_live" if live else "paper",
+        mode="real_perp" if real_perp else ("micro_live" if live else "paper"),
         title=f"{'微实盘' if live else '实时模拟'} · {rec.meta.name}",
         manifest={
             "lang": lang,
@@ -597,6 +635,12 @@ def start_session(payload: PaperStartIn, *, live: dict[str, Any] | None = None) 
             "source_kind": payload.source,
             "exchange": payload.exchange,
             "initial_cash": payload.initial_cash,
+            "initial_currency": payload.initial_currency,
+            "margin_mode": payload.margin_mode,
+            "position_mode": payload.position_mode,
+            "contract_type": payload.contract_type,
+            "expiry_ts": payload.expiry_ts,
+            "ledger_v2": payload.ledger_v2,
             "execution": execution,
             "demo_connection_id": demo_conn["id"] if demo_conn else None,
             **extra,
@@ -615,6 +659,12 @@ def start_session(payload: PaperStartIn, *, live: dict[str, Any] | None = None) 
         symbol=securities[0],
         timeframe=timeframe,
         initial_cash=payload.initial_cash,
+        initial_currency=payload.initial_currency,
+        margin_mode=payload.margin_mode,
+        position_mode=payload.position_mode,
+        contract_type=payload.contract_type,
+        expiry_ts=payload.expiry_ts,
+        ledger_v2=payload.ledger_v2,
         source=payload.source,
     )
     session.id = run["id"]

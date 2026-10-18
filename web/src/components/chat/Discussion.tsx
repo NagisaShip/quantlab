@@ -28,17 +28,23 @@ export function FeedItem({ u, mission }: { u: Utterance; mission: Mission }) {
   const typing = u.status === 'typing'
   const name = u.role_name || mission.roster.find((r) => r.id === u.role_id)?.name || u.role_id || ''
   return (
-    <div className={`cc-msg ${u.kind}`}>
-      <div className="cc-who">
-        <Avatar id={u.role_id} size={22} speaking={typing} />
-        <b>{name}</b>
-        {u.kind === 'challenge' && <span className="cc-kind">质疑 {(u.data?.reply_to || []).map((n: string) => `@${n}`).join(' ')}</span>}
-        {u.kind === 'synthesis' && <span className="cc-kind">汇总</span>}
-        {!typing && u.elapsed_ms ? <span className="cc-time">{(u.elapsed_ms / 1000).toFixed(1)}s</span> : null}
+    <div className={`cc-msg ${u.kind}${typing ? ' typing' : ''}`} aria-live={typing ? 'polite' : undefined}>
+      <Avatar id={u.role_id} size={22} speaking={typing} />
+      <div className="cc-main">
+        <div className="cc-who">
+          <b>{name}</b>
+          {u.kind === 'challenge' && <span className="cc-kind">质疑 {(u.data?.reply_to || []).map((n: string) => `@${n}`).join(' ')}</span>}
+          {u.kind === 'synthesis' && <span className="cc-kind">汇总</span>}
+          {!typing && u.elapsed_ms ? <span className="cc-time">{(u.elapsed_ms / 1000).toFixed(1)}s</span> : null}
+        </div>
+        <div className="cc-bubble">
+          {typing ? (
+            <span className="cc-typing"><span className="cc-dots" aria-hidden>•••</span>正在组织发言…</span>
+          ) : (
+            <AssistantText content={u.content.replace(/^【规则降级】/, '')} model={u.model} fallback={u.mode === 'fallback'} />
+          )}
+        </div>
       </div>
-      {typing ? <Working phase="正在发言" /> : (
-        <AssistantText content={u.content.replace(/^【规则降级】/, '')} model={u.model} fallback={u.mode === 'fallback'} />
-      )}
     </div>
   )
 }
@@ -83,12 +89,13 @@ function SayBox({ value, onChange, roster, onSubmit }: {
   )
 }
 
-export function DiscussionCard({ missionId, topic, onPin, notify }: {
-  missionId: string; topic: string; onPin: (conclusion: string) => void; notify: (msg: string, error?: boolean) => void
+export function DiscussionCard({ missionId, topic, onPin, notify, concise }: {
+  missionId: string; topic: string; onPin: (conclusion: string) => void; notify: (msg: string, error?: boolean) => void; concise?: boolean
 }) {
   const [mission, setMission] = useState<Mission | null>(null)
   const [feed, setFeed] = useState<Utterance[]>([])
-  const [open, setOpen] = useState(true)
+  const [open, setOpen] = useState(!concise)
+  const endRef = useRef<HTMLDivElement>(null)
   const [say, setSay] = useState('')
   const cursor = useRef({ after: 0, since: 0 })
   const gone = useRef(false)
@@ -107,7 +114,7 @@ export function DiscussionCard({ missionId, topic, onPin, notify }: {
     const loop = async () => {
       try {
         const m = await pull()
-        if (!gone.current && (m.status === 'running' || m.status === 'queued')) t = window.setTimeout(loop, 1200)
+        if (!gone.current && (m.status === 'running' || m.status === 'queued')) t = window.setTimeout(loop, 800)
       } catch (e) {
         if (!gone.current) setMission(null)
         void e
@@ -123,9 +130,14 @@ export function DiscussionCard({ missionId, topic, onPin, notify }: {
   // 运行中持续轮询（插话 / 继续之后重新进入运行态）
   useEffect(() => {
     if (!mission || !(mission.status === 'running' || mission.status === 'queued')) return
-    const t = window.setInterval(() => { pull().catch(() => undefined) }, 1200)
+    const t = window.setInterval(() => { pull().catch(() => undefined) }, 800)
     return () => window.clearInterval(t)
   }, [mission?.status, pull]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!open || !(mission?.status === 'running' || mission?.status === 'queued')) return
+    const t = window.setTimeout(() => endRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }), 80)
+    return () => window.clearTimeout(t)
+  }, [feed.length, mission?.status, open])
 
   if (!mission) {
     return <div className="disc-card"><div className="disc-head"><QuantEyes size={16} state="thinking" /><b>团队讨论</b><span>{topic}</span></div></div>
@@ -144,7 +156,7 @@ export function DiscussionCard({ missionId, topic, onPin, notify }: {
         <svg className="disc-chev" width="12" height="12" viewBox="0 0 12 12" aria-hidden fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="m3 4.5 3 3 3-3" /></svg>
       </button>
       {open && (
-        <div className="disc-body anim-expand">
+        <div className="disc-body anim-expand" aria-live="polite">
           <div className="disc-roster">
             {mission.roster.map((r) => <span key={r.id} className="disc-role" title={r.title}><Avatar id={r.id} size={18} />{r.name}</span>)}
           </div>
@@ -158,6 +170,7 @@ export function DiscussionCard({ missionId, topic, onPin, notify }: {
             </div>
           )}
           {running && <Working phase={`${spoken} 条发言`} onStop={() => act(() => missions.stop(missionId))} />}
+          <div ref={endRef} />
           <div className="disc-foot">
             {(running || mission.status === 'awaiting_approval' || mission.status === 'done' || mission.status === 'idle' || mission.status === 'stopped') && (
               <SayBox value={say} onChange={setSay} roster={mission.roster}

@@ -3,7 +3,7 @@
  * 任何地方的 <Avatar id="risk_officer" /> 被点击都会打开同一个抽屉，保存后所有头像即时更新。
  */
 import { useEffect, useState, useSyncExternalStore } from 'react'
-import { api, type Role, type ToolInfo } from '../api'
+import { api, type Role, type ToolInfo } from '../api/core'
 import type { ModelOption } from '../apiLab'
 import { AvatarFace } from './Avatar'
 import { modelLabel } from './chat/Composer'

@@ -14,6 +14,7 @@ import math
 import re
 import threading
 import time
+import uuid
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
@@ -24,11 +25,19 @@ from ..sdk import declared_params
 from ..store import Collections
 from ..strategies.repo import StrategyRepository
 from .deps import get_services
-from .schemas import CommentIn, PostIn, PostUpdateIn, ProfileIn
+from .schemas import CommentIn, FavoriteIn, PostIn, PostReportDecisionIn, PostReportIn, PostUpdateIn, ProfileIn, QmojiIn
 
 router = APIRouter(prefix="/api/community", tags=["策略广场"])
 
 TYPE_LABELS = {"article": "文章", "question": "问答", "strategy": "策略分享", "notice": "公告"}
+REPORT_REASONS = {
+    "spam": "垃圾广告 / 引流",
+    "abuse": "攻击谩骂 / 骚扰",
+    "misinformation": "虚假或误导信息",
+    "duplicate": "重复发布 / 抄袭",
+    "other": "其他问题",
+}
+REPORT_STATUS_LABELS = {"open": "待处理", "resolved": "已处理", "dismissed": "已忽略"}
 SUGGESTED_TAGS = [
     "趋势",
     "均值回归",
@@ -59,10 +68,20 @@ def _store():
 
 
 def me() -> dict[str, Any]:
-    """当前作者 = 服务端会话里的用户。显示名来自账号，简介按用户保存在工作区内。"""
+    """当前作者 = 服务端会话里的用户；资料与私信策略来自 social 服务。"""
     ctx = context.current()
-    prof = _store().get(Collections.PROFILE, ctx.user_id or "anon") or {}
-    return {"id": ctx.user_id, "name": ctx.user_name or "研究员", "bio": prof.get("bio", "")}
+    social = get_services().social
+    prof = social.profile(ctx.workspace_id or "", ctx.user_id or "")
+    account = (
+        get_services().db.fetchone("SELECT username, email, quantlab_uid FROM users WHERE id=?", (ctx.user_id,)) or {}
+    )
+    return {
+        "id": ctx.user_id,
+        "name": ctx.user_name or "研究员",
+        "username": account.get("username") or (account.get("email") or "").split("@")[0],
+        "quantlab_uid": account.get("quantlab_uid") or "",
+        **prof,
+    }
 
 
 def _is_moderator() -> bool:
@@ -82,19 +101,78 @@ def _clean_tags(tags: list[str]) -> list[str]:
     return out[:8]
 
 
-def _score(post: dict[str, Any], now: float) -> float:
-    """推荐分：互动加权 + 时间衰减（与常见社区排序一致）。置顶另行处理。"""
-    interact = (
-        len(post.get("likes", [])) * 3
-        + post.get("comment_count", 0) * 2
-        + post.get("clones", 0) * 4
-        + len(post.get("favorites", [])) * 2
-        + post.get("views", 0) * 0.05
-    )
-    if post.get("featured"):
-        interact += 20
-    hours = max(0.0, (now - post.get("created_at", now)) / 3600)
-    return (interact + 1) / math.pow(hours + 2, 1.2)
+def _engagement(post: dict[str, Any]) -> dict[str, float]:
+    likes = float(len(post.get("likes", [])))
+    dislikes = float(len(post.get("dislikes", [])))
+    favorites = float(len(post.get("favorites", [])))
+    comments = float(post.get("comment_count", 0) or 0)
+    clones = float(post.get("clones", 0) or 0)
+    views = float(post.get("views", 0) or 0)
+    positive = likes + favorites * 1.4 + comments * 0.8 + clones * 2.0
+    if post.get("accepted_comment"):
+        positive += 1.0
+    # 贝叶斯平滑：只有 1 个赞的新帖不会压过长期稳定高质量内容。
+    quality = (positive + 2.0) / (positive + dislikes * 1.5 + 5.0)
+    weighted = likes * 4 + favorites * 3 + comments * 2 + clones * 5 - dislikes * 4 + views * 0.05
+    reach = math.log1p(max(0.0, weighted))
+    return {"quality": quality, "reach": reach, "dislikes": dislikes}
+
+
+def _tag_affinity(posts: list[dict[str, Any]], viewer: str) -> dict[str, float]:
+    """用当前成员赞过 / 收藏过的帖子推断兴趣标签，作为推荐排序的轻量个性化信号。"""
+    affinity: dict[str, float] = {}
+    if not viewer:
+        return affinity
+    for p in posts:
+        liked = viewer in p.get("likes", [])
+        favorited = viewer in p.get("favorites", [])
+        if not (liked or favorited):
+            continue
+        weight = 2.0 if liked else 1.2
+        for tag in p.get("tags", []):
+            affinity[str(tag)] = affinity.get(str(tag), 0.0) + weight
+    return affinity
+
+
+def _recommend_score(
+    post: dict[str, Any],
+    now: float,
+    viewer: str,
+    tag_affinity: dict[str, float],
+    followed: set[str],
+) -> float:
+    """推荐分：质量置信度 + 互动广度 + 时效衰减 + 关注/兴趣偏置。"""
+    eng = _engagement(post)
+    hours = max(0.0, (now - float(post.get("created_at", now))) / 3600)
+    score = (eng["quality"] * 2.4 + eng["reach"] + (1.3 if post.get("featured") else 0.0)) / math.pow(hours + 6, 1.15)
+    if post.get("author_id") in followed:
+        score *= 1.45
+    tags = [str(t) for t in post.get("tags", [])]
+    if tags and tag_affinity:
+        overlap = sum(tag_affinity.get(t, 0.0) for t in tags) / max(1, len(tags))
+        score *= 1.0 + min(0.55, overlap * 0.16)
+    reply_at = float(post.get("last_reply_at") or 0)
+    if reply_at > 0:
+        reply_hours = max(0.0, (now - reply_at) / 3600)
+        score += max(0.0, 1.2 - reply_hours / 24) / math.pow(hours + 6, 1.15)
+    return score
+
+
+def _hot_score(post: dict[str, Any]) -> float:
+    eng = _engagement(post)
+    return eng["reach"] * 2 + eng["quality"] * 3 - eng["dislikes"] * 0.8
+
+
+def _diversify_by_author(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """推荐页限制同一作者在靠前位置过度集中，同时保留全部帖子。"""
+    primary: list[dict[str, Any]] = []
+    deferred: list[dict[str, Any]] = []
+    seen: dict[str, int] = {}
+    for post in rows:
+        author = str(post.get("author_id") or post.get("author") or "")
+        seen[author] = seen.get(author, 0) + 1
+        (primary if post.get("pinned") or seen[author] <= 2 else deferred).append(post)
+    return primary + deferred
 
 
 def source_of(post: dict[str, Any]) -> dict[str, Any]:
@@ -107,14 +185,31 @@ def source_of(post: dict[str, Any]) -> dict[str, Any]:
     return {"kind": "human", "label": "成员"}
 
 
+def _qmoji_reactions(post: dict[str, Any], viewer: str) -> list[dict[str, Any]]:
+    raw = post.get("reactions")
+    if not isinstance(raw, dict):
+        return []
+    out: list[dict[str, Any]] = []
+    for emoji, people in raw.items():
+        if not isinstance(people, list):
+            continue
+        users = list(dict.fromkeys(str(u) for u in people if u))
+        if users:
+            out.append({"emoji": str(emoji), "count": len(users), "mine": viewer in users})
+    return out
+
+
 def _public(post: dict[str, Any], viewer: str) -> dict[str, Any]:
-    out = {k: v for k, v in post.items() if k not in ("likes", "favorites")}
+    out = {k: v for k, v in post.items() if k not in ("likes", "dislikes", "favorites", "reactions")}
     out["source"] = source_of(post)
     out.setdefault("refs", [])
     out["like_count"] = len(post.get("likes", []))
+    out["dislike_count"] = len(post.get("dislikes", []))
     out["favorite_count"] = len(post.get("favorites", []))
     out["liked"] = viewer in post.get("likes", [])
+    out["disliked"] = viewer in post.get("dislikes", [])
     out["favorited"] = viewer in post.get("favorites", [])
+    out["reactions"] = _qmoji_reactions(post, viewer)
     out["type_label"] = TYPE_LABELS.get(post.get("type", ""), "")
     out["excerpt"] = _excerpt(post.get("body", ""))
     return out
@@ -132,6 +227,19 @@ def _get_post(post_id: str) -> dict[str, Any]:
     if post is None:
         raise HTTPException(404, "帖子不存在")
     return post
+
+
+def _ensure_not_blocked(post: dict[str, Any]) -> None:
+    author_id = str(post.get("author_id") or "")
+    viewer = context.current().user_id or ""
+    if not author_id or not viewer or author_id == viewer:
+        return
+    ws = context.current_workspace()
+    social = get_services().social
+    if social.blocked(ws, viewer, author_id):
+        raise HTTPException(403, "你已拉黑该作者")
+    if social.blocked(ws, author_id, viewer):
+        raise HTTPException(403, "对方已将你拉黑")
 
 
 def _snapshot_backtest(bt: dict[str, Any]) -> dict[str, Any]:
@@ -194,8 +302,241 @@ def put_profile(payload: ProfileIn) -> dict:
     ctx = context.current()
     get_services().db.execute("UPDATE users SET name=? WHERE id=?", (name, ctx.user_id))
     ctx.user_name = name
+    get_services().social.save_profile(
+        ctx.workspace_id or "",
+        ctx.user_id or "",
+        bio=payload.bio,
+        dm_policy=payload.dm_policy,
+        avatar_color=payload.avatar_color,
+        public_profile=payload.public_profile,
+    )
+    # 兼容旧版本：同步写一份到原 JSON 资料，避免回滚后简介丢失。
     _store().upsert(Collections.PROFILE, {"id": ctx.user_id, "bio": payload.bio.strip()})
     return {"profile": me()}
+
+
+def _profile_view(identifier: str) -> dict[str, Any]:
+    ctx = context.current()
+    ws = ctx.workspace_id or ""
+    social = get_services().social
+    target = social.user(ws, identifier)
+    if target is None:
+        raise HTTPException(404, "用户不存在")
+    uid = str(target["id"])
+    viewer = ctx.user_id or ""
+    prof = social.profile(ws, uid)
+    followers, following = social.follow_counts(ws, uid)
+    store = _store()
+    posts = [p for p in store.list(Collections.POSTS) if p.get("author_id") == uid]
+    posts.sort(key=lambda p: p.get("created_at", 0), reverse=True)
+    comments = [c for c in store.list(Collections.COMMENTS) if c.get("author_id") == uid]
+    is_self = uid == viewer
+    blocked = social.blocked(ws, viewer, uid)
+    blocked_me = social.blocked(ws, uid, viewer)
+    if blocked or blocked_me:
+        posts = []
+    cards = []
+    for p in posts[:30]:
+        item = _public(p, viewer)
+        item.pop("body", None)
+        item.pop("strategy", None)
+        item.pop("backtest", None)
+        cards.append(item)
+    can_dm = not is_self and not blocked and not blocked_me and prof["dm_policy"] != "none"
+    return {
+        "user": {
+            "id": uid,
+            "username": target.get("username") or "",
+            "name": target.get("name") or target.get("username") or "研究员",
+            "quantlab_uid": target.get("quantlab_uid") or "",
+            "bio": prof["bio"],
+            "public_profile": prof.get("public_profile", False),
+            "avatar_color": prof["avatar_color"],
+            "role": target.get("role") or "member",
+            "dm_policy": prof["dm_policy"],
+            "dm_policy_label": prof["dm_policy_label"],
+            "followers": followers,
+            "following": following,
+            "posts": len(posts),
+            "likes": sum(len(p.get("likes", [])) for p in posts),
+            "clones": sum(int(p.get("clones", 0)) for p in posts),
+            "comments": len(comments),
+        },
+        "is_me": is_self,
+        "is_following": social.is_following(ws, viewer, uid) if viewer else False,
+        "is_blocked": blocked,
+        "blocked_me": blocked_me,
+        "can_dm": can_dm,
+        "dm_reason": "对方已关闭私信"
+        if prof["dm_policy"] == "none"
+        else ("你们之间存在拉黑关系" if blocked or blocked_me else ""),
+        "posts": cards,
+    }
+
+
+@router.get("/users/{identifier}", summary="用户主页：资料、关注/拉黑状态、私信策略与帖子")
+def user_profile(identifier: str) -> dict:
+    return _profile_view(identifier)
+
+
+@router.post("/users/{identifier}/follow", summary="关注用户")
+def follow_user(identifier: str) -> dict:
+    ws, viewer, name = (
+        context.current_workspace(),
+        context.current().user_id or "",
+        context.current().user_name or "成员",
+    )
+    target = get_services().social.user(ws, identifier)
+    if target is None:
+        raise HTTPException(404, "用户不存在")
+    uid = str(target["id"])
+    social = get_services().social
+    if social.blocked(ws, viewer, uid) or social.blocked(ws, uid, viewer):
+        raise HTTPException(403, "存在拉黑关系，无法关注")
+    added = social.follow(ws, viewer, uid)
+    if added:
+        get_services().collab.notify(
+            [uid],
+            kind="follow",
+            title=f"{name} 关注了你",
+            body="",
+            link=f"profile/{viewer}",
+            actor_id=viewer,
+            actor_name=name,
+            source_type="user",
+            source_id=viewer,
+            workspace_id=ws,
+        )
+    followers, following = social.follow_counts(ws, uid)
+    return {"following": True, "added": added, "followers": followers, "following_count": following}
+
+
+@router.delete("/users/{identifier}/follow", summary="取消关注")
+def unfollow_user(identifier: str) -> dict:
+    ws, viewer = context.current_workspace(), context.current().user_id or ""
+    target = get_services().social.user(ws, identifier)
+    if target is None:
+        raise HTTPException(404, "用户不存在")
+    uid = str(target["id"])
+    removed = get_services().social.unfollow(ws, viewer, uid)
+    followers, following = get_services().social.follow_counts(ws, uid)
+    return {"following": False, "removed": removed, "followers": followers, "following_count": following}
+
+
+@router.post("/users/{identifier}/block", summary="拉黑用户：自动解除关注并隐藏其帖子")
+def block_user(identifier: str) -> dict:
+    ctx = context.current()
+    ws, viewer = ctx.workspace_id or "", ctx.user_id or ""
+    target = get_services().social.user(ws, identifier)
+    if target is None:
+        raise HTTPException(404, "用户不存在")
+    uid = str(target["id"])
+    if uid == viewer:
+        raise HTTPException(400, "不能拉黑自己")
+    if target.get("role") == "admin":
+        raise HTTPException(400, "不能拉黑工作区管理员")
+    added = get_services().social.block(ws, viewer, uid)
+    get_services().collab.mute(viewer, "user", uid, target.get("name") or target.get("username") or "")
+    return {"blocked": True, "added": added}
+
+
+@router.delete("/users/{identifier}/block", summary="取消拉黑")
+def unblock_user(identifier: str) -> dict:
+    ws, viewer = context.current_workspace(), context.current().user_id or ""
+    target = get_services().social.user(ws, identifier)
+    if target is None:
+        raise HTTPException(404, "用户不存在")
+    uid = str(target["id"])
+    removed = get_services().social.unblock(ws, viewer, uid)
+    get_services().collab.unmute(viewer, "user", uid)
+    return {"blocked": False, "removed": removed}
+
+
+FAVORITE_TYPES = {
+    "post": "帖子",
+    "strategy": "策略",
+    "backtest": "回测",
+    "factor": "因子",
+    "model": "模型",
+    "project": "研究项目",
+    "link": "链接",
+}
+
+
+def _favorite_target(payload: FavoriteIn) -> tuple[str, str, dict[str, Any]]:
+    title, link, meta = payload.title.strip(), payload.link.strip(), payload.meta or {}
+    if payload.object_type == "post":
+        post = _get_post(payload.object_id)
+        _ensure_not_blocked(post)
+        title = title or post.get("title") or "帖子"
+        link = link or f"post/{post['id']}"
+        meta = {**meta, "author": post.get("author"), "type": post.get("type")}
+    elif payload.object_type == "strategy":
+        rec = StrategyRepository(_store().root / "strategies").get(payload.object_id)
+        if rec is None:
+            raise HTTPException(404, "策略不存在")
+        title = title or rec.meta.name
+        link = link or f"editor/{rec.meta.slug}"
+        meta = {**meta, "version": rec.meta.version, "status": rec.meta.status}
+    elif payload.object_type == "backtest":
+        bt = _store().get_blob("backtests", payload.object_id)
+        if bt is None:
+            raise HTTPException(404, "回测不存在")
+        title = title or f"{bt.get('strategy_name') or '策略'} 回测"
+        link = link or f"backtest/{payload.object_id}"
+        meta = {**meta, "metrics": bt.get("metrics") or {}}
+    if not title:
+        title = payload.object_id[:80]
+    return title[:160], link[:300], meta
+
+
+def _set_favorite_state(payload: FavoriteIn, on: bool) -> bool:
+    ctx = context.current()
+    ws, uid = ctx.workspace_id or "", ctx.user_id or ""
+    social = get_services().social
+    if on:
+        title, link, meta = _favorite_target(payload)
+        return social.set_favorite(
+            ws,
+            uid,
+            object_type=payload.object_type,
+            object_id=payload.object_id,
+            title=title,
+            link=link,
+            meta=meta,
+        )
+    return social.remove_favorite(ws, uid, payload.object_type, payload.object_id)
+
+
+@router.get("/favorites", summary="我的收藏：帖子、策略、回测等统一列表")
+def list_favorites(type: str | None = None) -> dict:
+    ctx = context.current()
+    items = get_services().social.favorites(ctx.workspace_id or "", ctx.user_id or "", type or None)
+    return {"items": items, "types": FAVORITE_TYPES}
+
+
+@router.get("/favorites/{object_type}/{object_id}", summary="检查某个对象是否已收藏")
+def favorite_status(object_type: str, object_id: str) -> dict:
+    ctx = context.current()
+    return {
+        "favorite": get_services().social.is_favorite(ctx.workspace_id or "", ctx.user_id or "", object_type, object_id)
+    }
+
+
+@router.post("/favorites", summary="收藏内容；已收藏时再次调用会取消")
+def toggle_favorite(payload: FavoriteIn) -> dict:
+    ctx = context.current()
+    social = get_services().social
+    current = social.is_favorite(ctx.workspace_id or "", ctx.user_id or "", payload.object_type, payload.object_id)
+    added = _set_favorite_state(payload, not current)
+    return {"favorite": not current, "added": added}
+
+
+@router.delete("/favorites/{object_type}/{object_id}", summary="取消收藏")
+def delete_favorite(object_type: str, object_id: str) -> dict:
+    ctx = context.current()
+    removed = get_services().social.remove_favorite(ctx.workspace_id or "", ctx.user_id or "", object_type, object_id)
+    return {"favorite": False, "removed": removed}
 
 
 # ---------------------------------------------------------------------------
@@ -210,6 +551,7 @@ def list_posts(
     featured: bool = False,
     mine: bool = False,
     favorited: bool = False,
+    following: bool = False,
     source: str | None = Query(None, description="human / agent / system：只看人写的、Agent 发的或平台发的"),
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=50),
@@ -217,7 +559,10 @@ def list_posts(
     seed_if_empty()
     viewer = me()["id"]
     now = time.time()
-    rows = _store().list(Collections.POSTS)
+    all_rows = _store().list(Collections.POSTS)
+    followed = get_services().social.following_ids(context.current_workspace(), viewer)
+    affinity = _tag_affinity(all_rows, viewer)
+    rows = list(all_rows)
     if type:
         rows = [r for r in rows if r.get("type") == type]
     if tag:
@@ -228,6 +573,11 @@ def list_posts(
         rows = [r for r in rows if r.get("author_id") == viewer]
     if favorited:
         rows = [r for r in rows if viewer in r.get("favorites", [])]
+    if following:
+        rows = [r for r in rows if r.get("author_id") in followed]
+    blocked = get_services().social.blocked_ids(context.current_workspace(), viewer) if viewer else set()
+    if blocked and not mine:
+        rows = [r for r in rows if r.get("author_id") not in blocked]
     if source in ("human", "agent", "system"):
         rows = [r for r in rows if source_of(r)["kind"] == source]
     muted = get_services().collab.muted_users(viewer) if viewer else set()
@@ -247,24 +597,31 @@ def list_posts(
     elif sort == "reply":
         rows.sort(key=lambda r: r.get("last_reply_at") or r.get("created_at", 0), reverse=True)
     elif sort == "hot":
+        rows.sort(key=_hot_score, reverse=True)
+    else:
         rows.sort(
-            key=lambda r: (
-                len(r.get("likes", [])) * 3
-                + r.get("comment_count", 0) * 2
-                + r.get("clones", 0) * 4
-                + r.get("views", 0) * 0.05
-            ),
+            key=lambda r: _recommend_score(r, now, viewer, affinity, followed),
             reverse=True,
         )
-    else:
-        rows.sort(key=lambda r: _score(r, now), reverse=True)
+        rows = _diversify_by_author(rows)
     pinned = [r for r in rows if r.get("pinned")]
     rows = pinned + [r for r in rows if not r.get("pinned")]
     total = len(rows)
     page_rows = rows[(page - 1) * size : page * size]
     items = []
+    social = get_services().social
+    ws = context.current_workspace()
     for r in page_rows:
         p = _public(r, viewer)
+        author_id = str(p.get("author_id") or "")
+        if author_id and author_id not in ("system",):
+            author_prof = social.profile(ws, author_id)
+            author_user = social.user(ws, author_id) or {}
+            p["author_color"] = author_prof.get("avatar_color", "#2E5C9A")
+            p["author_role"] = author_user.get("role") or "member"
+        else:
+            p["author_color"] = "#2E5C9A"
+            p["author_role"] = "system"
         p.pop("body", None)
         if p.get("strategy"):
             p["strategy"] = {k: p["strategy"].get(k) for k in ("name", "securities", "timeframe", "version")}
@@ -302,6 +659,7 @@ def publish(payload: PostIn, source: dict[str, Any]) -> dict[str, Any]:
         "author": author,
         "author_id": author_id,
         "likes": [],
+        "dislikes": [],
         "favorites": [],
         "views": 0,
         "clones": 0,
@@ -358,18 +716,41 @@ def publish(payload: PostIn, source: dict[str, Any]) -> dict[str, Any]:
 @router.get("/posts/{post_id}")
 def read_post(post_id: str) -> dict:
     post = _get_post(post_id)
-    post["views"] = post.get("views", 0) + 1
     store = _store()
-    store.upsert(Collections.POSTS, post)
     viewer = me()["id"]
+    ws = context.current_workspace()
+    social = get_services().social
+    author_id = str(post.get("author_id") or "")
+    blocked = bool(author_id and viewer and social.blocked(ws, viewer, author_id))
+    blocked_me = bool(author_id and viewer and social.blocked(ws, author_id, viewer))
+    if blocked:
+        raise HTTPException(403, "你已拉黑该作者，先取消拉黑才能查看")
+    if blocked_me:
+        raise HTTPException(403, "对方已将你拉黑")
+    post["views"] = post.get("views", 0) + 1
+    store.upsert(Collections.POSTS, post)
     collab = get_services().collab
     muted = collab.muted_users(viewer)
-    comments = [c for c in store.list(Collections.COMMENTS) if c.get("post_id") == post_id]
+    blocked_ids = social.blocked_ids(ws, viewer)
+    comments = [
+        c
+        for c in store.list(Collections.COMMENTS)
+        if c.get("post_id") == post_id and c.get("author_id") not in blocked_ids
+    ]
     comments.sort(key=lambda c: c.get("created_at", 0))
     for c in comments:
         c["like_count"] = len(c.get("likes", []))
         c["liked"] = viewer in c.get("likes", [])
         c["muted"] = c.get("author_id") in muted
+        cid = str(c.get("author_id") or "")
+        if cid and cid != "system":
+            cp = social.profile(ws, cid)
+            cu = social.user(ws, cid) or {}
+            c["author_color"] = cp.get("avatar_color", "#2E5C9A")
+            c["author_role"] = cu.get("role") or "member"
+        else:
+            c["author_color"] = "#2E5C9A"
+            c["author_role"] = "system"
         c.pop("likes", None)
     related = [
         _public(r, viewer)
@@ -380,9 +761,29 @@ def read_post(post_id: str) -> dict:
         r.pop("body", None)
         r.pop("strategy", None)
         r.pop("backtest", None)
+    author_prof = social.profile(ws, author_id) if author_id else {"avatar_color": "#2E5C9A"}
+    author_user = (social.user(ws, author_id) if author_id else None) or {}
+    post_view = _public(post, viewer)
+    post_view["author_color"] = author_prof.get("avatar_color", "#2E5C9A")
+    post_view["author_role"] = author_user.get("role") or "system"
+    relation = {
+        "author_id": author_id,
+        "author_role": author_user.get("role") or "system",
+        "is_following": bool(author_id and social.is_following(ws, viewer, author_id)),
+        "is_blocked": False,
+        "can_dm": False,
+        "dm_policy": "none",
+        "dm_reason": "私聊不可用",
+    }
+    if author_id and author_id not in ("system", viewer):
+        prof = social.profile(ws, author_id)
+        relation["dm_policy"] = prof["dm_policy"]
+        relation["can_dm"] = prof["dm_policy"] != "none"
+        relation["dm_reason"] = "对方已关闭私信" if prof["dm_policy"] == "none" else ""
     return {
-        "post": _public(post, viewer),
+        "post": post_view,
         "comments": comments,
+        "author_relation": relation,
         "related": related,
         "viewer": me()["name"],
         "viewer_id": viewer,
@@ -418,13 +819,28 @@ def update_post(post_id: str, payload: PostUpdateIn) -> dict:
 @router.delete("/posts/{post_id}")
 def delete_post(post_id: str) -> dict:
     post = _get_post(post_id)
-    if not (_owns(post) or _is_moderator()):
+    ctx = context.current()
+    moderator = _is_moderator()
+    if not (_owns(post) or moderator):
         raise HTTPException(403, "只能删除自己的帖子（工作区管理员可删除任何帖子）")
     store = _store()
+    now = int(time.time() * 1000)
     for c in store.list(Collections.COMMENTS):
         if c.get("post_id") == post_id:
             store.delete(Collections.COMMENTS, c["id"])
     store.delete(Collections.POSTS, post_id)
+    get_services().db.execute(
+        "UPDATE post_reports SET status='resolved', action_taken='post_deleted', resolution=?, "
+        "reviewed_by=?, reviewed_at=?, updated_at=? "
+        "WHERE workspace_id=? AND post_id=? AND status IN ('open')",
+        ("帖子已删除", ctx.user_id, now, now, context.current_workspace(), post_id),
+    )
+    get_services().audit.record(
+        "community.post_delete",
+        object_type="post",
+        object_id=post_id,
+        details={"author_id": post.get("author_id"), "moderator": moderator and not _owns(post)},
+    )
     return {"ok": True}
 
 
@@ -438,9 +854,48 @@ def _toggle(post_id: str, field: str) -> dict:
     else:
         bucket.remove(who)
     _store().upsert(Collections.POSTS, post)
-    if on and field == "likes":
-        _notify_author(post, kind="like", title=f"{me()['name']} 赞了你的帖子「{post['title']}」")
     return {"on": on, "count": len(bucket)}
+
+
+def _toggle_reaction(post_id: str, target: str) -> dict:
+    """点赞 / 点踩互斥；点踩只影响排序，不向作者发通知。"""
+    post = _get_post(post_id)
+    who = me()["id"]
+    likes = list(dict.fromkeys(post.get("likes", [])))
+    dislikes = list(dict.fromkeys(post.get("dislikes", [])))
+    liked = who in likes
+    disliked = who in dislikes
+    if target == "like":
+        if liked:
+            likes.remove(who)
+            liked = False
+        else:
+            likes.append(who)
+            liked = True
+            if who in dislikes:
+                dislikes.remove(who)
+                disliked = False
+    else:
+        if disliked:
+            dislikes.remove(who)
+            disliked = False
+        else:
+            dislikes.append(who)
+            disliked = True
+            if who in likes:
+                likes.remove(who)
+                liked = False
+    post["likes"] = likes
+    post["dislikes"] = dislikes
+    _store().upsert(Collections.POSTS, post)
+    if liked:
+        _notify_author(post, kind="like", title=f"{me()['name']} 赞了你的帖子「{post['title']}」")
+    return {
+        "liked": liked,
+        "disliked": disliked,
+        "like_count": len(likes),
+        "dislike_count": len(dislikes),
+    }
 
 
 def _notify_author(post: dict[str, Any], *, kind: str, title: str, body: str = "", to: str | None = None) -> None:
@@ -449,20 +904,222 @@ def _notify_author(post: dict[str, Any], *, kind: str, title: str, body: str = "
     if not target or target == "system":
         return
     get_services().collab.notify(
-        [target], kind=kind, title=title, body=body[:200], link=f"post/{post['id']}", actor_id=ctx.user_id,
-        actor_name=ctx.user_name, source_type="post", source_id=post["id"], workspace_id=ctx.workspace_id,
+        [target],
+        kind=kind,
+        title=title,
+        body=body[:200],
+        link=f"post/{post['id']}",
+        actor_id=ctx.user_id,
+        actor_name=ctx.user_name,
+        source_type="post",
+        source_id=post["id"],
+        workspace_id=ctx.workspace_id,
         post_id=post["id"],
     )
 
 
 @router.post("/posts/{post_id}/like")
 def like_post(post_id: str) -> dict:
-    return _toggle(post_id, "likes")
+    post = _get_post(post_id)
+    _ensure_not_blocked(post)
+    result = _toggle_reaction(post_id, "like")
+    return {**result, "on": result["liked"], "count": result["like_count"]}
+
+
+@router.post("/posts/{post_id}/dislike", summary="踩帖子；再次调用取消")
+def dislike_post(post_id: str) -> dict:
+    post = _get_post(post_id)
+    _ensure_not_blocked(post)
+    result = _toggle_reaction(post_id, "dislike")
+    return {**result, "on": result["disliked"], "count": result["dislike_count"]}
+
+
+@router.post("/posts/{post_id}/qmoji", summary="给帖子贴一个 Qmoji 反应；再次调用取消")
+def qmoji_post(post_id: str, payload: QmojiIn) -> dict:
+    post = _get_post(post_id)
+    _ensure_not_blocked(post)
+    who = me()["id"]
+    raw = post.get("reactions") if isinstance(post.get("reactions"), dict) else {}
+    existing = raw.get(payload.emoji)
+    bucket = list(dict.fromkeys(str(u) for u in existing if u)) if isinstance(existing, list) else []
+    on = who not in bucket
+    if on:
+        bucket.append(who)
+    else:
+        bucket.remove(who)
+    if bucket:
+        raw[payload.emoji] = bucket
+    else:
+        raw.pop(payload.emoji, None)
+    post["reactions"] = raw
+    _store().upsert(Collections.POSTS, post)
+    if on and who != post.get("author_id"):
+        _notify_author(post, kind="like", title=f"{me()['name']} 用 Qmoji 回应了你的帖子「{post['title']}」")
+    reactions = _qmoji_reactions(post, who)
+    count = next((r["count"] for r in reactions if r["emoji"] == payload.emoji), 0)
+    return {"emoji": payload.emoji, "on": on, "count": count, "reactions": reactions}
 
 
 @router.post("/posts/{post_id}/favorite")
 def favorite_post(post_id: str) -> dict:
-    return _toggle(post_id, "favorites")
+    post = _get_post(post_id)
+    _ensure_not_blocked(post)
+    result = _toggle(post_id, "favorites")
+    _set_favorite_state(
+        FavoriteIn(object_type="post", object_id=post_id, title=post.get("title") or "帖子", link=f"post/{post_id}"),
+        result["on"],
+    )
+    return result
+
+
+def _report_item(
+    row: dict[str, Any], *, post: dict[str, Any] | None, reporter_name: str, same_post: int
+) -> dict[str, Any]:
+    return {
+        **row,
+        "reason_label": REPORT_REASONS.get(str(row.get("reason")), "其他问题"),
+        "status_label": REPORT_STATUS_LABELS.get(str(row.get("status")), str(row.get("status"))),
+        "reporter_name": reporter_name,
+        "post_exists": post is not None,
+        "post_title": post.get("title") if post else "帖子已删除",
+        "post_author": post.get("author") if post else "—",
+        "post_author_id": post.get("author_id") if post else None,
+        "post_excerpt": _excerpt(post.get("body", ""), 120) if post else "帖子已删除，举报记录保留用于审计。",
+        "same_post_reports": same_post,
+    }
+
+
+@router.post("/posts/{post_id}/report", summary="举报帖子")
+def report_post(post_id: str, payload: PostReportIn) -> dict:
+    post = _get_post(post_id)
+    if _owns(post):
+        raise HTTPException(400, "不能举报自己的帖子")
+    _ensure_not_blocked(post)
+    ctx = context.current()
+    ws = context.current_workspace()
+    db = get_services().db
+    existing = db.fetchone(
+        "SELECT * FROM post_reports WHERE workspace_id=? AND post_id=? AND reporter_id=?",
+        (ws, post_id, ctx.user_id),
+    )
+    if existing:
+        return {
+            "report": _report_item(existing, post=post, reporter_name=ctx.user_name or "", same_post=1),
+            "already_reported": True,
+        }
+    rid = uuid.uuid4().hex
+    now = int(time.time() * 1000)
+    db.execute(
+        "INSERT INTO post_reports (id, workspace_id, post_id, reporter_id, reason, detail, status, "
+        "created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+        (rid, ws, post_id, ctx.user_id, payload.reason, payload.detail.strip(), "open", now, now),
+    )
+    admins = [
+        m["user_id"]
+        for m in get_services().auth.members(ws)
+        if m.get("role") == "admin" and m.get("user_id") != ctx.user_id
+    ]
+    if admins:
+        get_services().collab.notify(
+            admins,
+            kind="system",
+            title=f"新帖子举报：{post.get('title', '')[:40]}",
+            body=f"{REPORT_REASONS.get(payload.reason, '其他问题')}：{payload.detail.strip()[:120]}",
+            link="square",
+            actor_id=ctx.user_id,
+            actor_name=ctx.user_name,
+            source_type="post",
+            source_id=post_id,
+            workspace_id=ws,
+            post_id=post_id,
+        )
+    get_services().audit.record(
+        "community.post_report",
+        object_type="post",
+        object_id=post_id,
+        details={"report_id": rid, "reason": payload.reason},
+    )
+    row = db.fetchone("SELECT * FROM post_reports WHERE id=?", (rid,)) or {}
+    return {
+        "report": _report_item(row, post=post, reporter_name=ctx.user_name or "", same_post=1),
+        "already_reported": False,
+    }
+
+
+def _report_counts(ws: str) -> dict[str, int]:
+    rows = get_services().db.fetchall(
+        "SELECT status, COUNT(*) AS n FROM post_reports WHERE workspace_id=? GROUP BY status", (ws,)
+    )
+    counts = {"open": 0, "resolved": 0, "dismissed": 0, "all": 0}
+    for row in rows:
+        n = int(row.get("n") or 0)
+        counts[str(row.get("status"))] = n
+        counts["all"] += n
+    return counts
+
+
+@router.get("/reports", summary="帖子举报列表（工作区管理员）")
+def list_reports(status: str = Query("open", pattern="^(open|resolved|dismissed|all)$")) -> dict:
+    if not _is_moderator():
+        raise HTTPException(403, "只有工作区管理员可以审核举报")
+    ws = context.current_workspace()
+    db = get_services().db
+    where = "workspace_id=?"
+    args: list[Any] = [ws]
+    if status != "all":
+        where += " AND status=?"
+        args.append(status)
+    rows = db.fetchall(f"SELECT * FROM post_reports WHERE {where} ORDER BY created_at DESC LIMIT 300", tuple(args))
+    reporter_ids = sorted({str(r.get("reporter_id")) for r in rows if r.get("reporter_id")})
+    names: dict[str, str] = {}
+    if reporter_ids:
+        marks = ",".join("?" * len(reporter_ids))
+        for user in db.fetchall(f"SELECT id, name FROM users WHERE id IN ({marks})", tuple(reporter_ids)):
+            names[str(user["id"])] = user.get("name") or str(user["id"])
+    same_counts: dict[str, int] = {}
+    for agg in db.fetchall(
+        "SELECT post_id, COUNT(*) AS n FROM post_reports WHERE workspace_id=? AND status='open' GROUP BY post_id",
+        (ws,),
+    ):
+        same_counts[str(agg["post_id"])] = int(agg.get("n") or 0)
+    items = []
+    for row in rows:
+        post = _store().get(Collections.POSTS, str(row.get("post_id")))
+        items.append(
+            _report_item(
+                row,
+                post=post,
+                reporter_name=names.get(str(row.get("reporter_id")), str(row.get("reporter_id"))),
+                same_post=same_counts.get(str(row.get("post_id")), 0),
+            )
+        )
+    return {"items": items, "counts": _report_counts(ws), "status": status}
+
+
+@router.post("/reports/{report_id}/decide", summary="处理或忽略帖子举报（工作区管理员）")
+def decide_report(report_id: str, payload: PostReportDecisionIn) -> dict:
+    if not _is_moderator():
+        raise HTTPException(403, "只有工作区管理员可以审核举报")
+    ws = context.current_workspace()
+    db = get_services().db
+    row = db.fetchone("SELECT * FROM post_reports WHERE id=? AND workspace_id=?", (report_id, ws))
+    if row is None:
+        raise HTTPException(404, "举报记录不存在")
+    ctx = context.current()
+    now = int(time.time() * 1000)
+    db.execute(
+        "UPDATE post_reports SET status=?, resolution=?, reviewed_by=?, reviewed_at=?, updated_at=? WHERE id=?",
+        (payload.status, payload.note.strip(), ctx.user_id, now, now, report_id),
+    )
+    get_services().audit.record(
+        "community.post_report_decide",
+        object_type="post_report",
+        object_id=report_id,
+        details={"post_id": row.get("post_id"), "status": payload.status, "note": payload.note.strip()},
+    )
+    updated = db.fetchone("SELECT * FROM post_reports WHERE id=?", (report_id,)) or {}
+    post = _store().get(Collections.POSTS, str(row.get("post_id")))
+    return {"report": _report_item(updated, post=post, reporter_name="", same_post=0)}
 
 
 @router.post("/posts/{post_id}/feature")
@@ -492,6 +1149,7 @@ def pin_post(post_id: str) -> dict:
 def clone_from_post(post_id: str) -> dict:
     """一键克隆帖子里的策略到"我的策略"。克隆的是帖子冻结的那份代码。"""
     post = _get_post(post_id)
+    _ensure_not_blocked(post)
     snap = post.get("strategy")
     if not snap or not snap.get("code"):
         raise HTTPException(400, "这篇帖子没有附带策略代码")
@@ -565,16 +1223,27 @@ def _add_comment(
 @router.post("/posts/{post_id}/comments")
 def add_comment(post_id: str, payload: CommentIn) -> dict:
     post = _get_post(post_id)
-    comment = _add_comment(
-        post, payload.body.strip(), author=me()["name"], author_id=me()["id"], parent_id=payload.parent_id
-    )
-    name = me()["name"]
-    _notify_author(post, kind="comment", title=f"{name} 评论了你的帖子「{post['title']}」", body=payload.body)
+    _ensure_not_blocked(post)
+    body = payload.body.strip()
+    parent = _store().get(Collections.COMMENTS, payload.parent_id) if payload.parent_id else None
     if payload.parent_id:
-        parent = _store().get(Collections.COMMENTS, payload.parent_id) or {}
+        if parent is None or parent.get("post_id") != post["id"]:
+            raise HTTPException(404, "要回复的评论不存在")
+        mention = f"@{parent.get('author') or '成员'}"
+        if not body.startswith(mention):
+            body = f"{mention} {body}"
+    name = me()["name"]
+    comment = _add_comment(post, body, author=name, author_id=me()["id"], parent_id=payload.parent_id)
+    _notify_author(post, kind="comment", title=f"{name} 评论了你的帖子「{post['title']}」", body=body)
+    if payload.parent_id and parent:
         if parent.get("author_id") and parent["author_id"] != post.get("author_id"):
-            _notify_author(post, kind="comment", title=f"{name} 回复了你在「{post['title']}」下的评论",
-                           body=payload.body, to=parent["author_id"])
+            _notify_author(
+                post,
+                kind="comment",
+                title=f"{name} 回复了你在「{post['title']}」下的评论",
+                body=body,
+                to=parent["author_id"],
+            )
     return {"comment": comment}
 
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { fmtTime } from '../api2'
+import { fmtTime } from '../api/research'
 import { nodeApi, type BotItem, type BotKinds, type NodeHealth } from '../apiNode'
 import { Callout, Field, Loading, Modal, Panel, Tag } from '../components/ui'
 import type { PageProps } from './types'

@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { v3, type CopilotResult } from '../api2'
+import { v3, type CopilotResult } from '../api/research'
 import { post } from '../http'
 import { CodeView } from './CodeEditor'
 import { Markdown } from './markdown'
@@ -15,6 +15,8 @@ export interface FtReport {
   params: Record<string, unknown>
   param_space: Record<string, unknown>
   smoke: { trades?: number; fills?: number; bars?: number; error?: string }
+  can_short?: boolean
+  uses_leverage?: boolean
 }
 
 export const freqtrade = {
@@ -40,7 +42,12 @@ export function FreqtradeImportModal({ onClose, onDone, notify }: { onClose: () 
   const check = async (text = source) => {
     if (!text.trim()) return
     setBusy('check'); setError(''); setReport(null); setAi(null)
-    try { const r = await freqtrade.check(text); setReport(r); setName((n) => n || r.class_name) } catch (e) { setError((e as Error).message) } finally { setBusy('') }
+    try {
+      const r = await freqtrade.check(text)
+      setReport(r)
+      setName((n) => n || r.class_name)
+      if ((r.can_short || r.uses_leverage) && !/:PERP/i.test(secs)) setSecs('BTC/USDT:PERP')
+    } catch (e) { setError((e as Error).message) } finally { setBusy('') }
   }
   const pick = async (f: File | null) => {
     if (!f) return
@@ -92,7 +99,7 @@ export function FreqtradeImportModal({ onClose, onDone, notify }: { onClose: () 
             </div>
             <textarea className="spec-editor ft-paste" value={source} onChange={(e) => setSource(e.target.value)} spellCheck={false}
               placeholder="class MyStrategy(IStrategy): ..." aria-label="Freqtrade 策略代码" />
-            <p className="hint">策略类原样保留，只把 import 换成平台的兼容层（TA-Lib 常用指标、qtpylib、hyperopt 参数、ROI、止损、追踪止损、custom_stoploss、大周期 informative 都能用）。只支持现货多头。</p>
+            <p className="hint">策略类原样保留，只把 import 换成平台的兼容层（TA-Lib 常用指标、qtpylib、hyperopt 参数、ROI、止损、追踪止损、custom_stoploss、大周期 informative 都能用）。现货只做多；can_short / leverage() 仅在线性永续、且工作区开启「Freqtrade 做空/杠杆」后运行。</p>
           </>
         )}
         {report && (
@@ -113,7 +120,7 @@ export function FreqtradeImportModal({ onClose, onDone, notify }: { onClose: () 
                 <Field label="交易对" hint="多个用逗号分开"><input value={secs} onChange={(e) => setSecs(e.target.value)} /></Field>
               </div>
             )}
-            {report.ok && <p className="hint">导入后自动开始一次体检（未来函数、过拟合、成本敏感度）。和 Freqtrade 一样按收盘价出信号、下一根开盘成交。</p>}
+            {report.ok && <p className="hint">导入后自动开始一次体检（未来函数、过拟合、成本敏感度）。和 Freqtrade 一样按收盘价出信号、下一根开盘成交。{report.can_short || report.uses_leverage ? ' 做空/杠杆只能配 :PERP 标的，后台会再次校验功能开关。' : ''}</p>}
             {ai && (
               <>
                 {ai.mode === 'fallback' && <Callout tone="warn">没有可用的模型，改写没有完成。请先在设置里配置模型密钥。</Callout>}

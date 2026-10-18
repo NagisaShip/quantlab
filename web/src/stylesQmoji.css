@@ -1,0 +1,388 @@
+/*
+ * QuantLab Qmoji：策略广场发帖 / 评论的社交表情。
+ * 与 QuantBot 共用头部比例与 K 线眼睛；只改变眼睛几何、头部姿态和短动画。
+ * 涨跌红绿不参与社交情绪，仍只留给真实模型信号。
+ */
+
+.qmoji {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  line-height: 0;
+  vertical-align: -0.2em;
+  overflow: visible;
+  --qm-head-anim: none;
+  --qm-eyes-anim: none;
+  --qm-eye-l-anim: none;
+  --qm-eye-r-anim: none;
+  --qm-body-l-anim: none;
+  --qm-body-r-anim: none;
+  --qm-tear-anim: none;
+  --qm-scan-anim: none;
+  --qm-eye-warm: #ffcf66;
+  --qm-eye-cyan: #8fe8ff;
+  --qm-eye-cool: #9ec5ff;
+  --qm-sweat: #8fe8ff;
+  --qm-blush: #ff9fb8;
+}
+.qmoji svg { display: block; overflow: visible; }
+.qmoji .qm-head { transform-box: fill-box; transform-origin: 50% 72%; }
+.qmoji .qm-visor { fill: var(--qb-visor); opacity: .55; }
+.qmoji .qm-eye, .qmoji .qm-body { transform-box: fill-box; transform-origin: center; }
+.qmoji .qm-wick { stroke: var(--qb-eye); stroke-width: .7; stroke-linecap: round; opacity: .9; }
+.qmoji .qm-body { fill: var(--qb-eye); stroke: var(--qb-eye); stroke-width: 0; transition: fill var(--dur-3, 240ms), stroke var(--dur-3, 240ms); }
+.qmoji .qm-chev, .qmoji .qm-arc, .qmoji .qm-droop, .qmoji .qm-line {
+  fill: none; stroke: var(--qb-eye); stroke-width: 1.65; stroke-linecap: round; stroke-linejoin: round; opacity: 0;
+}
+.qmoji .qm-mouth path { fill: none; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; transform-box: fill-box; transform-origin: center; }
+.qmoji .qm-check { stroke: #fff; opacity: 0; transform: scale(.3); }
+.qmoji .qm-cross { stroke: var(--qb-error); opacity: 0; transform: scale(.3); }
+.qmoji .qm-tear { fill: none; stroke: rgba(255, 255, 255, .82); stroke-width: 1.15; stroke-linecap: round; opacity: 0; transform-box: fill-box; transform-origin: top; }
+.qmoji .qm-scan { fill: #fff; opacity: 0; }
+
+/* ---- 表情造型：静态也成立，动画只是同一姿态的节奏 ---- */
+.qmoji.qm-hi .qm-eye.r { transform: translateY(-1.5px); }
+.qmoji.qm-agree .qm-body, .qmoji.qm-agree .qm-wick,
+.qmoji.qm-laugh .qm-body, .qmoji.qm-laugh .qm-wick,
+.qmoji.qm-cry .qm-body, .qmoji.qm-cry .qm-wick,
+.qmoji.qm-sleep .qm-body, .qmoji.qm-sleep .qm-wick,
+.qmoji.qm-steady .qm-body, .qmoji.qm-steady .qm-wick { opacity: 0; }
+.qmoji.qm-agree .qm-chev { opacity: 1; }
+.qmoji.qm-laugh .qm-arc { opacity: 1; }
+.qmoji.qm-cry .qm-droop { opacity: 1; }
+.qmoji.qm-cry .qm-tear { opacity: .85; }
+.qmoji.qm-sleep .qm-line, .qmoji.qm-steady .qm-line { opacity: 1; }
+.qmoji.qm-sleep .qm-head { transform: rotate(-6deg); }
+.qmoji.qm-sleep .qm-eye.r .qm-line { transform: translateY(.6px); }
+.qmoji.qm-steady .qm-scan { opacity: .2; }
+
+.qmoji.qm-wow .qm-eye .qm-body { transform: scaleY(1.5) scaleX(1.02); }
+.qmoji.qm-wow .qm-wick { opacity: .55; }
+.qmoji.qm-think .qm-eye.l { transform: translateY(-.9px); }
+.qmoji.qm-think .qm-eye.r { transform: translateY(.9px); }
+.qmoji.qm-question .qm-head { transform: rotate(-6deg); }
+.qmoji.qm-question .qm-eye.r .qm-body { fill: transparent; stroke: var(--qb-eye); stroke-width: 1; transform: scale(.72); }
+.qmoji.qm-question .qm-eye.r .qm-wick { opacity: .4; }
+.qmoji.qm-fire .qm-eye .qm-body { transform: scaleY(1.35) scaleX(.82); }
+.qmoji.qm-fire .qm-wick { opacity: .55; }
+.qmoji.qm-ok .qm-check { opacity: 1; transform: scale(1); }
+.qmoji.qm-ok .qm-eye.r .qm-body { transform: scaleY(.55); }
+.qmoji.qm-no .qm-cross { opacity: 1; transform: scale(1); }
+.qmoji.qm-no .qm-eye.l { transform: rotate(-9deg); }
+.qmoji.qm-no .qm-eye.r { transform: rotate(9deg); }
+
+/* ---- 新增表情：同一套眼睛，更多社交 / 量化语义 ---- */
+.qmoji .qm-x { fill: none; stroke: var(--qb-eye); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; opacity: 0; }
+.qmoji .qm-glyph { fill: rgba(255, 255, 255, .74); font-family: var(--mono); font-weight: 700; letter-spacing: .1px; transform-box: fill-box; transform-origin: center; pointer-events: none; }
+.qmoji.qm-rekt .qm-x { opacity: 1; }
+.qmoji.qm-rekt .qm-body, .qmoji.qm-rekt .qm-wick,
+.qmoji.qm-respect .qm-body, .qmoji.qm-respect .qm-wick,
+.qmoji.qm-shh .qm-eye.l .qm-body, .qmoji.qm-shh .qm-eye.l .qm-wick { opacity: 0; }
+.qmoji.qm-respect .qm-droop { opacity: 1; }
+.qmoji.qm-shh .qm-eye.l .qm-line { opacity: 1; }
+.qmoji.qm-thanks .qm-check, .qmoji.qm-rekt .qm-cross { opacity: 1; transform: scale(1); }
+.qmoji.qm-nervous .qm-eye .qm-body { transform: scale(.72); }
+.qmoji.qm-nervous .qm-eye .qm-wick { opacity: .45; }
+.qmoji.qm-nervous .qm-head { transform: rotate(-2deg); }
+.qmoji.qm-angry .qm-eye.l { transform: rotate(-14deg); }
+.qmoji.qm-angry .qm-eye.r { transform: rotate(14deg); }
+.qmoji.qm-love .qm-head { transform: rotate(4deg); }
+.qmoji.qm-love .qm-eye.r .qm-body { transform: scaleY(.36); }
+.qmoji.qm-love .qm-eye.r .qm-wick { opacity: .5; }
+.qmoji.qm-thanks .qm-head { transform: rotate(7deg) translateY(.6px); }
+.qmoji.qm-respect .qm-head { transform: rotate(3deg); }
+.qmoji.qm-shh .qm-head { transform: rotate(-5deg); }
+.qmoji.qm-vote .qm-eye.l { transform: translateY(-.8px); }
+.qmoji.qm-vote .qm-eye.r { transform: translateY(.8px); }
+.qmoji.qm-party .qm-eye .qm-body { transform: scaleY(1.25); }
+.qmoji.qm-alpha .qm-head { transform: rotate(-3deg); }
+.qmoji.qm-alpha .qm-eye.l .qm-body { transform: scaleY(.55); }
+.qmoji.qm-rekt .qm-head { transform: rotate(8deg) translateY(1px); }
+.qmoji.qm-moon .qm-head { transform: rotate(-4deg); }
+.qmoji.qm-moon .qm-eye { transform: translateY(-1.3px); }
+.qmoji.qm-data .qm-head { transform: rotate(2deg); }
+.qmoji.qm-shh .qm-glyph { font-size: 4px; }
+.qmoji.qm-alpha .qm-glyph, .qmoji.qm-moon .qm-glyph { font-size: 3.8px; }
+.qmoji.qm-party .qm-glyph { font-size: 3.8px; fill: rgba(255, 255, 255, .88); }
+.qmoji.qm-data .qm-glyph { font-size: 2.8px; letter-spacing: .2px; }
+.qmoji.qm-vote .qm-glyph text { font-size: 3.1px; }
+.qmoji.qm-vote .qm-glyph .v1 { opacity: .35; }
+
+/* ---- 硬核量化梗：只动眼睛、面罩 HUD 与颜色，不加汗滴 / 腮红 ---- */
+.qmoji .qm-wave, .qmoji .qm-long-wick, .qmoji .qm-fast { fill: none; stroke: var(--qb-eye); stroke-linecap: round; stroke-linejoin: round; opacity: 0; }
+.qmoji .qm-wave { stroke-width: 1.55; }
+.qmoji .qm-long-wick { stroke-width: 1.35; transform-box: fill-box; transform-origin: 50% 0%; }
+.qmoji .qm-fast { stroke-width: 1.2; }
+.qmoji.qm-overfit .qm-body, .qmoji.qm-overfit .qm-wick { opacity: 0; }
+.qmoji.qm-overfit .qm-wave { opacity: 1; }
+.qmoji.qm-future .qm-fast { opacity: 1; }
+.qmoji.qm-future .qm-eye { transform: translateX(1.1px); }
+.qmoji.qm-future .qm-head { transform: rotate(-2deg); }
+.qmoji.qm-wick .qm-body { transform: scaleY(.32); }
+.qmoji.qm-wick .qm-wick { opacity: 0; }
+.qmoji.qm-wick .qm-long-wick { opacity: 1; }
+.qmoji.qm-drawdown .qm-eye.l { transform: translateY(-.5px); }
+.qmoji.qm-drawdown .qm-eye.r { transform: translateY(1px); }
+.qmoji.qm-drawdown .qm-glyph { font-size: 3.4px; }
+
+/* ---- 克制的外部元素：一滴汗、两颊淡粉 ---- */
+.qmoji .qm-strain { fill: none; stroke: var(--qb-eye); stroke-width: 1.65; stroke-linecap: round; stroke-linejoin: round; opacity: 0; }
+.qmoji .qm-sweat { fill: var(--qm-sweat); opacity: 0; transform-box: fill-box; transform-origin: 50% 100%; }
+.qmoji .qm-blush { fill: var(--qm-blush); opacity: 0; transform-box: fill-box; transform-origin: center; }
+.qmoji.qm-effort .qm-body, .qmoji.qm-effort .qm-wick,
+.qmoji.qm-shy .qm-body, .qmoji.qm-shy .qm-wick { opacity: 0; }
+.qmoji.qm-effort .qm-strain { opacity: 1; }
+.qmoji.qm-shy .qm-arc { opacity: 1; }
+.qmoji.qm-shy .qm-head { transform: rotate(5deg); }
+.qmoji.qm-effort .qm-sweat, .qmoji.qm-nervous .qm-sweat { opacity: .9; }
+.qmoji.qm-shy .qm-blush { opacity: .52; }
+
+/* ---- 动态：正文里悬停播放；面板 / 规范页可循环播放 ---- */
+.qmoji.qm-anim .qm-head,
+.qmoji.qm-hover:hover .qm-head { animation: var(--qm-head-anim, none); }
+.qmoji.qm-anim .qm-eyes,
+.qmoji.qm-hover:hover .qm-eyes { animation: var(--qm-eyes-anim, none); }
+.qmoji.qm-anim .qm-eye.l,
+.qmoji.qm-hover:hover .qm-eye.l { animation: var(--qm-eye-l-anim, none); }
+.qmoji.qm-anim .qm-eye.r,
+.qmoji.qm-hover:hover .qm-eye.r { animation: var(--qm-eye-r-anim, none); }
+.qmoji.qm-anim .qm-eye.l .qm-body,
+.qmoji.qm-hover:hover .qm-eye.l .qm-body { animation: var(--qm-body-l-anim, none); }
+.qmoji.qm-anim .qm-eye.r .qm-body,
+.qmoji.qm-hover:hover .qm-eye.r .qm-body { animation: var(--qm-body-r-anim, none); }
+.qmoji.qm-anim .qm-tear,
+.qmoji.qm-hover:hover .qm-tear { animation: var(--qm-tear-anim, none); }
+.qmoji.qm-anim .qm-scan,
+.qmoji.qm-hover:hover .qm-scan { animation: var(--qm-scan-anim, none); }
+.qmoji.qm-anim .qm-glyph,
+.qmoji.qm-hover:hover .qm-glyph { animation: var(--qm-glyph-anim, none); }
+.qmoji.qm-anim .qm-eye.l .qm-wave,
+.qmoji.qm-hover:hover .qm-eye.l .qm-wave { animation: var(--qm-wave-l-anim, none); }
+.qmoji.qm-anim .qm-eye.r .qm-wave,
+.qmoji.qm-hover:hover .qm-eye.r .qm-wave { animation: var(--qm-wave-r-anim, none); }
+.qmoji.qm-anim .qm-long-wick,
+.qmoji.qm-hover:hover .qm-long-wick { animation: var(--qm-long-wick-anim, none); }
+.qmoji.qm-anim .qm-fast,
+.qmoji.qm-hover:hover .qm-fast { animation: var(--qm-fast-anim, none); }
+.qmoji.qm-anim .qm-sweat,
+.qmoji.qm-hover:hover .qm-sweat { animation: var(--qm-sweat-anim, none); }
+.qmoji.qm-anim .qm-blush,
+.qmoji.qm-hover:hover .qm-blush { animation: var(--qm-blush-anim, none); }
+
+.qmoji.qm-hi { --qm-head-anim: qm-hi-tilt 2.4s var(--ease-spring, ease) infinite; --qm-eye-r-anim: qm-hi-eye 2.4s var(--ease-spring, ease) infinite; }
+.qmoji.qm-agree { --qm-head-anim: qm-nod 1.35s var(--ease-out, ease) infinite; --qm-eyes-anim: qm-squint 1.35s var(--ease-out, ease) infinite; }
+.qmoji.qm-laugh { --qm-head-anim: qm-laugh 1.05s var(--ease-spring, ease) infinite; }
+.qmoji.qm-wow { --qm-head-anim: qm-wow 1.7s var(--ease-spring, ease) infinite; --qm-body-l-anim: qm-wow-eye 1.7s var(--ease-out, ease) infinite; --qm-body-r-anim: qm-wow-eye 1.7s var(--ease-out, ease) infinite; }
+.qmoji.qm-cry { --qm-head-anim: qm-cry 1.9s ease-in-out infinite; --qm-tear-anim: qm-tear 1.9s ease-in-out infinite; }
+.qmoji.qm-question { --qm-head-anim: qm-question 2.6s var(--ease-spring, ease) infinite; --qm-body-r-anim: qm-question-eye 2.6s var(--ease-out, ease) infinite; }
+.qmoji.qm-think { --qm-head-anim: qm-think-head 1.4s ease-in-out infinite; --qm-eye-l-anim: qm-float-l 1.4s ease-in-out infinite; --qm-eye-r-anim: qm-float-r 1.4s ease-in-out infinite; }
+.qmoji.qm-fire { --qm-head-anim: qm-fire 0.62s linear infinite; --qm-body-l-anim: qm-fire-body 0.42s linear infinite; --qm-body-r-anim: qm-fire-body 0.42s linear infinite .21s; }
+.qmoji.qm-ok { --qm-head-anim: qm-ok-nod 2.4s var(--ease-out, ease) infinite; }
+.qmoji.qm-no { --qm-head-anim: qm-no-shake 2.2s var(--ease-out, ease) infinite; }
+.qmoji.qm-sleep { --qm-head-anim: qm-breathe 3.2s ease-in-out infinite; --qm-eyes-anim: qm-sleep-eyes 3.2s ease-in-out infinite; }
+.qmoji.qm-steady { --qm-head-anim: qm-steady 3.4s ease-in-out infinite; --qm-scan-anim: qm-scan 3.4s ease-in-out infinite; }
+.qmoji.qm-angry { --qm-head-anim: qm-angry .38s linear infinite; }
+.qmoji.qm-nervous { --qm-head-anim: qm-nervous .26s linear infinite; --qm-eye-l-anim: qm-nervous-eye .26s linear infinite; --qm-eye-r-anim: qm-nervous-eye .26s linear infinite .13s; --qm-sweat-anim: qm-sweat 1.6s ease-in-out infinite; }
+.qmoji.qm-love { --qm-head-anim: qm-love 2.8s var(--ease-spring, ease) infinite; --qm-body-r-anim: qm-love-wink 2.8s var(--ease-out, ease) infinite; }
+.qmoji.qm-thanks { --qm-head-anim: qm-thanks 2.8s var(--ease-out, ease) infinite; }
+.qmoji.qm-respect { --qm-head-anim: qm-respect 3.2s ease-in-out infinite; }
+.qmoji.qm-shh { --qm-head-anim: qm-shh 3.4s ease-in-out infinite; --qm-glyph-anim: qm-glyph-fade 3.4s ease-in-out infinite; }
+.qmoji.qm-vote { --qm-head-anim: qm-vote 2.2s var(--ease-out, ease) infinite; }
+.qmoji.qm-party { --qm-head-anim: qm-party 1.05s var(--ease-spring, ease) infinite; --qm-glyph-anim: qm-spark .9s ease-in-out infinite; }
+.qmoji.qm-alpha { --qm-head-anim: qm-alpha 2.8s var(--ease-out, ease) infinite; --qm-glyph-anim: qm-glyph-glow 2.8s ease-in-out infinite; }
+.qmoji.qm-rekt { --qm-head-anim: qm-rekt 3s ease-in-out infinite; }
+.qmoji.qm-moon { --qm-head-anim: qm-moon 2.4s ease-in-out infinite; --qm-eye-l-anim: qm-moon-eye 2.4s ease-in-out infinite; --qm-eye-r-anim: qm-moon-eye 2.4s ease-in-out infinite; --qm-glyph-anim: qm-glyph-glow 2.4s ease-in-out infinite; }
+.qmoji.qm-data { --qm-head-anim: qm-data 2.2s ease-in-out infinite; --qm-glyph-anim: qm-data-scan 2.2s ease-in-out infinite; }
+.qmoji.qm-effort { --qm-head-anim: qm-effort 0.5s linear infinite; --qm-sweat-anim: qm-sweat 1.8s ease-in-out infinite; }
+.qmoji.qm-shy { --qm-head-anim: qm-shy 3s ease-in-out infinite; --qm-blush-anim: qm-blush 3s ease-in-out infinite; }
+.qmoji.qm-overfit { --qm-wave-l-anim: qm-overfit-wave 2.4s ease-in-out infinite, qm-overfit-wobble 2.4s ease-in-out infinite; --qm-wave-r-anim: qm-overfit-wave 2.4s ease-in-out infinite, qm-overfit-wobble 2.4s ease-in-out infinite .2s; }
+.qmoji.qm-future { --qm-head-anim: qm-future-head 2.4s ease-in-out infinite; --qm-fast-anim: qm-future-fast 2.4s ease-in-out infinite; }
+.qmoji.qm-wick { --qm-head-anim: qm-wick-head 2.2s ease-in-out infinite; --qm-long-wick-anim: qm-wick 2.2s ease-in-out infinite, qm-wick-color 2.2s ease-in-out infinite; }
+.qmoji.qm-drawdown { --qm-head-anim: qm-drawdown-head 2.8s ease-in-out infinite; --qm-eye-l-anim: qm-step-l 2.8s steps(1, end) infinite; --qm-eye-r-anim: qm-step-r 2.8s steps(1, end) infinite; --qm-body-l-anim: qm-drawdown-body 2.8s ease-in-out infinite; --qm-body-r-anim: qm-drawdown-body 2.8s ease-in-out infinite .2s; --qm-glyph-anim: qm-glyph-down 2.8s ease-in-out infinite; }
+
+.qmoji.qm-ok.qm-anim .qm-check, .qmoji.qm-ok.qm-hover:hover .qm-check { animation: qm-check-pop 2.4s var(--ease-spring, ease) infinite; }
+.qmoji.qm-no.qm-anim .qm-cross, .qmoji.qm-no.qm-hover:hover .qm-cross { animation: qm-cross-pop 2.2s var(--ease-spring, ease) infinite; }
+.qmoji.qm-thanks.qm-anim .qm-check, .qmoji.qm-thanks.qm-hover:hover .qm-check { animation: qm-check-pop 2.8s var(--ease-spring, ease) infinite; }
+.qmoji.qm-rekt.qm-anim .qm-cross, .qmoji.qm-rekt.qm-hover:hover .qm-cross { animation: qm-cross-pop 3s var(--ease-spring, ease) infinite; }
+.qmoji.qm-vote.qm-anim .qm-glyph-vote .v0, .qmoji.qm-vote.qm-hover:hover .qm-glyph-vote .v0 { animation: qm-vote-0 1.6s steps(1, end) infinite; }
+.qmoji.qm-vote.qm-anim .qm-glyph-vote .v1, .qmoji.qm-vote.qm-hover:hover .qm-glyph-vote .v1 { animation: qm-vote-1 1.6s steps(1, end) infinite; }
+
+/* ---- 首次出现：每个表情实例只播放一次，随后恢复静态 ---- */
+.qmoji.qm-once .qm-head { animation: var(--qm-head-anim, none); animation-iteration-count: 1; animation-fill-mode: both; }
+.qmoji.qm-once .qm-eyes { animation: var(--qm-eyes-anim, none); animation-iteration-count: 1; animation-fill-mode: both; }
+.qmoji.qm-once .qm-eye.l { animation: var(--qm-eye-l-anim, none); animation-iteration-count: 1; animation-fill-mode: both; }
+.qmoji.qm-once .qm-eye.r { animation: var(--qm-eye-r-anim, none); animation-iteration-count: 1; animation-fill-mode: both; }
+.qmoji.qm-once .qm-eye.l .qm-body { animation: var(--qm-body-l-anim, none); animation-iteration-count: 1; animation-fill-mode: both; }
+.qmoji.qm-once .qm-eye.r .qm-body { animation: var(--qm-body-r-anim, none); animation-iteration-count: 1; animation-fill-mode: both; }
+.qmoji.qm-once .qm-tear { animation: var(--qm-tear-anim, none); animation-iteration-count: 1; animation-fill-mode: both; }
+.qmoji.qm-once .qm-scan { animation: var(--qm-scan-anim, none); animation-iteration-count: 1; animation-fill-mode: both; }
+.qmoji.qm-once .qm-glyph { animation: var(--qm-glyph-anim, none); animation-iteration-count: 1; animation-fill-mode: none; }
+.qmoji.qm-once .qm-eye.l .qm-wave { animation: var(--qm-wave-l-anim, none); animation-iteration-count: 1; animation-fill-mode: both; }
+.qmoji.qm-once .qm-eye.r .qm-wave { animation: var(--qm-wave-r-anim, none); animation-iteration-count: 1; animation-fill-mode: both; }
+.qmoji.qm-once .qm-long-wick { animation: var(--qm-long-wick-anim, none); animation-iteration-count: 1; animation-fill-mode: none; }
+.qmoji.qm-once .qm-fast { animation: var(--qm-fast-anim, none); animation-iteration-count: 1; animation-fill-mode: none; }
+.qmoji.qm-once .qm-sweat { animation: var(--qm-sweat-anim, none); animation-iteration-count: 1; animation-fill-mode: both; }
+.qmoji.qm-once .qm-blush { animation: var(--qm-blush-anim, none); animation-iteration-count: 1; animation-fill-mode: both; }
+.qmoji.qm-ok.qm-once .qm-check, .qmoji.qm-thanks.qm-once .qm-check { animation: qm-check-pop 2.8s var(--ease-spring, ease) 1 both; }
+.qmoji.qm-no.qm-once .qm-cross, .qmoji.qm-rekt.qm-once .qm-cross { animation: qm-cross-pop 3s var(--ease-spring, ease) 1 both; }
+.qmoji.qm-vote.qm-once .qm-glyph-vote .v0 { animation: qm-vote-0 1.6s steps(1, end) 1 none; }
+.qmoji.qm-vote.qm-once .qm-glyph-vote .v1 { animation: qm-vote-1 1.6s steps(1, end) 1 none; }
+
+@keyframes qm-hi-tilt { 0%, 100% { transform: rotate(-4deg); } 50% { transform: rotate(5deg); } }
+@keyframes qm-hi-eye { 0%, 100% { transform: translateY(-1.5px); } 50% { transform: translateY(-2.4px); } }
+@keyframes qm-nod { 0%, 100% { transform: translateY(0); } 35% { transform: translateY(1.15px); } 55% { transform: translateY(-.25px); } 75% { transform: translateY(.35px); } }
+@keyframes qm-squint { 0%, 100% { transform: scaleY(1); } 45% { transform: scaleY(.82); } }
+@keyframes qm-laugh { 0%, 100% { transform: translateY(0) scale(1); } 28% { transform: translateY(-1.6px) scale(1.03, .97); } 55% { transform: translateY(.15px) scale(.99, 1.02); } 76% { transform: translateY(-.55px) scale(1.01, .99); } }
+@keyframes qm-wow { 0%, 100% { transform: scale(1); } 34% { transform: scale(.97, 1.05); } 56% { transform: scale(1.02, .98); } 76% { transform: scale(.995, 1.01); } }
+@keyframes qm-wow-eye { 0%, 100% { transform: scaleY(1.5) scaleX(1.02); } 42% { transform: scaleY(1.76) scaleX(1); } 62% { transform: scaleY(1.4) scaleX(1.03); } }
+@keyframes qm-cry { 0%, 100% { transform: rotate(-4deg) translateY(.4px); } 50% { transform: rotate(-6deg) translateY(1px); } }
+@keyframes qm-tear { 0%, 100% { transform: scaleY(.55); opacity: .55; } 48% { transform: scaleY(1); opacity: .95; } }
+@keyframes qm-question { 0%, 100% { transform: rotate(-6deg); } 44% { transform: rotate(4deg); } 68% { transform: rotate(-2deg); } }
+@keyframes qm-question-eye { 0%, 100% { transform: scale(.72); } 50% { transform: scale(.92); } }
+@keyframes qm-think-head { 0%, 100% { transform: rotate(-1.5deg); } 50% { transform: rotate(1.5deg); } }
+@keyframes qm-float-l { 0%, 100% { transform: translateY(-.9px); } 50% { transform: translateY(1.1px); } }
+@keyframes qm-float-r { 0%, 100% { transform: translateY(.9px); } 50% { transform: translateY(-1.1px); } }
+@keyframes qm-fire { 0%, 100% { transform: translateX(0); filter: drop-shadow(0 0 0 rgba(74, 98, 234, 0)); } 25% { transform: translateX(-.28px); filter: drop-shadow(0 0 2.5px rgba(90, 113, 242, .55)); } 50% { transform: translateX(.28px); filter: drop-shadow(0 0 5px rgba(90, 113, 242, .8)); } 75% { transform: translateX(-.2px); filter: drop-shadow(0 0 2.5px rgba(90, 113, 242, .55)); } }
+@keyframes qm-fire-body { 0%, 100% { transform: scaleY(1.35) scaleX(.82); } 50% { transform: scaleY(1.5) scaleX(.78); } }
+@keyframes qm-ok-nod { 0%, 100% { transform: translateY(0); } 14% { transform: translateY(1px); } 26% { transform: translateY(0); } }
+@keyframes qm-check-pop { 0%, 100% { opacity: 1; transform: scale(1); } 10% { transform: scale(1.22); } 22% { transform: scale(1); } }
+@keyframes qm-no-shake { 0%, 100% { transform: translateX(0); } 12% { transform: translateX(-1.3px); } 24% { transform: translateX(1.3px); } 36% { transform: translateX(-.8px); } 48% { transform: translateX(.8px); } 60% { transform: translateX(0); } }
+@keyframes qm-cross-pop { 0%, 100% { opacity: 1; transform: scale(1); } 16% { transform: scale(1.2); } 32% { transform: scale(1); } }
+@keyframes qm-breathe { 0%, 100% { transform: rotate(-6deg) translateY(0) scale(1); } 50% { transform: rotate(-7deg) translateY(.8px) scale(.99, 1.01); } }
+@keyframes qm-sleep-eyes { 0%, 100% { transform: scaleY(1); } 50% { transform: scaleY(.82); } }
+@keyframes qm-steady { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(.18px); } }
+@keyframes qm-scan { 0%, 12% { transform: translateX(0); opacity: .1; } 40% { opacity: .42; } 86%, 100% { transform: translateX(12.6px); opacity: .1; } }
+@keyframes qm-angry { 0%, 100% { transform: translateX(0); } 25% { transform: translateX(-.28px); } 50% { transform: translateX(.28px); } 75% { transform: translateX(-.18px); } }
+@keyframes qm-nervous { 0%, 100% { transform: rotate(-2deg) translateX(0); } 25% { transform: rotate(-2.6deg) translateX(-.2px); } 50% { transform: rotate(-1.4deg) translateX(.2px); } 75% { transform: rotate(-2.4deg) translateX(-.1px); } }
+@keyframes qm-nervous-eye { 0%, 100% { transform: translate(0, 0); } 50% { transform: translate(.2px, -.18px); } }
+@keyframes qm-love { 0%, 100% { transform: rotate(4deg); } 50% { transform: rotate(6deg) translateY(.45px); } }
+@keyframes qm-love-wink { 0%, 100% { transform: scaleY(.36); } 42% { transform: scaleY(.95); } 52% { transform: scaleY(.36); } }
+@keyframes qm-thanks { 0%, 100% { transform: rotate(7deg) translateY(.6px); } 50% { transform: rotate(10deg) translateY(1.1px); } }
+@keyframes qm-respect { 0%, 100% { transform: rotate(3deg) translateY(0); } 50% { transform: rotate(5deg) translateY(.8px); } }
+@keyframes qm-shh { 0%, 100% { transform: rotate(-5deg); } 50% { transform: rotate(-8deg) translateY(.25px); } }
+@keyframes qm-vote { 0%, 100% { transform: rotate(0); } 50% { transform: rotate(-3deg); } }
+@keyframes qm-vote-0 { 0%, 49% { opacity: .85; } 50%, 100% { opacity: .2; } }
+@keyframes qm-vote-1 { 0%, 49% { opacity: .2; } 50%, 100% { opacity: .85; } }
+@keyframes qm-party { 0%, 100% { transform: translateY(0) rotate(-2deg); } 30% { transform: translateY(-1.5px) rotate(3deg); } 60% { transform: translateY(.2px) rotate(-1deg); } }
+@keyframes qm-spark { 0%, 100% { opacity: .35; transform: scale(.85); } 50% { opacity: 1; transform: scale(1.15); } }
+@keyframes qm-alpha { 0%, 100% { transform: rotate(-3deg); } 50% { transform: rotate(-6deg); } }
+@keyframes qm-rekt { 0%, 100% { transform: rotate(8deg) translateY(1px); } 50% { transform: rotate(10deg) translateY(1.3px); } }
+@keyframes qm-moon { 0%, 100% { transform: rotate(-4deg) translateY(0); } 50% { transform: rotate(-6deg) translateY(-.8px); } }
+@keyframes qm-moon-eye { 0%, 100% { transform: translateY(-1.3px); } 50% { transform: translateY(-2px); } }
+@keyframes qm-data { 0%, 100% { transform: rotate(2deg); } 50% { transform: rotate(0); } }
+@keyframes qm-data-scan { 0%, 100% { opacity: .35; } 50% { opacity: .9; } }
+@keyframes qm-glyph-glow { 0%, 100% { opacity: .45; } 50% { opacity: .95; } }
+@keyframes qm-glyph-fade { 0%, 100% { opacity: .4; } 50% { opacity: .9; } }
+@keyframes qm-effort { 0%, 100% { transform: translateX(-.2px); } 50% { transform: translateX(.2px); } }
+@keyframes qm-sweat { 0%, 100% { transform: translateY(0) scale(.85); opacity: .55; } 50% { transform: translateY(.35px) scale(1); opacity: .95; } }
+@keyframes qm-shy { 0%, 100% { transform: rotate(5deg) translateY(0); } 50% { transform: rotate(7deg) translateY(.35px); } }
+@keyframes qm-blush { 0%, 100% { opacity: .42; } 50% { opacity: .68; } }
+@keyframes qm-overfit-wave { 0%, 100% { stroke: var(--qb-eye); } 50% { stroke: var(--qm-eye-warm); } }
+@keyframes qm-overfit-wobble { 0%, 100% { transform: scaleX(1); } 50% { transform: scaleX(1.08); } }
+@keyframes qm-future-head { 0%, 100% { transform: rotate(-2deg) translateX(0); } 30% { transform: rotate(-4deg) translateX(-.5px); } 62% { transform: rotate(0) translateX(.5px); } }
+@keyframes qm-future-fast { 0%, 100% { stroke: var(--qb-eye); opacity: .4; } 40% { stroke: var(--qm-eye-cyan); opacity: 1; } 62% { opacity: .5; } }
+@keyframes qm-wick { 0%, 100% { transform: scaleY(.12); } 22% { transform: scaleY(1.05); } 40% { transform: scaleY(.12); } 58% { transform: scaleY(1); } 100% { transform: scaleY(1); } }
+@keyframes qm-wick-color { 0%, 100% { stroke: var(--qb-eye); } 22% { stroke: var(--qm-eye-warm); } 42% { stroke: var(--qb-eye); } 58% { stroke: var(--qm-eye-warm); } }
+@keyframes qm-wick-head { 0%, 100% { transform: translateY(0); } 22% { transform: translateY(.35px); } 42% { transform: translateY(0); } }
+@keyframes qm-drawdown-head { 0%, 100% { transform: rotate(2deg); } 50% { transform: rotate(5deg) translateY(.3px); } }
+@keyframes qm-step-l { 0%, 100% { transform: translateY(-.5px); } 20% { transform: translateY(-.5px); } 35% { transform: translateY(.8px); } 50% { transform: translateY(1.4px); } 70% { transform: translateY(2.2px); } 100% { transform: translateY(-.5px); } }
+@keyframes qm-step-r { 0%, 100% { transform: translateY(1px); } 20% { transform: translateY(1.8px); } 40% { transform: translateY(2.4px); } 60% { transform: translateY(3.2px); } 80% { transform: translateY(1px); } }
+@keyframes qm-drawdown-body { 0%, 100% { fill: var(--qb-eye); stroke: var(--qb-eye); } 50% { fill: var(--qm-eye-cool); stroke: var(--qm-eye-cool); } }
+@keyframes qm-glyph-down { 0%, 100% { opacity: .4; transform: translateY(-.2px); } 50% { opacity: 1; transform: translateY(.4px); } }
+
+/* ---- 正文中的行内表情 ---- */
+.md .qmoji { margin: 0 .06em; }
+.md.compact .qmoji { vertical-align: -0.16em; }
+
+/* ---- 表情面板 ---- */
+.qmoji-anchor { position: relative; display: inline-flex; }
+.qmoji-trigger { display: inline-flex; align-items: center; gap: 4px; }
+.qmoji-trigger .qmoji { pointer-events: none; }
+.qmoji-trigger.small { min-width: 28px; padding: 0 5px; }
+.qmoji-pop {
+  position: fixed; z-index: 10050; width: 344px; max-width: calc(100vw - 24px); max-height: calc(100vh - 24px); overflow: hidden;
+  padding: 9px 10px 8px; border: 1px solid var(--line); border-radius: 14px; background: var(--sheet);
+  box-shadow: 0 20px 46px -22px rgba(10, 20, 50, .45); transform-origin: top left;
+}
+.qmoji-pop.up { transform-origin: bottom left; }
+.qmoji-pop-head { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; }
+.qmoji-tabs { display: flex; gap: 2px; padding: 2px; border-radius: 8px; background: var(--sunken); }
+.qmoji-tabs button { border: 0; background: none; color: var(--muted); font: 600 11.5px/1 var(--sans); padding: 5px 10px; border-radius: 6px; cursor: pointer; }
+.qmoji-tabs button.on { background: var(--sheet); color: var(--ink); box-shadow: 0 1px 3px rgba(10, 20, 50, .08); }
+.qmoji-esc { margin-left: auto; font-size: 10.5px; color: var(--faint); }
+.qmoji-cats { display: flex; gap: 3px; overflow-x: auto; padding: 7px 0 5px; border-bottom: 1px solid var(--line-2, var(--line)); scrollbar-width: none; }
+.qmoji-cats::-webkit-scrollbar { display: none; }
+.qmoji-cats button { flex: none; border: 1px solid transparent; background: none; color: var(--muted); font: 500 11px/1 var(--sans); padding: 5px 8px; border-radius: 999px; cursor: pointer; transition: background-color var(--dur-1, 150ms), color var(--dur-1, 150ms); }
+.qmoji-cats button:hover { background: var(--hover); color: var(--ink); }
+.qmoji-cats button.on { background: var(--accent-soft); color: var(--accent); border-color: var(--accent-line); font-weight: 600; }
+.qmoji-content { min-height: 220px; max-height: 268px; overflow-y: auto; padding-top: 6px; }
+.qmoji-empty { min-height: 208px; display: grid; place-items: center; padding: 20px; text-align: center; font-size: 11.5px; color: var(--faint); }
+.qmoji-group { margin-top: 6px; }
+.qmoji-group-label { font-size: 10.5px; color: var(--faint); margin: 0 2px 3px; }
+.qmoji-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 3px; }
+.qmoji-cell {
+  display: grid; justify-items: center; gap: 2px; padding: 6px 2px 5px; border: 0; border-radius: 8px;
+  background: none; color: var(--muted); cursor: pointer; transition: background-color var(--dur-1, 150ms), color var(--dur-1, 150ms), transform var(--dur-1, 150ms);
+}
+.qmoji-cell:hover { background: var(--hover); color: var(--ink); }
+.qmoji-cell:active { transform: scale(.96); }
+.qmoji-cell span { font-size: 10.5px; line-height: 1.2; white-space: nowrap; }
+.qmoji-foot { margin-top: 7px; padding-top: 6px; border-top: 1px solid var(--line-2, var(--line)); font-size: 10.5px; color: var(--faint); }
+.qmoji-foot code { font-family: var(--mono); font-size: 10px; color: var(--muted); background: var(--sunken); border-radius: 4px; padding: 1px 4px; }
+.qmoji-native { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 3px; padding: 4px 0 2px; }
+.qmoji-native-cell { border: 0; background: none; border-radius: 8px; padding: 6px 0; font-size: 20px; line-height: 1; cursor: pointer; }
+.qmoji-native-cell:hover { background: var(--hover); }
+.comment-input { width: 100%; display: grid; gap: 6px; }
+.comment-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.comment-tools .hint { margin: 0; font-size: 11.5px; }
+.comment-tools code { font-family: var(--mono); font-size: 10.5px; color: var(--muted); background: var(--sunken); border-radius: 4px; padding: 1px 4px; }
+.comment-preview { padding: 8px 10px; border: 1px dashed var(--line); border-radius: 8px; background: var(--sunken); }
+
+/* ---- 规范页 ---- */
+.qmoji-group-block { display: grid; gap: 8px; margin-top: 14px; }
+.qmoji-group-block:first-of-type { margin-top: 0; }
+.qmoji-section-label { font-size: 12px; font-weight: 600; color: var(--ink-2); }
+.qmoji-gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); gap: 10px; }
+.qmoji-card {
+  display: grid; justify-items: center; gap: 3px; padding: 14px 10px 11px; border: 1px solid var(--line);
+  border-radius: 12px; background: var(--sunken); text-align: center; min-width: 0;
+}
+.qmoji-card .qmoji { margin-bottom: 3px; }
+.qmoji-card b { font-size: 13px; color: var(--ink); }
+.qmoji-card small { font-size: 11.5px; line-height: 1.45; color: var(--muted); min-height: 2.9em; }
+.qmoji-card code { font-size: 10px; color: var(--faint); white-space: nowrap; }
+
+@media (max-width: 520px) {
+  .qmoji-pop { width: min(320px, calc(100vw - 24px)); }
+  .qmoji-native { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .qmoji, .qmoji * { animation: none !important; }
+}
+
+
+/* ---- 快捷 Reaction ---- */
+.qmoji-reaction-bar { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin-top: 9px; }
+.qmoji-reaction {
+  display: inline-flex; align-items: center; gap: 2px; height: 26px; padding: 0 7px;
+  border: 1px solid var(--line); border-radius: 999px; background: var(--sheet); color: var(--muted);
+  cursor: pointer; transition: background-color var(--dur-1, 150ms), border-color var(--dur-1, 150ms), color var(--dur-1, 150ms), transform var(--dur-1, 150ms);
+}
+.qmoji-reaction:hover { background: var(--hover); border-color: var(--accent-line); color: var(--ink); }
+.qmoji-reaction:active { transform: scale(.96); }
+.qmoji-reaction.on { background: var(--accent-soft); border-color: var(--accent-line); color: var(--accent); }
+.qmoji-reaction:disabled { opacity: .55; cursor: default; }
+.qmoji-reaction .qmoji { pointer-events: none; }
+.qmoji-reaction span { font-size: 10.5px; line-height: 1; font-variant-numeric: tabular-nums; }
+.qmoji-reaction-bar.compact { gap: 3px; margin-top: 5px; }
+.qmoji-reaction-bar.compact .qmoji-reaction { height: 23px; padding: 0 5px; }
+.qmoji-reaction-bar .qmoji-trigger { height: 26px; min-width: 26px; padding: 0 8px; border: 1px dashed var(--line); border-radius: 999px; font-size: 11px; }
+.qmoji-reaction-bar .qmoji-trigger:hover { border-color: var(--accent-line); background: var(--hover); }
+.post-card .qmoji-reaction-bar { opacity: .72; transition: opacity var(--dur-2, 180ms) var(--ease-out, ease); }
+.post-card:hover .qmoji-reaction-bar, .post-card:focus-within .qmoji-reaction-bar { opacity: 1; }
+.chat-qmoji-reactions { margin-top: 2px; opacity: .6; transition: opacity var(--dur-2, 180ms) var(--ease-out, ease); }
+.chat-msg:hover .chat-qmoji-reactions, .chat-qmoji-reactions:focus-within { opacity: 1; }
+.post-reaction-foot { margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--line-2, var(--line)); }
+.post-reaction-foot .qmoji-reaction-bar { margin-top: 0; }
+@media (hover: none) { .post-card .qmoji-reaction-bar, .chat-qmoji-reactions { opacity: 1; } }

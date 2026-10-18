@@ -13,6 +13,7 @@ const P: Record<string, ReactNode> = {
   strategy: <><path d="M3 4.5h10M3 8h10M3 11.5h10" /><circle cx="6" cy="4.5" r="1.3" fill="var(--rail)" /><circle cx="10.5" cy="8" r="1.3" fill="var(--rail)" /><circle cx="5" cy="11.5" r="1.3" fill="var(--rail)" /></>,
   experiments: <><path d="M6 2.5h4M6.8 2.5v4L3 12.6a.8.8 0 0 0 .7 1.2h8.6a.8.8 0 0 0 .7-1.2L9.2 6.5v-4" /><path d="M4.8 10h6.4" /></>,
   lab: <><path d="M8 2.2l1.4 3.4 3.4 1.4-3.4 1.4L8 11.8 6.6 8.4 3.2 7l3.4-1.4z" /><path d="M12.5 11v3M11 12.5h3" /></>,
+  flow: <><circle cx="3.5" cy="8" r="1.3" /><circle cx="8" cy="4" r="1.3" /><circle cx="8" cy="12" r="1.3" /><circle cx="12.5" cy="8" r="1.3" /><path d="M4.7 7.4 6.8 4.9M4.7 8.6l2.1 2.5M9.2 4.9l2.1 2.5M9.2 11.1l2.1-2.5" /></>,
   data: <><ellipse cx="8" cy="4" rx="5" ry="1.8" /><path d="M3 4v8c0 1 2.2 1.8 5 1.8s5-.8 5-1.8V4" /><path d="M3 8c0 1 2.2 1.8 5 1.8S13 9 13 8" /></>,
   teams: <><circle cx="6" cy="5.5" r="2" /><path d="M2.5 13c0-2 1.6-3.5 3.5-3.5S9.5 11 9.5 13" /><circle cx="11" cy="6" r="1.6" /><path d="M10.5 9.6c1.7 0 3 1.3 3 3" /></>,
   roles: <><rect x="2.5" y="3" width="11" height="10" rx="1.2" /><circle cx="6" cy="7" r="1.4" /><path d="M4 11c.3-1 1-1.6 2-1.6s1.7.6 2 1.6M9.5 6.5h2.5M9.5 9h2.5" /></>,
@@ -34,10 +35,18 @@ const P: Record<string, ReactNode> = {
   settings: <><path d="M3 4h10M3 8h10M3 12h10" /><path d="M5.5 2.8v2.4M10.5 6.8v2.4M7 10.8v2.4" /></>,
   sun: <><circle cx="8" cy="8" r="2.6" /><path d="M8 1.8v1.4M8 12.8v1.4M1.8 8h1.4M12.8 8h1.4M3.6 3.6l1 1M11.4 11.4l1 1M3.6 12.4l1-1M11.4 4.6l1-1" /></>,
   moon: <path d="M12.8 9.6A5.2 5.2 0 0 1 6.4 3.2a5.2 5.2 0 1 0 6.4 6.4z" />,
+  monitor: <><rect x="2.2" y="2.8" width="11.6" height="8" rx="1.3" /><path d="M5.5 13.2h5M8 10.8v2.4" /></>,
   groups: <><circle cx="5" cy="5.5" r="1.8" /><circle cx="11" cy="5.5" r="1.8" /><path d="M1.8 12.5c.3-1.8 1.6-3 3.2-3s2.9 1.2 3.2 3M7.8 12.5c.3-1.8 1.6-3 3.2-3s2.9 1.2 3.2 3" /></>,
   issues: <><circle cx="8" cy="8" r="5.5" /><path d="M8 5v3.5M8 10.8v.2" /></>,
   inbox: <><path d="M4 11.5V7a4 4 0 0 1 8 0v4.5l1 1.2H3z" /><path d="M6.6 14a1.5 1.5 0 0 0 2.8 0" /></>,
+  bell: <><path d="M4 11.5V7a4 4 0 0 1 8 0v4.5l1 1.2H3z" /><path d="M6.6 14a1.5 1.5 0 0 0 2.8 0" /></>,
+  'bell-off': <><path d="M5.2 3.4A4 4 0 0 1 12 7v4.5l1 1.2H6.1" /><path d="M4 6.2v5.3l-1 1.2h5" /><path d="M2 2l12 12" /><path d="M6.6 14a1.5 1.5 0 0 0 2.8 0" /></>,
+  message: <><path d="M3 3.5h10v7H8l-3 2.5v-2.5H3z" /></>,
   lineage: <><circle cx="3.5" cy="8" r="1.5" /><circle cx="12.5" cy="4" r="1.5" /><circle cx="12.5" cy="12" r="1.5" /><path d="M5 8h2.5c1.5 0 1.5-4 3.5-4M7.5 8c1.5 0 1.5 4 3.5 4" /></>,
+  up: <><path d="M8 13V3M3.8 7.2 8 3l4.2 4.2" /></>,
+  down: <><path d="M8 3v10M3.8 8.8 8 13l4.2-4.2" /></>,
+  flag: <><path d="M4 14V2.5M4 3h7.2l-1.5 2.7L11.2 8H4" /></>,
+  clock: <><circle cx="8" cy="8" r="5.3" /><path d="M8 4.8V8l2.2 1.4" /></>,
 }
 
 export function Icon({ name, size = 16 }: { name: string; size?: number }) {

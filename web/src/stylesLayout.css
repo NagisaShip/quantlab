@@ -86,12 +86,23 @@ main { max-width: var(--page-max, 1480px); }
   .topbar > div:first-child > span:last-child { font-size: 14.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .topbar-right { gap: 6px; flex-shrink: 0; }
   .topbar-right .tape-btn span:not(.swatch) { display: none; }
+  .topbar-right .tape-btn span:not(.swatch) { display: none; }
+
+  /* 面板右上角的操作区 / 分段控件：手机上换行或横向滚动，不要被 panel 裁掉 */
+  .panel-heading .panel-actions { width: 100%; min-width: 0; flex-wrap: wrap; justify-content: flex-start; }
+  .panel-heading .segments { max-width: 100%; width: 100%; flex-wrap: wrap; overflow-x: visible; }
+  .panel-heading .segments button { flex: 0 0 auto; }
+  .tabs { -webkit-overflow-scrolling: touch; scroll-behavior: smooth; }
+  .tabs.wide { flex-wrap: wrap; overflow-x: visible; padding: 4px; gap: 4px; }
+  .tabs.wide button { border: 1px solid transparent; border-radius: 7px; padding: 6px 8px; }
+  .tabs.wide button[aria-pressed="true"] { background: var(--sunken); border-color: var(--line); }
+  .table-wrap { -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain; }
 
   /* 文字被挤成一字一行：弹性子项允许收缩但标题不竖排，按钮组换行而不是压扁 */
   .panel-heading > div:first-child, .row-between > *:first-child { min-width: 0; }
   .panel-heading h2, .panel-title, .heading h1 { word-break: normal; overflow-wrap: anywhere; }
   .editor-toolbar, .button-row, .panel-actions, .segments, .toolbar { flex-wrap: wrap; }
-  .tabs, .tabs.wide, .hub-tabs, .segments { overflow-x: auto; scrollbar-width: none; flex-wrap: nowrap; }
+  .tabs:not(.wide), .hub-tabs, .segments { overflow-x: auto; scrollbar-width: none; flex-wrap: nowrap; }
   .tabs::-webkit-scrollbar, .hub-tabs::-webkit-scrollbar, .segments::-webkit-scrollbar { display: none; }
   .table-wrap, .panel-body:has(> table), .panel.flush .panel-body { overflow-x: auto; }
   td { word-break: keep-all; }
@@ -133,8 +144,9 @@ main { max-width: var(--page-max, 1480px); }
 .return-pill-x { border: 0; border-left: 1px solid var(--accent-line); background: none; color: var(--muted); padding: 5px 9px; cursor: pointer; }
 
 /* ---------- 全站：不显示滚动条（滚轮 / 触控板 / 触摸照常滚动），界面更干净 ---------- */
-* { scrollbar-width: none; }
-*::-webkit-scrollbar { display: none; width: 0; height: 0; }
+html, body, #root, * { scrollbar-width: none !important; -ms-overflow-style: none !important; scrollbar-gutter: auto; }
+*::-webkit-scrollbar { display: none !important; width: 0 !important; height: 0 !important; background: transparent; }
+*::-webkit-scrollbar-thumb, *::-webkit-scrollbar-track, *::-webkit-scrollbar-corner { background: transparent; }
 
 /* ---------- 文字默认不可选中：只有内容（对话、帖子、报告、代码、表格数据、输入框）可以选中复制 ---------- */
 body { -webkit-user-select: none; user-select: none; }
@@ -144,4 +156,208 @@ pre, code, .code-editor, .code-view, .cm-editor, .qb-math-src,
 .qb-table td, .md-html td, .table-wrap td, .kv dd, .mono, .num, .selectable,
 .toast, .callout, .auth-error {
   -webkit-user-select: text; user-select: text;
+}
+
+/* ---- 工作区功能开关（设置 → 工作区） ---- */
+.feature-switches { display: grid; gap: 14px; margin-top: 12px; }
+.feature-group { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; background: var(--sunken); }
+.feature-group h4 { margin: 0 0 8px; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.feature-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 10px 0; border-top: 1px solid var(--line); }
+.feature-row:first-of-type { border-top: 0; }
+.feature-copy { min-width: 0; display: grid; gap: 4px; }
+.feature-copy small { color: var(--muted); line-height: 1.5; }
+.feature-row .switch { flex: none; }
+
+/* ---------- 英文界面：控件文案保持单行，空间不足时省略或横向滚动 ---------- */
+:root[data-lang="en"] .button,
+:root[data-lang="en"] .chip,
+:root[data-lang="en"] .tag,
+:root[data-lang="en"] .nav-item,
+:root[data-lang="en"] .tabs button,
+:root[data-lang="en"] .hub-tabs a,
+:root[data-lang="en"] .pill,
+:root[data-lang="en"] .table-pill,
+:root[data-lang="en"] .role-chip,
+:root[data-lang="en"] .segments button,
+:root[data-lang="en"] .lab2-sessbtn,
+:root[data-lang="en"] .cmp-chip,
+:root[data-lang="en"] .cmp-model,
+:root[data-lang="en"] .mk-switch {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  max-width: 100%;
+  line-height: 1.3;
+}
+:root[data-lang="en"] .button,
+:root[data-lang="en"] .chip,
+:root[data-lang="en"] .tag,
+:root[data-lang="en"] .pill,
+:root[data-lang="en"] .table-pill,
+:root[data-lang="en"] .role-chip,
+:root[data-lang="en"] .tabs button,
+:root[data-lang="en"] .hub-tabs a,
+:root[data-lang="en"] .segments button { flex-shrink: 0; }
+:root[data-lang="en"] .button.small,
+:root[data-lang="en"] .chip,
+:root[data-lang="en"] .tag { min-height: 24px; }
+:root[data-lang="en"] .tabs,
+:root[data-lang="en"] .hub-tabs,
+:root[data-lang="en"] .segments {
+  max-width: 100%;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+:root[data-lang="en"] .tabs::-webkit-scrollbar,
+:root[data-lang="en"] .hub-tabs::-webkit-scrollbar,
+:root[data-lang="en"] .segments::-webkit-scrollbar { display: none; }
+:root[data-lang="en"] .button > span,
+:root[data-lang="en"] .nav-item > span,
+:root[data-lang="en"] .tabs button > span,
+:root[data-lang="en"] .hub-tabs a > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+:root[data-lang="en"] .lab2-title-row,
+:root[data-lang="en"] .lab2-sub,
+:root[data-lang="en"] .cmp-pop-anchor { min-width: 0; }
+:root[data-lang="en"] .lab2-title { min-width: 0; }
+/* 账号菜单：英文保持单行，长名称省略，避免菜单项被撑成两行。 */
+:root[data-lang="en"] .acct-menu { width: 100%; max-width: 100%; }
+:root[data-lang="en"] .acct-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 30px;
+  white-space: nowrap;
+}
+:root[data-lang="en"] .acct-menu button > span:first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+:root[data-lang="en"] .acct-menu button > .role-chip { flex: none; white-space: nowrap; }
+:root[data-lang="en"] .acct-head { min-width: 0; }
+:root[data-lang="en"] .acct-head small {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+:root[data-lang="en"] .page-head h1,
+:root[data-lang="en"] .heading h1,
+:root[data-lang="en"] .panel-heading h2,
+:root[data-lang="en"] .panel-title,
+:root[data-lang="en"] .set-section-note,
+:root[data-lang="en"] .issue-main,
+:root[data-lang="en"] .issue-row,
+:root[data-lang="en"] .post-body,
+:root[data-lang="en"] .md { overflow-wrap: anywhere; word-break: normal; }
+:root[data-lang="en"] .set-row { flex-wrap: wrap; row-gap: 8px; }
+:root[data-lang="en"] .set-row > div:first-child { min-width: min(100%, 260px); flex: 1 1 260px; }
+:root[data-lang="en"] .set-row > select { width: min(360px, 100%); max-width: 100%; flex: 1 1 260px; }
+:root[data-lang="en"] .community-tools { flex-wrap: wrap; min-width: 0; }
+:root[data-lang="en"] .cb-tool-row { min-width: 0; }
+:root[data-lang="en"] .cb-tool-label { max-width: 46%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+:root[data-lang="en"] .lab-send-queue span { min-width: 0; }
+:root[data-lang="en"] .lab-send-queue small { flex: 1; }
+:root[data-lang="en"] .mk-switch { max-width: min(320px, 100%); }
+
+
+/* 手机端运行状态：顶栏不能再裁切菜单，改成视口内固定面板 */
+@media (max-width: 720px) {
+  .topbar-right { overflow: visible; }
+  .status-menu {
+    position: fixed; left: 10px; right: 10px; top: calc(var(--tape-h, 0px) + 56px); width: auto;
+    max-height: calc(100dvh - var(--tape-h, 0px) - 76px); overflow-y: auto;
+  }
+}
+
+/* 手机端通用表单与弹窗：所有功能页共用，避免长选项、长按钮把内容撑出屏幕 */
+@media (max-width: 720px) {
+  .modal-backdrop {
+    align-items: flex-start;
+    padding: max(12px, env(safe-area-inset-top)) 10px calc(16px + env(safe-area-inset-bottom));
+  }
+  .modal {
+    width: 100%;
+    max-width: 100% !important;
+    border-radius: 16px;
+  }
+  .modal > header {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    padding: 11px 14px;
+    background: var(--sheet);
+  }
+  .modal > header h3 { min-width: 0; overflow-wrap: anywhere; }
+  .modal .modal-body { padding: 14px; max-height: none; }
+  .modal > footer {
+    position: sticky;
+    bottom: 0;
+    flex-wrap: wrap;
+    padding: 10px 14px;
+    background: var(--sheet);
+  }
+  .modal > footer .button { flex: 1 1 120px; min-width: 0; }
+  .button-row { flex-wrap: wrap; }
+}
+
+@media (max-width: 420px) {
+  label { min-width: 0; }
+  input:not([type="checkbox"]):not([type="radio"]):not([type="color"]),
+  select,
+  textarea {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+  }
+  select { text-overflow: ellipsis; }
+  .panel,
+  .side-column,
+  .side-column > .panel,
+  .side-column label { min-width: 0; max-width: 100%; }
+  .side-column .panel { overflow: hidden; }
+  .field-row,
+  .form-actions { flex-wrap: wrap; }
+}
+
+/* 手机端所有功能切换器改为自动换行：不靠横向滑动也能看到全部入口 */
+@media (max-width: 720px) {
+  .tabs:not(.wide),
+  .hub-tabs,
+  .segments,
+  .bt-tabs,
+  .community-bar .tabs.flat,
+  .editor-right .tabs,
+  .fx-tabs .segments {
+    max-width: 100%;
+    flex-wrap: wrap;
+    overflow-x: visible;
+    white-space: normal;
+  }
+  .segments { width: fit-content; }
+  .fx-tabs .segments,
+  .editor-right .tabs,
+  .bt-tabs { width: 100%; }
+  .tabs:not(.wide) button,
+  .hub-tabs a,
+  .segments button,
+  .bt-tabs button,
+  .community-bar .tabs.flat button,
+  .editor-right .tabs button,
+  .fx-tabs .segments button {
+    flex: 0 1 auto;
+    min-width: 0;
+    white-space: normal;
+    line-height: 1.35;
+  }
+  .tabs:not(.wide) button,
+  .segments button { margin-block: 1px; }
+  .bt-tabs button { height: auto; min-height: 30px; padding-block: 5px; }
 }

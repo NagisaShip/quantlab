@@ -87,7 +87,9 @@ class DbCache:
         except sqlite3.Error:
             return
 
-    def remember(self, ns: str, key: str, ttl: float, fn: Callable[[], Any], *, keep: Callable[[Any], bool] | None = None) -> Any:
+    def remember(
+        self, ns: str, key: str, ttl: float, fn: Callable[[], Any], *, keep: Callable[[Any], bool] | None = None
+    ) -> Any:
         """命中就直接返回；未命中才调用 fn，结果满足 keep（默认：非空）时写入缓存。失败的结果不缓存。"""
         hit = self.get(ns, key)
         if hit is not None:
@@ -102,7 +104,8 @@ class DbCache:
         try:
             with self._conn() as c:
                 rows = c.execute(
-                    "SELECT ns, COUNT(*), SUM(LENGTH(value)), SUM(hits) FROM cache WHERE expires_at >= ? GROUP BY ns", (now,)
+                    "SELECT ns, COUNT(*), SUM(LENGTH(value)), SUM(hits) FROM cache WHERE expires_at >= ? GROUP BY ns",
+                    (now,),
                 ).fetchall()
         except sqlite3.Error:
             rows = []
@@ -111,7 +114,13 @@ class DbCache:
         return {
             "path": str(self.path),
             "namespaces": [
-                {"ns": ns, "entries": n, "bytes": int(b or 0), "hits_stored": int(h or 0), **session.get(ns, {"hits": 0, "misses": 0})}
+                {
+                    "ns": ns,
+                    "entries": n,
+                    "bytes": int(b or 0),
+                    "hits_stored": int(h or 0),
+                    **session.get(ns, {"hits": 0, "misses": 0}),
+                }
                 for ns, n, b, h in rows
             ],
         }

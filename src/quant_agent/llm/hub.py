@@ -45,15 +45,22 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import time
+import urllib.error
+import urllib.request
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
+from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo
 
 from ..platform import context
 from ..platform.db import Database, now_ms
 from ..platform.errors import AppError, ErrorCode
 from ..platform.secretbox import SecretError
+from ..platform.storage_usage import upload_storage
 from ..store import Collections
 from .router import AgentConfig, ProviderConfig
 
@@ -86,7 +93,16 @@ WINDOW_LABEL = {
     "month": "每月",
     "total": "累计",
 }
-METRIC_LABEL = {"tokens": "token", "cost": "费用（元）"}
+METRIC_LABEL = {
+    "tokens": "token",
+    "cost": "费用（元）",
+    "cpu_seconds": "CPU 秒",
+    "backtests": "回测次数",
+    "optimize_combinations": "优化组合数",
+    "storage_bytes": "上传存储",
+    "record_units": "研究记录（单位）",
+}
+TASK_METRICS = {"cpu_seconds", "backtests", "optimize_combinations"}
 MICRO = Decimal(1_000_000)
 NAME_RE = re.compile(r"[a-z0-9][a-z0-9_\-]{0,30}")
 
@@ -112,6 +128,17 @@ def plain(d: Decimal) -> str:
     return format(d.normalize(), "f")
 
 
+def fmt_bytes(value: int | Decimal) -> str:
+    """按 1024 进制显示字节数。"""
+    n = max(0.0, float(value))
+    units = ("B", "KB", "MB", "GB", "TB")
+    idx = 0
+    while n >= 1024 and idx < len(units) - 1:
+        n /= 1024
+        idx += 1
+    return f"{n:.0f} {units[idx]}" if idx == 0 else f"{n:.2f} {units[idx]}"
+
+
 def clean_limits(rules: Any) -> list[dict[str, Any]]:
     """限额规则去重（同一 metric + window 只留最后一条）并校验。"""
     out: dict[tuple[str, str], dict[str, Any]] = {}
@@ -121,6 +148,10 @@ def clean_limits(rules: Any) -> list[dict[str, Any]]:
         metric, window = str(r.get("metric", "")), str(r.get("window", ""))
         if metric not in METRIC_LABEL or window not in WINDOWS:
             continue
+        # 存储是存量指标，只比较当前占用；把所有存储规则统一到累计口径，
+        # 避免同一条配额被 day / week 等窗口重复解释。
+        if metric in ("storage_bytes", "record_units"):
+            window = "total"
         limit = dec(r.get("limit"))
         if limit <= 0:
             continue
@@ -200,6 +231,8 @@ class ModelHub:
         self.db = db
         self.auth = auth
         self.audit = audit
+        # 服务商侧额度查询缓存：{缓存键: (抓取时间, 结果)}。避免每次打开额度页都打外部接口。
+        self._remote_quota_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
     # ------------------------------------------------------------------ 存取
     def _ws(self, workspace_id: str | None = None):
@@ -635,22 +668,106 @@ class ModelHub:
         row = self.db.fetchone(sql, tuple(args)) or {}
         return int(row.get("t") or 0), int(row.get("c") or 0)
 
+    def _task_usage(
+        self,
+        ws: str,
+        since_ms: int,
+        metric: str,
+        *,
+        user_id: str | None = None,
+        user_ids: list[str] | None = None,
+    ) -> Decimal:
+        """成员在回测 / 优化任务上的资源用量（从 runs 表实时汇总）。"""
+        import json
+
+        sql = (
+            "SELECT kind, state, created_at, started_at, ended_at, manifest FROM runs "
+            "WHERE workspace_id=? AND created_at>=?"
+        )
+        args: list[Any] = [ws, since_ms]
+        if user_id:
+            sql += " AND created_by=?"
+            args.append(user_id)
+        if user_ids is not None:
+            if not user_ids:
+                return Decimal(0)
+            sql += f" AND created_by IN ({','.join('?' * len(user_ids))})"
+            args.extend(user_ids)
+        rows = self.db.fetchall(sql, tuple(args))
+        now = now_ms()
+        total = Decimal(0)
+        for row in rows:
+            kind = str(row.get("kind") or "")
+            if metric == "backtests" and kind in ("backtest", "template_backtest"):
+                total += 1
+            elif metric == "cpu_seconds" and kind in ("backtest", "template_backtest", "optimize"):
+                started = int(row.get("started_at") or 0)
+                if started:
+                    end = int(row.get("ended_at") or now)
+                    total += Decimal(max(0, end - started)) / 1000
+            elif metric == "optimize_combinations" and kind == "optimize":
+                try:
+                    manifest = json.loads(row.get("manifest") or "{}")
+                except (TypeError, ValueError):
+                    manifest = {}
+                total += max(1, _int(manifest.get("combinations") or 1))
+        return total
+
     def rule_status(self, ws: str, rules: list[dict[str, Any]], **where: Any) -> list[dict[str, Any]]:
         rules = clean_limits(rules)
         tz = self._tz(ws) if any(r["window"] in CALENDAR_WINDOWS for r in rules) else "Asia/Shanghai"
         out = []
         for r in rules:
-            tokens, cost = self._sum(ws, window_start(r["window"], tz), **where)
+            since = window_start(r["window"], tz)
+            if r["metric"] in TASK_METRICS:
+                used = self._task_usage(
+                    ws,
+                    since,
+                    r["metric"],
+                    user_id=where.get("user_id"),
+                    user_ids=where.get("user_ids"),
+                )
+            elif r["metric"] == "storage_bytes":
+                # 存储是当前存量，不按 window 起点回溯。
+                used = Decimal(upload_storage(self.db, ws, where.get("user_id"))["used_bytes"])
+            elif r["metric"] == "record_units":
+                # 研究记录也是当前存量：按记录倍数折算，PIN 不影响占用。
+                from ..platform import backtest_retention as BR
+
+                targets = [where.get("user_id")] if where.get("user_id") else list(where.get("user_ids") or [])
+                used = sum(
+                    (Decimal(str(BR.record_usage(self._ws(ws), str(uid))["total_units"])) for uid in targets if uid),
+                    Decimal(0),
+                )
+            elif r["metric"] == "tokens":
+                tokens, _ = self._sum(ws, since, **where)
+                used = Decimal(tokens)
+            else:
+                _, cost = self._sum(ws, since, **where)
+                used = Decimal(cost) / MICRO
             limit = dec(r["limit"])
-            used = Decimal(tokens) if r["metric"] == "tokens" else Decimal(cost) / MICRO
             pct = int(min(Decimal(999), used * 100 / limit)) if limit > 0 else 0
+            display_used = (
+                used.quantize(Decimal("0.0001"))
+                if r["metric"] == "cost"
+                else Decimal(int(used))
+                if r["metric"] == "storage_bytes"
+                else used
+            )
+            label = (
+                f"存储空间上限 ≤ {fmt_bytes(limit)}"
+                if r["metric"] == "storage_bytes"
+                else f"研究记录上限 ≤ {r['limit']} 单位"
+                if r["metric"] == "record_units"
+                else f"{WINDOW_LABEL[r['window']]} {METRIC_LABEL[r['metric']]} ≤ {r['limit']}"
+            )
             out.append(
                 {
                     **r,
-                    "used": str(used if r["metric"] == "tokens" else used.quantize(Decimal("0.0001"))),
+                    "used": str(display_used),
                     "percent": pct,
                     "exceeded": used >= limit,
-                    "label": f"{WINDOW_LABEL[r['window']]} {METRIC_LABEL[r['metric']]} ≤ {r['limit']}",
+                    "label": label,
                 }
             )
         return out
@@ -666,28 +783,288 @@ class ModelHub:
             where["user_id"] = pc.owner_id
         if pc.scope == "group":
             where["group_id"] = pc.group_id
-        for st in self.rule_status(ws, pc.limits, **where):
+        model_rules = [r for r in pc.limits if r.get("metric") not in ("storage_bytes", "record_units")]
+        for st in self.rule_status(ws, model_rules, **where):
             if st["exceeded"]:
                 return f"已达服务商限额（{st['label']}）"
         human = bool(ctx.user_id and ctx.user_id != "system")
         if pc.scope == "group" and human and pc.group_id:
-            rules = self.group_settings(pc.group_id).get("member_limits") or []
+            rules = [
+                r
+                for r in (self.group_settings(pc.group_id).get("member_limits") or [])
+                if r.get("metric") not in ("storage_bytes", "record_units")
+            ]
             for st in self.rule_status(ws, rules, scope="group", group_id=pc.group_id, user_id=ctx.user_id):
                 if st["exceeded"]:
                     return f"已达群主给你设定的群组模型限额（{st['label']}）"
         if pc.scope == "workspace" and human:
             pol = self.policy(ws, ctx.user_id, ctx.role)
-            for st in self.rule_status(ws, pol["limits"], scope="workspace", user_id=ctx.user_id):
+            model_limits = [r for r in pol["limits"] if r.get("metric") not in ("storage_bytes", "record_units")]
+            for st in self.rule_status(ws, model_limits, scope="workspace", user_id=ctx.user_id):
                 if st["exceeded"]:
                     return f"已达你的成员限额（{st['label']}），可以在「额度与用量」里申请提升"
             # 工作区管理员分给群组的共享模型额度：全体群成员合计
             for gid in self.my_groups(ws, ctx.user_id):
-                rules = self.group_settings(gid).get("ws_limits") or []
+                rules = [
+                    r
+                    for r in (self.group_settings(gid).get("ws_limits") or [])
+                    if r.get("metric") not in ("storage_bytes", "record_units")
+                ]
                 if not rules:
                     continue
                 for st in self.rule_status(ws, rules, scope="workspace", user_ids=self.group_members(gid)):
                     if st["exceeded"]:
                         return f"你所在群组的共享模型额度已用完（{st['label']}）"
+        return None
+
+    def storage_snapshot(self, ws: str, user_id: str | None = None) -> dict[str, Any]:
+        """当前成员（或整个工作区）的上传存储统计。"""
+        return upload_storage(self.db, ws, user_id)
+
+    def enforce_storage_upload(
+        self, ws: str, user_id: str, role: str | None, used_bytes: int, pending_bytes: int
+    ) -> None:
+        """上传前校验该成员的所有存储规则；任一条超限即拒绝。
+
+        存储规则统一按累计口径（current stock），多条规则同时生效。管理员不受成员
+        配额约束，与其它成员限额保持同一权限口径。
+        """
+        if role == "admin" or not user_id:
+            return
+        rules = [r for r in self.policy(ws, user_id, role)["limits"] if r.get("metric") == "storage_bytes"]
+        for rule in rules:
+            limit = dec(rule.get("limit"))
+            if limit <= 0:
+                continue
+            if Decimal(used_bytes) + Decimal(pending_bytes) <= limit:
+                continue
+            raise AppError(
+                ErrorCode.QUOTA_EXHAUSTED,
+                f"存储空间配额已用完：已用 {fmt_bytes(used_bytes)}，上限 {fmt_bytes(limit)}，"
+                f"本次上传需要 {fmt_bytes(pending_bytes)}。请删除不需要的图片或附件，或联系管理员调整限额。",
+                details={
+                    "metric": "storage_bytes",
+                    "label": f"存储空间上限 ≤ {fmt_bytes(limit)}",
+                    "unit": "字节",
+                    "used": str(used_bytes),
+                    "limit": plain(limit),
+                    "requested": str(pending_bytes),
+                    "quota_key": "member_storage_bytes",
+                },
+            )
+
+    def _usage_bucket(self, ws: str, since_ms: int, **where: Any) -> dict[str, Any]:
+        sql = (
+            "SELECT COUNT(*) AS calls, COALESCE(SUM(input_tokens + output_tokens), 0) AS tokens, "
+            "COALESCE(SUM(input_tokens), 0) AS input_tokens, COALESCE(SUM(output_tokens), 0) AS output_tokens, "
+            "COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens, COALESCE(SUM(cost_micro), 0) AS cost_micro, "
+            "MAX(created_at) AS last_used FROM llm_usage WHERE workspace_id=? AND created_at>=?"
+        )
+        args: list[Any] = [ws, since_ms]
+        for key in ("provider", "scope", "user_id", "group_id"):
+            if where.get(key):
+                sql += f" AND {key}=?"
+                args.append(where[key])
+        row = self.db.fetchone(sql, tuple(args)) or {}
+        return {
+            "calls": int(row.get("calls") or 0),
+            "tokens": int(row.get("tokens") or 0),
+            "input_tokens": int(row.get("input_tokens") or 0),
+            "output_tokens": int(row.get("output_tokens") or 0),
+            "cache_read_tokens": int(row.get("cache_read_tokens") or 0),
+            "cost": fmt_cost(int(row.get("cost_micro") or 0)),
+            "last_used": int(row.get("last_used") or 0),
+        }
+
+    @staticmethod
+    def _parse_iso_ms(value: Any) -> int | None:
+        if not value:
+            return None
+        try:
+            return int(datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp() * 1000)
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+    def _fmt_quota_time(self, ms: int | None, tz: str) -> str:
+        if not ms:
+            return ""
+        try:
+            zone = ZoneInfo(tz)
+        except Exception:
+            zone = timezone.utc
+        return datetime.fromtimestamp(ms / 1000, zone).strftime("%m-%d %H:%M")
+
+    @staticmethod
+    def _opencode_endpoint(base: str) -> str:
+        """只接受 opencode.ai 的 HTTPS Go 推理地址，避免把密钥发到其他主机。"""
+        try:
+            parts = urlsplit(str(base or "").strip())
+        except ValueError:
+            return ""
+        host = (parts.hostname or "").lower()
+        if parts.scheme != "https" or (host != "opencode.ai" and not host.endswith(".opencode.ai")):
+            return ""
+        path = parts.path.rstrip("/")
+        if path == "/inference/go":
+            path += "/v1"
+        if not path.startswith("/inference/go/"):
+            return ""
+        return f"https://{parts.netloc}{path}/usage"
+
+    def _opencode_usage(self, ws: str, rec: dict[str, Any], *, refresh: bool = False) -> dict[str, Any] | None:
+        """读取 OpenCode Go 的真实 5 小时 / 周 / 月额度。
+
+        OpenCode 的推理密钥可直接访问 ``/inference/go/v1/usage``；这里只做只读查询，
+        不把密钥写入缓存键或日志。接口失败时返回 available=False，由界面回退到平台记账。
+        """
+        endpoint = self._opencode_endpoint(str(rec.get("base_url") or ""))
+        if not endpoint:
+            return None
+        key = self.api_key(rec)
+        if not key:
+            return {"available": False, "reason": "未配置密钥", "updated_at": now_ms(), "windows": {}}
+        cache_key = hashlib.sha256(f"{endpoint}\0{key}".encode()).hexdigest()
+        cached = None if refresh else self._remote_quota_cache.get(cache_key)
+        if cached:
+            ttl = 60 if cached[1].get("available") else 20
+            if time.time() - cached[0] < ttl:
+                return cached[1]
+        out: dict[str, Any]
+        try:
+            req = urllib.request.Request(
+                endpoint,
+                headers={
+                    "Authorization": f"Bearer {key}",
+                    "Accept": "application/json",
+                    "User-Agent": "quant-agent/1.0",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                payload = json.loads(resp.read(65536).decode("utf-8", "replace"))
+            usage = payload.get("usage") if isinstance(payload, dict) else None
+            windows: dict[str, Any] = {}
+            for src, (name, label) in (
+                ("rolling", ("5h", "5 小时")),
+                ("weekly", ("week", "本周")),
+                ("monthly", ("month", "本月")),
+            ):
+                item = usage.get(src) if isinstance(usage, dict) else None
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    used = max(0.0, min(100.0, float(item.get("percent") or 0)))
+                except (TypeError, ValueError):
+                    used = 0.0
+                resets_at = self._parse_iso_ms(item.get("resetsAt"))
+                windows[name] = {
+                    "label": label,
+                    "used_pct": round(used, 1),
+                    "remaining_pct": round(max(0.0, 100.0 - used), 1),
+                    "resets_at": resets_at,
+                    "resets_at_text": self._fmt_quota_time(resets_at, self._tz(ws)),
+                    "status": str(item.get("status") or "ok"),
+                }
+            if not windows:
+                raise ValueError("响应中没有额度窗口")
+            fetched_at = now_ms()
+            out = {
+                "available": True,
+                "source": "OpenCode Go usage",
+                "timezone": self._tz(ws),
+                "updated_at": fetched_at,
+                "updated_at_text": self._fmt_quota_time(fetched_at, self._tz(ws)),
+                "windows": windows,
+            }
+        except Exception as exc:  # 网络、鉴权或响应格式异常都不应影响额度页其余内容
+            if isinstance(exc, urllib.error.HTTPError):
+                reason = f"HTTP {exc.code}"
+            elif isinstance(exc, urllib.error.URLError):
+                reason = "无法连接 OpenCode"
+            elif isinstance(exc, ValueError):
+                reason = str(exc)
+            else:
+                reason = "额度接口响应异常"
+            out = {"available": False, "reason": reason, "updated_at": now_ms(), "windows": {}}
+        self._remote_quota_cache[cache_key] = (time.time(), out)
+        return out
+
+    def provider_quota_cards(
+        self, ws: str, user_id: str | None, role: str | None, *, refresh: bool = False
+    ) -> dict[str, Any]:
+        """按模型来源汇总 5 小时 / 周 / 月 / 累计用量，供额度页卡片展示。"""
+        now = time.time()
+        tz = self._tz(ws)
+        starts = {w: window_start(w, tz, now) for w in ("5h", "week", "month", "total")}
+        cards = []
+        for rec in self.visible(ws, user_id, role):
+            where: dict[str, Any] = {"provider": rec["name"], "scope": rec.get("scope", "workspace")}
+            if where["scope"] == "personal":
+                where["user_id"] = rec.get("owner_id")
+            elif where["scope"] == "group":
+                where["group_id"] = rec.get("group_id")
+            buckets = {w: self._usage_bucket(ws, starts[w], **where) for w in starts}
+            limits = list(rec.get("limits") or [])
+            status = self.rule_status(ws, limits, **where)
+            has_key = bool(rec.get("key_enc")) or self._keyless(rec)
+            base = str(rec.get("base_url") or "")
+            billing = "subscription" if self._opencode_endpoint(base) else "api"
+            remote = self._opencode_usage(ws, rec, refresh=refresh) if billing == "subscription" else None
+            remote_used = [float(w.get("used_pct") or 0) for w in (remote or {}).get("windows", {}).values()]
+            if not has_key:
+                state = "missing"
+            elif any(x["exceeded"] for x in status) or any(x >= 100 for x in remote_used):
+                state = "exhausted"
+            elif any(x["percent"] >= 80 for x in status) or any(x >= 80 for x in remote_used):
+                state = "near"
+            else:
+                state = "active"
+            total = buckets["total"]
+            cards.append(
+                {
+                    "name": rec["name"],
+                    "label": rec.get("label") or rec["name"],
+                    "scope": rec.get("scope", "workspace"),
+                    "type": rec.get("type", "openai_compatible"),
+                    "models": list(rec.get("models") or []),
+                    "billing": billing,
+                    "has_key": has_key,
+                    "state": state,
+                    "windows": {w: {k: v for k, v in b.items() if k != "last_used"} for w, b in buckets.items()},
+                    "total": total,
+                    "limits": status,
+                    "remote": remote,
+                    "avg_cost_per_call": round(float(dec(total["cost"]) / max(1, total["calls"])), 4),
+                    "last_used": total["last_used"],
+                }
+            )
+        cards.sort(key=lambda c: (0 if c["scope"] == "workspace" else 1, c["label"].lower()))
+        return {
+            "cards": cards,
+            "note": "OpenCode 来源优先读取服务商实时额度（5 小时 / 本周 / 本月及刷新时间）；其余来源按平台实际调用记录汇总，服务商侧余额不可用时不会推算或虚构。",
+        }
+
+    def task_guard(self, kind: str, manifest: dict[str, Any] | None = None) -> str | None:
+        """成员启动计算任务前的资源限额检查：回测次数、CPU 秒、优化组合数。"""
+        ctx = context.current()
+        ws = ctx.workspace_id
+        user_id = ctx.user_id
+        if not ws or not user_id or user_id == "system" or ctx.role == "admin":
+            return None
+        if kind in ("backtest", "template_backtest"):
+            metrics = {"cpu_seconds", "backtests"}
+            requested = {"backtests": Decimal(1)}
+        elif kind == "optimize":
+            metrics = {"cpu_seconds", "optimize_combinations"}
+            requested = {"optimize_combinations": max(1, _int((manifest or {}).get("combinations") or 1))}
+        else:
+            return None
+        rules = [r for r in self.policy(ws, user_id, ctx.role)["limits"] if r.get("metric") in metrics]
+        for st in self.rule_status(ws, rules, scope="workspace", user_id=user_id):
+            used = dec(st["used"])
+            limit = dec(st["limit"])
+            need = Decimal(requested.get(st["metric"], 0))
+            if used + need > limit:
+                return f"你的{METRIC_LABEL[st['metric']]}额度不足（{st['label']}），请等待额度重置或申请提升"
         return None
 
     def stats(self, ws: str, *, days: int, user_id: str | None = None) -> dict[str, Any]:
@@ -757,6 +1134,11 @@ class ModelHub:
             "by_model": [norm(r) for r in by_model],
             "by_user": [norm(r) for r in by_user],
             "daily": series,
+            "storage": upload_storage(self.db, ws, user_id),
+            "tasks": {
+                metric: plain(self._task_usage(ws, since, metric, user_id=user_id))
+                for metric in ("backtests", "cpu_seconds", "optimize_combinations")
+            },
         }
 
     # ------------------------------------------------------------------ 额度申请

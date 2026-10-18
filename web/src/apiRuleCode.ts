@@ -1,5 +1,5 @@
 /* 规则 ↔ 代码 统一：规则生成代码、代码识别规则（AST 比较）、DSL 策略转代码策略。 */
-import type { DslProblem, StrategyVersion } from './api3'
+import type { DslProblem, StrategyVersion } from './api/platform'
 import { post } from './http'
 import type { RuleSpec } from './pages/rulecode/RuleForm'
 

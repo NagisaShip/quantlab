@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
 import { directBars } from '../marketDirect'
 import { get } from '../http'
-import { ago, fmtNum, fmtPct, tone, v3, type BacktestRow, type LlmStatus, type PaperSessionView, type StrategyFile } from '../api2'
+import { ago, fmtNum, fmtPct, tone, v3, type BacktestRow, type LlmStatus, type PaperSessionView, type StrategyFile } from '../api/research'
 import { HomeAsk, Watchlist } from './home/HomeAsk'
+import MentorCourse from './home/MentorCourse'
 import { EmptyState, Panel } from '../components/ui'
 import { NewStrategyModal } from './MyStrategies'
 import { missions, type Mission } from '../apiLab'
@@ -13,7 +14,7 @@ import type { PageProps } from './types'
 const MISSION_STATUS: Record<string, string> = { queued: '排队中', running: '讨论中', awaiting_approval: '等你确认', done: '已完成', failed: '出错', stopped: '已停止', idle: '待命' }
 
 
-export default function HomePage({ onNavigate, notify }: PageProps) {
+export default function HomePage({ onNavigate, notify, features }: PageProps) {
   const [strategies, setStrategies] = useState<StrategyFile[]>([])
   const [backtests, setBacktests] = useState<BacktestRow[]>([])
   const [sessions, setSessions] = useState<PaperSessionView[]>([])
@@ -57,6 +58,7 @@ export default function HomePage({ onNavigate, notify }: PageProps) {
       </section>
 
       <FlowBoard board={board} onNavigate={onNavigate} />
+      {features?.['research.mentor'] !== false && <MentorCourse onNavigate={onNavigate} notify={notify} />}
       {pipe && <PipelineRow p={pipe} onNavigate={onNavigate} />}
 
       <div className="two-columns">
@@ -64,6 +66,7 @@ export default function HomePage({ onNavigate, notify }: PageProps) {
           {!backtests.length ? (
             <EmptyState glyph="∿" title="还没有回测" action={<button className="button primary" onClick={() => setModal('new')}>从模板开始</button>}>选一个模板，30 秒跑出第一份回测报告。</EmptyState>
           ) : (
+            <div className="table-wrap">
             <table>
               <thead><tr><th>策略</th><th>区间</th><th className="right">收益</th><th className="right">超额</th><th className="right">回撤</th><th className="right">夏普</th></tr></thead>
               <tbody>
@@ -79,6 +82,7 @@ export default function HomePage({ onNavigate, notify }: PageProps) {
                 ))}
               </tbody>
             </table>
+            </div>
           )}
         </Panel>
         <div className="side-column">
@@ -173,7 +177,7 @@ function FlowBoard({ board, onNavigate }: { board: { rows: GradRow[]; cfg: Recor
   )
 }
 
-/** 研究流水线：因子 → 模型 → 组合 → 执行，加上夜班和试验台账，一格一个，点进对应页面。 */
+/** 研究流水线：因子 → 模型 → 组合 → 执行，加上定时任务和试验台账，一格一个，点进对应页面。 */
 function PipelineRow({ p, onNavigate }: { p: Pipeline; onNavigate: (k: string) => void }) {
   const ns = p.nightshift
   const cells: { key: string; label: string; value: string; note: string; warn?: boolean }[] = [
@@ -181,7 +185,7 @@ function PipelineRow({ p, onNavigate }: { p: Pipeline; onNavigate: (k: string) =
     { key: 'modellib', label: '模型', value: `${p.models.active} 上线`, note: p.models.live_ic !== null ? `线上 IC ${fmtNum(p.models.live_ic, 3)}` : `共 ${p.models.total} 个` },
     { key: 'portfolio', label: '组合', value: `${p.portfolio.active} 启用`, note: p.portfolio.risk_usage !== null ? `风险预算用了 ${fmtPct(p.portfolio.risk_usage, 0)}` : '未设目标波动', warn: (p.portfolio.risk_usage ?? 0) > 1 },
     { key: 'execution', label: '执行', value: p.execution.avg_is_bps !== null ? `${fmtNum(p.execution.avg_is_bps, 1)} bps` : '—', note: `近 ${p.execution.runs} 次仿真平均执行缺口` },
-    { key: 'long-running', label: '夜班', value: ns.running ? '进行中' : `${ns.queued} 排队`, note: ns.last ? `上一班 ${when(ns.last.started_at)} · 达标 ${ns.passed} 个` : '还没跑过' },
+    { key: 'long-running', label: '定时任务', value: ns.running ? '执行中' : `${ns.queued} 排队`, note: ns.last ? `上次 ${when(ns.last.started_at)} · 达标 ${ns.passed} 个` : '还没执行过' },
     { key: 'discipline', label: '试验台账', value: `${p.discipline.trials} 次试验`, note: p.discipline.holdout ? '紧封测试集已设置' : '没有紧封测试集', warn: !p.discipline.holdout && p.discipline.trials > 20 },
   ]
   return (

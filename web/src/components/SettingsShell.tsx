@@ -13,8 +13,10 @@ export const SETTINGS_GROUPS: { group: string; items: SettingsItem[] }[] = [
     group: '设置',
     items: [
       { key: 'settings/account', label: '我的账号', icon: 'accounts', keywords: '密码 双因素 两步验证 TOTP' },
+      { key: 'settings/privacy', label: '隐私与存储', icon: 'overview', keywords: '隐私 保留 清理 存储 磁盘 反馈 评分 自动删除' },
       { key: 'settings/workspace', label: '工作区', icon: 'overview', keywords: '名称 时区 新建 加入 切换' },
-      { key: 'settings/quota', label: '额度与升级', icon: 'validation', keywords: '用量 配额 额度 申请 升级 费用 token 限额 审批' },
+      { key: 'settings/quota', label: '额度与用量', icon: 'validation', keywords: '用量 配额 额度 申请 费用 token 限额 审批 CPU 回测 优化 订阅 API 计费' },
+      { key: 'settings/retention', label: '研究记录', icon: 'backtests', keywords: '回测 记录 参数优化 因子 模型 模型实验 组合 执行 记录单位 倍率 配额 PIN 自动清理 存储' },
       { key: 'settings/members', label: '成员与邀请', icon: 'teams', keywords: '邀请码 角色 权限 共享模型 限额 用量' },
       { key: 'settings/runs', label: '任务与运行', icon: 'paper', keywords: 'worker 队列' },
       { key: 'settings/node', label: '运行节点与机器人', icon: 'demo', keywords: '节点 机器人 telegram' },
@@ -29,13 +31,12 @@ export const SETTINGS_GROUPS: { group: string; items: SettingsItem[] }[] = [
       { key: 'models', label: '模型', icon: 'models', keywords: 'AI 模型 密钥 API key 服务商 provider 共享 个人 价格 限额 用量 路由 联网搜索 tavily' },
       { key: 'roles', label: '角色与团队', icon: 'roles', keywords: '角色 团队 agent' },
       { key: 'prompts', label: '提示词', icon: 'prompts', keywords: 'prompt' },
-      { key: 'long-running', label: '夜班', icon: 'long-running', keywords: '晨报 队列 自动研究' },
     ],
   },
   {
     group: '开发者',
     items: [
-      { key: 'docs', label: '策略 API 文档', icon: 'docs', keywords: 'sdk 接口 文档' },
+      { key: 'docs', label: 'API 文档', icon: 'docs', keywords: 'sdk 接口 文档' },
       { key: 'brand', label: '视觉规范', icon: 'models', keywords: 'logo bot 品牌 机器人 表情 动效 设计规范 红绿' },
     ],
   },
@@ -47,6 +48,9 @@ export const SETTINGS_GROUPS: { group: string; items: SettingsItem[] }[] = [
  */
 export interface SettingsEntry { page: string; text: string; keywords?: string }
 export const SETTINGS_ENTRIES: SettingsEntry[] = [
+  { page: 'settings/privacy', text: 'Agent 评价弹窗', keywords: '评分 反馈 频率 自动关闭 意见 感谢' },
+  { page: 'settings/privacy', text: '隐私与数据保留', keywords: '保留 不保留 删除 隐私政策' },
+  { page: 'settings/privacy', text: '服务器存储', keywords: '磁盘 清理 分类 阈值 自动清理 最早数据' },
   { page: 'settings/account', text: '双因素认证', keywords: '两步验证 TOTP 验证器 恢复码 安全' },
   { page: 'settings/account', text: '修改密码', keywords: '密码 当前密码 新密码' },
   { page: 'settings/workspace', text: '工作区名称', keywords: '名称 改名' },
@@ -58,6 +62,11 @@ export const SETTINGS_ENTRIES: SettingsEntry[] = [
   { page: 'settings/quota', text: 'AI 模型额度', keywords: '模型额度 申请 提升 审批' },
   { page: 'settings/quota', text: '我的模型用量', keywords: '费用 token 缓存' },
   { page: 'settings/quota', text: '工作区模型用量', keywords: '成员用量 费用' },
+  { page: 'settings/retention', text: '研究记录总览', keywords: '回测 参数优化 因子 模型 组合 执行 记录单位 配额 倍率 PIN' },
+  { page: 'settings/retention', text: '按记录类型统计', keywords: '倍率 默认倍率 回测 因子 模型 组合 执行' },
+  { page: 'settings/retention', text: '我的自动清理设置', keywords: '自动删除 最久远 PIN 单策略 清理' },
+  { page: 'settings/retention', text: '工作区记录单位上限', keywords: '管理员 上限 配额 100000' },
+  { page: 'settings/retention', text: '记录明细', keywords: '筛选 删除 PIN 记录类型' },
   { page: 'settings/members', text: '成员与邀请', keywords: '邀请 角色 共享模型 个人模型 限额' },
   { page: 'settings/node', text: '节点状态', keywords: '运行节点 心跳' },
   { page: 'settings/node', text: '交易所时钟', keywords: '时钟偏差 时间同步' },
@@ -82,8 +91,6 @@ export const SETTINGS_ENTRIES: SettingsEntry[] = [
   { page: 'models', text: '连通性测试', keywords: '测试 调用 验证 密钥' },
   { page: 'models', text: '联网搜索', keywords: '搜索 google 谷歌 brave tavily serper searxng rss 来源 密钥 web search' },
   { page: 'models', text: '对话偏好', keywords: '建议 工具调用' },
-  { page: 'long-running', text: '定时调度', keywords: 'cron 夜班 晨报' },
-  { page: 'long-running', text: '通知型 Agent', keywords: '推送 通知' },
 ]
 
 /** 跳转后要定位的设置项文字：SettingsShell 在内容渲染后取走并滚动过去。 */

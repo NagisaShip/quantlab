@@ -1,4 +1,4 @@
-# quant-agent 2.0 —— PostgreSQL + Redis + API（控制面）+ Worker（执行面）
+# QuantLab v 0.1 preview —— PostgreSQL + Redis + API（控制面）+ Worker（执行面）
 #
 #   1) 生成凭证主密钥：  mkdir -p secrets && docker run --rm python:3.13-slim \
 #        sh -c "pip -q install cryptography && python -c 'from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())'" > secrets/secret.key
@@ -11,7 +11,7 @@ name: quant-agent
 
 x-app: &app
   build: .
-  image: quant-agent:2.0.0
+  image: quantlab:0.1.0-preview
   restart: unless-stopped
   env_file: .env
   environment:
@@ -22,6 +22,8 @@ x-app: &app
     QAGENT_WORKER: external
     # 微实盘（真实资金）总开关，默认关闭；打开前先读 docs/运维与恢复手册.md 第 8 节
     QAGENT_MICROLIVE: "${QAGENT_MICROLIVE:-0}"
+    # 真实永续总开关，独立于微实盘，默认关闭
+    QAGENT_REAL_PERP: "${QAGENT_REAL_PERP:-0}"
   secrets: [qagent_secret_key]
   depends_on:
     postgres: { condition: service_healthy }

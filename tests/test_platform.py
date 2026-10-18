@@ -7,7 +7,7 @@ from conftest import login
 from fastapi.testclient import TestClient
 
 from quant_agent.api.app import create_app
-from quant_agent.api.deps import AppServices, reset_services, set_services
+from quant_agent.api.deps import AppServices, get_services, reset_services, set_services
 
 
 @pytest.fixture()
@@ -313,6 +313,120 @@ def test_workspace_shared_models_permissions_limits_and_usage(app):
         assert [p["name"] for p in member.get("/api/config").json()["providers"]] == ["mine"]
 
 
+def test_member_task_limits_and_provider_quota_cards(app):
+    """成员可以按回测次数 / CPU 秒 / 优化组合数限额；模型来源额度卡返回多时间窗数据。"""
+    from quant_agent.api.deps import get_services
+    from quant_agent.platform import context
+
+    shared = {
+        "name": "shared",
+        "type": "openai_compatible",
+        "base_url": "https://a.example/v1",
+        "api_key": "sk-admin-0001",
+        "models": ["m"],
+        "model_settings": {"m": {"price_in": "1", "price_out": "2"}},
+    }
+    with _client(app) as admin:
+        login(admin)
+        assert admin.post("/api/config/providers", json=shared).status_code == 200
+        code = admin.post("/api/workspace/invites", json={"role": "member"}).json()["invite"]["code"]
+        ws = admin.get("/api/auth/me").json()["workspace"]["id"]
+    with _client(app) as member:
+        login(member, email="tasks@example.com", password="Member01!", name="Tasks", invite_code=code)
+        member_id = member.get("/api/auth/me").json()["user"]["id"]
+        s = get_services()
+        with context.bind(ws, user_id=member_id, role="member"):
+            s.model_hub.set_policy(
+                ws,
+                member_id,
+                {
+                    "limits": [
+                        {"metric": "backtests", "window": "total", "limit": "1"},
+                        {"metric": "cpu_seconds", "window": "total", "limit": "5"},
+                        {"metric": "optimize_combinations", "window": "month", "limit": "2"},
+                    ]
+                },
+            )
+            run = s.runs.create(workspace_id=ws, user_id=member_id, kind="backtest", mode="backtest", manifest={})
+            s.db.execute(
+                "UPDATE runs SET started_at=?, ended_at=? WHERE id=?",
+                (run["created_at"] - 2000, run["created_at"], run["id"]),
+            )
+            assert "回测次数" in s.model_hub.task_guard("backtest", {})
+            assert "优化组合数" in s.model_hub.task_guard("optimize", {"combinations": 3})
+            status = s.model_hub.rule_status(
+                ws,
+                s.model_hub.policy(ws, member_id, "member")["limits"],
+                scope="workspace",
+                user_id=member_id,
+            )
+            assert next(x for x in status if x["metric"] == "cpu_seconds")["used"] == "2"
+            pc = s.router.config.providers["shared"]
+            s.model_hub.record(pc, "m", {"input_tokens": 100, "output_tokens": 20})
+        cards = member.get("/api/config/provider-quotas").json()["cards"]
+        card = next(c for c in cards if c["name"] == "shared")
+        assert set(card["windows"]) == {"5h", "week", "month", "total"}
+        assert card["windows"]["5h"]["calls"] == 1 and card["total"]["tokens"] == 120
+
+
+def test_opencode_quota_endpoint_guard():
+    """OpenCode 实时额度只允许访问 opencode.ai 的 HTTPS Go 推理地址。"""
+    from quant_agent.llm.hub import ModelHub
+
+    assert (
+        ModelHub._opencode_endpoint("https://opencode.ai/inference/go/v1")
+        == "https://opencode.ai/inference/go/v1/usage"
+    )
+    assert (
+        ModelHub._opencode_endpoint("https://opencode.ai/inference/go") == "https://opencode.ai/inference/go/v1/usage"
+    )
+    assert ModelHub._opencode_endpoint("https://evil.example/?host=opencode.ai") == ""
+    assert ModelHub._opencode_endpoint("http://opencode.ai/inference/go/v1") == ""
+    assert ModelHub._opencode_endpoint("https://opencode.ai/other/v1") == ""
+    assert ModelHub._parse_iso_ms("2026-10-17T16:38:00.000Z") == 1792255080000
+
+
+def test_agent_calculator_and_team_tool_bridge():
+    """计算器只做安全算术；团队开启平台工具后能拿到 calculator / list_trades / trade_breakdown。"""
+    from quant_agent.agents.calculator import calculate
+    from quant_agent.agents.team import TeamRunner, ToolRegistry
+
+    assert calculate("(1+2)*3")["result"] == 9
+    assert calculate("percent(18, 80)")["result"] == 14.4
+    assert calculate("sqrt(16)+2^3")["result"] == 12
+    assert "error" in calculate("__import__('os').system('echo bad')")
+    assert "error" in calculate("1/0")
+
+    plain = TeamRunner(None, None, tools=ToolRegistry())
+    assert plain._platform_tool_names() == []
+    bridged = TeamRunner(None, None, tools=ToolRegistry(), platform_tools=True)
+    names = set(bridged._platform_tool_names())
+    assert {"calculator", "list_trades", "trade_breakdown"} <= names
+
+
+def test_member_run_quota_blocks_second_enqueue(app):
+    """成员的回测次数限额在真实入队路径上生效，而不是只在状态展示里生效。"""
+    from quant_agent.api.deps import get_services
+    from quant_agent.api.routes_runs import enqueue
+    from quant_agent.platform import context
+    from quant_agent.platform.errors import AppError, ErrorCode
+
+    with _client(app) as admin:
+        login(admin)
+        code = admin.post("/api/workspace/invites", json={"role": "member"}).json()["invite"]["code"]
+        ws = admin.get("/api/auth/me").json()["workspace"]["id"]
+    with _client(app) as member:
+        login(member, email="limits@example.com", password="Member01!", name="Limits", invite_code=code)
+        uid = member.get("/api/auth/me").json()["user"]["id"]
+        s = get_services()
+        with context.bind(ws, user_id=uid, role="member"):
+            s.model_hub.set_policy(ws, uid, {"limits": [{"metric": "backtests", "window": "total", "limit": "1"}]})
+            enqueue(kind="backtest", mode="backtest", title="limit probe 1", manifest={"securities": ["BTC/USDT"]})
+            with pytest.raises(AppError) as exc:
+                enqueue(kind="backtest", mode="backtest", title="limit probe 2", manifest={"securities": ["BTC/USDT"]})
+            assert exc.value.code == ErrorCode.QUOTA_EXHAUSTED
+
+
 def test_usage_breakdown_and_cache_pricing():
     """各家 usage 的缓存字段归一；缓存命中 / 写入按各自单价计费，没填按普通输入价。"""
     from quant_agent.llm.hub import ModelHub, usage_breakdown
@@ -357,3 +471,65 @@ def test_usage_breakdown_and_cache_pricing():
     # 没填缓存价：按普通输入价
     pc.model_settings = {"m": {"price_in": "4", "price_out": "16"}}
     assert ModelHub.cost_micro(pc, "m", 1000, 20, cache_read=700, cache_write=200) == 1000 * 4 + 20 * 16
+
+
+def test_privacy_feedback_and_storage_settings(app):
+    with _client(app) as c:
+        login(c)
+        r = c.put(
+            "/api/workspace/settings",
+            json={
+                "feedback": {"enabled": True, "every_n_messages": 3, "auto_close_seconds": 12},
+                "privacy": {
+                    "retain_agent_history": False,
+                    "retain_uploads": False,
+                    "allow_improvement_feedback": False,
+                    "retention_days": 30,
+                },
+                "storage": {"auto_cleanup": True, "threshold_percent": 82, "target_percent": 70, "keep_days": 14},
+            },
+        )
+        assert r.status_code == 200, r.text
+        settings = r.json()["workspace"]["settings"]
+        assert settings["feedback"] == {"enabled": True, "every_n_messages": 3, "auto_close_seconds": 12}
+        assert settings["privacy"]["retain_agent_history"] is False
+        assert settings["privacy"]["allow_improvement_feedback"] is False
+        assert settings["storage"]["target_percent"] == 70
+        assert c.get("/api/workspace/storage").status_code == 200
+
+        code = c.post("/api/workspace/invites", json={"role": "member"}).json()["invite"]["code"]
+    with _client(app) as member:
+        login(member, email="privacy-member@example.com", password="Member123!", name="Privacy", invite_code=code)
+        _assert_error(member.get("/api/workspace/storage"), 403, "PERMISSION_DENIED")
+        _assert_error(
+            member.put("/api/workspace/settings", json={"storage": {"auto_cleanup": False}}), 403, "PERMISSION_DENIED"
+        )
+
+
+def test_privacy_no_retention_cleans_without_disk_pressure(app):
+    from quant_agent.platform import storage
+
+    with _client(app) as c:
+        login(c)
+        p = c.post(
+            "/api/lab/projects",
+            json={
+                "idea": "临时研究",
+                "securities": ["BTC/USDT"],
+                "timeframe": "1h",
+                "market_auto": False,
+                "data_source": "synthetic",
+            },
+        ).json()["project"]
+        assert (
+            c.put(
+                "/api/workspace/settings", json={"privacy": {"retain_agent_history": False, "retention_days": 365}}
+            ).status_code
+            == 200
+        )
+        import time
+
+        time.sleep(0.01)
+        result = storage.auto_cleanup(get_services())
+        assert any(x["category"] == "conversations" and x["reason"] == "privacy" for x in result["deleted"])
+        assert c.get(f"/api/lab/projects/{p['id']}").status_code == 404

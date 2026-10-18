@@ -50,11 +50,16 @@ probe-*/
 
 # ---- 测试 / 缓存 ----
 .pytest_cache/
+pytest-cache-files-*/
 .ruff_cache/
 .mypy_cache/
 .coverage
 htmlcov/
 .pytest-tmp/
+.pytest-*/
+.pt-*/
+.run-*/
+.tmp-*
 pytest-of-*/
 
 # ---- Redis 本地快照 ----
@@ -75,3 +80,13 @@ _archive/
 
 # ---- Claude Code 本地会话文件（工作树、启动配置）----
 .claude/
+
+# 本地 i18n 巡检临时数据
+.tmp_i18n_audit/
+
+# ---- 本地补丁脚本、临时截图与录制输出 ----
+.tmp_*
+.mobile-shots/
+.realperp-test-home/
+record-flow-*/
+$null

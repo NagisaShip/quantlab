@@ -19,6 +19,8 @@ os.environ.setdefault("QAGENT_STREAM", "0")
 os.environ.setdefault("QAGENT_ALLOW_SYNTHETIC", "1")
 # 联网搜索的免密钥来源（必应 / 百度 / 新闻）在测试里关闭，不访问外网
 os.environ.setdefault("QAGENT_FREE_SEARCH", "0")
+# 默认资产由专门的种子测试显式开启，避免所有既有用例的试验计数被默认数据污染
+os.environ.setdefault("QAGENT_SEED_BUILTINS", "0")
 
 # 在 PostgreSQL 上跑全套测试：QAGENT_TEST_PG=postgresql://user@host:port/db
 # 每个 AppServices.build() 使用一个全新 schema，测试之间互不影响。

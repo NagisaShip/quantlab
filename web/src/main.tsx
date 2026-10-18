@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import { ImageViewerHost } from './components/ImageViewer'
 import App from './App'
 import { loadLang, startDomTranslator } from './i18n'
+import { startMobileTableCards } from './mobileTables'
 import { applyPrefs, watchSystemTheme } from './components/prefs'
 import '@fontsource-variable/inter'
 import '@fontsource-variable/jetbrains-mono'
@@ -22,7 +23,10 @@ import './stylesBot.css'
 import './stylesResearch.css'
 import './stylesLayout.css'
 import './stylesCollab.css'
+import './stylesQmoji.css'
 import './stylesMotion.css'
+import './stylesPublic.css'
+import './stylesResponsiveTables.css'
 
 applyPrefs()
 watchSystemTheme()
@@ -35,6 +39,7 @@ if (!['localhost', '127.0.0.1'].includes(location.hostname) && location.port !==
 // 英文界面：先加载词典并开始翻译，再渲染（避免先闪一下中文）
 loadLang().catch(() => undefined).finally(() => {
   startDomTranslator()
+  startMobileTableCards()
   createRoot(document.getElementById('root')!).render(
     <StrictMode>
       <App />

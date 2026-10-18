@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { TF_MS } from '../timeframes'
-import { fmtMoney, fmtNum, fmtPct, fmtQty, fmtTime, tone } from '../api2'
+import { fmtMoney, fmtNum, fmtPct, fmtQty, fmtTime, tone } from '../api/research'
 import { demo, ORDER_STATUS, type LiveQuote, type Terminal, type TerminalSession } from '../apiDemo'
 import { num } from '../http'
 import KlineChart from './KlineChart'

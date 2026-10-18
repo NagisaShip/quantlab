@@ -39,7 +39,9 @@ class ToolHappyRouter:
 def test_agent_forces_final_answer_after_step_cap():
     router = ToolHappyRouter()
     tool = Tool("noop", "什么也不做", {"type": "object", "properties": {}}, lambda **kw: {"ok": True})
-    agent = Agent(name="a", role="reasoning", router=router, context=ContextManager(system_prompt="s"), tools=[tool], max_steps=2)
+    agent = Agent(
+        name="a", role="reasoning", router=router, context=ContextManager(system_prompt="s"), tools=[tool], max_steps=2
+    )
     run = agent.run("任务")
     assert run.final == "汇总：共识与分歧……"
     assert router.calls == [True, True, False]  # 两步都在调工具，最后补一次不带工具的最终答复
@@ -89,8 +91,20 @@ class FlakyAdapter:
         t = start - start % step
         out = []
         while t + step <= end:
-            out.append(Bar(symbol=symbol, timeframe=timeframe, open_time=t, close_time=t + step - 1,
-                           open=1, high=1, low=1, close=1, volume=1, closed=True))
+            out.append(
+                Bar(
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    open_time=t,
+                    close_time=t + step - 1,
+                    open=1,
+                    high=1,
+                    low=1,
+                    close=1,
+                    volume=1,
+                    closed=True,
+                )
+            )
             t += step
         return out
 
@@ -121,8 +135,11 @@ def test_quality_without_cache_still_reports_unavailable(tmp_path, monkeypatch):
 # ---------------------------------------------------------------- 联网搜索来源
 def _ws(secrets: dict[str, str], handler=None) -> WebSearch:
     transport = httpx.MockTransport(handler or (lambda req: httpx.Response(404)))
-    return WebSearch(lambda: secrets, client_factory=lambda: httpx.Client(transport=transport),
-                     resolver=lambda host: ["93.184.216.34"])
+    return WebSearch(
+        lambda: secrets,
+        client_factory=lambda: httpx.Client(transport=transport),
+        resolver=lambda host: ["93.184.216.34"],
+    )
 
 
 def test_custom_source_added_by_agent_must_be_public(tmp_path, monkeypatch):
@@ -145,9 +162,23 @@ def test_custom_searxng_source_is_searched(monkeypatch):
 
     def handler(req: httpx.Request) -> httpx.Response:
         assert req.url.path == "/search" and req.url.params["format"] == "json"
-        return httpx.Response(200, json={"results": [{"title": "资金费率", "url": "https://a.example/x", "content": "摘要"}]})
+        return httpx.Response(
+            200, json={"results": [{"title": "资金费率", "url": "https://a.example/x", "content": "摘要"}]}
+        )
 
-    secrets = {CUSTOM_KEY: json.dumps([{"id": "c_1", "label": "SearX", "url": "https://searx.example.org", "kind": "searxng", "added_by": "admin"}])}
+    secrets = {
+        CUSTOM_KEY: json.dumps(
+            [
+                {
+                    "id": "c_1",
+                    "label": "SearX",
+                    "url": "https://searx.example.org",
+                    "kind": "searxng",
+                    "added_by": "admin",
+                }
+            ]
+        )
+    }
     out = _ws(secrets, handler).search("资金费率", source="custom")
     assert out["ok"] and out["results"][0]["url"] == "https://a.example/x" and "ql:citation" in out["note"]
 
@@ -186,7 +217,11 @@ def test_timeframe_parsing_and_tables():
     from quant_agent.engine.metrics import BARS_PER_YEAR
     from quant_agent.timeframes import check_timeframe, is_sub_minute, parse_timeframe_ms
 
-    assert parse_timeframe_ms("250ms") == 250 and parse_timeframe_ms("1s") == 1000 and parse_timeframe_ms("4h") == 14_400_000
+    assert (
+        parse_timeframe_ms("250ms") == 250
+        and parse_timeframe_ms("1s") == 1000
+        and parse_timeframe_ms("4h") == 14_400_000
+    )
     assert parse_timeframe_ms("10ms") is None and parse_timeframe_ms("1x") is None
     assert TIMEFRAME_MS["500ms"] == 500 and TIMEFRAME_MS.get("30m") == 1_800_000 and TIMEFRAME_MS.get("bad", 7) == 7
     assert "1s" in TIMEFRAME_MS and "bad" not in TIMEFRAME_MS
@@ -200,7 +235,11 @@ def test_binance_builds_sub_second_bars_from_trades():
     from quant_agent.exchanges.binance import BinanceAdapter
 
     t0 = 1_700_000_000_000
-    trades = [{"T": t0 + 10, "p": "100", "q": "1"}, {"T": t0 + 120, "p": "101", "q": "2"}, {"T": t0 + 760, "p": "99", "q": "1"}]
+    trades = [
+        {"T": t0 + 10, "p": "100", "q": "1"},
+        {"T": t0 + 120, "p": "101", "q": "2"},
+        {"T": t0 + 760, "p": "99", "q": "1"},
+    ]
 
     def handler(req: httpx.Request) -> httpx.Response:
         assert req.url.path == "/api/v3/aggTrades"
@@ -245,9 +284,39 @@ def test_db_cache_remember_and_stats(tmp_path):
     assert c.clear("ns") == 1
 
 
+def test_websearch_free_sources_run_in_parallel(monkeypatch):
+    import threading
+
+    monkeypatch.setenv("QAGENT_FREE_SEARCH", "1")
+    barrier = threading.Barrier(3)
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        barrier.wait(timeout=2)
+        if req.url.host == "cn.bing.com":
+            return httpx.Response(
+                200, text='<li class="b_algo"><h2><a href="https://a.example/1">A</a></h2><p>s</p></li>'
+            )
+        if req.url.host == "www.baidu.com":
+            return httpx.Response(
+                200,
+                text='<div class="result c-container" mu="https://c.example/2"><h3 class="t"><a href="https://baidu.com/link">C</a></h3><span>s</span></div>',
+            )
+        return httpx.Response(
+            200,
+            text='<a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fb.example%2F3">B</a>',
+        )
+
+    t0 = time.monotonic()
+    out = _ws({}, handler).search("btc", max_results=5, source="auto")
+    assert out["ok"] and len(out["results"]) == 3
+    assert time.monotonic() - t0 < 1.8
+
+
 def test_websearch_uses_cache(monkeypatch):
+    import os
+    import tempfile
+
     from quant_agent.data.dbcache import DbCache
-    import tempfile, os
 
     monkeypatch.setenv("QAGENT_FREE_SEARCH", "0")
     hits = []
@@ -271,8 +340,12 @@ def _lab_with_conv(tmp_path, started):
         lab.store.save(p)
         return p
 
-    tools = LabTools(backtest=lambda *a, **k: {}, market=lambda *a: {}, templates=lambda q: [],
-                     conversations={"start": lambda pid, text: started.append((pid, text)), "create": create})
+    tools = LabTools(
+        backtest=lambda *a, **k: {},
+        market=lambda *a: {},
+        templates=lambda q: [],
+        conversations={"start": lambda pid, text: started.append((pid, text)), "create": create},
+    )
     lab = StrategyLab(router=None, store=LabStore(JsonStore(tmp_path)), tools=tools)
     return lab
 
@@ -306,7 +379,9 @@ def test_relay_hops_are_capped(tmp_path):
     lab.store.save(a)
     lab.store.save(b)
     lab.store.append(a["id"], {"role": "user", "kind": "text", "content": "转发来的", "data": {"relay_hops": 3}})
-    out = lab._conversation_tools(a["id"], {"type": "object"})["send_to_conversation"].handler(conversation_id=b["id"], message="再转")
+    out = lab._conversation_tools(a["id"], {"type": "object"})["send_to_conversation"].handler(
+        conversation_id=b["id"], message="再转"
+    )
     assert not out["ok"] and "转发" in out["error"]
 
 
@@ -321,4 +396,6 @@ def test_file_pins_keep_full_text_and_read_in_pages(tmp_path):
     assert "read_pinned_file" in block and "共 12000 字" in block
     tools = lab._all_tools(p["id"])
     out = tools["read_pinned_file"].handler(pin_id=pin["id"], offset=8000, length=8000)
-    assert out["ok"] and out["text"].startswith("甲" * 1000) and out["next_offset"] is None and out["total_chars"] == 12000
+    assert (
+        out["ok"] and out["text"].startswith("甲" * 1000) and out["next_offset"] is None and out["total_chars"] == 12000
+    )

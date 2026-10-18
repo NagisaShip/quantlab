@@ -44,6 +44,7 @@ from decimal import Decimal
 from typing import Any
 
 from ..exchanges.base import Bar
+from ..exchanges.contracts import contract_type_of, is_derivative, spec_for
 from . import guards as guards_mod
 from . import trade_mgmt
 from .ledger import ZERO, InsufficientFunds, Ledger, LedgerError, dec, dstr, floor_to, is_perp, quantize
@@ -77,6 +78,17 @@ class RuntimeCost:
     price_tick: float = 0.0
     # 信号有效期（以 bar 数计）。超过有效期仍未成交的委托作废，不补成交。
     signal_ttl_bars: int = 2
+    # 撮合粒度：bar = 下一根 bar 开盘；tick = 用 OHLC 路径模拟盘中逐笔成交（若周期本身是 50ms/1s，
+    # 就等价于逐笔 / 子秒级撮合）。真实逐笔数据可直接把回测周期设为 50ms~1s。
+    execution_mode: str = "bar"
+    # 动态滑点：基础滑点 + 振幅系数 × 本根振幅；冲击成本：a + b·√(下单量/成交量) bp
+    dynamic_slippage: bool = False
+    vol_slippage: float = 0.25
+    impact_a_bps: float = 0.0
+    impact_b_bps: float = 0.0
+    # 涨跌停 / 流动性枯竭：0 = 关闭（加密现货默认无涨跌停）
+    limit_move_pct: float = 0.0
+    min_liquidity_usd: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -93,6 +105,13 @@ class RuntimeCost:
             "qty_step": self.qty_step,
             "price_tick": self.price_tick,
             "signal_ttl_bars": self.signal_ttl_bars,
+            "execution_mode": self.execution_mode,
+            "dynamic_slippage": self.dynamic_slippage,
+            "vol_slippage": self.vol_slippage,
+            "impact_a_bps": self.impact_a_bps,
+            "impact_b_bps": self.impact_b_bps,
+            "limit_move_pct": self.limit_move_pct,
+            "min_liquidity_usd": self.min_liquidity_usd,
         }
 
 
@@ -284,6 +303,7 @@ class BacktestRuntime:
         bars_by_security: dict[str, list[Bar]],
         *,
         initial_cash: float | str | Decimal = 10_000.0,
+        initial_currency: str = "USDT",
         cost: RuntimeCost | None = None,
         ctx: Context | None = None,
         risk: RiskConfig | None = None,
@@ -292,6 +312,12 @@ class BacktestRuntime:
         quote_currency: str = "USDT",
         research: dict[str, Any] | None = None,
         cost_scale: float = 1.0,
+        exchange: str = "binance",
+        margin_mode: str = "isolated",
+        position_mode: str = "one-way",
+        contract_type: str = "linear",
+        expiry_ts: int | None = None,
+        ledger_v2: bool = False,
     ) -> None:
         self.bars_by_security = bars_by_security
         # 成本压力倍数：在成交时统一乘到手续费（吃单 / 挂单）、价差、滑点与冲击成本上。
@@ -304,10 +330,18 @@ class BacktestRuntime:
         self.risk = risk or RiskConfig()
         self.run_id = run_id
         self.strategy_version_id = strategy_version_id
-        self.ledger = Ledger(base_currency=quote_currency)
+        self.exchange = (exchange or "binance").lower()
+        self.margin_mode = margin_mode
+        self.position_mode = position_mode
+        self.contract_type = contract_type
+        self.expiry_ts = expiry_ts
+        self.ledger_v2 = bool(ledger_v2)
+        self.ledger = Ledger(base_currency=quote_currency, exchange=self.exchange)
         self.initial_cash = float(dec(initial_cash))
+        self.initial_currency = (initial_currency or self.ledger.base_currency).upper()
         if dec(initial_cash) > 0:
-            self.ledger.deposit(initial_cash, ref="initial")
+            self.ledger.deposit(initial_cash, ref="initial", currency=self.initial_currency)
+        self._setup_perp_book(bars_by_security)
         self.ctx = ctx or Context(run_id=run_id, mode="backtest")
         # v2.0：策略必须能从 Context 读到自己跑的是哪个版本
         self.ctx.strategy_version_id = strategy_version_id
@@ -320,6 +354,12 @@ class BacktestRuntime:
         self.benchmark: str | None = None
         self.slippage_override: float | None = None
         self.impact_model: dict[str, Any] | None = None  # set_execution()：随下单规模变化的滑点
+        # 成本优先级：平台 UI 默认成本先注入；策略显式 set_order_cost / set_slippage 后覆盖，
+        # cost_source 会写进回测报告，避免研究者误以为代码里的声明没有生效。
+        self.cost_source: str = "platform"
+        self.cost_overrides: dict[str, float] = {}
+        # 指标缓存：key -> 整条序列（只在首次调用时算一次；每根 bar 只按当前索引取值）
+        self._indicator_cache: dict[tuple[str, str, int, str], Any] = {}
         self.rejected: list[dict[str, Any]] = []
         self.pending: list[dict[str, Any]] = []  # 市价委托：等下一根 bar 开盘
         self.open_orders: list[dict[str, Any]] = []  # 限价委托：直到成交 / 过期 / 撤销
@@ -341,6 +381,9 @@ class BacktestRuntime:
             "duplicate_events": 0,
             "insufficient_funds": 0,
             "risk_rejections": 0,
+            "limit_locked": 0,
+            "liquidity_drought": 0,
+            "tick_path_fills": 0,
         }
         self.flows_applied: list[dict[str, Any]] = []
         self._new_fills_for_callback: list[Fill] = []
@@ -366,13 +409,97 @@ class BacktestRuntime:
         # ---- 永续合约资金费 ----
         # funding_rates[合约] = [(结算时刻, 费率)]（升序）；funding_ts[合约] = 已结算到的时刻
         self.funding_rates: dict[str, list[tuple[int, Decimal]]] = {}
+        self.funding_marks: dict[str, dict[int, Decimal]] = {}
         self.funding_ts: dict[str, int] = {}
         self._funding_warned: set[str] = set()
         for key, tbl in list(self.research.items()):
             if key.startswith("funding:") and isinstance(tbl, dict):
                 self.add_funding(
-                    key.split(":", 1)[1], list(zip(tbl.get("times") or [], tbl.get("rates") or [], strict=False))
+                    key.split(":", 1)[1],
+                    list(
+                        zip(
+                            tbl.get("times") or [],
+                            tbl.get("rates") or [],
+                            tbl.get("mark_prices") or [""] * len(tbl.get("times") or []),
+                            strict=False,
+                        )
+                    ),
                 )
+
+    def _setup_perp_book(self, bars_by_security: dict[str, list[Bar]]) -> None:
+        """Enable the v2 ledger for advanced derivative modes.
+
+        Linear isolated one-way retains the legacy net-position path for
+        backward compatibility.  Cross, hedge, inverse and delivery always use
+        the v2 book so a mode switch can never silently use the wrong ledger.
+        """
+        symbols = [s for s in bars_by_security if is_derivative(s)]
+        if not symbols:
+            return
+        advanced = (
+            self.ledger_v2
+            or self.margin_mode == "cross"
+            or self.position_mode == "hedge"
+            or self.contract_type in ("inverse", "delivery")
+            or any(contract_type_of(s) in ("inverse", "delivery") for s in symbols)
+        )
+        if not advanced:
+            return
+        specs = {}
+        for symbol in symbols:
+            kind = contract_type_of(symbol)
+            specs[symbol] = spec_for(self.exchange, symbol, self.expiry_ts if kind == "delivery" else None)
+        first = specs[symbols[0]]
+        self.contract_type = first.contract_type
+        self.ledger.enable_perp_book(
+            margin_mode=self.margin_mode,
+            position_mode=self.position_mode,
+            contract_type=first.contract_type,
+            quote_ccy=self.ledger.base_currency,
+            settlement_ccy=first.settlement,
+            expiry_ts=self.expiry_ts,
+            exchange=self.exchange,
+            specs=specs,
+        )
+        for symbol in symbols:
+            self.ledger.perp_book.leverage[symbol.upper()] = self.ledger.leverage.get(symbol.upper(), Decimal(1))
+        initial_marks = {
+            symbol: bars_by_security[symbol][0].close for symbol in symbols if bars_by_security.get(symbol)
+        }
+        if initial_marks:
+            self.ledger.perp_book.mark(initial_marks)
+
+    def set_margin_mode(self, mode: str) -> None:
+        mode = str(mode).lower()
+        if mode not in ("isolated", "cross"):
+            raise ValueError("margin_mode 只能是 isolated 或 cross")
+        if self.ledger.perp_book is None:
+            symbols = [s for s in self.bars_by_security if is_derivative(s)]
+            if not symbols:
+                raise ValueError("当前运行没有衍生品标的")
+            self.margin_mode = mode
+            self._setup_perp_book(self.bars_by_security)
+            return
+        if self.ledger.perp_book.all_legs():
+            raise ValueError("已有持仓时不能切换保证金模式")
+        self.margin_mode = mode
+        self.ledger.perp_book.margin_mode = mode
+
+    def set_position_mode(self, mode: str) -> None:
+        mode = str(mode).lower()
+        if mode not in ("one-way", "hedge"):
+            raise ValueError("position_mode 只能是 one-way 或 hedge")
+        if self.ledger.perp_book is None:
+            symbols = [s for s in self.bars_by_security if is_derivative(s)]
+            if not symbols:
+                raise ValueError("当前运行没有衍生品标的")
+            self.position_mode = mode
+            self._setup_perp_book(self.bars_by_security)
+            return
+        if self.ledger.perp_book.all_legs():
+            raise ValueError("已有持仓时不能切换持仓模式")
+        self.position_mode = mode
+        self.ledger.perp_book.position_mode = mode
 
     # ------------------------------------------------------------------ 时间推进
     def advance(self, ts: int) -> None:
@@ -453,12 +580,64 @@ class BacktestRuntime:
         self.ctx.benchmark = security
 
     def set_order_cost(self, cost: dict[str, float]) -> None:
+        """策略代码显式声明成本：覆盖平台 / UI 默认值，并记录覆盖项供报告标注。"""
+        changed = False
         for key in ("taker_fee", "maker_fee", "slippage_bps", "spread_bps", "max_volume_participation", "min_notional"):
             if key in cost:
-                setattr(self.cost, key, float(cost[key]))
+                value = float(cost[key])
+                setattr(self.cost, key, value)
+                self.cost_overrides[key] = value
+                changed = True
+        if changed:
+            self.cost_source = "strategy"
 
     def set_slippage(self, bps: float) -> None:
+        """set_slippage 也是代码显式覆盖，单独标注并同步到报告。"""
         self.slippage_override = float(bps)
+        self.cost_overrides["slippage_bps"] = float(bps)
+        self.cost_source = "strategy"
+
+    # ------------------------------------------------------------------ 预计算指标
+    def indicator(self, security: str, name: str, period: int, *, field: str = "close") -> float:
+        """返回当前 bar 上的平台指标值（因果计算，预热期 NaN）。
+
+        整条序列只算一次并缓存；策略在每根 bar 调用 ``ctx.indicators.ema(...)`` 时
+        不会重复切片、重复递推。521k 根 1m 线也不会退化成 O(n²)。
+        """
+        if security not in self.bars_by_security:
+            raise KeyError(f"未知标的：{security}")
+        period = int(period)
+        if period <= 0:
+            raise ValueError("period 必须大于 0")
+        name = name.lower()
+        key = (security, name, period, field)
+        arr = self._indicator_cache.get(key)
+        if arr is None:
+            import numpy as np
+
+            from . import indicators as I
+
+            bars = self.bars_by_security[security]
+            if name in ("ema", "sma"):
+                vals = [float(getattr(b, field)) for b in bars]
+                values = I.ema(vals, period) if name == "ema" else I.sma(vals, period)
+            elif name == "atr":
+                values = I.atr(
+                    [float(b.high) for b in bars],
+                    [float(b.low) for b in bars],
+                    [float(b.close) for b in bars],
+                    period,
+                )
+            elif name == "rsi":
+                values = I.rsi([float(b.close) for b in bars], period)
+            else:
+                raise ValueError(f"不支持的指标：{name}（可用 ema / sma / atr / rsi）")
+            arr = np.asarray(values, dtype=float)
+            self._indicator_cache[key] = arr
+        idx = self._index.get(security, -1)
+        if idx < 0:
+            return float("nan")
+        return float(arr[idx])
 
     def set_impact_model(self, tbl: dict[str, Any]) -> None:
         m = tbl.get("cost_model") or {}
@@ -540,26 +719,45 @@ class BacktestRuntime:
     # ------------------------------------------------------------------ 永续合约
     def set_leverage(self, security: str, leverage: float) -> None:
         if not is_perp(security):
-            raise ValueError(f"{security} 不是永续合约（永续写成 BTC/USDT:PERP），现货不能加杠杆")
+            raise ValueError(f"{security} 不是永续合约（线性 :PERP / 反向 :INVERSE / 交割 :DELIVERY），现货不能加杠杆")
         try:
             lev = self.ledger.set_leverage(security, leverage)
         except LedgerError as exc:
             raise ValueError(str(exc)) from exc
+        if self.ledger.perp_book is not None:
+            legs = [x for x in self.ledger.perp_book.all_legs() if x.instrument.upper() == security.upper()]
+            if legs and any(x.leverage != lev for x in legs):
+                self.log("info", f"{security} 杠杆改为 {dstr(lev)} 倍：对之后的开仓生效，现有持仓保证金不变")
+            return
         pos = self.ledger.perps.get(security)
         if pos is not None and pos.qty and pos.leverage != lev:
             self.log("info", f"{security} 杠杆改为 {dstr(lev)} 倍：对之后的开仓生效，现有持仓保证金不变")
 
-    def add_funding(self, security: str, rows: list[tuple[int, Any]]) -> int:
-        """并入资金费率（结算时刻, 费率）。已有的时刻不重复加入。返回新增条数。"""
+    def add_funding(self, security: str, rows: list[Any]) -> int:
+        """并入资金费率事件。
+
+        兼容两种行：``(settlement_ts, rate)`` 与 ``(settlement_ts, rate, mark_price)``。
+        标记价是资金费结算的名义价值基准；缺失时运行时会回退到 bar 开盘/收盘并显式警告。
+        """
         cur = self.funding_rates.setdefault(security, [])
+        marks = self.funding_marks.setdefault(security, {})
         known = {t for t, _ in cur}
         added = 0
-        for ts, rate in rows:
-            ts = int(ts)
+        for row in rows:
+            if not row:
+                continue
+            ts = int(row[0])
+            rate = row[1] if len(row) > 1 else None
+            mark = row[2] if len(row) > 2 else None
             if ts in known or rate is None:
                 continue
             cur.append((ts, dec(rate)))
             known.add(ts)
+            try:
+                if mark not in (None, "", "0", 0):
+                    marks[ts] = dec(mark)
+            except (TypeError, ValueError):
+                pass
             added += 1
         if added:
             cur.sort()
@@ -574,8 +772,77 @@ class BacktestRuntime:
             return None
         return {"ts": rows[i][0], "rate": float(rows[i][1])}
 
+    def _settle_delivery(self) -> list[OrderResult]:
+        book = self.ledger.perp_book
+        if book is None or not book.expiry_ts:
+            return []
+        out: list[OrderResult] = []
+        for instrument in {x.instrument for x in book.all_legs()}:
+            spec = book.spec(instrument)
+            if spec.contract_type != "delivery":
+                continue
+            bar = self.current_bar(instrument)
+            if bar is None or bar.close_time < (book.expiry_ts or 0):
+                continue
+            qty = sum((x.qty for x in book.all_legs() if x.instrument == instrument), ZERO)
+            pnl = book.settle_expiry(
+                self.ledger,
+                bar.close,
+                ts=bar.close_time,
+                ref=f"delivery:{instrument}:{bar.close_time}",
+                instrument=instrument,
+            )
+            self.ledger.liquidation_loss = book.liquidation_loss
+            note = f"交割到期，按结算价 {dstr(dec(bar.close))} 平仓；已实现 {dstr(pnl)} {self.ledger.base_currency}"
+            self.log("info", f"{instrument} {note}")
+            out.append(
+                OrderResult(
+                    ok=True,
+                    security=instrument,
+                    side="sell",
+                    filled_amount=float(qty),
+                    filled_price=float(bar.close),
+                    message=note,
+                )
+            )
+        if not any(book.spec(x.instrument).contract_type == "delivery" for x in book.all_legs()):
+            book.expired = True
+        return out
+
     def _settle_funding(self, *, at_open: bool) -> None:
-        """结算 (上次结算点, upto] 之间的资金费。标记价用当根开盘（开盘前的结算点）或收盘。"""
+        """Settle all funding points in (last, upto], using the recorded mark price."""
+        if self.ledger.perp_book is not None:
+            book = self.ledger.perp_book
+            instruments = {leg.instrument for leg in book.all_legs()}
+            for sec in instruments:
+                spec = book.spec(sec)
+                if spec.funding_interval_hours <= 0:
+                    continue
+                rows = self.funding_rates.get(sec)
+                if not rows:
+                    if sec not in self._funding_warned:
+                        self._funding_warned.add(sec)
+                        self.log("warning", f"{sec} 没有资金费率数据，资金费按 0 计——资金费套利类策略的结果不可信")
+                    continue
+                last = self.funding_ts.get(sec, 0)
+                bar = self.current_bar(sec)
+                if bar is None:
+                    continue
+                upto = bar.open_time if at_open else bar.close_time
+                mark = bar.open if at_open else bar.close
+                for ts, rate in rows:
+                    if ts <= last or ts > upto:
+                        continue
+                    actual_mark = self.funding_marks.get(sec, {}).get(ts, mark)
+                    delta = self.ledger.settle_funding(
+                        sec, rate=rate, mark_price=actual_mark, ts=ts, ref=f"funding:{sec}:{ts}"
+                    )
+                    trip = self._open_trips.get(sec)
+                    if trip is not None:
+                        trip.realized += delta
+                    last = ts
+                self.funding_ts[sec] = max(self.funding_ts.get(sec, 0), last)
+            return
         for sec, pos in list(self.ledger.perps.items()):
             rows = self.funding_rates.get(sec)
             if not rows:
@@ -593,17 +860,135 @@ class BacktestRuntime:
                 if ts <= last or ts > upto:
                     continue
                 if pos.qty:
+                    actual_mark = self.funding_marks.get(sec, {}).get(ts, mark)
                     delta = self.ledger.settle_funding(
-                        sec, rate=rate, mark_price=mark, ts=ts, ref=f"funding:{sec}:{ts}"
+                        sec, rate=rate, mark_price=actual_mark, ts=ts, ref=f"funding:{sec}:{ts}"
                     )
                     trip = self._open_trips.get(sec)
                     if trip is not None:
-                        trip.realized += delta  # 永续的完整交易收益含资金费
+                        trip.realized += delta
                 last = ts
             self.funding_ts[sec] = max(self.funding_ts.get(sec, 0), last)
 
+    def _v2_liquidation_fill(self, detail: dict[str, Any], result: Any, ts: int, ref: str) -> Fill:
+        settlement = detail.get("settlement_ccy") or self.ledger.base_currency
+        exit_price = dec(detail.get("exit_price") or 0)
+        pnl = dec(detail.get("pnl") or 0)
+        quote_pnl = pnl * (exit_price if settlement != self.ledger.base_currency else Decimal(1))
+        fee_quote = result.fee if len(result.details) == 1 else ZERO
+        return Fill(
+            ts=ts,
+            security=detail["instrument"],
+            side="sell" if detail.get("side") == "long" else "buy",
+            amount=dec(detail.get("qty") or 0),
+            price=exit_price,
+            fee=ZERO,
+            reason="liquidation",
+            note=f"强平：{detail.get('reason') or result.reason}；MMR {detail.get('mmr_tier') or '-'}",
+            realized_pnl=quote_pnl,
+            fee_currency=settlement,
+            fee_value=fee_quote,
+            fill_id=ref,
+            source="liquidation",
+        )
+
     def _check_liquidations(self) -> list[OrderResult]:
-        """逐仓强平：多头最低价、空头最高价触及强平价 → 以强平价平掉全部，损失全部保证金。"""
+        """Check isolated leg stops or the account-wide cross liquidation trigger."""
+        book = self.ledger.perp_book
+        if book is not None:
+            if not book.all_legs():
+                return []
+            out: list[OrderResult] = []
+            prices: dict[str, Decimal] = {}
+            for leg in book.all_legs():
+                bar = self.current_bar(leg.instrument)
+                if bar is not None:
+                    prices[leg.instrument] = dec(bar.close)
+                    leg.last_price = dec(bar.close)
+            if book.cross:
+                stress: dict[str, Decimal] = {}
+                for leg in book.all_legs():
+                    bar = self.current_bar(leg.instrument)
+                    if bar is None:
+                        continue
+                    stress[leg.instrument] = dec(bar.low if leg.side == "long" else bar.high)
+                if not stress or not book.liquidatable(self.ledger, stress):
+                    return []
+                ts = max(
+                    (
+                        self.current_bar(x.instrument).close_time
+                        for x in book.all_legs()
+                        if self.current_bar(x.instrument)
+                    ),
+                    default=self.now,
+                )
+                result = book.liquidate_cross_all(
+                    self.ledger,
+                    stress,
+                    ts=ts,
+                    ref=f"{self.run_id}:cross-liq:{ts}",
+                    reason="全仓账户权益低于联合维持保证金；K 线不利极值触发",
+                    fee_bps=Decimal(str(book.spec(book.all_legs()[0].instrument).liquidation_fee_bps)),
+                )
+                self.ledger.liquidation_loss = book.liquidation_loss
+                self.counters["liquidations"] = self.counters.get("liquidations", 0) + 1
+                for i, detail in enumerate(result.details):
+                    fill = self._v2_liquidation_fill(detail, result, ts, f"{self.run_id}:cross-liq:{ts}:{i}")
+                    self.fills.append(fill)
+                    self._new_fills_for_callback.append(fill)
+                    out.append(
+                        OrderResult(
+                            ok=True,
+                            security=detail["instrument"],
+                            side=fill.side,
+                            filled_amount=float(fill.amount),
+                            filled_price=float(fill.price),
+                            message=fill.note,
+                        )
+                    )
+                self.log("error", f"全仓联合强平：{result.to_dict()}")
+                return out
+            for leg in list(book.all_legs()):
+                bar = self.current_bar(leg.instrument)
+                if bar is None:
+                    continue
+                liq = leg.liquidation_price(book.spec(leg.instrument))
+                hit = (leg.side == "long" and dec(bar.low) <= liq) or (leg.side == "short" and dec(bar.high) >= liq)
+                if not hit or liq <= 0:
+                    continue
+                spec = book.spec(leg.instrument)
+                slip = (leg.liquidation_slippage_bps or dec(spec.liquidation_slippage_bps)) / Decimal(10000)
+                exit_px = liq * (Decimal(1) - slip if leg.side == "long" else Decimal(1) + slip)
+                qty = leg.qty
+                result = book.liquidate(
+                    self.ledger,
+                    leg,
+                    price=max(exit_px, Decimal("0.00000001")),
+                    ts=bar.close_time,
+                    ref=f"{self.run_id}:liq:{leg.instrument}:{bar.close_time}",
+                    mark_price=bar.close,
+                    reason=f"K 线不利极值触及强平价 {dstr(liq)}；MMR {leg.mmr_tier or '-'}",
+                )
+                self.ledger.liquidation_loss = book.liquidation_loss
+                self.counters["liquidations"] = self.counters.get("liquidations", 0) + 1
+                for i, detail in enumerate(result.details):
+                    fill = self._v2_liquidation_fill(
+                        detail, result, bar.close_time, f"{self.run_id}:liq:{leg.instrument}:{bar.close_time}:{i}"
+                    )
+                    self.fills.append(fill)
+                    self._new_fills_for_callback.append(fill)
+                    out.append(
+                        OrderResult(
+                            ok=True,
+                            security=leg.instrument,
+                            side=fill.side,
+                            filled_amount=float(qty),
+                            filled_price=float(fill.price),
+                            message=fill.note,
+                        )
+                    )
+                self.log("error", f"{leg.instrument} 逐腿强平：{result.to_dict()}")
+            return out
         out: list[OrderResult] = []
         for sec, pos in list(self.ledger.perps.items()):
             if not pos.qty:
@@ -617,14 +1002,38 @@ class BacktestRuntime:
                 continue
             side = "sell" if pos.qty > 0 else "buy"
             qty = abs(pos.qty)
-            px = self._round_price(liq)
+            spec = spec_for(self.exchange, sec)
+            slip_bps = float(pos.liquidation_slippage_bps or spec.liquidation_slippage_bps)
+            fee_bps = float(pos.liquidation_fee_bps or spec.liquidation_fee_bps)
+            q0 = abs(pos.qty)
+            adverse = (
+                liq * (Decimal(1) - Decimal(str(slip_bps)) / Decimal(10000))
+                if pos.qty > 0
+                else liq * (Decimal(1) + Decimal(str(slip_bps)) / Decimal(10000))
+            )
+            px = self._round_price(max(adverse, Decimal("0.00000001")))
             ts = bar.close_time
             self.order_seq += 1
             fill_id = f"{self.run_id}:liq:{sec}:{bar.close_time}"
             margin = pos.margin
-            booking = self.ledger.liquidate(sec, price=px, ts=ts, ref=fill_id)
+            mark = pos.last_price or liq
+            fee = q0 * liq * Decimal(str(fee_bps)) / Decimal(10000)
+            booking = self.ledger.liquidate(
+                sec,
+                price=px,
+                ts=ts,
+                ref=fill_id,
+                fee=fee,
+                slippage_bps=slip_bps,
+                mark_price=mark,
+                reason=f"K 线 high/low 触及强平价；MMR 档位 {pos.mmr_tier or spec.tier_for_notional(float(q0 * liq))['label']}",
+            )
             self.counters["liquidations"] = self.counters.get("liquidations", 0) + 1
-            note = f"触及强平价 {dstr(px)}，损失全部逐仓保证金 {dstr(quantize(margin, Decimal('0.01')))}"
+            note = (
+                f"触及强平价 {dstr(liq)}，按滑点后 {dstr(px)} 强平；损失保证金 "
+                f"{dstr(quantize(margin, Decimal('0.01')))}，强平费 {dstr(quantize(booking.fee, Decimal('0.01')))}"
+                f"；MMR 档位 {pos.mmr_tier or spec.tier_for_notional(float(q0 * liq))['label']}"
+            )
             if self.fill_mode == "external":
                 note += "（交易所模拟盘的强平由交易所执行，这里按强平价估算记账，以对账结果为准）"
             self._track_round_trip(sec, side, ts, qty * px, booking, reason="liquidation")
@@ -777,8 +1186,16 @@ class BacktestRuntime:
 
     # ------------------------------------------------------------------ 交易
     def effective_cost(self) -> dict[str, Any]:
-        """报告里的成本模型：策略设置后的成本，再乘上压力倍数（倍数为 1 时与原值相同）。"""
+        """报告里的成本模型：代码覆盖后的成本，再乘上压力倍数（倍数为 1 时与原值相同）。"""
         out = self.cost.to_dict()
+        out["cost_source"] = self.cost_source
+        if self.cost_overrides:
+            out["strategy_cost_overrides"] = dict(self.cost_overrides)
+        if self.slippage_override is not None:
+            out["slippage_bps"] = self.slippage_override
+            out["slippage_override"] = self.slippage_override
+        if self.impact_model is not None:
+            out["impact_model"] = dict(self.impact_model)
         if self.cost_scale != 1.0:
             out["cost_scale"] = self.cost_scale
             for k in ("taker_fee", "maker_fee", "slippage_bps", "spread_bps"):
@@ -791,15 +1208,51 @@ class BacktestRuntime:
         """实际收取的手续费率（含成本压力倍数）。"""
         return dec(rate) * dec(self.cost_scale)
 
-    def _exec_price(self, base: float | Decimal, side: str, participation: float | None = None) -> Decimal:
+    def _exec_price(
+        self,
+        base: float | Decimal,
+        side: str,
+        participation: float | None = None,
+        *,
+        bar: Bar | None = None,
+    ) -> Decimal:
+        """成交价 = 基准价 ± 半价差 + 固定滑点 + 动态滑点 + 冲击成本。
+
+        动态滑点按本根振幅放大；冲击成本优先用执行方案校准的 a/b，否则用回测规格里的
+        a + b·√(参与率)。这样大单在低成交量 bar 上会自然得到更差的价格，而不是永远只扣固定 bp。
+        """
         slippage = self.slippage_override if self.slippage_override is not None else self.cost.slippage_bps
         adj = dec(self.cost.spread_bps) / 2 + dec(slippage)
+        p = max(0.0, float(participation or 0.0))
         if self.impact_model is not None and participation is not None:
             # 执行方案的成本曲线已经包含价差与冲击（不含手续费），替代固定的价差 + 滑点
-            adj = dec(max(self.impact_model["a"] + self.impact_model["b"] * math.sqrt(max(participation, 0.0)), 0.0))
-        adj = adj * dec(self.cost_scale)
-        p = dec(base) * (1 + adj / 10_000) if side == "buy" else dec(base) * (1 - adj / 10_000)
-        return self._round_price(p)
+            adj = dec(max(self.impact_model["a"] + self.impact_model["b"] * math.sqrt(p), 0.0))
+        else:
+            if self.cost.impact_a_bps or self.cost.impact_b_bps:
+                adj += dec(self.cost.impact_a_bps + self.cost.impact_b_bps * math.sqrt(p))
+        if self.cost.dynamic_slippage and bar is not None and bar.open > 0:
+            rng_bps = max(0.0, (bar.high - bar.low) / bar.open * 10_000)
+            adj += dec(rng_bps * max(0.0, self.cost.vol_slippage))
+        adj = max(adj, 0) * dec(self.cost_scale)
+        out = dec(base) * (1 + adj / 10_000) if side == "buy" else dec(base) * (1 - adj / 10_000)
+        return self._round_price(out)
+
+    def _tick_base_price(self, bar: Bar, side: str, participation: float = 0.0) -> Decimal:
+        """用 OHLC 路径近似盘中逐笔成交价（不是未来数据：成交发生在下一根 bar 的路径里）。
+
+        路径按阳线 / 阴线选择，再按参与率向最不利的一端偏移。把回测周期设为 50ms~1s 时，
+        输入本身就是逐笔 / 子秒级 bar，撮合粒度也会随周期自动变细。
+        """
+        o, h, lo, c = float(bar.open), float(bar.high), float(bar.low), float(bar.close)
+        path = (o, lo, h, c) if c >= o else (o, h, lo, c)
+        weights = (0.35, 0.2, 0.3, 0.15)
+        vwap = sum(x * w for x, w in zip(path, weights, strict=False))
+        p = min(1.0, max(0.0, float(participation)))
+        if side == "buy":
+            vwap += (h - vwap) * p * 0.5
+        else:
+            vwap -= (vwap - lo) * p * 0.5
+        return self._round_price(dec(max(vwap, 1e-12)))
 
     def _round_price(self, p: Decimal) -> Decimal:
         tick = dec(self.cost.price_tick) if self.cost.price_tick else PRICE_STEP
@@ -825,7 +1278,13 @@ class BacktestRuntime:
         need = dec(amount) * dec(price) * (1 + self._fee_rate(self.cost.taker_fee))
         return need <= self.ledger.cash()
 
-    def _held(self, security: str) -> Decimal:
+    def _held(self, security: str, position_side: str = "") -> Decimal:
+        book = self.ledger.perp_book
+        if book is not None and is_derivative(security):
+            legs = [x for x in book.all_legs() if x.instrument.upper() == security.upper()]
+            if position_side:
+                return sum((x.signed_qty for x in legs if x.side == position_side.lower()), ZERO)
+            return sum((x.signed_qty for x in legs), ZERO) + self._ext_qty.get(security, ZERO)
         if is_perp(security):
             p = self.ledger.perps.get(security)
             return (p.qty if p else ZERO) + self._ext_qty.get(security, ZERO)
@@ -833,25 +1292,43 @@ class BacktestRuntime:
         # 交易所模拟盘：已送出未回报的委托按预期计入，避免同一目标重复下单
         return (h.qty if h else ZERO) + self._ext_qty.get(security, ZERO)
 
-    def _projected_amount(self, security: str) -> Decimal:
+    def _projected_amount(self, security: str, position_side: str = "") -> Decimal:
         """当前持仓 + 已委托未成交的净数量。委托排队时用它判断"还要不要再调"。"""
-        amount = self._held(security)
+        amount = self._held(security, position_side)
         for item in self.pending:
-            if item["security"] == security:
+            if item["security"] == security and (not position_side or item.get("req").position_side == position_side):
                 amount += item["delta"]
         return amount
 
-    @staticmethod
-    def _target_amount(req: OrderRequest, *, held: Decimal, price: Decimal, equity: Decimal) -> Decimal:
-        """把下单意图换算成目标数量（Decimal）。"""
+    def _target_amount(self, req: OrderRequest, *, held: Decimal, price: Decimal, equity: Decimal) -> Decimal:
+        """把下单意图换算成目标数量（Decimal），并计入合约面值。"""
+        spec = None
+        book = self.ledger.perp_book
+        if is_derivative(req.security):
+            spec = (
+                book.spec(req.security) if book is not None else spec_for(self.exchange, req.security, self.expiry_ts)
+            )
+        mult = dec(spec.contract_multiplier) if spec is not None else Decimal(1)
         if req.target_kind == "percent_target":
-            return (equity * dec(req.target_value)) / price if price else held
+            if not price:
+                return held
+            if spec is not None and spec.contract_type == "inverse":
+                return (equity * dec(req.target_value)) / mult
+            return (equity * dec(req.target_value)) / (price * mult)
         if req.target_kind == "value_target":
-            return dec(req.target_value) / price if price else held
+            if not price:
+                return held
+            if spec is not None and spec.contract_type == "inverse":
+                return dec(req.target_value) / mult
+            return dec(req.target_value) / (price * mult)
         if req.target_kind == "amount_target":
             return dec(req.target_value)
         if req.target_kind == "value":
-            return held + (dec(req.target_value) / price if price else ZERO)
+            if not price:
+                return held
+            if spec is not None and spec.contract_type == "inverse":
+                return held + dec(req.target_value) / mult
+            return held + dec(req.target_value) / (price * mult)
         return held + (dec(req.amount) if req.side == "buy" else -dec(req.amount))
 
     def _threshold(self, equity: Decimal) -> Decimal:
@@ -992,13 +1469,18 @@ class BacktestRuntime:
         return n
 
     # ------------------------------------------------------------------ 每根新 bar 的执行阶段
+    def _has_derivative_positions(self) -> bool:
+        if self.ledger.perp_book is not None:
+            return bool(self.ledger.perp_book.all_legs())
+        return bool(self.ledger.perps)
+
     def execute(self) -> list[OrderResult]:
-        """新 bar 到来时的执行阶段：开盘前的资金费 → 开盘撮合上一根的市价委托 → 强平 → 盘中资金费
-        → 限价挂单 → 止损止盈。"""
-        if self.funding_rates or self.ledger.perps:
+        """新 bar 到来时的执行阶段：资金费 → 开盘撮合 → 到期/强平 → 限价/保护单。"""
+        if self.funding_rates or self._has_derivative_positions():
             self._settle_funding(at_open=True)
         out = self.execute_pending()
-        if self.ledger.perps:
+        if self._has_derivative_positions():
+            out += self._settle_delivery()
             out += self._check_liquidations()
             self._settle_funding(at_open=False)
         out += self._match_limits()
@@ -1159,7 +1641,8 @@ class BacktestRuntime:
         跳空越过 → 按开盘价；盘中触及 → 按止损/止盈价；同一根同时触及止损和止盈 → 保守假设止损先触发。
         """
         results: list[OrderResult] = []
-        for security, held_qty, avg in trade_mgmt.positions(self):
+        for position_key, held_qty, avg in trade_mgmt.positions(self):
+            security, _, position_side = position_key.partition("|")
             short = held_qty < 0
             stops, takes = trade_mgmt.exit_levels(self, security, held_qty, avg)
             if not stops and not takes:
@@ -1200,6 +1683,7 @@ class BacktestRuntime:
                 reason=hit,
                 target_kind="amount_target",
                 target_value=0.0,
+                position_side=position_side,
             )
             sig = self._make_signal(req, bar=bar)
             self._register(sig)
@@ -1237,16 +1721,53 @@ class BacktestRuntime:
     ) -> OrderResult:
         security = req.security
         ledger = self.ledger
-        held = self._held(security)
+        held = self._held(security, req.position_side)
         if bar.volume <= 0:
             return self._reject(req, f"{security} 成交 bar 的成交量为 0，委托作废", code="NOT_TRADABLE", sig=sig)
+        # 涨跌停 / 一字板：加密现货默认关闭（limit_move_pct=0），股票或模拟市场可显式开启。
+        if self.cost.limit_move_pct > 0:
+            bars = self.bars_by_security.get(security) or []
+            idx = self._index.get(security, -1)
+            prev = bars[idx - 1] if idx > 0 else None
+            if prev is not None and prev.close > 0:
+                move = (bar.open / prev.close) - 1.0
+                locked = bar.high <= bar.low and abs(move) >= self.cost.limit_move_pct - 1e-9
+                if locked and ((move > 0 and req.side == "buy") or (move < 0 and req.side == "sell")):
+                    self.counters["limit_locked"] += 1
+                    return self._reject(
+                        req,
+                        f"{security} 触及{'涨停' if move > 0 else '跌停'}且无流动性，{req.side} 委托无法成交",
+                        code="LIMIT_LOCKED",
+                        sig=sig,
+                    )
+        if self.cost.min_liquidity_usd > 0 and bar.volume * float(base_price) < self.cost.min_liquidity_usd:
+            self.counters["liquidity_drought"] += 1
+            return self._reject(
+                req,
+                f"{security} 本根流动性不足（成交额约 {bar.volume * float(base_price):,.0f}，"
+                f"低于下限 {self.cost.min_liquidity_usd:,.0f}）",
+                code="LIQUIDITY_DROUGHT",
+                sig=sig,
+            )
+        if at_open and self.cost.execution_mode == "tick" and bar.high > bar.low:
+            est_part = abs(float(req.amount or 0.0)) / bar.volume if bar.volume else 0.0
+            base_price = self._tick_base_price(bar, req.side, est_part)
+            self.counters["tick_path_fills"] += 1
         ledger.mark({security: base_price})
         equity = ledger.equity()
 
         target = self._target_amount(req, held=held, price=base_price, equity=equity)
         delta = target - held
         threshold = self._threshold(equity)
-        if not skip_tolerance and abs(delta) * base_price < threshold:
+        tolerance_spec = (
+            ledger.perp_book.spec(security) if ledger.perp_book is not None and is_derivative(security) else None
+        )
+        tolerance_notional = abs(delta) * base_price
+        if tolerance_spec is not None:
+            tolerance_notional = abs(delta) * dec(tolerance_spec.contract_multiplier)
+            if tolerance_spec.contract_type != "inverse":
+                tolerance_notional *= base_price
+        if not skip_tolerance and tolerance_notional < threshold:
             if at_open:
                 self.log("info", f"{security} 开盘时调仓差额已低于容差，委托不成交")
             return self._tolerance_result(req, delta, base_price, threshold, sig)
@@ -1255,8 +1776,8 @@ class BacktestRuntime:
         if liquidity == "maker":
             exec_price = self._round_price(base_price)
         else:
-            part = float(abs(delta)) / bar.volume if self.impact_model is not None and bar.volume else None
-            exec_price = self._exec_price(base_price, side, part)
+            part = float(abs(delta)) / bar.volume if bar.volume else 0.0
+            exec_price = self._exec_price(base_price, side, part, bar=bar)
             if price_cap is not None:
                 exec_price = min(exec_price, price_cap) if side == "buy" else max(exec_price, price_cap)
         rate = self._fee_rate(self.cost.maker_fee if liquidity == "maker" else self.cost.taker_fee)
@@ -1265,7 +1786,7 @@ class BacktestRuntime:
         explicit = req.target_kind in ("", "amount", "amount_target", "value", "value_target")
         notes: list[str] = []
         partial = False
-        perp = is_perp(security)
+        perp = is_derivative(security)
         # 永续：反向成交先平掉现有持仓（closing），超出部分才是新开仓；现货的买入就是开仓
         closing = min(qty, abs(held)) if perp and held and (held > 0) != (delta > 0) else ZERO
         opens = (qty > closing) if perp else side == "buy"
@@ -1321,7 +1842,12 @@ class BacktestRuntime:
 
         # ---- 成交量占比上限（真实的部分成交）----
         max_qty = floor_to(dec(bar.volume) * dec(self.cost.max_volume_participation), step)
-        if max_qty > 0 and qty > max_qty:
+        if max_qty <= 0:
+            self.counters["liquidity_drought"] += 1
+            return self._reject(
+                req, f"{security} 本根成交量不足以成交一个最小数量步长，委托作废", code="LIQUIDITY_DROUGHT", sig=sig
+            )
+        if qty > max_qty:
             qty = max_qty
             partial = True
             notes.append(f"受单根 bar 成交量占比 {self.cost.max_volume_participation:.0%} 限制，未成交部分作废")
@@ -1330,12 +1856,20 @@ class BacktestRuntime:
         fee_ccy_mode = self.cost.fee_currency
         if perp:
             if qty > closing:
-                pos = ledger.perps.get(security)
+                book = ledger.perp_book
+                spec = book.spec(security) if book is not None else spec_for(self.exchange, security, self.expiry_ts)
                 lev = ledger.leverage.get(security, Decimal(1))
-                per_unit = exec_price / lev + exec_price * rate
-                avail = ledger.cash() + self._ext_cash
-                if closing and pos is not None:
-                    avail += ledger._release_preview(pos, closing, exec_price)
+                mult = dec(spec.contract_multiplier)
+                fee_unit = (mult / exec_price if spec.contract_type == "inverse" else mult * exec_price) * rate
+                if book is not None:
+                    per_unit = book.margin_for(security, Decimal(1), exec_price) + fee_unit
+                    avail = book.available(ledger) if book.cross else ledger.cash(spec.settlement)
+                else:
+                    per_unit = exec_price / lev + exec_price * rate
+                    avail = ledger.cash() + self._ext_cash
+                    pos = ledger.perps.get(security)
+                    if closing and pos is not None:
+                        avail += ledger._release_preview(pos, closing, exec_price)
                 afford = floor_to(max(ZERO, avail) / per_unit, step) if per_unit > 0 else ZERO
                 if qty - closing > afford:
                     if req.target_kind == "percent_target":
@@ -1413,17 +1947,29 @@ class BacktestRuntime:
                 perp=perp,
                 open_qty=max(ZERO, qty - closing),
                 market_price=base_price,
+                position_side=req.position_side,
             )
 
-        notional = qty * exec_price
         base_ccy, quote_ccy = ([*security.split("/"), "USDT"])[:2]
         quote_ccy = quote_ccy.partition(":")[0]
         if perp:
-            fee, fee_ccy = quantize(notional * rate, FEE_STEP), quote_ccy.upper()
-        elif side == "buy" and fee_ccy_mode == "received":
-            fee, fee_ccy = quantize(qty * rate, FEE_STEP), base_ccy.upper()
+            spec = (
+                ledger.perp_book.spec(security)
+                if ledger.perp_book is not None
+                else spec_for(self.exchange, security, self.expiry_ts)
+            )
+            mult = dec(spec.contract_multiplier)
+            notional = qty * mult if spec.contract_type == "inverse" else qty * mult * exec_price
+            if spec.contract_type == "inverse":
+                fee, fee_ccy = quantize(notional * rate / exec_price, FEE_STEP), spec.settlement.upper()
+            else:
+                fee, fee_ccy = quantize(notional * rate, FEE_STEP), spec.settlement.upper()
         else:
-            fee, fee_ccy = quantize(notional * rate, FEE_STEP), quote_ccy.upper()
+            notional = qty * exec_price
+            if side == "buy" and fee_ccy_mode == "received":
+                fee, fee_ccy = quantize(qty * rate, FEE_STEP), base_ccy.upper()
+            else:
+                fee, fee_ccy = quantize(notional * rate, FEE_STEP), quote_ccy.upper()
 
         self.order_seq += 1
         fill_id = (
@@ -1438,8 +1984,28 @@ class BacktestRuntime:
         )
         try:
             if perp:
+                spec = (
+                    ledger.perp_book.spec(security)
+                    if ledger.perp_book is not None
+                    else spec_for(self.exchange, security, self.expiry_ts)
+                )
+                mult = dec(spec.contract_multiplier)
+                quote_notional = qty * mult if spec.contract_type == "inverse" else qty * mult * exec_price
+                tier = spec.tier_for_notional(float(quote_notional))
                 booking = ledger.perp_trade(
-                    instrument=security, side=side, qty=qty, price=exec_price, fee=fee, ts=ts, ref=fill_id
+                    instrument=security,
+                    side=side,
+                    qty=qty,
+                    price=exec_price,
+                    fee=fee,
+                    ts=ts,
+                    ref=fill_id,
+                    mmr=tier["mmr"],
+                    mmr_tier=tier["label"],
+                    liquidation_fee_bps=spec.liquidation_fee_bps,
+                    liquidation_slippage_bps=spec.liquidation_slippage_bps,
+                    position_side=req.position_side,
+                    leverage=ledger.leverage.get(security, Decimal(1)),
                 )
             else:
                 booking = ledger.trade(
@@ -1462,9 +2028,19 @@ class BacktestRuntime:
             ts,
             notional,
             booking,
-            opened=(qty - closing) * exec_price if perp else None,
+            opened=(
+                (qty - closing)
+                * (
+                    dec(ledger.perp_book.spec(security).contract_multiplier)
+                    if ledger.perp_book and ledger.perp_book.spec(security).contract_type == "inverse"
+                    else exec_price
+                )
+                if perp
+                else None
+            ),
             flipped=perp and closing > 0 and closing == abs(held) and qty > closing,
             reason=req.reason,
+            position_side=req.position_side,
         )
         day = _day(bar.close_time)
         self.trades_per_day[day] = self.trades_per_day.get(day, 0) + 1
@@ -1528,8 +2104,9 @@ class BacktestRuntime:
         perp: bool = False,
         open_qty: Decimal = ZERO,
         market_price: Decimal | None = None,
+        position_side: str = "",
     ) -> OrderResult:
-        held = self._held(req.security)
+        held = self._held(req.security, position_side)
         if req.security in self.protects and held and (held > 0) != (side == "buy"):
             trade_mgmt.cancel_protect(self, req.security)  # 平台自己减仓 / 平仓：先撤交易所上的保护止损
         self.order_seq += 1
@@ -1558,6 +2135,19 @@ class BacktestRuntime:
                     "open_qty": dstr(open_qty),
                     "opens": open_qty > 0,
                     "leverage": dstr(self.ledger.leverage.get(req.security, Decimal(1))),
+                    "position_side": position_side,
+                    "margin_mode": self.margin_mode,
+                    "position_mode": self.position_mode,
+                    "contract_type": (
+                        self.ledger.perp_book.spec(req.security).contract_type
+                        if self.ledger.perp_book is not None
+                        else self.contract_type
+                    ),
+                    "expiry_ts": (
+                        self.ledger.perp_book.spec(req.security).expiry_ts
+                        if self.ledger.perp_book is not None
+                        else self.expiry_ts
+                    ),
                 }
             )
         else:
@@ -1583,7 +2173,15 @@ class BacktestRuntime:
             # 永续：只有新开仓部分占用保证金；平仓释放的保证金等回报到了再用（保守）
             open_q = dec(intent.get("open_qty") or 0)
             lev = dec(intent.get("leverage") or 1)
-            self._ext_cash -= sign * (open_q * px / lev + qty * px * rate)
+            spec = (
+                self.ledger.perp_book.spec(sec)
+                if self.ledger.perp_book is not None
+                else spec_for(self.exchange, sec, self.expiry_ts)
+            )
+            mult = dec(spec.contract_multiplier)
+            margin = open_q * mult / (px * lev) if spec.contract_type == "inverse" else open_q * mult * px / lev
+            fee_quote = qty * mult * rate / px if spec.contract_type == "inverse" else qty * mult * px * rate
+            self._ext_cash -= sign * (margin + fee_quote)
             self._ext_qty[sec] = self._ext_qty.get(sec, ZERO) + sign * (qty if intent["side"] == "buy" else -qty)
         elif intent["side"] == "buy":
             self._ext_cash -= sign * qty * px * (1 + rate)
@@ -1673,14 +2271,37 @@ class BacktestRuntime:
             notes.append(f"交易所只成交 {dstr(filled)} / {intent['qty']}，其余作废")
         fill_id = f"{intent['ref']}:{report.get('exchange_order_id') or coid}"
         perp = bool(intent.get("perp"))
-        _pos = self.ledger.perps.get(sec)
-        before = _pos.qty if _pos else ZERO
+        if self.ledger.perp_book is not None:
+            before = self._held(sec, intent.get("position_side") or "")
+        else:
+            _pos = self.ledger.perps.get(sec)
+            before = _pos.qty if _pos else ZERO
         try:
             if perp:
-                if fee_ccy and fee_ccy != quote_ccy.partition(":")[0].upper():
+                spec = (
+                    self.ledger.perp_book.spec(sec)
+                    if self.ledger.perp_book is not None
+                    else spec_for(self.exchange, sec, self.expiry_ts)
+                )
+                if fee_ccy and fee_ccy != spec.settlement.upper() and fee_ccy != quote_ccy.partition(":")[0].upper():
                     fee = ZERO
+                mult = dec(spec.contract_multiplier)
+                quote_notional = filled * mult if spec.contract_type == "inverse" else filled * mult * price
+                tier = spec.tier_for_notional(float(quote_notional))
                 booking = self.ledger.perp_trade(
-                    instrument=sec, side=side, qty=filled, price=price, fee=fee, ts=ts, ref=fill_id
+                    instrument=sec,
+                    side=side,
+                    qty=filled,
+                    price=price,
+                    fee=fee,
+                    ts=ts,
+                    ref=fill_id,
+                    mmr=tier["mmr"],
+                    mmr_tier=tier["label"],
+                    liquidation_fee_bps=spec.liquidation_fee_bps,
+                    liquidation_slippage_bps=spec.liquidation_slippage_bps,
+                    position_side=intent.get("position_side") or "",
+                    leverage=self.ledger.leverage.get(sec, Decimal(1)),
                 )
             else:
                 booking = self.ledger.trade(
@@ -1715,7 +2336,15 @@ class BacktestRuntime:
             opened = (filled - closing) * price
             flipped = closing > 0 and closing == abs(before) and filled > closing
         self._track_round_trip(
-            sec, side, ts, notional, booking, opened=opened, flipped=flipped, reason=intent.get("reason") or ""
+            sec,
+            side,
+            ts,
+            notional,
+            booking,
+            opened=opened,
+            flipped=flipped,
+            reason=intent.get("reason") or "",
+            position_side=intent.get("position_side") or "",
         )
         day = _day(ts)
         self.trades_per_day[day] = self.trades_per_day.get(day, 0) + 1
@@ -1755,7 +2384,37 @@ class BacktestRuntime:
         opened: Decimal | None = None,
         flipped: bool = False,
         reason: str = "",
+        position_side: str = "",
     ) -> None:
+        book = self.ledger.perp_book
+        if book is not None and is_derivative(security):
+            target_side = position_side or ("long" if side == "buy" else "short")
+            trip_key = f"{security}|{target_side}" if book.hedge else security
+            trip = self._open_trips.get(trip_key)
+            if trip is None:
+                trip = RoundTrip(security=security, open_ts=ts, entry_tag=reason)
+                self._open_trips[trip_key] = trip
+            trip.realized += booking.realized
+            trip.fees += booking.fee_value
+            trip.fills += 1
+            legs = [x for x in book.all_legs() if x.instrument.upper() == security.upper()]
+            flat = not legs if not book.hedge else not any(x.side == target_side for x in legs)
+            if flat or flipped:
+                if not trip.cost_in:
+                    trip.cost_in = notional
+                    trip.entries = max(trip.entries, 1)
+                trip.close_ts = ts
+                trip.exit_reason = reason
+                self.round_trips.append(trip)
+                self._open_trips.pop(trip_key, None)
+                if flipped:
+                    self._open_trips[trip_key] = RoundTrip(
+                        security=security, open_ts=ts, cost_in=opened, entry_tag=reason, entries=1
+                    )
+            elif opened:
+                trip.cost_in += opened
+                trip.entries += 1
+            return
         if is_perp(security):
             # 永续：从空仓开到回到空仓（或反手）算一次完整交易；投入按开仓名义，收益含手续费与资金费
             trip = self._open_trips.get(security)
@@ -1854,6 +2513,7 @@ class BacktestRuntime:
             "ext_cash": dstr(self._ext_cash),
             "ext_qty": {k: dstr(v) for k, v in self._ext_qty.items()},
             "funding_ts": dict(self.funding_ts),
+            "funding_marks": {k: {str(t): dstr(v) for t, v in rows.items()} for k, rows in self.funding_marks.items()},
             "trade_state": self.trade_state,
             "roi": {k: [list(r) for r in v] for k, v in self.roi.items()},
             "protects": self.protects,
@@ -1910,6 +2570,9 @@ class BacktestRuntime:
         self._ext_cash = dec(snap.get("ext_cash") or 0)
         self._ext_qty = {k: dec(v) for k, v in (snap.get("ext_qty") or {}).items()}
         self.funding_ts.update({k: int(v) for k, v in (snap.get("funding_ts") or {}).items()})
+        self.funding_marks = {
+            k: {int(t): dec(v) for t, v in rows.items()} for k, rows in (snap.get("funding_marks") or {}).items()
+        }
         self.trade_state = dict(snap.get("trade_state") or {})
         if snap.get("roi"):
             self.roi = {k: [(int(m), float(r)) for m, r in v] for k, v in snap["roi"].items()}
@@ -1926,6 +2589,40 @@ class BacktestRuntime:
 # ---------------------------------------------------------------------------
 # 本地跑一遍：把 StrategyRunner 与 BacktestRuntime 接起来
 # ---------------------------------------------------------------------------
+def _simple_rule_curve(bars: list[Any], initial_cash: float, *, fast: int = 20, slow: int = 60) -> list[float]:
+    """简单 SMA 规则基线：快线在上持有，快线在下空仓；不计成本。"""
+    closes: list[float] = []
+    cash, qty = float(initial_cash), 0.0
+    out: list[float] = []
+    for i, bar in enumerate(bars):
+        c = float(bar.close)
+        closes.append(c)
+        if i + 1 >= slow:
+            f = sum(closes[-fast:]) / fast
+            s = sum(closes[-slow:]) / slow
+            if f > s and qty == 0 and c > 0:
+                qty, cash = cash / c, 0.0
+            elif f <= s and qty > 0:
+                cash, qty = qty * c, 0.0
+        out.append(cash + qty * c)
+    return out
+
+
+def _asof_curve(bars: list[Any], values: list[float], timestamps: list[int], default: float) -> list[float]:
+    """把基准 bar 上的曲线按“截至当前时刻”映射到策略时间轴。"""
+    if not bars or not values:
+        return [default] * len(timestamps)
+    out: list[float] = []
+    j = 0
+    last = float(values[0])
+    for ts in timestamps:
+        while j < len(bars) and int(bars[j].close_time) <= int(ts):
+            last = float(values[j])
+            j += 1
+        out.append(last)
+    return out
+
+
 @dataclass
 class LocalRunResult:
     """本地运行结果。字段与平台回测报告保持同名，便于对照。"""
@@ -1936,8 +2633,12 @@ class LocalRunResult:
     timestamps: list[int] = field(default_factory=list)
     drawdown: list[float] = field(default_factory=list)
     benchmark_curve: list[float] = field(default_factory=list)
+    simple_benchmark_curve: list[float] = field(default_factory=list)
+    simple_benchmark: str = "SMA 20/60 多头/空仓"
+    simple_benchmark_metrics: dict[str, Any] = field(default_factory=dict)
     unit_nav: list[float] = field(default_factory=list)
     benchmark: str = ""
+    contract_specs: dict[str, Any] = field(default_factory=dict)
     fills: list[dict[str, Any]] = field(default_factory=list)
     logs: list[dict[str, Any]] = field(default_factory=list)
     records: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
@@ -1985,8 +2686,12 @@ class LocalRunResult:
             "timestamps": ts,
             "drawdown": dd,
             "benchmark_curve": bm,
+            "simple_benchmark_curve": self.simple_benchmark_curve,
+            "simple_benchmark": self.simple_benchmark,
+            "simple_benchmark_metrics": self.simple_benchmark_metrics,
             "unit_nav": nav,
             "benchmark": self.benchmark,
+            "contract_specs": self.contract_specs,
             "fills": self.fills[:max_rows],
             "fills_total": len(self.fills),
             "logs": self.logs[:max_rows],
@@ -2039,6 +2744,7 @@ def run_backtest(
     bars_by_security: dict[str, list[Bar]],
     *,
     initial_cash: float = 10_000.0,
+    initial_currency: str = "USDT",
     cost: RuntimeCost | None = None,
     risk: RiskConfig | None = None,
     warmup_bars: int = 0,
@@ -2052,6 +2758,12 @@ def run_backtest(
     research: dict[str, Any] | None = None,
     delistings: list[dict[str, Any]] | None = None,
     cost_scale: float = 1.0,
+    exchange: str = "binance",
+    margin_mode: str = "isolated",
+    position_mode: str = "one-way",
+    contract_type: str = "linear",
+    expiry_ts: int | None = None,
+    ledger_v2: bool = False,
 ) -> LocalRunResult:
     """在本地把一份策略跑一遍，返回净值曲线、基准、日度统计与指标。
 
@@ -2068,12 +2780,19 @@ def run_backtest(
     runtime = BacktestRuntime(
         bars_by_security,
         initial_cash=initial_cash,
+        initial_currency=initial_currency,
         cost=cost,
         risk=risk,
         run_id=run_id,
         strategy_version_id=strategy_version_id,
         research=research,
         cost_scale=cost_scale,
+        exchange=exchange,
+        margin_mode=margin_mode,
+        position_mode=position_mode,
+        contract_type=contract_type,
+        expiry_ts=expiry_ts,
+        ledger_v2=ledger_v2,
     )
     ctx = runtime.ctx
     ctx.securities = list(bars_by_security)
@@ -2108,12 +2827,23 @@ def run_backtest(
             bench = next(iter(bars_by_security))
         result.benchmark = bench
         result.cost_model = runtime.effective_cost()
+        derivative_symbols = [sec for sec in bars_by_security if is_derivative(sec)]
+        if derivative_symbols:
+            result.contract_specs = {
+                sec: (
+                    runtime.ledger.perp_book.spec(sec)
+                    if runtime.ledger.perp_book is not None
+                    else spec_for(exchange, sec, expiry_ts)
+                ).to_dict()
+                for sec in derivative_symbols
+            }
 
         scoring_start = min(warmup_bars, max(0, len(timeline) - 2))
         bench_p0 = 0.0
         day_rows: list[dict[str, Any]] = []
         current_day = ""
         initial_dec = runtime.ledger.equity()
+        initial_equity_quote = float(initial_dec)
 
         try:
             for i, ts in enumerate(timeline):
@@ -2125,10 +2855,10 @@ def run_backtest(
                 if i == scoring_start:
                     first = runtime.current_bar(bench)
                     bench_p0 = first.open if first else runtime.price(bench)
-                    result.equity_curve.append(float(initial_cash))
+                    result.equity_curve.append(initial_equity_quote)
                     result.unit_nav.append(1.0)
                     result.timestamps.append(timeline[i - 1] if i > 0 else ts)
-                    result.benchmark_curve.append(float(initial_cash))
+                    result.benchmark_curve.append(initial_equity_quote)
                 while flow_i < len(flows) and int(flows[flow_i]["ts"]) <= ts:
                     try:
                         runtime.apply_flow(flows[flow_i]["amount"], ts=ts, ref=str(flows[flow_i].get("ref") or ""))
@@ -2143,7 +2873,9 @@ def run_backtest(
                     runner.dispatch_trades(runtime.drain_new_fills())
                 runtime.mark()
                 equity = float(runtime.ledger.equity())
-                bench_value = float(initial_cash) * runtime.price(bench) / bench_p0 if bench_p0 else float(initial_cash)
+                bench_value = (
+                    initial_equity_quote * runtime.price(bench) / bench_p0 if bench_p0 else initial_equity_quote
+                )
                 result.equity_curve.append(equity)
                 result.unit_nav.append(float(runtime.unit_nav))
                 result.timestamps.append(ts)
@@ -2171,6 +2903,18 @@ def run_backtest(
             result.errors.append(str(exc))
             result.timed_out = True
 
+    # 双基准：买入持有 + 简单 SMA 20/60 多头/空仓（不计成本，只用于回答“策略是否跑赢一个朴素规则”）
+    bench_bars = bars_by_security.get(result.benchmark or bench) or []
+    simple_curve = _simple_rule_curve(bench_bars, float(initial_cash))
+    result.simple_benchmark_curve = _asof_curve(bench_bars, simple_curve, result.timestamps, float(initial_cash))
+    simple_last = result.simple_benchmark_curve[-1] if result.simple_benchmark_curve else float(initial_cash)
+    result.simple_benchmark_metrics = {
+        "total_return": simple_last / float(initial_cash) - 1 if initial_cash else None,
+        "label": result.simple_benchmark,
+        "fast": 20,
+        "slow": 60,
+        "costs": "未计成本（朴素基线）",
+    }
     result.unfilled = len(runtime.pending) + len(runtime.open_orders)
     if runtime.pending:
         runtime.log(
@@ -2209,6 +2953,7 @@ def run_backtest(
         # 资金费单列（T03）：它是持仓成本，不是交易成本，混进手续费会让毛利对不上交易所账单。
         "funding": runtime.ledger.funding_report(),
         "perps": {k: p.to_dict() for k, p in runtime.ledger.perps.items()},
+        "perp_book": runtime.ledger.perp_book.to_dict() if runtime.ledger.perp_book is not None else None,
         "liquidation_loss": dstr(runtime.ledger.liquidation_loss),
         "realized_pnl": dstr(runtime.ledger.realized_total()),
         "initial_equity": dstr(initial_dec),
@@ -2226,10 +2971,12 @@ def run_backtest(
         )
 
         # 收益口径：有资金流时用单位净值（时间加权）；无资金流时两者等价
-        basis = [v * float(initial_cash) for v in result.unit_nav] if runtime.flows_applied else result.equity_curve
+        basis = [v * initial_equity_quote for v in result.unit_nav] if runtime.flows_applied else result.equity_curve
         trade_returns = [t.ret for t in runtime.round_trips]
         turnover = (
-            float(sum((f.notional for f in runtime.fills), Decimal(0)) / dec(initial_cash)) if initial_cash else 0.0
+            float(sum((f.notional for f in runtime.fills), Decimal(0)) / dec(initial_equity_quote))
+            if initial_equity_quote
+            else 0.0
         )
         metrics = compute_metrics(
             basis, timeframe=timeframe, trade_returns=trade_returns, turnover=turnover, risk_free_rate=risk_free_rate
@@ -2237,6 +2984,13 @@ def run_backtest(
         metrics.trades = len(trade_returns)
         body = metrics.to_dict()
         body.update(compute_relative_metrics(basis, result.benchmark_curve, timeframe=timeframe, daily=result.daily))
+        simple_ret = (result.simple_benchmark_metrics or {}).get("total_return")
+        body["simple_benchmark_return"] = simple_ret
+        tr = body.get("total_return")
+        if tr is not None and simple_ret is not None and (1 + simple_ret):
+            body["excess_vs_simple"] = (1 + tr) / (1 + simple_ret) - 1
+            body["beats_simple"] = tr > simple_ret
+        body["simple_benchmark"] = result.simple_benchmark
         body["fills"] = len(runtime.fills)
         body["total_fees"] = float(runtime.ledger.fees_value)
         # 折算后的总手续费之外，另列出未折算的部分与资金费——
@@ -2261,15 +3015,31 @@ def run_backtest(
         result.assumptions = assumptions_block(
             timeframe=timeframe,
             risk_free_rate=risk_free_rate,
-            cost=runtime.cost.to_dict(),
+            cost=runtime.effective_cost(),
             flows=bool(runtime.flows_applied),
             warmup_bars=warmup_bars,
-            perps=[s for s in bars_by_security if is_perp(s)],
+            perps=[s for s in bars_by_security if is_derivative(s)],
             funding_sources={
                 s: (runtime.research.get(f"funding:{s}") or {}).get("source", "")
                 for s in bars_by_security
-                if is_perp(s)
+                if is_derivative(s)
             },
+            margin_mode=runtime.margin_mode,
+            position_mode=runtime.position_mode,
+            contract_type=(
+                runtime.ledger.perp_book.contract_type
+                if runtime.ledger.perp_book is not None
+                else runtime.contract_type
+            ),
+            settlement_ccy=(
+                runtime.ledger.perp_book.settlement_ccy
+                if runtime.ledger.perp_book is not None
+                else runtime.ledger.base_currency
+            ),
+            expiry_ts=(
+                runtime.ledger.perp_book.expiry_ts if runtime.ledger.perp_book is not None else runtime.expiry_ts
+            ),
+            liquidation_loss=float(runtime.ledger.liquidation_loss),
         )
     except ImportError:  # pragma: no cover - SDK 独立安装时走这条
         result.metrics = {"total_return": ctx.portfolio.total_return, "trades": len(runtime.round_trips)}

@@ -1,0 +1,275 @@
+"""策略广场社交关系：用户资料、关注、拉黑与私信策略。"""
+
+from __future__ import annotations
+
+import re
+import uuid
+from typing import Any
+
+from ..store import Collections, WorkspaceStore
+from .db import Database, jdump, jload, now_ms
+
+DM_POLICIES = {
+    "reply_only": "回复后可继续",
+    "open": "允许自由私信",
+    "none": "不允许私信",
+}
+
+
+class SocialService:
+    def __init__(self, db: Database, store: WorkspaceStore) -> None:
+        self.db = db
+        self.store = store
+
+    def _ensure_profile(self, ws: str, user_id: str) -> dict[str, Any]:
+        row = self.db.fetchone("SELECT * FROM community_profiles WHERE user_id=?", (user_id,))
+        if row:
+            return row
+        now = now_ms()
+        bio = ""
+        try:
+            legacy = self.store.for_workspace(ws).get(Collections.PROFILE, user_id) or {}
+            bio = str(legacy.get("bio") or "")[:500]
+        except Exception:
+            bio = ""
+        self.db.execute(
+            "INSERT INTO community_profiles (user_id, workspace_id, bio, dm_policy, created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?)",
+            (user_id, ws, bio, "reply_only", now, now),
+        )
+        return self.db.fetchone("SELECT * FROM community_profiles WHERE user_id=?", (user_id,)) or {
+            "user_id": user_id,
+            "workspace_id": ws,
+            "bio": bio,
+            "dm_policy": "reply_only",
+        }
+
+    def profile(self, ws: str, user_id: str) -> dict[str, Any]:
+        row = self._ensure_profile(ws, user_id)
+        policy = row.get("dm_policy") if row.get("dm_policy") in DM_POLICIES else "reply_only"
+        color = row.get("avatar_color") if str(row.get("avatar_color") or "").startswith("#") else "#2E5C9A"
+        return {
+            "bio": row.get("bio") or "",
+            "dm_policy": policy,
+            "dm_policy_label": DM_POLICIES[policy],
+            "avatar_color": color,
+            "public_profile": bool(row.get("public_profile")),
+        }
+
+    def save_profile(
+        self,
+        ws: str,
+        user_id: str,
+        *,
+        bio: str,
+        dm_policy: str,
+        avatar_color: str = "#2E5C9A",
+        public_profile: bool = False,
+    ) -> dict[str, Any]:
+        self._ensure_profile(ws, user_id)
+        policy = dm_policy if dm_policy in DM_POLICIES else "reply_only"
+        color = avatar_color if re.fullmatch(r"#[0-9a-fA-F]{6}", avatar_color or "") else "#2E5C9A"
+        self.db.execute(
+            "UPDATE community_profiles SET bio=?, dm_policy=?, avatar_color=?, public_profile=?, updated_at=? "
+            "WHERE user_id=?",
+            (bio.strip()[:500], policy, color, 1 if public_profile else 0, now_ms(), user_id),
+        )
+        return self.profile(ws, user_id)
+
+    def user(self, ws: str, identifier: str) -> dict[str, Any] | None:
+        ident = (identifier or "").strip()
+        if not ident:
+            return None
+        row = self.db.fetchone(
+            "SELECT u.id, u.username, u.name, u.email, u.quantlab_uid, u.is_active, u.banned_at, m.role, m.status "
+            "FROM users u JOIN memberships m ON m.user_id=u.id "
+            "WHERE m.workspace_id=? AND (u.id=? OR lower(u.username)=lower(?) OR lower(u.email)=lower(?))",
+            (ws, ident, ident, ident),
+        )
+        if row and row.get("status") == "active" and row.get("is_active") and not row.get("banned_at"):
+            return row
+        return None
+
+    # ------------------------------------------------------------------ 关注
+    def is_following(self, ws: str, follower: str, following: str) -> bool:
+        return bool(
+            self.db.fetchone(
+                "SELECT 1 AS x FROM user_follows WHERE workspace_id=? AND follower_id=? AND following_id=?",
+                (ws, follower, following),
+            )
+        )
+
+    def following_ids(self, ws: str, user_id: str) -> set[str]:
+        return {
+            str(r["following_id"])
+            for r in self.db.fetchall(
+                "SELECT following_id FROM user_follows WHERE workspace_id=? AND follower_id=?", (ws, user_id)
+            )
+        }
+
+    def follow(self, ws: str, follower: str, following: str) -> bool:
+        if follower == following or self.blocked(ws, follower, following) or self.blocked(ws, following, follower):
+            return False
+        if self.is_following(ws, follower, following):
+            return False
+        self.db.execute(
+            "INSERT INTO user_follows (id, workspace_id, follower_id, following_id, created_at) VALUES (?,?,?,?,?)",
+            (uuid.uuid4().hex, ws, follower, following, now_ms()),
+        )
+        return True
+
+    def unfollow(self, ws: str, follower: str, following: str) -> bool:
+        return (
+            self.db.execute(
+                "DELETE FROM user_follows WHERE workspace_id=? AND follower_id=? AND following_id=?",
+                (ws, follower, following),
+            )
+            > 0
+        )
+
+    def follow_counts(self, ws: str, user_id: str) -> tuple[int, int]:
+        followers = int(
+            self.db.scalar("SELECT COUNT(*) FROM user_follows WHERE workspace_id=? AND following_id=?", (ws, user_id))
+            or 0
+        )
+        following = int(
+            self.db.scalar("SELECT COUNT(*) FROM user_follows WHERE workspace_id=? AND follower_id=?", (ws, user_id))
+            or 0
+        )
+        return followers, following
+
+    # ------------------------------------------------------------------ 拉黑
+    def blocked(self, ws: str, blocker: str, blocked: str) -> bool:
+        return bool(
+            self.db.fetchone(
+                "SELECT 1 AS x FROM user_blocks WHERE workspace_id=? AND blocker_id=? AND blocked_id=?",
+                (ws, blocker, blocked),
+            )
+        )
+
+    def blocked_ids(self, ws: str, blocker: str) -> set[str]:
+        return {
+            str(r["blocked_id"])
+            for r in self.db.fetchall(
+                "SELECT blocked_id FROM user_blocks WHERE workspace_id=? AND blocker_id=?", (ws, blocker)
+            )
+        }
+
+    def block(self, ws: str, blocker: str, blocked: str) -> bool:
+        if blocker == blocked or self.blocked(ws, blocker, blocked):
+            return False
+        with self.db.tx() as t:
+            t.execute(
+                "INSERT INTO user_blocks (id, workspace_id, blocker_id, blocked_id, created_at) VALUES (?,?,?,?,?)",
+                (uuid.uuid4().hex, ws, blocker, blocked, now_ms()),
+            )
+            t.execute(
+                "DELETE FROM user_follows WHERE workspace_id=? AND "
+                "((follower_id=? AND following_id=?) OR (follower_id=? AND following_id=?))",
+                (ws, blocker, blocked, blocked, blocker),
+            )
+        return True
+
+    def unblock(self, ws: str, blocker: str, blocked: str) -> bool:
+        return (
+            self.db.execute(
+                "DELETE FROM user_blocks WHERE workspace_id=? AND blocker_id=? AND blocked_id=?",
+                (ws, blocker, blocked),
+            )
+            > 0
+        )
+
+    # ------------------------------------------------------------------ 收藏
+    def set_favorite(
+        self,
+        ws: str,
+        user_id: str,
+        *,
+        object_type: str,
+        object_id: str,
+        title: str,
+        link: str,
+        meta: dict[str, Any] | None = None,
+    ) -> bool:
+        row = self.db.fetchone(
+            "SELECT id FROM favorites WHERE workspace_id=? AND user_id=? AND object_type=? AND object_id=?",
+            (ws, user_id, object_type, object_id),
+        )
+        if row:
+            return False
+        self.db.execute(
+            "INSERT INTO favorites (id, workspace_id, user_id, object_type, object_id, title, link, meta, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                uuid.uuid4().hex,
+                ws,
+                user_id,
+                object_type,
+                object_id,
+                title[:160],
+                link[:300],
+                jdump(meta or {}),
+                now_ms(),
+            ),
+        )
+        return True
+
+    def remove_favorite(self, ws: str, user_id: str, object_type: str, object_id: str) -> bool:
+        return (
+            self.db.execute(
+                "DELETE FROM favorites WHERE workspace_id=? AND user_id=? AND object_type=? AND object_id=?",
+                (ws, user_id, object_type, object_id),
+            )
+            > 0
+        )
+
+    def is_favorite(self, ws: str, user_id: str, object_type: str, object_id: str) -> bool:
+        return bool(
+            self.db.fetchone(
+                "SELECT 1 AS x FROM favorites WHERE workspace_id=? AND user_id=? AND object_type=? AND object_id=?",
+                (ws, user_id, object_type, object_id),
+            )
+        )
+
+    def favorites(self, ws: str, user_id: str, object_type: str | None = None) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM favorites WHERE workspace_id=? AND user_id=?"
+        args: list[Any] = [ws, user_id]
+        if object_type:
+            sql += " AND object_type=?"
+            args.append(object_type)
+        rows = self.db.fetchall(sql + " ORDER BY created_at DESC", tuple(args))
+        return [{**r, "meta": jload(r.get("meta"), {}) or {}} for r in rows]
+
+    # ------------------------------------------------------------------ 私信策略
+    def can_dm(self, gid: str, ws: str, sender: str, recipient: str) -> dict[str, Any]:
+        if self.blocked(ws, sender, recipient) or self.blocked(ws, recipient, sender):
+            return {"ok": False, "reason": "你们之间存在拉黑关系，无法发送私信", "policy": "blocked"}
+        prof = self.profile(ws, recipient)
+        policy = prof["dm_policy"]
+        receiver_sent = int(
+            self.db.scalar(
+                "SELECT COUNT(*) FROM collab_messages WHERE group_id=? AND author_id=? AND deleted_at IS NULL",
+                (gid, recipient),
+            )
+            or 0
+        )
+        sender_sent = int(
+            self.db.scalar(
+                "SELECT COUNT(*) FROM collab_messages WHERE group_id=? AND author_id=? AND deleted_at IS NULL",
+                (gid, sender),
+            )
+            or 0
+        )
+        if receiver_sent:
+            return {"ok": True, "reason": "", "policy": policy, "established": True}
+        if policy == "none":
+            return {"ok": False, "reason": "对方已关闭私信", "policy": policy, "established": False}
+        if policy == "reply_only" and sender_sent >= 1:
+            return {
+                "ok": False,
+                "reason": "对方回复前，你只能发送一条私信",
+                "policy": policy,
+                "established": False,
+                "awaiting_reply": True,
+            }
+        return {"ok": True, "reason": "", "policy": policy, "established": False}

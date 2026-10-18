@@ -67,6 +67,19 @@ def import_strategy(payload: ImportIn) -> dict:
     if not rep.ok:
         return {"report": rep.to_dict(), "strategy": None}
     secs = [s.strip().upper() for s in payload.securities if s.strip()] or ["BTC/USDT"]
+    if rep.can_short or rep.uses_leverage:
+        from ..platform import features
+
+        try:
+            features.require("import.freqtrade_short")
+        except Exception as exc:
+            rep.errors.append(str(exc))
+            rep.ok = False
+            return {"report": rep.to_dict(), "strategy": None}
+        if any(not sec.endswith(":PERP") for sec in secs):
+            rep.errors.append("做空/杠杆策略必须使用 :PERP 永续标的；现货标的只允许做多")
+            rep.ok = False
+            return {"report": rep.to_dict(), "strategy": None}
     repo = _repo()
     name = (payload.name or rep.class_name or "Freqtrade 策略")[:60]
     from ..sdk.runner import declared_params
@@ -110,7 +123,8 @@ def rewrite(payload: RewriteIn) -> dict:
     instruction = (
         "这是一个 Freqtrade（IStrategy）策略，平台的兼容层跑不了它，问题是：" + problems + "。"
         "请改写成平台原生策略（initialize / handle_data，用平台 SDK 的指标和下单函数），"
-        "保持原策略的入场、出场、止损和止盈逻辑；做不到的部分（如做空、杠杆）去掉并在改动要点里说明。"
+        "保持原策略的入场、出场、止损和止盈逻辑；平台支持线性永续做空与 leverage()，请优先保留，"
+        "只有确实无法映射的部分才去掉并在改动要点里说明。"
     )
     res = StrategyCopilot(get_services().router).edit(
         payload.source, instruction, securities=payload.securities, timeframe=payload.timeframe

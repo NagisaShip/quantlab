@@ -10,8 +10,10 @@ import threading
 import time
 from typing import Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 
+from ..exchanges.contract_verification import verify_bills
+from ..exchanges.contracts import spec_for
 from ..platform import context
 from .deps import get_services
 from .schemas import DemoConnectIn
@@ -56,6 +58,22 @@ def connect(payload: DemoConnectIn) -> dict:
 @router.post("/connections/{cid}/test")
 def test_connection(cid: str) -> dict:
     return {"connection": get_services().demo.test(cid)}
+
+
+@router.get("/connections/{cid}/contract-bills", summary="拉取模拟账户账单并核验永续合约规则假设")
+def contract_bills(
+    cid: str,
+    symbol: str = Query("BTC/USDT:PERP"),
+    start: int | None = Query(None, ge=0),
+    end: int | None = Query(None, ge=0),
+) -> dict:
+    if not symbol.upper().endswith(":PERP"):
+        raise HTTPException(400, "合约账单核验只接受 :PERP 标的")
+    got = get_services().demo.bills(cid, symbol, start, end)
+    conn = got["connection"]
+    spec = spec_for(conn.get("exchange") or "", symbol)
+    report = verify_bills(exchange=conn.get("exchange") or "", spec=spec, rows=got["rows"])
+    return {**report, "connection": conn, "fetched_rows": len(got["rows"])}
 
 
 @router.delete("/connections/{cid}")

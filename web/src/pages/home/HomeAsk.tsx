@@ -3,7 +3,7 @@
  * 右侧是可编辑的关注列表（多个标的），没有真实行情的标的如实显示「未接入数据」，可以一键同步。
  */
 import { directBars } from '../../marketDirect'
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useDraft } from '../../components/draft'
 import { get } from '../../http'
 import { lab, labPrefs, type Effort, type LabKind, type LabMeta } from '../../apiLab'
@@ -27,6 +27,17 @@ const TYPE_CMDS: { cmd: string; alias: string[]; type: ResearchType; help: strin
   { cmd: '/pipeline', alias: ['/完整流程', '/全流程'], type: 'pipeline', help: '完整流程：选标的 → 因子 → 策略 → 模型 → 组合 → 执行' },
   { cmd: '/report', alias: ['/调研', '/报告'], type: 'report', help: '调研报告：联网与平台数据调研，导出 PDF' },
 ]
+const TYPE_SHORT: Record<ResearchType, string> = {
+  auto: 'AI 自动判断',
+  strategy: '代码与回测',
+  factor: 'IC 与样本外',
+  model: '训练预测',
+  portfolio: '权重与风险',
+  execution: '拆单与成本',
+  pipeline: '端到端研究',
+  report: '联网调研报告',
+}
+
 const EXTRA_CMDS: SlashCommand[] = [
   { cmd: '/parallel', group: '协作', arg: '[方向1 | 方向2]', help: '唤起子 Agent 并行比较多个方向' },
   { cmd: '/plan', group: '协作', arg: '[任务]', help: 'AI 列分步计划并一步步做完' },
@@ -46,12 +57,25 @@ export function HomeAsk({ onNavigate, notify, brief }: { onNavigate: (k: string)
   const [longFiles, setLongFiles] = useState<{ title: string; text: string }[]>([])
   const [seed, setSeed] = useState(() => Math.random())
   const [hover, setHover] = useState(false)
+  const [activeIdea, setActiveIdea] = useState(0)
+  const ideasRef = useRef<HTMLDivElement>(null)
   const fx = useBotFlash()
   useEffect(() => {
     if (hover) return
-    const t = window.setInterval(() => setSeed(Math.random()), 10_000)
+    const t = window.setInterval(() => setActiveIdea((i) => (i + 1) % 5), 5200)
     return () => window.clearInterval(t)
   }, [hover])
+  useEffect(() => {
+    setActiveIdea(0)
+    requestAnimationFrame(() => ideasRef.current?.scrollTo({ left: 0, behavior: 'smooth' }))
+  }, [seed])
+  useEffect(() => {
+    const el = ideasRef.current
+    const card = el?.children[activeIdea] as HTMLElement | undefined
+    if (!el || !card) return
+    const left = el.scrollLeft + card.getBoundingClientRect().left - el.getBoundingClientRect().left - 8
+    el.scrollTo({ left: Math.max(0, left), behavior: 'smooth' })
+  }, [activeIdea])
   // 建议：从所有研究类型里各取一些，随机换批
   const ideas = useMemo(() => {
     const types: ResearchType[] = ['strategy', 'factor', 'model', 'pipeline', 'report', 'portfolio']
@@ -69,6 +93,14 @@ export function HomeAsk({ onNavigate, notify, brief }: { onNavigate: (k: string)
   ]
   // 平台上的每个功能都能从首页直接用斜杠命令发起（新对话里 AI 会直接调用对应工具）
   const commands = [...baseCmds, ...usePlatformCommands(baseCmds)]
+
+  const chooseType = (id: ResearchType) => {
+    fx.fire('tap')
+    const rest = parse(text).rest
+    if (id === 'auto') { setText(rest); return }
+    const cmd = TYPE_CMDS.find((item) => item.type === id)
+    if (cmd) setText(`${cmd.cmd} ${rest}`)
+  }
 
   const start = async () => {
     const t = text.trim()
@@ -110,34 +142,59 @@ export function HomeAsk({ onNavigate, notify, brief }: { onNavigate: (k: string)
           {brief}
         </div>
       </div>
+      <section className="home-type-picker" aria-label="研究主题选择">
+        <div className="home-type-picker-head">
+          <b>研究主题</b>
+          <span>先选方向，再描述你的想法；自动模式会由 AI 判断该用哪些研究工具。</span>
+        </div>
+        <div className="home-type-options" role="group" aria-label="研究主题">
+          <button type="button" className={`home-type-card${!type ? ' on' : ''}`} aria-pressed={!type}
+            title={RESEARCH_TYPES.find((x) => x.id === 'auto')?.hint} onClick={() => chooseType('auto')}>
+            <b>自动</b><small>{TYPE_SHORT.auto}</small>
+          </button>
+          {TYPE_CMDS.map((c) => (
+            <button key={c.cmd} type="button" className={`home-type-card${type === c.type ? ' on' : ''}`} aria-pressed={type === c.type}
+              title={c.help} onClick={() => chooseType(c.type)}>
+              <b>{RESEARCH_TYPES.find((x) => x.id === c.type)?.label}</b><small>{TYPE_SHORT[c.type]}</small>
+            </button>
+          ))}
+        </div>
+      </section>
       <Composer value={text} onChange={setText} onSend={start} disabled={busy} commands={commands} sendLabel="开始" hasAttachments={longFiles.length > 0}
         onLongText={async (f) => { const text = await f.text(); setLongFiles((x) => [...x, { title: f.name, text }]) }}
-        placeholder="和 AI 聊聊你的想法；输入 / 选择 预测、策略、因子、完整流程、调研报告…"
+        placeholder="描述你想研究的问题；研究主题已在上方选择"
         above={type ? <div className="cmp-attached on"><span>{RESEARCH_TYPES.find((x) => x.id === type)?.label} · {RESEARCH_TYPES.find((x) => x.id === type)?.hint}</span></div> : undefined}
         right={meta ? (
           <ModelMenu models={meta.models} value={model} defaultModel={meta.default_model} effort={effort} efforts={meta.efforts}
             onModel={(m) => { setModel(m); store.set('qa.lab.model', m) }}
             onEffort={(e) => { setEffort(e); store.set('qa.lab.effort', e) }} />
-        ) : undefined}
-        left={<div className="home-types">
-          {/* 不指定研究类型时就是「自动」：AI 按内容判断该用哪些工具 */}
-          <button type="button" className={`chip${!type ? ' on' : ''}`} title={RESEARCH_TYPES.find((x) => x.id === 'auto')?.hint}
-            onClick={() => { fx.fire('tap'); setText(parse(text).rest) }}>自动</button>
-          {TYPE_CMDS.slice(0, 7).map((c) => (
-            <button key={c.cmd} type="button" className={`chip${type === c.type ? ' on' : ''}`} title={c.help}
-              onClick={() => { fx.fire('tap'); setText(`${c.cmd} ${parse(text).rest}`) }}>{RESEARCH_TYPES.find((x) => x.id === c.type)?.label}</button>
+        ) : undefined} />
+      <div className="home-idea-block" onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}>
+        <div className="home-idea-head">
+          <span><QuantEyes size={14} state="thinking" /> 研究建议</span>
+          <button type="button" className="link-btn" onClick={() => setSeed(Math.random())}>↻ 换一批</button>
+        </div>
+        <div className="home-ideas" ref={ideasRef} key={seed}>
+          {ideas.map((x, i) => {
+            const cmd = TYPE_CMDS.find((c) => c.type === x.type)!
+            return (
+              <button key={x.text} type="button" className={`home-idea-card${i === activeIdea ? ' on' : ''}`}
+                style={{ animationDelay: `${i * 55}ms` }}
+                onClick={() => setText(x.type === 'strategy' ? x.text : `${cmd.cmd} ${x.text}`)}>
+                <em>{RESEARCH_TYPES.find((r) => r.id === x.type)?.label}</em>
+                <span>{x.text}</span>
+                <i aria-hidden="true">↗</i>
+              </button>
+            )
+          })}
+        </div>
+        <div className="home-idea-dots" role="tablist" aria-label="研究建议">
+          {ideas.map((x, i) => (
+            <button key={x.text} type="button" role="tab" aria-selected={i === activeIdea}
+              className={i === activeIdea ? 'on' : ''} aria-label={`研究建议 ${i + 1}`}
+              onClick={() => setActiveIdea(i)} />
           ))}
-        </div>} />
-      <div className="home-ideas stagger" key={seed} onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}>
-        {ideas.map((x) => {
-          const cmd = TYPE_CMDS.find((c) => c.type === x.type)!
-          return (
-            <button key={x.text} type="button" className="lab2-example" onClick={() => setText(x.type === 'strategy' ? x.text : `${cmd.cmd} ${x.text}`)}>
-              <em>{RESEARCH_TYPES.find((r) => r.id === x.type)?.label}</em>{x.text}
-            </button>
-          )
-        })}
-        <button type="button" className="lab2-example lab2-shuffle" onClick={() => setSeed(Math.random())}>↻ 换一批</button>
+        </div>
       </div>
     </div>
   )

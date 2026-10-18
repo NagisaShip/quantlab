@@ -29,8 +29,16 @@ export default defineConfig({
             if (/^(react|react-dom|scheduler|@fontsource)/.test(name)) return 'vendor'
             return `vendor-${name.replace(/^@/, '')}`
           }
+          // 研究页之间会互相引用卡片/终端组件。把这一组固定到同一个研究 chunk，
+          // 避免 Rollup 为每页单独建 chunk 后形成 page-lab ↔ page-* 的循环。
           const page = id.match(/[\\/]src[\\/]pages[\\/]([^\\/.]+)/)
-          if (page) return `page-${page[1]}`
+          if (page) {
+            const research = new Set(['lab', 'data', 'DataCenter', 'Factors', 'ModelLib', 'Portfolio', 'Execution', 'StrategyLab', 'Validation', 'LifecycleView', 'Assemble'])
+            const automation = new Set(['LongRunning', 'NightShift'])
+            if (research.has(page[1])) return 'page-research'
+            if (automation.has(page[1])) return 'page-automation'
+            return `page-${page[1]}`
+          }
         },
       },
     },

@@ -292,6 +292,9 @@ def prepare(payload: PrepareIn) -> dict:
 @router.post("/start", summary="输入确认码启动微实盘")
 def start(payload: StartIn) -> dict:
     _admin()
+    from ..platform import features
+
+    features.require("execution.real_spot")
     from .routes_studio import start_session
     from .schemas import PaperStartIn, RiskIn
 
@@ -344,4 +347,10 @@ def start(payload: StartIn) -> dict:
 
 @router.get("/notice", summary="风险告知原文与版本")
 def notice() -> dict:
-    return {"notice": MI.RISK_NOTICE, "version": MI.NOTICE_VERSION, "ack_phrase": MI.ACK_PHRASE}
+    return {
+        "notice": MI.RISK_NOTICE,
+        "notice_en": MI.RISK_NOTICE_EN,
+        "version": MI.NOTICE_VERSION,
+        "ack_phrase": MI.ACK_PHRASE,
+        "ack_phrase_en": MI.ACK_PHRASE_EN,
+    }

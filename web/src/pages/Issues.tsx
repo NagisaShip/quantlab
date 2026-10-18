@@ -8,8 +8,9 @@ import { issues, since, uploadUrl, fmtSize, type Issue, type Ref, type Upload } 
 import { Callout, EmptyState, Loading, Modal, Tag } from '../components/ui'
 import { RichBody, RichEditor } from '../components/RichText'
 import { QuantBot } from '../components/QuantBot'
+import { UserAvatar } from '../components/UserAvatar'
 import { pingInbox } from '../components/Inbox'
-import type { Me } from '../api3'
+import type { Me } from '../api/platform'
 import type { PageProps } from './types'
 
 const STATUS_TONE: Record<string, string> = { open: 'warn', replied: 'agent', resolved: 'ok', closed: '' }
@@ -55,7 +56,10 @@ function IssueList({ me, onNavigate, notify, startNew }: { me: Me; onNavigate: (
       ) : (
         <div className="issue-list stagger">
           {data.items.map((i) => (
-            <button key={i.id} type="button" className="issue-row" onClick={() => onNavigate(`issues/${i.id}`)}>
+            <button key={i.id} type="button" className="issue-row" onClick={() => {
+              const selected = window.getSelection()?.toString().trim()
+              if (!selected) onNavigate(`issues/${i.id}`)
+            }}>
               <span className={`issue-sev s-${i.severity}`} title={`严重程度：${SEV_LABEL[i.severity]}`} />
               <span className="issue-main">
                 <b>{i.title}</b>
@@ -181,7 +185,7 @@ function IssueDetail({ id, me, onNavigate, notify }: { id: string; me: Me; onNav
             <h1 className="post-h1">{i.title}</h1>
             <Tag tone={STATUS_TONE[i.status]}>{i.status_label}</Tag>
           </div>
-          <div className="post-meta"><span className="avatar sm">{i.user_name.slice(0, 1)}</span><span>{i.user_name}</span><span>· {i.category_label} · {SEV_LABEL[i.severity]} · {since(i.created_at)}</span></div>
+          <div className="post-meta"><UserAvatar size={26} title={i.user_name} /><span>{i.user_name}</span><span>· {i.category_label} · {SEV_LABEL[i.severity]} · {since(i.created_at)}</span></div>
           <div className="post-body"><RichBody text={i.body || '（没有描述）'} refs={i.attachments.map((f) => ({ type: 'file', id: f.id, title: f.filename, mime: f.mime, size: f.size }))} /></div>
           {Object.keys(i.context).length > 0 && (
             <details className="issue-ctx"><summary>环境信息</summary><dl className="kv">{Object.entries(i.context).map(([k, v]) => <Fragment key={k}><dt>{k}</dt><dd className="mono small">{v}</dd></Fragment>)}</dl></details>

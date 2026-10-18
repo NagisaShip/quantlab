@@ -1,4 +1,4 @@
-# quant-agent 2.0 运行时依赖锁定（测试环境 Python 3.13；Linux x86_64 / Windows 通用，要求 Python ≥ 3.11）
+# QuantLab v 0.1 preview 运行时依赖锁定（测试环境 Python 3.13；Linux x86_64 / Windows 通用，要求 Python ≥ 3.11）
 # 安装：pip install -r requirements.lock && pip install --no-deps -e .
 #
 # 带 [verified] 的版本是本次 406 项测试（SQLite 与 PostgreSQL 两套）实际运行的版本；
@@ -16,6 +16,7 @@ httpcore==1.0.9               # [verified]
 httpx==0.28.1                 # [verified]
 idna==3.20                    # [verified]
 numpy==2.3.4                  # [verified]  因子研究面板计算
+pillow==12.3.0                # [verified]  图片缩略图生成
 pycparser==3.0                # [verified]
 pydantic==2.13.5              # [verified]
 pydantic-core==2.46.5         # [verified]

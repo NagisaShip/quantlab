@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { directBars } from '../marketDirect'
 import { get } from '../http'
 import { LogoMark, Icon } from './icons'
-import { getTheme, getUpDown, resolvedTheme, setTheme, setUpDown, type UpDown } from './prefs'
+import { getTheme, getUpDown, setTheme, setUpDown, type ThemePref, type UpDown } from './prefs'
 
 interface Quote { symbol: string; price: number; change: number; source: string }
 
@@ -37,8 +37,16 @@ const fmtPrice = (v: number) => v.toLocaleString('en-US', { minimumFractionDigit
 export default function Tape() {
   const [quotes, setQuotes] = useState<Quote[]>([])
   const [loaded, setLoaded] = useState(false)
-  const [theme, setThemeState] = useState(resolvedTheme())
+  const [themePref, setThemePref] = useState<ThemePref>(getTheme())
   const [updown, setUpDownState] = useState<UpDown>(getUpDown())
+  const [notice, setNotice] = useState<{ title: string; detail?: string } | null>(null)
+  const noticeTimer = useRef<number | null>(null)
+  const showNotice = (title: string, detail?: string) => {
+    setNotice({ title, detail })
+    if (noticeTimer.current) window.clearTimeout(noticeTimer.current)
+    noticeTimer.current = window.setTimeout(() => setNotice(null), 3200)
+  }
+  useEffect(() => () => { if (noticeTimer.current) window.clearTimeout(noticeTimer.current) }, [])
 
   useEffect(() => {
     let alive = true
@@ -53,21 +61,28 @@ export default function Tape() {
 
   const synthetic = quotes.some((q) => q.source !== 'exchange')
   const toggleTheme = () => {
-    const next = resolvedTheme(getTheme()) === 'dark' ? 'light' : 'dark'
+    const next: ThemePref = themePref === 'light' ? 'dark' : themePref === 'dark' ? 'system' : 'light'
     setTheme(next)
-    setThemeState(next)
+    setThemePref(next)
+    showNotice(next === 'system' ? '主题：跟随系统' : next === 'dark' ? '主题：夜间' : '主题：浅色', next === 'system' ? '随系统深浅色自动切换' : undefined)
   }
   const toggleUpDown = () => {
     const next: UpDown = updown === 'red' ? 'green' : 'red'
     setUpDown(next)
     setUpDownState(next)
+    showNotice(
+      next === 'red' ? '已切换为红涨绿跌' : '已切换为绿涨红跌',
+      next === 'red' ? '红色=上涨，绿色=下跌；只改颜色，不改数值。' : '绿色=上涨，红色=下跌；只改颜色，不改数值。',
+    )
   }
+  const themeLabel = themePref === 'light' ? '浅色' : themePref === 'dark' ? '夜间' : '跟随系统'
+  const nextTheme = themePref === 'light' ? '夜间' : themePref === 'dark' ? '跟随系统' : '浅色'
 
   return (
     <div className="tape" role="region" aria-label="行情">
       <a className="tape-brand" href="#/home" style={{ textDecoration: 'none' }}>
         <LogoMark />
-        QuantLab<small>量化研究台</small>
+        <span className="tape-brand-copy"><span>QuantLab</span><small>v 0.1 preview</small></span>
       </a>
       <div className="tape-quotes">
         {quotes.map((q) => (
@@ -85,11 +100,12 @@ export default function Tape() {
           <span className="swatch"><i style={{ background: 'var(--up)' }} /><i style={{ background: 'var(--down)' }} /></span>
           {updown === 'red' ? '红涨绿跌' : '绿涨红跌'}
         </button>
-        <button className="tape-btn" onClick={toggleTheme} aria-label={theme === 'dark' ? '切换到浅色' : '切换到夜间'} title={theme === 'dark' ? '切换到浅色' : '切换到夜间'}>
-          <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={13} />
-          {theme === 'dark' ? '浅色' : '夜间'}
+        <button className="tape-btn" onClick={toggleTheme} aria-label={`当前主题：${themeLabel}；点击切换为${nextTheme}`} title={`当前主题：${themeLabel}；点击切换为${nextTheme}`}>
+          <Icon name={themePref === 'light' ? 'sun' : themePref === 'dark' ? 'moon' : 'monitor'} size={13} />
+          {themeLabel}
         </button>
       </div>
+      {notice && <div className="tape-explain anim-in" role="status" aria-live="polite"><b>{notice.title}</b>{notice.detail && <span>{notice.detail}</span>}</div>}
     </div>
   )
 }

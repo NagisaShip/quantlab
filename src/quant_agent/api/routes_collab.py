@@ -18,9 +18,11 @@ from pydantic import BaseModel, Field
 
 from ..platform import context
 from ..platform.collab import ISSUE_CATEGORIES, ISSUE_STATUS, NOTIFY_KINDS, TASK_STATUS_LABEL
+from ..platform.db import jload
 from ..platform.errors import AppError, ErrorCode
 from ..store import Collections
 from .deps import get_services
+from .schemas import QmojiIn
 
 router = APIRouter(prefix="/api", tags=["协作与通知"])
 
@@ -46,7 +48,9 @@ def _writer() -> None:
 # ---------------------------------------------------------------------------
 # 工作区成员目录（选择器用）
 # ---------------------------------------------------------------------------
-@router.get("/collab/members", summary="工作区成员目录（选择群成员、指派任务、@ 提及、私聊用；q 按名字 / 用户名 / 邮箱搜索）")
+@router.get(
+    "/collab/members", summary="工作区成员目录（选择群成员、指派任务、@ 提及、私聊用；q 按名字 / 用户名 / 邮箱搜索）"
+)
 def members(q: str = "") -> dict:
     ws, uid, _ = _me()
     rows = get_services().auth.members(ws)
@@ -55,8 +59,15 @@ def members(q: str = "") -> dict:
     online = presence_online(ws)
     return {
         "members": [
-            {"user_id": r["user_id"], "name": r["name"] or r["username"] or "成员", "username": r["username"],
-             "role": r["role"], "muted": r["user_id"] in muted, "online": r["user_id"] in online}
+            {
+                "user_id": r["user_id"],
+                "name": r["name"] or r["username"] or "成员",
+                "username": r["username"],
+                "role": r["role"],
+                "muted": r["user_id"] in muted,
+                "online": r["user_id"] in online,
+                "avatar_color": get_services().social.profile(ws, r["user_id"]).get("avatar_color", "#2E5C9A"),
+            }
             for r in rows
             if r["status"] == "active"
             and (not ql or any(ql in str(r.get(k) or "").lower() for k in ("name", "username", "email")))
@@ -71,12 +82,25 @@ class DmIn(BaseModel):
     user_id: str = Field(..., min_length=1, max_length=64)
 
 
+def _dm_view(view: dict[str, Any], gid: str, ws: str, uid: str) -> dict[str, Any]:
+    if view.get("kind") == "dm" and view.get("peer"):
+        state = get_services().social.can_dm(gid, ws, uid, view["peer"]["user_id"])
+        view["dm_can_send"] = bool(state.get("ok"))
+        view["dm_reason"] = state.get("reason") or ""
+        view["dm_policy"] = state.get("policy") or "reply_only"
+    return view
+
+
 @router.post("/collab/dm", summary="打开与某位成员的私聊（没有就新建），返回私聊会话")
 def open_dm(payload: DmIn) -> dict:
     _writer()
     ws, uid, _ = _me()
+    if get_services().social.blocked(ws, uid, payload.user_id) or get_services().social.blocked(
+        ws, payload.user_id, uid
+    ):
+        raise AppError(ErrorCode.PERMISSION_DENIED, "你们之间存在拉黑关系，无法发起私聊")
     gid = _c().open_dm(ws, uid, payload.user_id)
-    return {"group": _c().get_group(ws, gid, uid)}
+    return {"group": _dm_view(_c().get_group(ws, gid, uid), gid, ws, uid)}
 
 
 # ---------------------------------------------------------------------------
@@ -105,7 +129,9 @@ def share_to(payload: ShareToIn) -> dict:
         title = (payload.title or ref.get("title") or "分享").strip()[:120]
         if len(title) < 2:
             title = f"分享：{title}"
-        body = (payload.note.strip() + "\n\n" if payload.note.strip() else "") + f"{{{{ref:{ref['type']}:{ref['id']}}}}}"
+        body = (
+            payload.note.strip() + "\n\n" if payload.note.strip() else ""
+        ) + f"{{{{ref:{ref['type']}:{ref['id']}}}}}"
         post = publish(PostIn(title=title, body=body, refs=[ref]), {"kind": "human", "label": "成员"})
         return {"ok": True, "target": "square", "link": f"post/{post['id']}"}
     gid = payload.target_id
@@ -126,7 +152,9 @@ _PRESENCE_TTL = 45.0
 def presence_online(ws: str) -> set[str]:
     """工作区里最近 45 秒有心跳的成员（成员目录里的绿点）。"""
     now = time.time()
-    return {u for (w, _, _), who in _PRESENCE.items() if w == ws for u, v in who.items() if now - v["at"] < _PRESENCE_TTL}
+    return {
+        u for (w, _, _), who in _PRESENCE.items() if w == ws for u, v in who.items() if now - v["at"] < _PRESENCE_TTL
+    }
 
 
 class PresenceIn(BaseModel):
@@ -150,11 +178,7 @@ def presence(payload: PresenceIn) -> dict:
         who.pop(k, None)
     if not who:
         _PRESENCE.pop(key, None)
-    return {
-        "others": [
-            {"user_id": k, "name": v["name"], "editing": v["editing"]} for k, v in who.items() if k != uid
-        ]
-    }
+    return {"others": [{"user_id": k, "name": v["name"], "editing": v["editing"]} for k, v in who.items() if k != uid]}
 
 
 # ---------------------------------------------------------------------------
@@ -192,12 +216,22 @@ def list_groups() -> dict:
     return {"groups": _c().list_groups(ws, uid, ws_admin=_ws_admin())}
 
 
+@router.get("/collab/discover", summary="公开目录：按名称 / QuantLab UID / 群号搜索公开用户与公开群组")
+def discover(q: str = Query("", max_length=80)) -> dict:
+    ws, uid, _ = _me()
+    return _c().discover(ws, uid, q)
+
+
 @router.post("/collab/groups", summary="新建群组（任何成员都可以组建）")
 def create_group(payload: GroupIn) -> dict:
     _writer()
     ws, uid, name = _me()
     gid = _c().create_group(
-        ws, uid, name=payload.name, description=payload.description, visibility=payload.visibility,
+        ws,
+        uid,
+        name=payload.name,
+        description=payload.description,
+        visibility=payload.visibility,
     )
     if payload.members:
         _c().add_members(gid, payload.members, by=uid, by_name=name)
@@ -208,7 +242,20 @@ def create_group(payload: GroupIn) -> dict:
 @router.get("/collab/groups/{gid}", summary="群组详情与成员")
 def get_group(gid: str) -> dict:
     ws, uid, _ = _me()
-    return {"group": _c().get_group(ws, gid, uid, ws_admin=_ws_admin())}
+    view = _c().get_group(ws, gid, uid, ws_admin=_ws_admin())
+    for m in view.get("members") or []:
+        m["avatar_color"] = get_services().social.profile(ws, m["user_id"]).get("avatar_color", "#2E5C9A")
+    return {"group": _dm_view(view, gid, ws, uid)}
+
+
+@router.post("/collab/groups/{gid}/number/rotate", summary="销毁并重新生成 QuantLab 群号")
+def rotate_group_number(gid: str) -> dict:
+    _writer()
+    _ws, uid, _ = _me()
+    _c().require_group_admin(gid, uid, ws_admin=_ws_admin())
+    number = _c().rotate_group_number(gid)
+    get_services().audit.record("group.number_rotate", object_type="group", object_id=gid)
+    return {"quantlab_no": number}
 
 
 @router.put("/collab/groups/{gid}", summary="修改群组名称、简介、可见性与群成员的群组模型限额（群主 / 群管理员）")
@@ -232,7 +279,7 @@ def set_group_quota(gid: str, payload: GroupQuotaIn) -> dict:
 
 @router.delete("/collab/groups/{gid}", summary="解散（归档）群组：群主或工作区管理员")
 def archive_group(gid: str) -> dict:
-    ws, uid, _ = _me()
+    _ws, uid, _ = _me()
     row = _c().require_group_admin(gid, uid, ws_admin=_ws_admin())
     if row["owner_id"] != uid and not _ws_admin():
         raise AppError(ErrorCode.PERMISSION_DENIED, "只有群主或工作区管理员可以解散群组")
@@ -262,7 +309,7 @@ def add_members(gid: str, payload: MembersIn) -> dict:
 
 @router.delete("/collab/groups/{gid}/members/{user_id}", summary="移出群成员（群主 / 群管理员）或退出群组（本人）")
 def remove_member(gid: str, user_id: str) -> dict:
-    ws, uid, name = _me()
+    _ws, uid, name = _me()
     if user_id != uid:
         _c().require_group_admin(gid, uid, ws_admin=_ws_admin())
     _c().remove_member(gid, user_id, by_name=name, left=user_id == uid)
@@ -310,21 +357,38 @@ def _readable_group(gid: str) -> dict[str, Any]:
 def list_messages(gid: str, after: int = 0, before: int | None = None, limit: int = Query(60, ge=1, le=200)) -> dict:
     _readable_group(gid)
     _, uid, _ = _me()
-    msgs = _c().messages(gid, after_id=after, before_id=before, limit=limit)
+    msgs = _c().messages(gid, after_id=after, before_id=before, limit=limit, viewer=uid)
     muted = _c().muted_users(uid)
     for m in msgs:
         m["muted"] = m["author_id"] in muted
-    return {"messages": msgs, "pinned": _c().pinned_messages(gid) if not after else None, "server_time": time.time()}
+    return {
+        "messages": msgs,
+        "pinned": _c().pinned_messages(gid, viewer=uid) if not after else None,
+        "server_time": time.time(),
+    }
 
 
-@router.post("/collab/groups/{gid}/messages", summary="发群消息（Markdown + 引用回测 / 策略 / 代码 / 文件；@ 提及进通知中心）")
+@router.post(
+    "/collab/groups/{gid}/messages", summary="发群消息（Markdown + 引用回测 / 策略 / 代码 / 文件；@ 提及进通知中心）"
+)
 def post_message(gid: str, payload: MessageIn) -> dict:
     _writer()
     ws, uid, name = _me()
     _c().require_group_member(gid, uid, ws=ws)
+    row = _c()._group_row(gid)
+    dm = (jload(row.get("settings"), {}) or {}).get("dm") or []
+    if dm:
+        peer = next((x for x in dm if x != uid), None)
+        if peer:
+            state = get_services().social.can_dm(gid, ws, uid, peer)
+            if not state.get("ok"):
+                raise AppError(ErrorCode.PERMISSION_DENIED, str(state.get("reason") or "当前无法发送私信"))
     refs = _resolve_refs(payload.refs)
-    return {"message": _c().post_message(gid, author_id=uid, author_name=name, body=payload.body, refs=refs,
-                                         reply_to=payload.reply_to)}
+    return {
+        "message": _c().post_message(
+            gid, author_id=uid, author_name=name, body=payload.body, refs=refs, reply_to=payload.reply_to
+        )
+    }
 
 
 @router.put("/collab/messages/{mid}", summary="编辑自己的消息")
@@ -340,6 +404,14 @@ def delete_message(mid: int) -> dict:
     mod = _ws_admin() or _c().group_role(msg["group_id"], uid) in ("owner", "admin")
     _c().delete_message(mid, uid, moderator=mod)
     return {"ok": True}
+
+
+@router.post("/collab/messages/{mid}/qmoji", summary="给群消息贴一个 Qmoji 反应；再次调用取消")
+def qmoji_message(mid: int, payload: QmojiIn) -> dict:
+    ws, uid, _ = _me()
+    msg = _c().message(mid)
+    _c().require_group_member(msg["group_id"], uid, ws=ws)
+    return _c().react_message(mid, uid, payload.emoji)
 
 
 @router.post("/collab/messages/{mid}/pin", summary="置顶 / 取消置顶群消息（群主 / 群管理员）")
@@ -446,16 +518,24 @@ def group_usage(gid: str, days: int = Query(30, ge=1, le=365)) -> dict:
     for m in members if is_mod else [uid]:
         g_tokens, g_cost = hub._sum(ws, since, scope="group", group_id=gid, user_id=m)
         w_tokens, w_cost = hub._sum(ws, since, scope="workspace", user_id=m)
-        per_user.append({
-            "user_id": m, "name": names.get(m, "?"),
-            "group_tokens": g_tokens, "group_cost": f"{g_cost / 1e6:.4f}",
-            "ws_tokens": w_tokens, "ws_cost": f"{w_cost / 1e6:.4f}",
-            "member_limit_status": hub.rule_status(ws, settings.get("member_limits") or [], scope="group",
-                                                   group_id=gid, user_id=m),
-        })
+        per_user.append(
+            {
+                "user_id": m,
+                "name": names.get(m, "?"),
+                "group_tokens": g_tokens,
+                "group_cost": f"{g_cost / 1e6:.4f}",
+                "ws_tokens": w_tokens,
+                "ws_cost": f"{w_cost / 1e6:.4f}",
+                "member_limit_status": hub.rule_status(
+                    ws, settings.get("member_limits") or [], scope="group", group_id=gid, user_id=m
+                ),
+            }
+        )
     providers = [
-        {**hub.view(r), "limit_status": hub.rule_status(ws, r.get("limits") or [], provider=r["name"], scope="group",
-                                                        group_id=gid)}
+        {
+            **hub.view(r),
+            "limit_status": hub.rule_status(ws, r.get("limits") or [], provider=r["name"], scope="group", group_id=gid),
+        }
         for r in hub._records(ws)
         if r.get("scope") == "group" and r.get("group_id") == gid
     ]
@@ -515,8 +595,15 @@ def get_share(object_type: Literal["strategy", "project"], object_id: str) -> di
 @router.put("/collab/shares/{object_type}/{object_id}", summary="设置可见性：仅自己 / 工作区内公开 / 指定群组内公开")
 def put_share(object_type: Literal["strategy", "project"], object_id: str, payload: ShareIn) -> dict:
     ws, uid, _ = _me()
-    sh = _c().set_share(ws, object_type, object_id, user_id=uid, ws_admin=_ws_admin(),
-                        visibility=payload.visibility, group_ids=payload.group_ids)
+    sh = _c().set_share(
+        ws,
+        object_type,
+        object_id,
+        user_id=uid,
+        ws_admin=_ws_admin(),
+        visibility=payload.visibility,
+        group_ids=payload.group_ids,
+    )
     get_services().audit.record("share.set", object_type=object_type, object_id=object_id, details=payload.model_dump())
     return {"share": sh}
 
@@ -573,14 +660,18 @@ def edit_log(object_type: str, object_id: str) -> dict:
 
 @router.get("/collab/editors/{object_type}", summary="每个对象的编辑者（列表上的头像标记）")
 def editors(object_type: str) -> dict:
-    ws, uid, _ = _me()
+    ws, _uid, _ = _me()
     shares = _c().shares(ws, object_type) if object_type in ("strategy", "project") else {}
     names = _c().names({s["owner_id"] for s in shares.values()})
     return {
         "editors": _c().editors(ws, object_type),
         "visibility": {
-            k: {"visibility": v["visibility"], "owner_id": v["owner_id"], "owner_name": names.get(v["owner_id"], ""),
-                "groups": v["group_ids"]}
+            k: {
+                "visibility": v["visibility"],
+                "owner_id": v["owner_id"],
+                "owner_name": names.get(v["owner_id"], ""),
+                "groups": v["group_ids"],
+            }
             for k, v in shares.items()
         },
     }
@@ -618,9 +709,18 @@ def lineage(slug: str | None = None) -> dict:
         if key not in nodes:
             rec = strategies.get(s)
             nodes[key] = {
-                "id": key, "slug": s, "version": version or "?", "name": rec.meta.name if rec else s,
-                "exists": rec is not None, "current": bool(rec and rec.meta.version == version),
-                "author": None, "editors": [], "at": None, "action": "", "note": "", "backtests": [],
+                "id": key,
+                "slug": s,
+                "version": version or "?",
+                "name": rec.meta.name if rec else s,
+                "exists": rec is not None,
+                "current": bool(rec and rec.meta.version == version),
+                "author": None,
+                "editors": [],
+                "at": None,
+                "action": "",
+                "note": "",
+                "backtests": [],
                 "status": rec.meta.status if rec and rec.meta.version == version else "",
             }
         nodes[key].update({k: v for k, v in kw.items() if v is not None})
@@ -643,7 +743,11 @@ def lineage(slug: str | None = None) -> dict:
             if v == rec.meta.version:
                 n["at"] = rec.meta.updated_at
                 if rec.meta.author:
-                    n["author"] = {"user_id": "", "name": rec.meta.author, "actor_kind": "agent" if rec.meta.source == "agent" else "human"}
+                    n["author"] = {
+                        "user_id": "",
+                        "name": rec.meta.author,
+                        "actor_kind": "agent" if rec.meta.source == "agent" else "human",
+                    }
             if prev:
                 link(prev, n["id"], "edit")
             prev = n["id"]
@@ -663,22 +767,35 @@ def lineage(slug: str | None = None) -> dict:
             link(node(s, e["parent_version"])["id"], n["id"], "edit")
         src = e.get("derived_from") or ""
         if src.startswith("strategy:"):
-            ps, _, pv = src[len("strategy:"):].partition("@")
+            ps, _, pv = src[len("strategy:") :].partition("@")
             if ps not in hidden:
                 link(node(ps, pv)["id"], n["id"], "clone")
         elif src.startswith("post:"):
-            pid = src[len("post:"):]
+            pid = src[len("post:") :]
             snap = (posts.get(pid) or {}).get("strategy") or {}
             if snap.get("slug") and snap["slug"] not in hidden:
                 link(node(snap["slug"], snap.get("version") or "")["id"], n["id"], "clone")
             else:
                 key = f"post:{pid}"
-                nodes.setdefault(key, {
-                    "id": key, "slug": "", "version": "", "name": (posts.get(pid) or {}).get("title") or "策略广场帖子",
-                    "kind": "post", "exists": pid in posts, "current": False, "author": None, "editors": [],
-                    "at": (posts.get(pid) or {}).get("created_at"), "action": "post", "note": "", "backtests": [],
-                    "status": "",
-                })
+                nodes.setdefault(
+                    key,
+                    {
+                        "id": key,
+                        "slug": "",
+                        "version": "",
+                        "name": (posts.get(pid) or {}).get("title") or "策略广场帖子",
+                        "kind": "post",
+                        "exists": pid in posts,
+                        "current": False,
+                        "author": None,
+                        "editors": [],
+                        "at": (posts.get(pid) or {}).get("created_at"),
+                        "action": "post",
+                        "note": "",
+                        "backtests": [],
+                        "status": "",
+                    },
+                )
                 link(key, n["id"], "clone")
 
     # 3. 回测挂到对应版本；版本对不上的挂到该策略最新的节点
@@ -730,11 +847,18 @@ def _resolve_refs(refs: list[dict[str, Any]]) -> list[dict[str, Any]]:
             m = row.get("metrics") or {}
             r["title"] = r["title"] or f"{row.get('strategy_name') or row.get('slug')} 回测"
             r["summary"] = {
-                "strategy": row.get("strategy_name"), "slug": row.get("slug"), "version": row.get("version"),
-                "total_return": m.get("total_return"), "sharpe": m.get("sharpe"), "max_drawdown": m.get("max_drawdown"),
-                "trades": m.get("trades"), "excess_return": m.get("excess_return"),
-                "timeframe": row.get("timeframe"), "sources": ",".join(row.get("data_sources") or []),
-                "start_ts": row.get("start_ts"), "end_ts": row.get("end_ts"),
+                "strategy": row.get("strategy_name"),
+                "slug": row.get("slug"),
+                "version": row.get("version"),
+                "total_return": m.get("total_return"),
+                "sharpe": m.get("sharpe"),
+                "max_drawdown": m.get("max_drawdown"),
+                "trades": m.get("trades"),
+                "excess_return": m.get("excess_return"),
+                "timeframe": row.get("timeframe"),
+                "sources": ",".join(row.get("data_sources") or []),
+                "start_ts": row.get("start_ts"),
+                "end_ts": row.get("end_ts"),
             }
         elif t == "strategy":
             rec = _repo().get(rid)
@@ -742,8 +866,10 @@ def _resolve_refs(refs: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 continue
             r["title"] = r["title"] or rec.meta.name
             r["summary"] = {
-                "version": rec.meta.version, "timeframe": rec.meta.timeframe,
-                "securities": ",".join(rec.meta.securities or []), "status": rec.meta.status,
+                "version": rec.meta.version,
+                "timeframe": rec.meta.timeframe,
+                "securities": ",".join(rec.meta.securities or []),
+                "status": rec.meta.status,
                 "code_sha256": hashlib.sha256(rec.source.encode("utf-8")).hexdigest()[:12],
             }
         elif t == "file":
@@ -799,21 +925,36 @@ def search_refs(type: Literal["backtest", "strategy", "post", "file", "task"], q
             if ql and ql not in title.lower() and ql not in b["id"].lower():
                 continue
             m = b.get("metrics") or {}
-            items.append({"type": "backtest", "id": b["id"], "title": title, "at": b.get("created_at"),
-                          "hint": f"收益 {_pct(m.get('total_return'))} · 夏普 {_num(m.get('sharpe'))}"})
+            items.append(
+                {
+                    "type": "backtest",
+                    "id": b["id"],
+                    "title": title,
+                    "at": b.get("created_at"),
+                    "hint": f"收益 {_pct(m.get('total_return'))} · 夏普 {_num(m.get('sharpe'))}",
+                }
+            )
     elif type == "strategy":
         hidden = _c().hidden_ids(ws, "strategy", uid, ws_admin=_ws_admin())
         for r in _repo().list():
             if r.meta.slug in hidden or (ql and ql not in r.meta.name.lower() and ql not in r.meta.slug):
                 continue
-            items.append({"type": "strategy", "id": r.meta.slug, "title": r.meta.name, "at": r.meta.updated_at,
-                          "hint": f"{r.meta.version} · {r.meta.timeframe}"})
+            items.append(
+                {
+                    "type": "strategy",
+                    "id": r.meta.slug,
+                    "title": r.meta.name,
+                    "at": r.meta.updated_at,
+                    "hint": f"{r.meta.version} · {r.meta.timeframe}",
+                }
+            )
     elif type == "post":
         for p in sorted(store.list(Collections.POSTS), key=lambda x: x.get("created_at") or 0, reverse=True):
             if ql and ql not in p["title"].lower():
                 continue
-            items.append({"type": "post", "id": p["id"], "title": p["title"], "at": p.get("created_at"),
-                          "hint": p.get("author")})
+            items.append(
+                {"type": "post", "id": p["id"], "title": p["title"], "at": p.get("created_at"), "hint": p.get("author")}
+            )
     elif type == "file":
         rows = get_services().db.fetchall(
             "SELECT * FROM uploads WHERE user_id=? OR workspace_id=? ORDER BY created_at DESC LIMIT 100", (uid, ws)
@@ -821,16 +962,32 @@ def search_refs(type: Literal["backtest", "strategy", "post", "file", "task"], q
         for u in rows:
             if ql and ql not in u["filename"].lower():
                 continue
-            items.append({"type": "file", "id": u["id"], "title": u["filename"], "at": u["created_at"],
-                          "hint": f"{u['mime']} · {u['size'] // 1024} KB", "mime": u["mime"], "size": u["size"]})
+            items.append(
+                {
+                    "type": "file",
+                    "id": u["id"],
+                    "title": u["filename"],
+                    "at": u["created_at"],
+                    "hint": f"{u['mime']} · {u['size'] // 1024} KB",
+                    "mime": u["mime"],
+                    "size": u["size"],
+                }
+            )
     elif type == "task":
         for t in _c().tasks(ws=ws):
             if ql and ql not in t["title"].lower():
                 continue
             if _c().group_role(t["group_id"], uid) is None and not _ws_admin():
                 continue
-            items.append({"type": "task", "id": t["id"], "title": t["title"], "at": t["created_at"],
-                          "hint": f"{t['status_label']} · {t['assignee_name'] or '未指派'}"})
+            items.append(
+                {
+                    "type": "task",
+                    "id": t["id"],
+                    "title": t["title"],
+                    "at": t["created_at"],
+                    "hint": f"{t['status_label']} · {t['assignee_name'] or '未指派'}",
+                }
+            )
     return {"items": items[:40]}
 
 
@@ -862,11 +1019,15 @@ class MuteIn(BaseModel):
 
 
 @router.get("/inbox", summary="消息通知中心：我的通知（可只看未读、按类型筛选、向前翻页）")
-def inbox(unread: bool = False, kind: str | None = None, before: int | None = None,
-          limit: int = Query(50, ge=1, le=200)) -> dict:
+def inbox(
+    unread: bool = False, kind: str | None = None, before: int | None = None, limit: int = Query(50, ge=1, le=200)
+) -> dict:
     uid = context.current().user_id or ""
-    return {"items": _c().inbox(uid, unread=unread, kind=kind, before_id=before, limit=limit),
-            "kinds": NOTIFY_KINDS, "unread": _c().unread(uid)}
+    return {
+        "items": _c().inbox(uid, unread=unread, kind=kind, before_id=before, limit=limit),
+        "kinds": NOTIFY_KINDS,
+        "unread": _c().unread(uid),
+    }
 
 
 @router.get("/inbox/summary", summary="顶栏角标：未读通知数、我的待办任务数、待处理问题报告（管理员）与全站公告")
@@ -911,6 +1072,14 @@ def list_mutes() -> dict:
 
 @router.post("/inbox/mutes", summary="屏蔽：不再收到某人 / 某群组 / 某类 / 某帖子的通知；屏蔽的人的群消息会折叠")
 def add_mute(payload: MuteIn) -> dict:
+    if payload.target_type == "user":
+        ws = context.current_workspace()
+        row = get_services().db.fetchone(
+            "SELECT role FROM memberships WHERE workspace_id=? AND user_id=?",
+            (ws, payload.target_id),
+        )
+        if row and row.get("role") == "admin":
+            raise AppError(ErrorCode.PERMISSION_DENIED, "不能屏蔽工作区管理员")
     _c().mute(context.current().user_id or "", payload.target_type, payload.target_id, payload.label)
     return {"ok": True}
 
@@ -963,8 +1132,7 @@ def list_issues(scope: Literal["mine", "all"] = "mine", status: str | None = Non
     ctx = context.current()
     c = _c()
     if scope == "all" and (ctx.is_admin or _admin_workspaces()):
-        items = c.issues(all_issues=ctx.is_admin, workspace_ids=_admin_workspaces(), user_id=ctx.user_id,
-                         status=status)
+        items = c.issues(all_issues=ctx.is_admin, workspace_ids=_admin_workspaces(), user_id=ctx.user_id, status=status)
     else:
         items = c.issues(user_id=ctx.user_id, status=status)
     return {
@@ -981,8 +1149,13 @@ def create_issue(payload: IssueIn) -> dict:
     ctx = context.current()
     c = _c()
     iid = c.create_issue(
-        ws=ctx.workspace_id, user_id=ctx.user_id or "", title=payload.title, body=payload.body,
-        category=payload.category, severity=payload.severity, attachments=payload.attachments,
+        ws=ctx.workspace_id,
+        user_id=ctx.user_id or "",
+        title=payload.title,
+        body=payload.body,
+        category=payload.category,
+        severity=payload.severity,
+        attachments=payload.attachments,
         context_info=payload.context,
     )
     # 通知部署管理员与该工作区的管理员
@@ -997,12 +1170,24 @@ def create_issue(payload: IssueIn) -> dict:
             )
         }
     c.notify(
-        staff, kind="issue", title=f"新的问题报告：{payload.title}", body=payload.body[:200],
-        link=f"issues/{iid}", actor_id=ctx.user_id, actor_name=ctx.user_name, source_type="issue", source_id=iid,
-        workspace_id=ctx.workspace_id, force=True,
+        staff,
+        kind="issue",
+        title=f"新的问题报告：{payload.title}",
+        body=payload.body[:200],
+        link=f"issues/{iid}",
+        actor_id=ctx.user_id,
+        actor_name=ctx.user_name,
+        source_type="issue",
+        source_id=iid,
+        workspace_id=ctx.workspace_id,
+        force=True,
     )
-    get_services().audit.record("issue.create", object_type="issue", object_id=iid,
-                                details={"category": payload.category, "severity": payload.severity})
+    get_services().audit.record(
+        "issue.create",
+        object_type="issue",
+        object_id=iid,
+        details={"category": payload.category, "severity": payload.severity},
+    )
     return {"issue": c.issue(iid)}
 
 
@@ -1017,14 +1202,30 @@ def reply_issue(iid: str, payload: IssueReplyIn) -> dict:
     row = _issue_or_403(iid)
     ctx = context.current()
     staff = _is_staff(row) and row["user_id"] != ctx.user_id
-    _c().reply_issue(iid, user_id=ctx.user_id or "", user_name=ctx.user_name, body=payload.body, staff=staff,
-                     attachments=payload.attachments)
+    _c().reply_issue(
+        iid,
+        user_id=ctx.user_id or "",
+        user_name=ctx.user_name,
+        body=payload.body,
+        staff=staff,
+        attachments=payload.attachments,
+    )
     if not staff:
         db = get_services().db
         admins = {r["id"] for r in db.fetchall("SELECT id FROM users WHERE is_admin=1 AND is_active=1")}
-        _c().notify(admins, kind="issue", title=f"问题报告有新补充：{row['title']}", body=payload.body[:200],
-                    link=f"issues/{iid}", actor_id=ctx.user_id, actor_name=ctx.user_name, source_type="issue",
-                    source_id=iid, workspace_id=row["workspace_id"], force=True)
+        _c().notify(
+            admins,
+            kind="issue",
+            title=f"问题报告有新补充：{row['title']}",
+            body=payload.body[:200],
+            link=f"issues/{iid}",
+            actor_id=ctx.user_id,
+            actor_name=ctx.user_name,
+            source_type="issue",
+            source_id=iid,
+            workspace_id=row["workspace_id"],
+            force=True,
+        )
     return {"issue": _c().issue(iid)}
 
 
@@ -1058,8 +1259,16 @@ def _can_read_upload(up: dict[str, Any]) -> bool:
 async def upload(request: Request, filename: str = Query(..., max_length=200)) -> dict:
     data = await request.body()
     ctx = context.current()
-    info = _c().save_upload(ws=ctx.workspace_id, user_id=ctx.user_id or "", filename=filename,
-                            mime=request.headers.get("content-type", ""), data=data)
+    info = _c().save_upload(
+        ws=ctx.workspace_id,
+        user_id=ctx.user_id or "",
+        filename=filename,
+        mime=request.headers.get("content-type", ""),
+        data=data,
+        quota_guard=lambda used, pending: get_services().model_hub.enforce_storage_upload(
+            ctx.workspace_id or "", ctx.user_id or "", ctx.role, used, pending
+        ),
+    )
     return {"file": {**info, "url": f"/api/uploads/{info['id']}"}}
 
 
@@ -1073,8 +1282,35 @@ def read_upload(fid: str):
         raise AppError(ErrorCode.NOT_FOUND, "文件已被清理")
     inline = up["mime"].startswith("image/") or up["mime"] == "application/pdf"
     return FileResponse(
-        path, media_type=up["mime"], filename=up["filename"],
+        path,
+        media_type=up["mime"],
+        filename=up["filename"],
         content_disposition_type="inline" if inline else "attachment",
-        headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "private, max-age=86400",
-                 "Content-Security-Policy": "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'"},
+        headers={
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "private, max-age=86400",
+            "Content-Security-Policy": "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'",
+        },
+    )
+
+
+@router.get("/uploads/{fid}/thumb", summary="读取图片缩略图（列表与帖子卡使用，缺失时回退原图）")
+def read_upload_thumb(fid: str):
+    up = _c().upload(fid)
+    if up is None or not _can_read_upload(up):
+        raise AppError(ErrorCode.NOT_FOUND, "文件不存在")
+    thumb = _c().upload_thumb_file(fid)
+    # GIF 保留原图返回，缩略图 WebP 会丢掉动画
+    is_gif = up["mime"] == "image/gif"
+    path = _c().upload_file(fid) if is_gif or not thumb.exists() else thumb
+    if not path.exists():
+        raise AppError(ErrorCode.NOT_FOUND, "文件已被清理")
+    return FileResponse(
+        path,
+        media_type=up["mime"] if is_gif or not thumb.exists() else "image/webp",
+        headers={
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "private, max-age=86400",
+            "Content-Security-Policy": "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'",
+        },
     )

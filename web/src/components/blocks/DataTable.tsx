@@ -1,5 +1,6 @@
 import { useMemo, useState, type ReactNode } from 'react'
 import { copyText, downloadBlob, fmtValue, looksLikeTs, toCsv, type Fmt } from './protocol'
+import { t } from '../../i18n'
 
 /**
  * 增强型表格：横向滚动、固定表头、点击表头排序、全文筛选、点击单元格复制、导出 CSV；
@@ -98,7 +99,7 @@ export function DataTable({ columns, rows, title, renderCell, note, maxHeight = 
             <tr>
               {columns.map((c) => (
                 <th key={c.key} className={numeric[c.key] || c.align === 'right' ? 'num' : ''} aria-sort={sort?.key === c.key ? (sort.dir === 1 ? 'ascending' : 'descending') : 'none'}>
-                  <button type="button" onClick={() => toggleSort(c.key)} title="点击排序">
+                  <button type="button" onClick={() => toggleSort(c.key)} title={t('点击排序')}>
                     {c.label ?? c.key}
                     <i className={`qb-sort${sort?.key === c.key ? (sort.dir === 1 ? ' asc' : ' desc') : ''}`} aria-hidden />
                   </button>

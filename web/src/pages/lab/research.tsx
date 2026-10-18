@@ -201,20 +201,37 @@ export async function syncData(symbols: string[], timeframe: string, days = 180)
   return post<{ ok: boolean; results: SyncResult[] }>(`/api/market/sync?${q}`)
 }
 
-export function MarketSwitcher({ symbols, timeframe, onChange, multi, disabled, notify, compact }: {
-  symbols: string[]; timeframe: string; onChange: (symbols: string[], timeframe: string) => void
+export function MarketSwitcher({ symbols, timeframe, auto, onChange, multi, disabled, notify, compact }: {
+  symbols: string[]; timeframe: string; auto?: boolean; onChange: (symbols: string[], timeframe: string) => void
   multi?: boolean; disabled?: boolean; notify: (msg: string, error?: boolean) => void; compact?: boolean
 }) {
   const pop = usePopover()
   const all = useSymbols()
-  const [sel, setSel] = useState<string[]>(symbols)
+  const initiallyAuto = !!auto
+  const [sel, setSel] = useState<string[]>(initiallyAuto ? [] : symbols)
   const [tf, setTf] = useState(timeframe)
+  const [autoMode, setAutoMode] = useState(initiallyAuto)
   const [custom, setCustom] = useState('')
   const [syncing, setSyncing] = useState(false)
-  useEffect(() => { if (pop.open) { setSel(symbols); setTf(timeframe) } }, [pop.open]) // eslint-disable-line react-hooks/exhaustive-deps
-  const toggle = (s: string) => setSel((cur) => (multi ? (cur.includes(s) ? cur.filter((x) => x !== s) : [...cur, s]) : [s]))
+  useEffect(() => {
+    if (!pop.open) return
+    const isAuto = !!auto
+    setAutoMode(isAuto)
+    setSel(isAuto ? [] : symbols)
+    setTf(timeframe)
+  }, [pop.open]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (pop.open) return
+    setAutoMode(!!auto)
+    setSel(auto ? [] : symbols)
+    setTf(timeframe)
+  }, [auto, symbols.join('|'), timeframe]) // eslint-disable-line react-hooks/exhaustive-deps
+  const choose = (s: string) => {
+    setAutoMode(false)
+    setSel((cur) => (multi ? (cur.includes(s) ? cur.filter((x) => x !== s) : [...cur, s]) : [s]))
+  }
   const options = [...new Set([...symbols, ...all])]
-  const label = symbols.length > 2 ? `${symbols[0]} 等 ${symbols.length} 个` : symbols.join(', ')
+  const label = !symbols.length ? '未设置' : symbols.length > 2 ? `${symbols[0]} 等 ${symbols.length} 个` : symbols.join(', ')
   const doSync = async () => {
     setSyncing(true)
     try {
@@ -227,41 +244,55 @@ export function MarketSwitcher({ symbols, timeframe, onChange, multi, disabled, 
   }
   return (
     <div className="cmp-pop-anchor" ref={pop.ref}>
-      <button type="button" className={`mk-switch${compact ? ' compact' : ''}`} disabled={disabled} onClick={() => pop.setOpen(!pop.open)}
-        aria-haspopup="dialog" aria-expanded={pop.open} title="切换标的与周期">
-        <span className="mk-sym">{label}</span><span className="mk-tf">{timeframe}</span>
+      <button type="button" className={`mk-switch${compact ? ' compact' : ''}${autoMode ? ' auto' : ''}`} disabled={disabled} onClick={() => pop.setOpen(!pop.open)}
+        aria-haspopup="dialog" aria-expanded={pop.open} aria-label={autoMode ? '标的自动，点击设置' : `标的 ${label}，周期 ${timeframe}`}
+        title={autoMode ? '标的自动：AI 根据对话选择；点击可手动设置' : `当前 ${label} · ${timeframe}；点击切换标的与周期`}>
+        <span className="mk-ico" aria-hidden>
+          {autoMode
+            ? <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"><path d="M6 1.6v2M6 8.4v2M1.6 6h2M8.4 6h2M3 3l1.4 1.4M7.6 7.6 9 9M9 3 7.6 4.4M4.4 7.6 3 9" /></svg>
+            : <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"><path d="M3 1.8v2.4M3 7.8v2.4M9 1.8v2.4M9 7.8v2.4M1.8 4.2h2.4M7.8 4.2h2.4M1.8 7.8h2.4M7.8 7.8h2.4" /></svg>}
+        </span>
+        <span className="mk-sym">{autoMode ? '自动' : label}</span>{!autoMode && <span className="mk-tf">{timeframe}</span>}
         <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden><path d="M2 3.5 5 6.5 8 3.5" fill="none" stroke="currentColor" strokeWidth="1.4" /></svg>
       </button>
       {pop.open && (
-        <div className="cmp-menu cmp-menu-right mk-menu" role="dialog" aria-label="标的与周期">
-          <div className="cmp-menu-label">{multi ? '标的（可多选）' : '标的'}</div>
+        <div ref={pop.menuRef} className="cmp-menu cmp-menu-right mk-menu" style={pop.menuStyle} data-placement={pop.placement} role="dialog" aria-label="标的与周期">
+          <div className="cmp-menu-label">{multi ? '标的（可多选；自动=AI 按对话选择）' : '标的与周期（自动=AI 按对话选择）'}</div>
           <div className="mk-chips">
+            <button type="button" className={`chip auto${autoMode ? ' on' : ''}`} aria-pressed={autoMode}
+              onClick={() => { setAutoMode(true); setSel([]) }}>自动</button>
             {options.map((s) => (
-              <button key={s} type="button" className={`chip${sel.includes(s) ? ' on' : ''}`} aria-pressed={sel.includes(s)} onClick={() => toggle(s)}>{s.replace('/USDT', '')}</button>
+              <button key={s} type="button" className={`chip${!autoMode && sel.includes(s) ? ' on' : ''}`} aria-pressed={!autoMode && sel.includes(s)} onClick={() => choose(s)}>{s.replace('/USDT', '')}</button>
             ))}
           </div>
+          {autoMode && <div className="mk-auto-note">标的与周期都由 AI 根据对话决定；选择任一标的后即可手动设置周期。</div>}
           <form className="mk-add" onSubmit={(e) => {
             e.preventDefault()
             const v = custom.trim().toUpperCase()
             if (!v) return
             const s = v.includes('/') ? v : `${v}/USDT`
+            setAutoMode(false)
             setSel((cur) => (multi ? [...new Set([...cur, s])] : [s]))
             setCustom('')
           }}>
             <input value={custom} onChange={(e) => setCustom(e.target.value)} placeholder="添加其他标的，如 TON 或 ARB/USDT" />
             <button type="submit" className="button small">添加</button>
           </form>
-          <div className="cmp-menu-label">周期</div>
-          <div className="cmp-seg" role="group" aria-label="周期" style={{ gridTemplateColumns: `repeat(${TIMEFRAMES.length}, 1fr)` }}>
-            {TIMEFRAMES.map((t) => <button key={t} type="button" className={tf === t ? 'on' : ''} aria-pressed={tf === t} onClick={() => setTf(t)}>{t}</button>)}
-          </div>
+          {!autoMode && (
+            <>
+              <div className="cmp-menu-label">周期</div>
+              <div className="cmp-seg" role="group" aria-label="周期" style={{ gridTemplateColumns: `repeat(${TIMEFRAMES.length}, 1fr)` }}>
+                {TIMEFRAMES.map((t) => <button key={t} type="button" className={tf === t ? 'on' : ''} aria-pressed={tf === t} onClick={() => setTf(t)}>{t}</button>)}
+              </div>
+            </>
+          )}
           <div className="mk-foot">
             <button type="button" className="button small ghost" disabled={syncing || !sel.length} onClick={doSync}
               title="从交易所同步近 180 天真实行情到本地（补齐缺口）">{syncing ? '同步中…' : '同步数据'}</button>
             <span className="lab2-card-gap" />
             <button type="button" className="button small" onClick={() => pop.setOpen(false)}>取消</button>
-            <button type="button" className="button small primary" disabled={!sel.length}
-              onClick={() => { onChange(sel, tf); pop.setOpen(false) }}>应用</button>
+            <button type="button" className="button small primary"
+              onClick={() => { onChange(autoMode ? [] : sel, tf); pop.setOpen(false) }}>应用</button>
           </div>
         </div>
       )}

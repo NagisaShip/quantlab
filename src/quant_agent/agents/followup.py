@@ -31,7 +31,9 @@ def _fetch(tool: str, run_id: str) -> tuple[bool, Any]:
     if tool == "start_tuning":
         res = PT.t_tuning_result(opt_id=run_id)
         state = res.get("state") if isinstance(res, dict) else None
-        finished = isinstance(res, dict) and (bool(res.get("best_params")) or state in ("FAILED", "CANCELED") or "error" in res)
+        finished = isinstance(res, dict) and (
+            bool(res.get("best_params")) or state in ("FAILED", "CANCELED") or "error" in res
+        )
         return finished, res
     if tool == "start_stress_drill":
         res = PT.t_stress_result(run_id=run_id)
@@ -68,7 +70,9 @@ class FollowUps:
             return
         from ..platform import context
 
-        item = _Watch(lab, pid, tool, str(result["run_id"]), contextvars.copy_context(), context.current().user_id or "")
+        item = _Watch(
+            lab, pid, tool, str(result["run_id"]), contextvars.copy_context(), context.current().user_id or ""
+        )
         with self._lock:
             self._items.append(item)
             if self._thread is None or not self._thread.is_alive():
@@ -76,7 +80,11 @@ class FollowUps:
                 self._thread.start()
 
     #: 查结果的工具 → 它对应的发起工具
-    RESULT_OF = {"tuning_result": "start_tuning", "stress_result": "start_stress_drill", "checkup_result": "run_checkup"}
+    RESULT_OF = {
+        "tuning_result": "start_tuning",
+        "stress_result": "start_stress_drill",
+        "checkup_result": "run_checkup",
+    }
 
     def seen(self, pid: str, tool: str, out: Any) -> None:
         """AI 自己查到了已结束的结果：对应的跟进取消，不再重复汇报。"""
@@ -85,7 +93,9 @@ class FollowUps:
             return
         text = json.dumps(out, ensure_ascii=False, default=str)
         finished = isinstance(out, list) or bool(
-            out.get("best_params") or out.get("status") in ("done", "failed", "error") or out.get("state") in ("FAILED", "CANCELED")
+            out.get("best_params")
+            or out.get("status") in ("done", "failed", "error")
+            or out.get("state") in ("FAILED", "CANCELED")
         )
         if not finished:
             return
@@ -128,7 +138,12 @@ class FollowUps:
             return True  # 对话已删除
         if time.time() - w.created > GIVE_UP_SECONDS:
             w.lab.store.append(
-                w.pid, {"role": "event", "kind": "text", "content": f"{LABEL[w.tool]} {w.run_id} 超过 3 小时还没结束，不再自动跟进"}
+                w.pid,
+                {
+                    "role": "event",
+                    "kind": "text",
+                    "content": f"{LABEL[w.tool]} {w.run_id} 超过 3 小时还没结束，不再自动跟进",
+                },
             )
             return True
         finished, res = _fetch(w.tool, w.run_id)
@@ -151,11 +166,18 @@ class FollowUps:
         )
         if not start_turn:
             w.lab.store.append(
-                w.pid, {"role": "event", "kind": "text", "content": f"{label} {w.run_id} 已完成；回答上面的问题后 AI 会一起汇报"}
+                w.pid,
+                {
+                    "role": "event",
+                    "kind": "text",
+                    "content": f"{label} {w.run_id} 已完成；回答上面的问题后 AI 会一起汇报",
+                },
             )
             w.lab.store.append(w.pid, {"role": "user", "kind": "text", "content": text, "data": {"auto": "followup"}})
         else:
-            w.lab.store.append(w.pid, {"role": "event", "kind": "text", "content": f"{label} {w.run_id} 已完成，AI 正在汇报结果"})
+            w.lab.store.append(
+                w.pid, {"role": "event", "kind": "text", "content": f"{label} {w.run_id} 已完成，AI 正在汇报结果"}
+            )
             w.lab.store.append(w.pid, {"role": "user", "kind": "text", "content": text, "data": {"auto": "followup"}})
             try:
                 w.lab.start(w.pid, "chat", lambda: w.lab.chat(w.pid, text), wait=False)

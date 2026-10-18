@@ -74,10 +74,18 @@ class ArchiveIn(BaseModel):
     retention_days: int | None = Field(None, ge=1, le=3650)
 
 
+class FeaturesIn(BaseModel):
+    features: dict[str, bool] = {}
+
+
 class SettingsIn(BaseModel):
     name: str | None = None
     timezone: str | None = None
     quotas: dict | None = None
+    features: dict | None = None
+    feedback: dict | None = None
+    privacy: dict | None = None
+    storage: dict | None = None
 
 
 def _set_cookie(response: Response, token: str, request: Request) -> None:
@@ -181,6 +189,10 @@ class AccountIn(BaseModel):
     name: str | None = Field(None, max_length=40)
 
 
+class QuantlabIdIn(BaseModel):
+    password: str = Field(..., max_length=200)
+
+
 class EmailCodeIn(BaseModel):
     email: str = Field(..., max_length=200)
 
@@ -200,8 +212,19 @@ def put_account(payload: AccountIn) -> dict:
     ctx = context.current()
     s = get_services()
     acc = s.auth.update_account(ctx.user_id, username=payload.username, name=payload.name)
-    s.audit.record("user.account", object_type="user", object_id=ctx.user_id, details=payload.model_dump(exclude_none=True))
+    s.audit.record(
+        "user.account", object_type="user", object_id=ctx.user_id, details=payload.model_dump(exclude_none=True)
+    )
     return {"account": acc}
+
+
+@router.post("/auth/quantlab-id/rotate", summary="销毁并重新生成 QuantLab UID")
+def rotate_quantlab_uid(payload: QuantlabIdIn) -> dict:
+    ctx = context.current()
+    s = get_services()
+    account = s.auth.rotate_quantlab_uid(ctx.user_id, password=payload.password)
+    s.audit.record("user.quantlab_uid_rotate", object_type="user", object_id=ctx.user_id)
+    return {"account": account}
 
 
 @router.post("/auth/email/code", summary="给要绑定的邮箱发验证码（60 秒冷却，每小时 5 次）")
@@ -307,8 +330,12 @@ def me() -> dict:
             "email": acc["email"],
             "username": acc["username"],
             "email_verified": acc["email_verified"],
+            "quantlab_uid": acc.get("quantlab_uid", ""),
             "name": ctx.user_name,
             "is_admin": ctx.is_admin,
+            "avatar_color": s.social.profile(ctx.workspace_id or "", ctx.user_id or "").get("avatar_color", "#2E5C9A")
+            if s.social and ctx.workspace_id
+            else "#2E5C9A",
         },
         "workspaces": workspaces,
         "workspace": current
@@ -377,6 +404,53 @@ def update_settings(payload: SettingsIn) -> dict:
     return {"workspace": ws}
 
 
+@router.get("/workspace/storage", summary="工作区存储分类、磁盘占用与保留策略")
+def workspace_storage() -> dict:
+    from ..platform import storage
+
+    ws = _require_ws_admin()
+    return storage.scan(get_services(), ws)
+
+
+class StorageCleanupIn(BaseModel):
+    category: Literal["conversations", "feedback", "backtests", "runs", "uploads", "cache", "audit"]
+    keep_days: int = Field(30, ge=0, le=3650)
+    dry_run: bool = True
+
+
+@router.post("/workspace/storage/cleanup", summary="按分类清理超过保留期的数据（默认只预览）")
+def workspace_storage_cleanup(payload: StorageCleanupIn) -> dict:
+    from ..platform import storage
+
+    ws = _require_ws_admin()
+    return storage.cleanup(get_services(), ws, payload.category, keep_days=payload.keep_days, dry_run=payload.dry_run)
+
+
+@router.get("/workspace/features", summary="工作区功能开关与实现状态")
+def workspace_features() -> dict:
+    from ..platform.features import enabled, registry
+
+    ctx = context.current()
+    s = get_services()
+    ws = s.auth.workspace(ctx.workspace_id)
+    return {"enabled": enabled(ws.get("settings")), "registry": registry()}
+
+
+@router.put("/workspace/features", summary="管理员动态开关现货/永续/真实资金等能力")
+def update_workspace_features(payload: FeaturesIn) -> dict:
+    from ..platform.features import enabled, validate_patch
+
+    ws_id = _require_ws_admin()
+    s = get_services()
+    try:
+        patch = validate_patch(payload.features)
+    except ValueError as exc:
+        raise AppError(ErrorCode.INVALID_PARAMETER, str(exc)) from exc
+    ws = s.auth.update_settings(ws_id, {"features": patch})
+    s.audit.record("workspace.features", object_type="workspace", object_id=ws_id, details=patch)
+    return {"enabled": enabled(ws.get("settings")), "workspace": ws}
+
+
 @router.get("/workspace/members")
 def members() -> dict:
     s = get_services()
@@ -438,13 +512,26 @@ def audit_log(
     since: int | None = None,
     until: int | None = None,
     user_id: str | None = None,
+    q: str | None = Query(None, max_length=160),
 ) -> dict:
     """审计日志查询。只有工作区管理员可读——它记录的是全工作区的操作轨迹。"""
     ws_id = _require_ws_admin()
+    rows = get_services().audit.list(
+        ws_id,
+        limit=min(limit + 1, 1000),
+        action=action,
+        before_id=before_id,
+        since=since,
+        until=until,
+        user_id=user_id,
+        q=q,
+    )
+    has_more = len(rows) > limit
+    items = rows[:limit]
     return {
-        "items": get_services().audit.list(
-            ws_id, limit=limit, action=action, before_id=before_id, since=since, until=until, user_id=user_id
-        )
+        "items": items,
+        "has_more": has_more,
+        "next_before_id": items[-1]["id"] if has_more and items else None,
     }
 
 
@@ -454,6 +541,7 @@ def audit_export(
     since: int | None = None,
     until: int | None = None,
     user_id: str | None = None,
+    q: str | None = Query(None, max_length=160),
 ) -> PlainTextResponse:
     """导出审计日志为 CSV。
 
@@ -462,7 +550,7 @@ def audit_export(
     """
     ws_id = _require_ws_admin()
     s = get_services()
-    body = s.audit.export_csv(ws_id, action=action, since=since, until=until, user_id=user_id)
+    body = s.audit.export_csv(ws_id, action=action, since=since, until=until, user_id=user_id, q=q)
     s.audit.record("audit.export", object_type="audit_log", details={"action": action, "since": since, "until": until})
     return PlainTextResponse(
         body,

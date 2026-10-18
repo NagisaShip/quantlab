@@ -18,7 +18,6 @@ from typing import Any
 import httpx
 
 from ..timeframes import TimeframeTable
-
 from .base import (
     Balance,
     Bar,
@@ -43,7 +42,14 @@ FUNDING_LIMIT = 200
 
 
 def category_of(symbol: str) -> str:
-    return "linear" if symbol.upper().endswith(":PERP") else "spot"
+    from .contracts import contract_type_of
+
+    kind = contract_type_of(symbol)
+    if kind == "inverse":
+        return "inverse"
+    if kind in ("linear", "delivery"):
+        return "linear"
+    return "spot"
 
 
 def symbol_of(symbol: str) -> str:
@@ -154,8 +160,10 @@ class BybitAdapter(BaseAdapter):
 
     def fetch_funding_rates(self, symbol: str, start: int, end: int) -> list[FundingRate]:
         """USDT 永续资金费率历史（/v5/market/funding/history，每页 200 条，新→旧翻页）。"""
-        if not symbol.upper().endswith(":PERP"):
-            raise UnsupportedFeature(f"{symbol} 是现货，没有资金费率（永续写成 BTC/USDT:PERP）")
+        from .contracts import contract_type_of
+
+        if contract_type_of(symbol) not in ("linear", "inverse"):
+            raise UnsupportedFeature(f"{symbol} 没有资金费率（永续写成 :PERP 或 :INVERSE）")
         raw = symbol_of(symbol)
         got: dict[int, FundingRate] = {}
         cursor = end

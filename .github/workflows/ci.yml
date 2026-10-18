@@ -25,6 +25,11 @@ jobs:
         run: |
           ruff check src tests scripts
           ruff format --check src tests scripts
+      - name: API 快照与代码一致
+        run: |
+          python scripts/gen_api_doc.py
+          git diff --exit-code -- docs/API参考.md docs/openapi.json
+
       - name: 测试
         run: pytest -q
 
@@ -137,6 +142,9 @@ jobs:
 
       - name: 安装 Playwright 浏览器
         run: npx playwright install --with-deps chromium
+
+      - name: 研究流程页面覆盖审计
+        run: npm run qa:research
 
       - name: E2E 类型检查（spec 语法与类型）
         run: npm run e2e:typecheck

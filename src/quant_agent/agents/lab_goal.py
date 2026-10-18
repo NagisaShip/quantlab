@@ -44,7 +44,9 @@ LEGACY = {
 }
 LEGACY_BY_METRIC = {m: k for k, (m, _) in LEGACY.items()}
 
-TIMEFRAMES = TimeframeTable({k: 1 for k in ("1m", "5m", "15m", "30m", "1h", "4h", "1d")}, lambda ms: 1)  # 任意合法周期都算
+TIMEFRAMES = TimeframeTable(
+    {k: 1 for k in ("1m", "5m", "15m", "30m", "1h", "4h", "1d")}, lambda ms: 1
+)  # 任意合法周期都算
 TF_MS = {
     "1m": 60_000,
     "5m": 300_000,
@@ -203,7 +205,7 @@ def project_spec(project: dict[str, Any]) -> dict[str, Any]:
         {},
         {
             "items": project_items(project),
-            "symbols": project.get("securities") or ["BTC/USDT"],
+            "symbols": project.get("securities") or [],
             "timeframe": project.get("timeframe") or "1h",
             "start": project.get("start"),
             "end": project.get("end"),
@@ -236,7 +238,7 @@ def apply_spec(project: dict[str, Any], spec: dict[str, Any]) -> dict[str, Any]:
     return {
         "goal": {**spec, "updated_at": datetime.now(timezone.utc).timestamp()},
         "goals": legacy_from_items(spec["items"]),
-        "securities": spec["symbols"] or project.get("securities") or ["BTC/USDT"],
+        "securities": spec["symbols"] or project.get("securities") or [],
         "timeframe": spec["timeframe"],
         "start": spec.get("start"),
         "end": spec.get("end"),

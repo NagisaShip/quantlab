@@ -11,8 +11,9 @@ import {
 import { Callout, EmptyState, Heading, Loading, Modal, Panel, Tag } from '../components/ui'
 import { fmtCost, fmtTokens } from '../components/modelUsage'
 import { appConfirm, appPrompt } from '../components/dialog'
-import type { Me } from '../api3'
+import type { Me } from '../api/platform'
 import type { PageProps } from './types'
+import { tData } from '../i18n'
 
 export const ADMIN_TABS: { key: string; label: string }[] = [
   { key: 'overview', label: '服务器总览' }, { key: 'users', label: '账号管理' }, { key: 'workspaces', label: '全部工作区' },
@@ -398,7 +399,7 @@ function Audit() {
                   <td>{new Date(r.ts).toLocaleString()}</td><td>{r.user_name || r.user_id}</td><td className="mono small">{r.action}</td>
                   <td className="mono small">{r.object_type}{r.object_id ? `:${r.object_id.slice(0, 16)}` : ''}</td>
                   <td className="mono small">{r.workspace_id?.slice(0, 8)}</td><td className="mono small">{r.ip}</td>
-                  <td className="mono small adm-details" title={JSON.stringify(r.details)}>{JSON.stringify(r.details).slice(0, 80)}</td>
+                  <td className="mono small adm-details" title={JSON.stringify(tData(r.details))}>{JSON.stringify(tData(r.details)).slice(0, 80)}</td>
                 </tr>
               ))}
             </tbody>

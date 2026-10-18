@@ -1,4 +1,5 @@
-import { Fragment, useEffect, useMemo, useRef, useState, type MouseEvent as RME } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState, type PointerEvent as RPE } from 'react'
+import { ChartExpandButton, ChartFullscreen } from '../ChartFullscreen'
 import { DataTable } from './DataTable'
 import { downloadBlob, fmtValue, looksLikeTs, toCsv, type Fmt } from './protocol'
 
@@ -30,6 +31,9 @@ export interface ChartSpec {
   // 热力图
   y?: (number | string)[]
   z?: (number | null)[][]
+  /** 热力图最佳格点：画高亮边框，并在提示里标「最佳」。 */
+  best?: { x?: number | string; y?: number | string }
+  color_label?: string
 }
 
 export const PALETTE = ['var(--accent)', 'var(--amber)', '#0e9a9a', 'var(--violet)', 'var(--bench)', '#d0607f', '#6f7fa0', '#a3864f']
@@ -60,15 +64,30 @@ function niceTicks(lo: number, hi: number, n = 5): number[] {
 }
 
 export function Chart({ spec, height: hProp }: { spec: ChartSpec; height?: number }) {
+  const [full, setFull] = useState(false)
   const kind = spec.kind || 'line'
-  if (kind === 'pie') return <PieChart spec={spec} />
-  if (kind === 'heatmap') return <HeatmapChart spec={spec} />
-  return <XYChart spec={spec} height={hProp ?? spec.height} />
+  const height = hProp ?? spec.height ?? 260
+  const body = (h: number, expand?: () => void) => {
+    if (kind === 'pie') return <PieChart spec={spec} />
+    if (kind === 'heatmap') return <HeatmapChart spec={spec} />
+    return <XYChart spec={spec} height={h} onExpand={expand} />
+  }
+  if (full) {
+    return <ChartFullscreen title={spec.title} onClose={() => setFull(false)}>
+      {({ height: h }) => <div className="chart-fs-chart">{body(Math.max(260, h - 12))}</div>}
+    </ChartFullscreen>
+  }
+  return (
+    <div className="chart-expand-host">
+      {body(height, () => setFull(true))}
+      {kind !== 'line' && kind !== 'area' && kind !== 'bar' && kind !== 'scatter' && <ChartExpandButton onClick={() => setFull(true)} />}
+    </div>
+  )
 }
 
 // ---------------------------------------------------------------- XY
 
-function XYChart({ spec, height = 260 }: { spec: ChartSpec; height?: number }) {
+function XYChart({ spec, height = 260, onExpand }: { spec: ChartSpec; height?: number; onExpand?: () => void }) {
   const kind = spec.kind || 'line'
   const [ref, width] = useWidth<HTMLDivElement>()
   const [hidden, setHidden] = useState<Set<string>>(new Set())
@@ -146,24 +165,34 @@ function XYChart({ spec, height = 260 }: { spec: ChartSpec; height?: number }) {
     return [...new Set(out)]
   }, [norm.pairs, xLo, xHi, iw, i0, i1, catAxis])
 
-  const idxAt = (clientX: number, rect: DOMRect) => {
-    const x = clientX - rect.left
+  const idxAt = (svg: SVGSVGElement, clientX: number, clientY: number) => {
+    const ctm = svg.getScreenCTM?.()
+    let x: number
+    if (ctm) {
+      const pt = svg.createSVGPoint()
+      pt.x = clientX
+      pt.y = clientY
+      x = pt.matrixTransform(ctm.inverse()).x
+    } else {
+      x = clientX - svg.getBoundingClientRect().left
+    }
     const t = (x - pad.l) / iw
     return Math.max(i0, Math.min(i1, Math.round(i0 + t * (i1 - i0))))
   }
-  const onMove = (e: RME<SVGSVGElement>) => {
+  const onMove = (e: RPE<SVGSVGElement>) => {
     if (norm.pairs) return
-    const rect = e.currentTarget.getBoundingClientRect()
-    const i = idxAt(e.clientX, rect)
+    const i = idxAt(e.currentTarget, e.clientX, e.clientY)
     setHover(i)
     if (drag) setDrag({ ...drag, b: i })
   }
-  const onDown = (e: RME<SVGSVGElement>) => {
-    if (norm.pairs || n < 6) return
-    const i = idxAt(e.clientX, e.currentTarget.getBoundingClientRect())
+  const onDown = (e: RPE<SVGSVGElement>) => {
+    if (norm.pairs || n < 6 || (e.pointerType === 'mouse' && e.button !== 0)) return
+    try { e.currentTarget.setPointerCapture(e.pointerId) } catch { /* 旧浏览器 */ }
+    const i = idxAt(e.currentTarget, e.clientX, e.clientY)
     setDrag({ a: i, b: i })
   }
-  const onUp = () => {
+  const onUp = (e?: RPE<SVGSVGElement>) => {
+    try { if (e) e.currentTarget.releasePointerCapture(e.pointerId) } catch { /* 已释放 */ }
     if (drag && Math.abs(drag.b - drag.a) >= 2) setRange([Math.min(drag.a, drag.b), Math.max(drag.a, drag.b)])
     setDrag(null)
   }
@@ -285,10 +314,12 @@ function XYChart({ spec, height = 260 }: { spec: ChartSpec; height?: number }) {
         {zoomed && <button type="button" className="qb-icon-btn" onClick={() => setRange([0, n - 1])}>还原</button>}
         <button type="button" className={`qb-icon-btn${showData ? ' on' : ''}`} onClick={() => setShowData(!showData)}>数据</button>
         <button type="button" className="qb-icon-btn" onClick={exportCsv}>导出</button>
+        {onExpand && <ChartExpandButton onClick={onExpand} inline label="全屏查看图表（默认横屏）" />}
       </div>
       <div className="qb-chart-plot">
-        <svg width={W} height={H} role="img" aria-label={spec.title || '图表'} onMouseMove={onMove} onMouseLeave={() => { setHover(null); setDrag(null) }}
-          onMouseDown={onDown} onMouseUp={onUp} onDoubleClick={() => setRange([0, n - 1])} style={{ cursor: !norm.pairs && n >= 6 ? 'crosshair' : undefined }}>
+        <svg width={W} height={H} role="img" aria-label={spec.title || '图表'} onPointerMove={onMove} onPointerDown={onDown} onPointerUp={onUp} onPointerCancel={onUp}
+          onPointerLeave={() => { if (!drag) setHover(null) }} onDoubleClick={() => setRange([0, n - 1])}
+          style={{ cursor: !norm.pairs && n >= 6 ? 'crosshair' : undefined, touchAction: !norm.pairs && n >= 6 ? 'none' : undefined }}>
           {yt.map((t) => (
             <g key={t}>
               <line x1={pad.l} x2={W - pad.r} y1={sy(t)} y2={sy(t)} className="qb-grid" />
@@ -399,8 +430,17 @@ export function HeatmapChart({ spec }: { spec: ChartSpec }) {
   const labelW = Math.min(120, Math.max(40, ...ys.map((y) => y.length * 7)))
   const cell = Math.max(14, Math.min(46, (width - labelW - 10) / Math.max(1, xs.length)))
   const showNum = cell >= 34
+  const bx = spec.best?.x !== undefined ? xs.indexOf(String(spec.best.x)) : -1
+  const by = spec.best?.y !== undefined ? ys.indexOf(String(spec.best.y)) : -1
   return (
     <div className="qb-chart" ref={ref}>
+      {(spec.x_label || spec.y_label || spec.color_label) && (
+        <div className="qb-heat-labels">
+          {spec.y_label && <span>Y · {spec.y_label}</span>}
+          {spec.x_label && <span>X · {spec.x_label}</span>}
+          {spec.color_label && <span>{spec.color_label}</span>}
+        </div>
+      )}
       <div className="qb-heat" style={{ gridTemplateColumns: `${labelW}px repeat(${xs.length}, ${cell}px)` }}>
         <span />
         {xs.map((x) => <span key={x} className="qb-heat-x" title={x}>{x}</span>)}
@@ -410,9 +450,9 @@ export function HeatmapChart({ spec }: { spec: ChartSpec }) {
             {xs.map((x, j) => {
               const v = z[i]?.[j] ?? null
               return (
-                <span key={`${i}-${j}`} className={`qb-heat-cell${hover && (hover[0] === i || hover[1] === j) ? ' hl' : ''}`}
+                <span key={`${i}-${j}`} className={`qb-heat-cell${hover && (hover[0] === i || hover[1] === j) ? ' hl' : ''}${i === by && j === bx ? ' best' : ''}`}
                   style={{ background: color(v), height: cell, color: v !== null && Math.abs(diverging ? v / m : (v - lo) / (hi - lo || 1)) > 0.55 ? '#fff' : undefined }}
-                  onMouseEnter={() => setHover([i, j])} onMouseLeave={() => setHover(null)} title={`${y} × ${x}：${v === null ? '—' : fmtValue(v, spec.y_format, 3)}`}>
+                  onMouseEnter={() => setHover([i, j])} onMouseLeave={() => setHover(null)} onClick={() => setHover([i, j])} title={`${y} × ${x}：${v === null ? '—' : fmtValue(v, spec.y_format, 3)}${i === by && j === bx ? '（最佳）' : ''}`}>
                   {showNum && v !== null ? fmtValue(v, spec.y_format, 2) : ''}
                 </span>
               )
@@ -421,7 +461,7 @@ export function HeatmapChart({ spec }: { spec: ChartSpec }) {
         ))}
       </div>
       <div className="qb-hint">
-        {hover ? `${ys[hover[0]]} × ${xs[hover[1]]}：${fmtValue(z[hover[0]]?.[hover[1]] ?? null, spec.y_format, 3)}` : `范围 ${fmtValue(lo, spec.y_format, 2)} ~ ${fmtValue(hi, spec.y_format, 2)}${diverging ? '（蓝正红负）' : ''}`}
+        {hover ? `${ys[hover[0]]} × ${xs[hover[1]]}：${fmtValue(z[hover[0]]?.[hover[1]] ?? null, spec.y_format, 3)}${hover[0] === by && hover[1] === bx ? ' · 最佳' : ''}` : `范围 ${fmtValue(lo, spec.y_format, 2)} ~ ${fmtValue(hi, spec.y_format, 2)}${diverging ? '（蓝正红负）' : ''}`}
       </div>
     </div>
   )

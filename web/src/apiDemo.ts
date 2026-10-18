@@ -1,7 +1,7 @@
 /** 交易所模拟盘、交易终端、策略包。 */
 import { del, get, post, put, request, withWs } from './http'
 import type { KBar } from './components/KlineChart'
-import type { PaperSessionView } from './api2'
+import type { PaperSessionView } from './api/research'
 
 export interface DemoEnv {
   exchange: string
@@ -44,6 +44,18 @@ export interface OmsOrder {
   fee_currency: string
   slippage_bps: number | null
   reason?: string
+}
+
+export interface ContractVerification {
+  ok: boolean
+  rows: number
+  fetched_rows?: number
+  symbols: string[]
+  summary: { pass: number; warn: number; fail: number; unknown: number }
+  checks: { name: string; status: 'pass' | 'warn' | 'fail' | 'unknown'; detail: string; evidence?: unknown }[]
+  spec: Record<string, unknown>
+  assumption_note?: string
+  connection?: Partial<DemoConnection>
 }
 
 export interface DemoView {
@@ -117,6 +129,7 @@ export const demo = {
     post<{ connection: DemoConnection }>('/api/demo/connections', p),
   test: (id: string) => post<{ connection: DemoConnection }>(`/api/demo/connections/${id}/test`),
   revoke: (id: string) => del<{ connection: DemoConnection; note: string }>(`/api/demo/connections/${id}`),
+  contractBills: (id: string, symbol: string, start?: number, end?: number) => get<ContractVerification>(`/api/demo/connections/${id}/contract-bills?symbol=${encodeURIComponent(symbol)}${start ? `&start=${start}` : ''}${end ? `&end=${end}` : ''}`),
   live: (url: string) => get<LiveQuote>(url),
 
   terminal: (id: string, security = '', bars = 300) =>

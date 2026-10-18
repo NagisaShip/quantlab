@@ -19,6 +19,7 @@ import math
 import threading
 import time
 from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import Any
 
 from ..data.quality import TIMEFRAME_MS
@@ -76,7 +77,13 @@ class LiveRunner:
         *,
         timeframe: str,
         initial_cash: float,
-        cost: RuntimeCost,
+        initial_currency: str = "USDT",
+        cost: RuntimeCost | None = None,
+        margin_mode: str = "isolated",
+        position_mode: str = "one-way",
+        contract_type: str = "linear",
+        expiry_ts: int | None = None,
+        ledger_v2: bool = False,
         started_at: int,
         risk: RiskConfig | None = None,
         strategy_version_id: str = "",
@@ -91,11 +98,17 @@ class LiveRunner:
         runtime = BacktestRuntime(
             {s: list(b) for s, b in history.items()},
             initial_cash=initial_cash,
+            initial_currency=initial_currency,
             cost=cost,
             ctx=ctx,
             risk=risk,
             run_id=session_id,
             strategy_version_id=strategy_version_id,
+            margin_mode=margin_mode,
+            position_mode=position_mode,
+            contract_type=contract_type,
+            expiry_ts=expiry_ts,
+            ledger_v2=ledger_v2,
         )
         runtime.fill_mode = fill_mode
         ctx.securities = list(history)
@@ -163,9 +176,12 @@ class LiveRunner:
             rt = state.runtime
             canceled = rt.cancel_all()
             results = []
-            books = [(k, h.qty) for k, h in rt.ledger.holdings.items() if h.qty > 0]
-            books += [(k, p.qty) for k, p in rt.ledger.perps.items() if p.qty]
-            for sec, qty in books:
+            books = [(k, h.qty, "") for k, h in rt.ledger.holdings.items() if h.qty > 0]
+            if rt.ledger.perp_book is not None:
+                books += [(leg.instrument, leg.signed_qty, leg.side) for leg in rt.ledger.perp_book.all_legs()]
+            else:
+                books += [(k, p.qty, p.side if p.qty else "") for k, p in rt.ledger.perps.items() if p.qty]
+            for sec, qty, position_side in books:
                 bar = rt.current_bar(sec)
                 if bar is None:
                     continue
@@ -178,6 +194,7 @@ class LiveRunner:
                     reason=reason,
                     target_kind="amount_target",
                     target_value=0.0,
+                    position_side=position_side,
                 )
                 sig = rt._make_signal(req, bar=bar)
                 rt._register(sig)
@@ -260,7 +277,7 @@ class LiveRunner:
                 if i == 0:
                     rt.execute()  # 上一根收盘的委托在这根开盘成交；限价、止损止盈
                     state.runner.dispatch_trades(rt.drain_new_fills())
-                elif rt.ledger.perps:
+                elif (rt.ledger.perp_book is not None and rt.ledger.perp_book.all_legs()) or rt.ledger.perps:
                     # 补进来的 bar：交易所那边强平和资金费不会因为我们断线而暂停，逐根补算
                     rt._settle_funding(at_open=True)
                     rt._check_liquidations()
@@ -359,8 +376,16 @@ class LiveRunner:
                 "ledger": {
                     "cash": str(rt.ledger.cash()),
                     "holdings": {k: str(h.qty) for k, h in rt.ledger.holdings.items()},
-                    "perps": {k: str(p.qty) for k, p in rt.ledger.perps.items() if p.qty},
-                    "margin": str(sum((p.margin for p in rt.ledger.perps.values()), rt.ledger.cash() * 0)),
+                    "perps": (
+                        {f"{leg.instrument}|{leg.side}": str(leg.signed_qty) for leg in rt.ledger.perp_book.all_legs()}
+                        if rt.ledger.perp_book is not None
+                        else {k: str(p.qty) for k, p in rt.ledger.perps.items() if p.qty}
+                    ),
+                    "margin": str(
+                        rt.ledger.perp_book.posted_margin()
+                        if rt.ledger.perp_book is not None
+                        else sum((p.margin for p in rt.ledger.perps.values()), Decimal(0))
+                    ),
                 },
                 "nav": {
                     "ts": state.last_bar_ts,

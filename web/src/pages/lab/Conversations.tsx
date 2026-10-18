@@ -53,6 +53,8 @@ export function Conversations({ projects, activeId, onOpen, onNew, onChanged, no
   notify: Notify
 }) {
   const [q, setQ] = useState('')
+  const [searchOpen, setSearchOpen] = useState(false)
+  const searchRef = useRef<HTMLInputElement>(null)
   const [menu, setMenu] = useState<Menu | null>(null)
   const [renaming, setRenaming] = useState<string | null>(null)
   const [folders, setFolders] = useState<string[]>(() => readList(FOLDERS_KEY))
@@ -143,7 +145,10 @@ export function Conversations({ projects, activeId, onOpen, onNew, onChanged, no
               onBlur={(e) => { const v = e.target.value.trim(); setRenaming(null); if (v && v !== p.title) act(() => lab.update(p.id, { title: v })) }}
               onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setRenaming(null) }} />
           ) : (
-            <button type="button" className="conv-main" onClick={() => onOpen(p.id)}>
+            <button type="button" className="conv-main" onClick={() => {
+              const selected = window.getSelection()?.toString().trim()
+              if (!selected) onOpen(p.id)
+            }}>
               {p.status !== 'idle' && <i className={`dot ${p.status}`} />}
               {p.pinned && depth === 0 && <span className="conv-pin" aria-label="已置顶">📌</span>}
               <span className="conv-title">{p.title}</span>
@@ -164,6 +169,12 @@ export function Conversations({ projects, activeId, onOpen, onNew, onChanged, no
   const target = menu ? byId.get(menu.id) : undefined
   const [moveOpen, setMoveOpen] = useState(false)
   useEffect(() => setMoveOpen(false), [menu?.id])
+  useEffect(() => {
+    if (!searchOpen) return
+    const t = window.setTimeout(() => searchRef.current?.focus(), 20)
+    return () => window.clearTimeout(t)
+  }, [searchOpen])
+  useEffect(() => { if (q) setSearchOpen(true) }, [q])
 
   return (
     <div className="conv">
@@ -175,9 +186,16 @@ export function Conversations({ projects, activeId, onOpen, onNew, onChanged, no
         <button type="button" className="conv-icon" title="新对话" aria-label="新对话" onClick={() => onNew()}>
           <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden><path d="M8 3v10M3 8h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>
         </button>
+        <button type="button" className={`conv-icon${searchOpen ? ' on' : ''}`} title="搜索对话" aria-label="搜索对话" aria-expanded={searchOpen}
+          onClick={() => { if (searchOpen) { setQ(''); setSearchOpen(false) } else setSearchOpen(true) }}>
+          <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" aria-hidden><circle cx="7" cy="7" r="4.2" /><path d="m10.2 10.2 3 3" /></svg>
+        </button>
       </div>
-      <div className="conv-tools">
-        <input className="conv-search" placeholder="搜索对话" value={q} onChange={(e) => setQ(e.target.value)} aria-label="搜索对话" />
+      <div className={`conv-tools${searchOpen ? ' searching' : ''}`}>
+        {searchOpen && (
+          <input ref={searchRef} className="conv-search" placeholder="搜索对话" value={q} onChange={(e) => setQ(e.target.value)}
+            aria-label="搜索对话" onKeyDown={(e) => { if (e.key === 'Escape') { setQ(''); setSearchOpen(false) } }} />
+        )}
         <div className="conv-groupby" role="group" aria-label="分组方式">
           <button type="button" aria-pressed={groupBy === 'project'} onClick={() => setGroupBy('project')} title="按你建的项目（文件夹）分组">项目</button>
           <button type="button" aria-pressed={groupBy === 'type'} onClick={() => setGroupBy('type')} title="按研究类型自动分组">类型</button>
@@ -315,7 +333,7 @@ export function SidebarConversations({ activeId, notify }: { activeId: string; n
   const running = projects.some((p) => p.status === 'running')
   useEffect(() => {
     if (!running) return
-    const t = window.setInterval(refresh, 4000)
+    const t = window.setInterval(refresh, 2500)
     return () => window.clearInterval(t)
   }, [running, refresh])
   return (

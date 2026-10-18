@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { api, money, pct, shortTime, type DigestData, type NotificationRecord } from '../api'
+import { api, money, pct, shortTime, type DigestData, type NotificationRecord } from '../api/core'
 import {
   Callout,
   EmptyState,
@@ -16,15 +16,15 @@ import { Segments } from '../components/ui'
 import type { PageProps } from './types'
 
 type Tab = 'night' | 'brief' | 'push'
-const TABS: { value: Tab; label: string }[] = [{ value: 'night', label: '夜班' }, { value: 'brief', label: 'AI 晨报' }, { value: 'push', label: '推送与调度' }]
+const TABS: { value: Tab; label: string }[] = [{ value: 'night', label: '任务计划' }, { value: 'brief', label: 'AI 晨报' }, { value: 'push', label: '通知与调度' }]
 
 export default function LongRunningPage({ arg, onNavigate, notify, setBusy }: PageProps & { arg?: string }) {
   const tab: Tab = arg === 'brief' || arg === 'push' ? arg : 'night'
   return (
     <>
-      <Heading title="夜班" description="夜班在你休息时按队列做研究，有试验次数、token 和时长上限；早上一份 AI 晨报告诉你市场、库里成果和夜班结果。产出的都是候选，是否启用由你决定。" />
+      <Heading title="定时任务" description="每天按设定时间自动执行研究队列，有试验次数、token 和时长上限；执行结束生成 AI 晨报。产出的都是候选，是否启用由你决定。" />
       <div className="fx-tabs">
-        <Segments value={tab} options={TABS} onChange={(t) => onNavigate(t === 'night' ? 'long-running' : `long-running/${t}`)} ariaLabel="长期任务视图" />
+        <Segments value={tab} options={TABS} onChange={(t) => onNavigate(t === 'night' ? 'long-running' : `long-running/${t}`)} ariaLabel="定时任务视图" />
       </div>
       {tab === 'night' && <NightShiftView notify={notify} onNavigate={onNavigate} />}
       {tab === 'brief' && <BriefView notify={notify} onNavigate={onNavigate} />}
@@ -33,7 +33,7 @@ export default function LongRunningPage({ arg, onNavigate, notify, setBusy }: Pa
   )
 }
 
-const JOB_KIND: Record<string, string> = { digest: '每日简报', maintainer: '策略维护', brief: 'AI 晨报', nightshift: '夜班' }
+const JOB_KIND: Record<string, string> = { digest: '每日简报', maintainer: '策略维护', brief: 'AI 晨报', nightshift: '定时任务' }
 
 export const CHANNELS = [
   { id: 'console', label: '控制台（调试）', hint: '只打到服务端日志，不发出任何消息' },
@@ -215,7 +215,7 @@ function PushAndSchedule({ notify, setBusy }: Pick<PageProps, 'notify' | 'setBus
               <option value="digest">每日简报</option>
               <option value="maintainer">策略维护评估</option>
               <option value="brief">AI 晨报</option>
-              <option value="nightshift">夜班（按队列研究）</option>
+              <option value="nightshift">定时任务（按队列研究）</option>
             </select>
           </Field>
           <Field label="通道">

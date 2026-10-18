@@ -10,12 +10,14 @@ import functools
 import hashlib
 import math
 import random
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from ..exchanges.base import Bar
+from ..exchanges.contracts import contract_type_of, is_derivative
 from .cache import BarCache, FundingCache
 from .quality import TIMEFRAME_MS, DataSet
 
@@ -114,8 +116,8 @@ def synthetic_bars(
     anchored=True：按 bar 的绝对时间生成，同一时刻任何区间看到的价格都一样；平台页面取行情时用这个。
     """
     step = TIMEFRAME_MS.get(timeframe, 3_600_000)
-    if symbol.upper().endswith(":PERP"):
-        # 合成永续 = 同一条合成现货 × (1 + 小基差)，这样套利示例里两条腿走势一致
+    if is_derivative(symbol):
+        # 合成永续 / 反向 / 交割 = 同一条合成现货 × (1 + 小基差)
         spot = symbol.split(":")[0]
         base = synthetic_bars(spot, timeframe, n, start_price=start_price, seed=seed, end=end, anchored=anchored)
         brng = random.Random(int(hashlib.sha256(f"basis:{symbol}:{timeframe}".encode()).hexdigest()[:12], 16))
@@ -343,6 +345,13 @@ class MarketDataService:
         self.last_error: dict[str, str] = {}
         #: (exchange, symbol, timeframe) -> 最近一次补拉失败的原因；用缓存顶上时界面据此提示「数据可能不是最新」
         self.stale: dict[tuple[str, str, str], str] = {}
+        #: 单进程内的交易所节奏控制：缓存未命中时也要避免同一 IP 连续突发请求。
+        import os
+
+        self.min_pull_interval = max(0.0, float(os.environ.get("QAGENT_EXCHANGE_MIN_INTERVAL_MS", "75")) / 1000)
+        self._pull_locks: dict[str, threading.Lock] = {}
+        self._pull_last: dict[str, float] = {}
+        self.pull_stats: dict[str, dict[str, float]] = {}
 
     def get_bars(
         self,
@@ -400,9 +409,24 @@ class MarketDataService:
     #: 临时性网络错误（连接池等待超时、连接 / 读超时、断连）的重试间隔（秒）
     PULL_RETRY_DELAYS = (0.6, 1.8)
 
+    def _throttle(self, exchange: str) -> None:
+        """Serialize and pace external pulls per exchange (local cache stays instant)."""
+        if self.min_pull_interval <= 0:
+            return
+        lock = self._pull_locks.setdefault(exchange, threading.Lock())
+        with lock:
+            wait = self._pull_last.get(exchange, 0.0) + self.min_pull_interval - time.monotonic()
+            if wait > 0:
+                time.sleep(wait)
+            self._pull_last[exchange] = time.monotonic()
+
     def _pull(self, adapter: Any, exchange: str, symbol: str, timeframe: str, start: int, end: int) -> list[Bar]:
         """向交易所拉一段 K 线，并给每根 bar 打上事件审计字段。临时性网络错误自动重试两次。"""
+        self._throttle(exchange)
+        stat = self.pull_stats.setdefault(exchange, {"requests": 0, "bars": 0})
+        stat["requests"] += 1
         bars = _with_retry(lambda: adapter.fetch_bars(symbol, timeframe, start, end), self.PULL_RETRY_DELAYS)
+        stat["bars"] += len(bars)
         return stamp(
             bars,
             source=f"{exchange}:rest",
@@ -525,21 +549,37 @@ class MarketDataService:
         symbol: str,
         *,
         exchange: str = "binance",
-        start: int,
-        end: int,
+        start: int = 0,
+        end: int | None = None,
         source: str = "auto",
     ) -> tuple[list[tuple[int, str]], str, str]:
-        """永续合约在 (start, end] 内的已结算资金费率，返回 (rows, 来源, 错误)。rows = [(结算时刻, 费率字符串)]。
+        """兼容旧接口：返回 (结算时刻, 费率)。新代码应优先用 ``funding_events`` 取标记价。"""
+        events, label, err = self.funding_events(symbol, exchange=exchange, start=start, end=end, source=source)
+        return [(e["ts"], e["rate"]) for e in events], label, err
 
-        来源同 get_bars：auto 取不到时用合成费率并标注；exchange 取不到就返回空和错误；synthetic 只用合成。
+    def funding_events(
+        self,
+        symbol: str,
+        *,
+        exchange: str = "binance",
+        start: int = 0,
+        end: int | None = None,
+        source: str = "auto",
+    ) -> tuple[list[dict[str, Any]], str, str]:
+        """永续资金费事件：结算时刻、费率、标记价、来源。
+
+        标记价是资金费与强平报告的关键审计字段；取不到时保留空字符串，由运行时明确回退，
+        不编造一个价格。
         """
-        if not symbol.upper().endswith(":PERP"):
-            return [], "", f"{symbol} 不是永续合约，没有资金费率"
-        start, end = int(start), int(end)
+        if contract_type_of(symbol) not in ("linear", "inverse"):
+            return [], "", f"{symbol} 没有资金费率（交割合约不结算资金费）"
+        start = int(start)
+        end = int(end if end is not None else time.time() * 1000)
         if source == "synthetic":
             if not self.allow_synthetic:
                 return [], "exchange", "未接入数据：合成资金费率已停用"
-            return synthetic_funding(symbol, start, end), "synthetic", ""
+            rows, label = synthetic_funding(symbol, start, end), "synthetic"
+            return [{"ts": t, "rate": r, "mark_price": ""} for t, r in rows], label, ""
         error = ""
         adapter = self.adapters.get(exchange)
         if adapter is None or not hasattr(adapter, "fetch_funding_rates"):
@@ -549,20 +589,31 @@ class MarketDataService:
                 if self.funding_cache is not None:
                     rows, lo, hi = self.funding_cache.load(exchange, symbol)
                     if rows and lo <= start and end <= hi:
-                        return [(t, r) for t, r in rows if start < t <= end], "exchange", ""
+                        return (
+                            [{"ts": t, "rate": r, "mark_price": m} for t, r, m in rows if start < t <= end],
+                            "exchange",
+                            "",
+                        )
                 got = adapter.fetch_funding_rates(symbol, start, end)
-                rows = sorted({int(f.ts): str(f.rate) for f in got if start < int(f.ts) <= end}.items())
+                rows = sorted(
+                    (
+                        (int(f.ts), str(f.rate), str(getattr(f, "mark_price", "") or ""))
+                        for f in got
+                        if start < int(f.ts) <= end
+                    ),
+                    key=lambda x: x[0],
+                )
                 if self.funding_cache is not None:
-                    # 未来的结算点还没发生，覆盖范围只记到当前
                     self.funding_cache.merge(exchange, symbol, rows, start, min(end, int(time.time() * 1000)))
                 if rows:
-                    return rows, "exchange", ""
+                    return [{"ts": t, "rate": r, "mark_price": m} for t, r, m in rows], "exchange", ""
                 error = f"{exchange} 没有返回 {symbol} 的资金费率"
             except Exception as exc:
                 error = f"{type(exc).__name__}: {exc}"[:300]
         if source == "exchange" or not self.allow_synthetic:
             return [], "exchange", error
-        return synthetic_funding(symbol, start, end), "synthetic", error
+        rows = synthetic_funding(symbol, start, end)
+        return [{"ts": t, "rate": r, "mark_price": ""} for t, r in rows], "synthetic", error
 
     def ticker(self, symbol: str, exchange: str = "binance") -> dict[str, Any]:
         adapter = self.adapters.get(exchange)

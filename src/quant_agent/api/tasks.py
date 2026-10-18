@@ -16,6 +16,7 @@ from ..data.quality import TIMEFRAME_MS
 from ..engine.live import LIVE_WARMUP_BARS, clock_synthetic_bars
 from ..engine.paper import PaperSession, PaperTradingEngine
 from ..engine.research import BacktestSpec, load_market, manifest, summarize_metrics
+from ..platform import backtest_retention as BR
 from ..platform import isolation
 from ..platform.errors import AppError, ErrorCode
 from ..platform.runs import CANCELED, COMPLETED, PAUSED, RUNNING, TERMINAL
@@ -52,9 +53,14 @@ def _csv_dataset(services: Any, dataset_id: str, spec: BacktestSpec):
         raise AppError(ErrorCode.NOT_FOUND, "数据集不存在")
     sym = saved.get("symbol") or spec.securities[0]
     tf = saved.get("timeframe") or spec.timeframe
-    ds = DataSet(sym, tf, parse_csv(saved["content"], symbol=sym, timeframe=tf), "csv").freeze(
-        f"用户 CSV · {saved.get('filename', '')}"
-    )
+    builtin = bool(saved.get("builtin_teaching"))
+    ds = DataSet(
+        sym,
+        tf,
+        parse_csv(saved["content"], symbol=sym, timeframe=tf),
+        "synthetic" if builtin else "csv",
+    ).freeze("内置教学合成数据" if builtin else f"用户 CSV · {saved.get('filename', '')}")
+
     spec.securities = [sym]
     spec.timeframe = tf
     return {sym: ds.bars}, [ds.summary()], []
@@ -168,6 +174,9 @@ def handle_backtest(ctl: TaskCtl) -> dict[str, Any]:
                 **manifest(m["source"], spec, datasets, body),
                 "run_id": ctl.run_id,
                 "strategy_version_id": ctl.run.get("strategy_version_id"),
+                "lang": m.get("lang") or "python",
+                "contract_specs": body.get("contract_specs") or {},
+                "funding_data": funding_sets,
                 "isolation": isolation.probe(),
             },
             "duration_ms": duration,
@@ -176,6 +185,34 @@ def handle_backtest(ctl: TaskCtl) -> dict[str, Any]:
         }
     )
     store = services.store
+    # Research Review Gate：在落盘前生成可复核的审查卡；高严重度问题会阻断保存/晋级。
+    try:
+        from ..agents import redteam
+        from ..research.discipline import strategy_record
+        from ..research.review import build_review
+
+        rec = strategy_record(store, m.get("slug") or "") or {}
+        points = redteam.rule_points(m.get("source") or "", {}, body.get("metrics") or {})
+        review = build_review(
+            metrics=body.get("metrics") or {},
+            source=m.get("source") or "",
+            datasets=datasets,
+            funding=funding_sets,
+            contract_specs=body.get("contract_specs") or {},
+            simple_benchmark=body.get("simple_benchmark_metrics") or {},
+            trial_count=int(rec.get("n") or 0) or None,
+            dsr=rec.get("dsr"),
+            redteam_points=points,
+        )
+        body["review"] = review
+        body.setdefault("manifest", {})["review"] = {
+            "id": review["id"],
+            "verdict": review["verdict"],
+            "blocks_promotion": review["blocks_promotion"],
+            "summary": review["summary"],
+        }
+    except Exception:
+        logging.getLogger("quantlab.review").exception("研究审查生成失败：%s", ctl.run_id)
     # 成交与信号进数据库（按 fill_key / signal_id 去重，重放也只有一份）
     services.runs.save_fills(ctl.run_id, ctl.run["workspace_id"], body.get("fills") or [])
     services.runs.save_signals(ctl.run_id, ctl.run["workspace_id"], body.get("signals") or [])
@@ -218,20 +255,56 @@ def handle_backtest(ctl: TaskCtl) -> dict[str, Any]:
             "end_ts": body["timestamps"][-1] if body.get("timestamps") else 0,
             "initial_cash": spec.initial_cash,
             "data_sources": sorted({d["source"] for d in datasets}),
+            "review": body.get("review"),
+            "review_verdict": (body.get("review") or {}).get("verdict"),
+            "review_blocks": bool((body.get("review") or {}).get("blocks_promotion")),
             "metrics": summary["metrics"],
             "status": status,
             "errors": len(body.get("errors") or []),
             "duration_ms": duration,
             "created_at": time.time(),
             "strategy_version_id": ctl.run.get("strategy_version_id"),
+            "lang": m.get("lang") or "python",
             # 谁跑的这次回测：策略血缘图上按版本列出回测与执行人
             "created_by": ctl.run.get("created_by"),
+            "pinned": False,
             # 来自 AI 研究室对话的回测：记下对话，回测记录页可以按对话分组
             "lab_project_id": m.get("lab_project_id"),
             "lab_title": m.get("lab_title"),
         }
         store.upsert(Collections.BACKTESTS, row)
+        try:
+            BR.enforce_after_persist(
+                store,
+                services.auth,
+                ctl.run["workspace_id"],
+                str(ctl.run.get("created_by") or ""),
+                row,
+            )
+            BR.enforce_total_after_persist(
+                store,
+                services.auth,
+                ctl.run["workspace_id"],
+                str(ctl.run.get("created_by") or ""),
+                None,
+            )
+        except Exception:
+            # 入队前已经做过硬校验；这里失败不牺牲刚完成的结果，只记录并留待下次清理。
+            logging.getLogger("quantlab.backtest_retention").exception("回测记录自动清理失败：%s", bt_id)
         store.put_blob("backtests", bt_id, {**body, "id": bt_id, "code": m["source"], "row": row})
+        # 研究包快照：原始 K 线 + 资金费/标记价 + 源码规格。数据与结果分开放，避免详情接口返回大数组。
+        store.put_blob(
+            "research_snapshots",
+            bt_id,
+            {
+                "bars": bars_to_wire(bars),
+                "funding": {k: v for k, v in research.items() if k.startswith("funding:")},
+                "source": m["source"],
+                "spec": spec.to_dict(),
+                "datasets": datasets,
+                "created_at": time.time(),
+            },
+        )
         summary["bt_id"] = bt_id
         summary["row"] = row
         if m.get("slug") and status == "done" and m.get("mark_backtested"):
@@ -289,6 +362,9 @@ def handle_optimize(ctl: TaskCtl) -> dict[str, Any]:
         on_line=on_line,
         timeout=1800,
     )
+    # 排名是在 optimize() 全部算完后才附加的；把带 in_rank/out_rank 的最终行写回检查点，
+    # 否则 worker 中断后恢复出来的行会缺少排名，与直接跑完的结果不一致。
+    ctl.checkpoint({"rows": out.get("rows") or rows})
     opt_id = f"opt-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:4]}"
     row = {
         "id": opt_id,
@@ -310,6 +386,8 @@ def handle_optimize(ctl: TaskCtl) -> dict[str, Any]:
         "start_ts": min((b[0].open_time for b in bars.values() if b), default=0),
         "end_ts": max((b[-1].close_time for b in bars.values() if b), default=0),
         "created_at": time.time(),
+        "created_by": ctl.run.get("created_by"),
+        "pinned": False,
     }
     services.store.upsert(Collections.OPTIMIZATIONS, row)
     services.store.put_blob(
@@ -525,7 +603,28 @@ class PaperDriver(ResidentDriver):
         m = ctl.manifest
         quote = (session.securities or [session.symbol])[0].split("/")[-1].split(":")[0]
         limits = OmsLimits.from_dict(m.get("oms_limits"))
-        if m.get("execution") == "live":
+        if m.get("execution") == "live_realperp":
+            from ..live import real_perp as RP
+
+            if not RP.server_enabled():
+                raise AppError(
+                    ErrorCode.PERMISSION_DENIED, f"服务器没有打开真实永续（{RP.SERVER_FLAG}=1），不会向实盘下单"
+                )
+            conn, broker = RP.connections(ctl.services).broker(m["live_connection_id"])
+            store, home = ctl.services.store, ctl.services.home
+            self.oms = RP.RealPerpOMS(
+                broker,
+                limits,
+                OmsState.from_dict(cp.get("oms")),
+                initial_cash=session.initial_cash,
+                cap=float((m.get("real_perp") or {}).get("cap") or 0),
+                quote=quote,
+                max_leverage=float((m.get("real_perp") or {}).get("max_leverage") or 10),
+                margin_mode=session.margin_mode,
+                position_mode=session.position_mode,
+                blocked_fn=lambda: RP.blocked(store, home),
+            )
+        elif m.get("execution") == "live":
             from ..live import micro
 
             if not micro.server_enabled():
@@ -630,6 +729,11 @@ class PaperDriver(ResidentDriver):
         """熔断与对账。都只会让平台更保守：暂停开新仓，不会替你下单。"""
         if self.oms is None:
             return
+        if hasattr(self.oms, "watchdog"):
+            reason = self.oms.watchdog()
+            if reason:
+                session.note("error", f"真实永续自动急停：{reason}")
+                ctl.event("halt", {"reason": reason})
         reason = self.oms.observe_equity(float(res.get("equity") or 0))
         if reason:
             session.note("error", reason)
@@ -680,7 +784,7 @@ class PaperDriver(ResidentDriver):
         session = self._load(ctl)
         history = latest_bars(services, session, LIVE_WARMUP_BARS)
         cp = ctl.checkpoint_data or {}
-        demo = m.get("execution") in ("demo", "live")  # live = 微实盘：同一条外部成交链路，换成实盘客户端和 LiveOMS
+        demo = m.get("execution") in ("demo", "live", "live_realperp")
         if demo:
             self._open_demo(ctl, session, cp)
         self.sbx = isolation.IsolatedSession(lang=m.get("lang") or "python")
@@ -700,6 +804,12 @@ class PaperDriver(ResidentDriver):
             started_at=session.started_at,
             snapshot=cp.get("runtime"),
             fill_mode="external" if demo else "internal",
+            initial_currency=session.initial_currency,
+            margin_mode=session.margin_mode,
+            position_mode=session.position_mode,
+            contract_type=session.contract_type,
+            expiry_ts=session.expiry_ts,
+            ledger_v2=session.ledger_v2,
         )
         resumed = bool(cp.get("runtime"))
         state = ctl.runs.get(ctl.run_id)["state"]
@@ -1099,20 +1209,27 @@ def deliver_alerts(services: Any) -> dict[str, Any]:
     return alerts.deliver_pending(services)
 
 
+def storage_auto_cleanup(services: Any) -> dict[str, Any]:
+    """worker 周期钩子：磁盘达到管理员设置的阈值时，按分类清理最早的数据。"""
+    from ..platform import storage
+
+    return storage.auto_cleanup(services)
+
+
 def reload_config(services: Any) -> None:
     """worker 周期钩子：模型服务配置在 API 进程里修改，worker 定期重新加载。"""
     services.apply_runtime_config()
 
 
 def scan_schedules(services: Any) -> None:
-    """worker 周期钩子：把到期的定时任务登记为 run；夜班到点也登记一次（每天一次，幂等）。"""
+    """worker 周期钩子：把到期的定时任务登记为 run；每日研究计划到点也登记一次（每天一次，幂等）。"""
     from .routes_ops import due_schedules
 
     due_schedules(services)
     try:
         scan_nightshift(services)
     except Exception:
-        logging.getLogger("quantlab.nightshift").exception("夜班检查失败")
+        logging.getLogger("quantlab.nightshift").exception("定时任务检查失败")
 
 
 def scan_nightshift(services: Any) -> list[str]:
@@ -1133,7 +1250,7 @@ def scan_nightshift(services: Any) -> list[str]:
                 user_id="scheduler",
                 kind="agent_job",
                 mode="agent",
-                title="夜班研究",
+                title="定时任务执行",
                 manifest={"job": {"id": "nightshift", "kind": "nightshift"}, "fired_at": day},
                 idempotency_key=f"nightshift:{row['id']}:{day}",
             )
@@ -1249,6 +1366,7 @@ def build_worker(services: Any, **kw: Any) -> Worker:
             (5.0, poll_bots),
             (3600.0, scan_lifecycle),
             (600.0, scan_datahub),
+            (600.0, storage_auto_cleanup),
         ],
         **kw,
     )

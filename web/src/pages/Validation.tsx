@@ -4,9 +4,9 @@
  * 路由：#/validation · #/validation/checkup · #/validation/fidelity · #/validation/stress · #/validation/watcher · #/validation/decay
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { api } from '../api'
-import { v3 } from '../api2'
-import type { PaperSessionView } from '../api'
+import { api } from '../api/core'
+import { v3 } from '../api/research'
+import type { PaperSessionView } from '../api/core'
 import { LineChart } from '../components/charts2'
 import { Markdown } from '../components/markdown'
 import { Callout, EmptyState, Heading, Loading, MetricCard, Modal, Panel, Segments, Tag } from '../components/ui'

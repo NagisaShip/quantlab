@@ -49,10 +49,22 @@ export function t(zh: string): string {
   return zh
 }
 
+/** 递归翻译后端返回的详情对象（例如审计日志 details），不改变数字、布尔值和键名。 */
+export function tData(value: unknown): unknown {
+  if (typeof value === 'string') return t(value)
+  if (Array.isArray(value)) return value.map(tData)
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, tData(v)]))
+  }
+  return value
+}
+
 const CJK = /[一-鿿]/
-// AI 输出（.md）只跳过正文（段落、列表、引用、标题、表格单元格）；结构化内容块的按钮与标签照常翻译
-const SKIP = 'script,style,textarea,code,pre,.md > p,.md > ul,.md > ol,.md > blockquote,.md .md-h,.md td,.md th,.md-details,.md-html,.md-alert,.md-footnotes,.qb-claims li > span,.qb-snippet,.qb-note,.cm-editor,.code-editor,[data-no-i18n],[contenteditable="true"]'
-const ATTRS = ['placeholder', 'title', 'aria-label'] as const
+// AI 输出（.md）默认跳过正文；带 data-i18n 的静态营销内容允许翻译。
+const SKIP_HARD = 'script,style,textarea,code,pre,.cm-editor,.code-editor,[data-no-i18n],[contenteditable="true"]'
+const SKIP_SOFT = '.md > p,.md > ul,.md > ol,.md > blockquote,.md .md-h,.md td,.md th,.md-details,.md-html,.md-alert,.md-footnotes,.qb-claims li > span,.qb-snippet,.qb-note'
+const OPT_IN = '[data-i18n]'
+const ATTRS = ['placeholder', 'title', 'aria-label', 'data-label'] as const
 // 属性（占位符、提示）只在代码编辑器等区域里不翻译；输入框本身的占位符要翻译
 const SKIP_ATTR = '.cm-editor,.code-editor,[data-no-i18n],[contenteditable="true"]'
 
@@ -76,7 +88,7 @@ function translateText(raw: string): string | null {
 function translateNode(node: Node) {
   if (node.nodeType === Node.TEXT_NODE) {
     const p = node.parentElement
-    if (!p || p.closest(SKIP)) return
+    if (!p || p.closest(SKIP_HARD) || (!p.closest(OPT_IN) && p.closest(SKIP_SOFT))) return
     const out = translateText(node.nodeValue ?? '')
     if (out !== null && out !== node.nodeValue) node.nodeValue = out
     return
@@ -84,7 +96,7 @@ function translateNode(node: Node) {
   if (node.nodeType !== Node.ELEMENT_NODE) return
   const el = node as Element
   translateAttrs(el)
-  if (el.closest(SKIP)) return
+  if (el.closest(SKIP_HARD) || (!el.closest(OPT_IN) && el.closest(SKIP_SOFT))) return
   if (el instanceof HTMLInputElement && (el.type === 'button' || el.type === 'submit') && el.value) {
     const out = translateText(el.value); if (out !== null) el.value = out
   }
@@ -94,7 +106,7 @@ function translateNode(node: Node) {
     if (n.nodeType === Node.ELEMENT_NODE) {
       const e = n as Element
       translateAttrs(e)
-      if (e.matches(SKIP)) { n = skipSubtree(walker, e); continue }
+      if (e.matches(SKIP_HARD) || (!e.closest(OPT_IN) && e.matches(SKIP_SOFT))) { n = skipSubtree(walker, e); continue }
     } else {
       const out = translateText(n.nodeValue ?? '')
       if (out !== null && out !== n.nodeValue) n.nodeValue = out

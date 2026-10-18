@@ -191,10 +191,102 @@ def cmd_agent(args) -> int:
     return 0
 
 
+def _worker_heartbeat_recent(seconds: int = 60) -> bool:
+    """本地 DB 里是否已有最近心跳的 worker（避免 qagent serve 重复拉起）。"""
+    import sqlite3
+    import time
+
+    from .api.deps import default_home
+
+    path = default_home() / "quantlab.db"
+    if not path.exists():
+        return False
+    try:
+        con = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=1.0)
+        try:
+            row = con.execute(
+                "SELECT COUNT(*) FROM workers WHERE last_seen>?", (int(time.time() * 1000) - seconds * 1000,)
+            ).fetchone()
+            return bool(row and row[0])
+        finally:
+            con.close()
+    except Exception:
+        return False
+
+
+def _spawn_worker(slots: int):
+    """启动独立 worker 子进程；API 仍只做控制面，长任务仍在 worker 里执行。"""
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    log_dir = Path.cwd() / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    out = open(log_dir / "worker.auto.log", "ab", buffering=0)
+    err = open(log_dir / "worker.auto.err.log", "ab", buffering=0)
+    env = os.environ.copy()
+    env.setdefault("QAGENT_WORKER", "external")
+    creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "quant_agent.cli", "worker", "--slots", str(max(1, int(slots or 2)))],
+        stdin=subprocess.DEVNULL,
+        stdout=out,
+        stderr=err,
+        env=env,
+        creationflags=creationflags,
+    )
+    print(f"worker 已启动（pid={proc.pid}，日志 logs/worker.auto.err.log）", flush=True)
+    return proc
+
+
 def cmd_serve(args) -> int:
+    import threading
+
     import uvicorn
 
-    uvicorn.run("quant_agent.api.app:app", host=args.host, port=args.port)
+    auto = args.with_worker
+    if auto is None:
+        auto = args.host in ("127.0.0.1", "localhost", "::1")
+    stop = threading.Event()
+    holder: dict[str, object] = {}
+
+    def terminate_worker() -> None:
+        proc = holder.get("proc")
+        if proc is not None and getattr(proc, "poll", lambda: 0)() is None:
+            try:
+                proc.terminate()
+                proc.wait(timeout=5)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+
+    def supervise() -> None:
+        while not stop.wait(10):
+            proc = holder.get("proc")
+            if proc is None or getattr(proc, "poll", lambda: 0)() is not None:
+                # 守护线程只把“20 秒内仍有心跳”视为存活；worker 心跳间隔约 10 秒，15 秒仍是保守阈值。
+                if _worker_heartbeat_recent(15):
+                    continue
+                try:
+                    holder["proc"] = _spawn_worker(args.worker_slots)
+                except Exception as exc:
+                    print(f"worker 启动失败：{type(exc).__name__}: {exc}", flush=True)
+
+    if auto:
+        if args.with_worker is True or not _worker_heartbeat_recent():
+            try:
+                holder["proc"] = _spawn_worker(args.worker_slots)
+            except Exception as exc:
+                print(f"worker 启动失败：{type(exc).__name__}: {exc}；API 仍会启动，任务会排队", flush=True)
+        threading.Thread(target=supervise, name="worker-supervisor", daemon=True).start()
+    try:
+        uvicorn.run("quant_agent.api.app:app", host=args.host, port=args.port)
+    finally:
+        stop.set()
+        terminate_worker()
     return 0
 
 
@@ -311,6 +403,13 @@ def build_parser() -> argparse.ArgumentParser:
     sv = sub.add_parser("serve")
     sv.add_argument("--host", default="127.0.0.1")
     sv.add_argument("--port", type=int, default=8000)
+    sv.add_argument(
+        "--with-worker",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="同时启动并守护独立 worker；默认在回环地址且没有在线 worker 时自动启动",
+    )
+    sv.add_argument("--worker-slots", type=int, default=2)
     sv.set_defaults(func=cmd_serve)
 
     w = sub.add_parser("worker", help="启动独立 worker（执行回测、优化、实时模拟）")

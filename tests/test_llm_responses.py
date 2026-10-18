@@ -7,7 +7,7 @@ import json
 import httpx
 
 from quant_agent.llm.base import Message, Tool, ToolCall
-from quant_agent.llm.providers import OpenAIResponsesProvider
+from quant_agent.llm.providers import OpenAICompatibleProvider, OpenAIResponsesProvider, openai_headers
 from quant_agent.llm.router import AgentConfig, ModelRouter, ProviderConfig
 
 
@@ -98,7 +98,7 @@ def test_router_builds_responses_client_for_that_type():
 
 
 def test_image_parts_serialized_per_provider():
-    from quant_agent.llm.providers import AnthropicProvider, OpenAICompatibleProvider, _to_anthropic
+    from quant_agent.llm.providers import AnthropicProvider, _to_anthropic
 
     url = "data:image/png;base64,QUJD"
     m = Message(role="user", content="看图", images=[url])
@@ -127,3 +127,88 @@ def test_image_parts_serialized_per_provider():
     oa.chat([m], model="gpt-4o")
     assert seen["body"]["messages"][0]["content"][1]["image_url"]["url"] == url
     assert AnthropicProvider  # 同一套 _to_anthropic 被 chat 使用
+
+
+def test_opencode_requests_include_stable_session_header():
+    responses_seen = []
+    chat_seen = []
+    transport_headers = []
+
+    def responses_handler(request: httpx.Request) -> httpx.Response:
+        responses_seen.append(request.headers.get("x-opencode-session"))
+        transport_headers.append((request.headers.get("connection"), request.headers.get("accept-encoding")))
+        return httpx.Response(
+            200,
+            json={
+                "model": "deepseek-v4.1-flash",
+                "status": "completed",
+                "output": [{"type": "message", "content": [{"type": "output_text", "text": "OK"}]}],
+            },
+        )
+
+    def chat_handler(request: httpx.Request) -> httpx.Response:
+        chat_seen.append(request.headers.get("x-opencode-session"))
+        return httpx.Response(200, json={"model": "m", "choices": [{"message": {"content": "OK"}}]})
+
+    responses = OpenAIResponsesProvider(
+        "opencode", "https://opencode.ai/inference/go/v1", "k", transport=httpx.MockTransport(responses_handler)
+    )
+    first = [Message(role="user", content="same conversation")]
+    responses.chat(first, model="deepseek-v4.1-flash")
+    responses.chat(
+        [*first, Message(role="assistant", content="OK"), Message(role="user", content="continue")],
+        model="deepseek-v4.1-flash",
+    )
+
+    chat = OpenAICompatibleProvider(
+        "opencode", "https://opencode.ai/inference/go/v1", "k", transport=httpx.MockTransport(chat_handler)
+    )
+    chat.chat(first, model="m")
+
+    assert len(responses_seen) == 2 and responses_seen[0] == responses_seen[1]
+    assert responses_seen[0].startswith("quantlab-")
+    assert chat_seen == [responses_seen[0]]
+    assert transport_headers == [("close", "identity"), ("close", "identity")]
+    headers = openai_headers("https://opencode.ai/inference/go/v1", "k")
+    assert headers["Connection"] == "close"
+    assert headers["Accept-Encoding"] == "identity"
+
+
+def test_other_providers_do_not_get_opencode_session_header():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["session"] = request.headers.get("x-opencode-session")
+        return httpx.Response(200, json={"model": "m", "choices": [{"message": {"content": "OK"}}]})
+
+    provider = OpenAICompatibleProvider("gw", "https://gw.example/v1", "k", transport=httpx.MockTransport(handler))
+    provider.chat([Message(role="user", content="hi")], model="m")
+    assert seen["session"] is None
+
+
+def test_special_provider_headers_are_applied():
+    azure = openai_headers("https://demo.openai.azure.com/openai/v1", "k")
+    assert azure == {"api-key": "k"}
+
+    router_headers = openai_headers("https://openrouter.ai/api/v1", "k")
+    assert router_headers["Authorization"] == "Bearer k"
+    assert router_headers["HTTP-Referer"] == "http://127.0.0.1:8000"
+    assert router_headers["X-OpenRouter-Title"] == "QuantLab"
+
+    plain = openai_headers("https://api.example.com/v1", "k")
+    assert plain == {"Authorization": "Bearer k"}
+
+
+def test_azure_request_uses_api_key_header():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["api-key"] = request.headers.get("api-key")
+        seen["authorization"] = request.headers.get("authorization")
+        return httpx.Response(200, json={"model": "m", "choices": [{"message": {"content": "OK"}}]})
+
+    provider = OpenAICompatibleProvider(
+        "azure", "https://demo.openai.azure.com/openai/v1", "secret", transport=httpx.MockTransport(handler)
+    )
+    provider.chat([Message(role="user", content="hi")], model="m")
+    assert seen == {"api-key": "secret", "authorization": None}

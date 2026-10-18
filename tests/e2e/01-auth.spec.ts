@@ -134,8 +134,10 @@ test.describe('01 · 注册与登录', () => {
 
     await expect(page.locator('nav[aria-label="主导航"]')).toBeVisible()
 
-    // 退出：回到登录页（邮箱输入框再次出现）。
-    await page.getByRole('button', { name: '退出' }).click()
-    await expect(page.locator('input[type="email"]')).toBeVisible({ timeout: 30_000 })
+    // 退出：账号菜单里的“退出登录”；回到介绍页后重新打开登录抽屉。
+    await page.locator('.acct-trigger').click()
+    await page.getByRole('menuitem', { name: '退出登录' }).click()
+    await page.getByRole('button', { name: '登录 / 注册' }).first().click()
+    await expect(page.locator('input[autocomplete="username"]')).toBeVisible({ timeout: 30_000 })
   })
 })

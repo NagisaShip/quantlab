@@ -10,6 +10,8 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from ..platform import backtest_retention as BR
+from ..platform import context
 from ..research import goals as RG
 from ..research import portfolio as PF
 from ..research.datahub import DataHub
@@ -123,6 +125,19 @@ def portfolio_meta() -> dict:
 
 @router.post("/evaluate", summary="评估一份配置方案：滚动组合回测 + 风险分解 + 压力测试 + 有效前沿")
 def evaluate(payload: EvalIn) -> dict:
+    services = get_services()
+    ctx = context.current()
+    BR.guard_new_record(
+        services.store,
+        services.auth,
+        context.current_workspace(),
+        ctx.user_id or "",
+        ctx.role,
+        "portfolio_run",
+        max_units=BR.effective_limit(
+            services.auth, services.model_hub, context.current_workspace(), ctx.user_id or "", ctx.role
+        ),
+    )
     syms = _symbols(payload.universe, payload.symbols)
     try:
         cfg = PF.normalize_config(payload.config)
@@ -143,7 +158,13 @@ def evaluate(payload: EvalIn) -> dict:
         raise HTTPException(400, str(exc)) from exc
     report["panel"]["warnings"] = [*report["panel"].get("warnings", []), *warns]
     run = _lib().record_run(
-        cfg, report, symbols=panel.symbols, timeframe=payload.timeframe, source="portfolio", note=payload.note
+        cfg,
+        report,
+        symbols=panel.symbols,
+        timeframe=payload.timeframe,
+        source="portfolio",
+        note=payload.note,
+        created_by=ctx.user_id or "user",
     )
     return {"run": run, "report": report}
 
@@ -196,6 +217,19 @@ def list_schemes(status: str | None = None) -> dict:
 
 @router.post("", summary="把一次试验存为方案（策略里用 optimize('名字') 调用）")
 def save_scheme(payload: SaveIn) -> dict:
+    services = get_services()
+    ctx = context.current()
+    BR.guard_new_record(
+        services.store,
+        services.auth,
+        context.current_workspace(),
+        ctx.user_id or "",
+        ctx.role,
+        "portfolio",
+        max_units=BR.effective_limit(
+            services.auth, services.model_hub, context.current_workspace(), ctx.user_id or "", ctx.role
+        ),
+    )
     lib = _lib()
     run, report = lib.run(payload.run_id), lib.run_report(payload.run_id)
     if run is None or report is None:
@@ -210,6 +244,7 @@ def save_scheme(payload: SaveIn) -> dict:
         note=payload.note,
         scheme_id=payload.scheme_id,
         run_id=payload.run_id,
+        created_by=ctx.user_id or "user",
     )
     return {"scheme": rec}
 

@@ -71,7 +71,9 @@ def bar_dict(b: Bar) -> dict[str, Any]:
 # 消息解析（纯函数，便于用录下来的消息做测试）
 # ---------------------------------------------------------------------------
 def _is_perp(symbol: str) -> bool:
-    return symbol.upper().endswith(":PERP")
+    from ..exchanges.contracts import is_derivative
+
+    return is_derivative(symbol)
 
 
 def binance_url(symbol: str, timeframe: str) -> str:
@@ -133,7 +135,9 @@ def parse_okx(msg: dict[str, Any], symbol: str, timeframe: str) -> list[Bar]:
 
 
 def bybit_url(symbol: str) -> str:
-    return f"{BYBIT_WS}/{'linear' if _is_perp(symbol) else 'spot'}"
+    from ..exchanges.bybit import category_of
+
+    return f"{BYBIT_WS}/{category_of(symbol)}"
 
 
 def bybit_subscribe(symbol: str, timeframe: str) -> dict[str, Any]:

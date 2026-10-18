@@ -23,6 +23,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
+from .qmoji import decorate_qmoji, metrics_from_materials
 from .roles import Role
 from .team import PARALLEL_BRIEF, TeamRunner
 
@@ -349,7 +350,7 @@ class MissionRunner:
             "stages": stages,
             "synthesizer_id": synthesizer,
             "roster": roster,
-            "symbol": payload.get("symbol") or "BTC/USDT",
+            "symbol": payload.get("symbol") or "",
             "timeframe": payload.get("timeframe") or "1h",
             "lab_project_id": payload.get("lab_project_id"),
             "materials": materials,
@@ -539,18 +540,20 @@ class MissionRunner:
         }
 
     def _finish_speech(self, mid: str, seq: int, role: Role, step: Any, kind: str) -> None:
+        m = self.store.get(mid) or {}
+        qmetrics = metrics_from_materials(m.get("materials"))
         if step.status == "ok":
+            content = decorate_qmoji(step.output, role=role.id, tags=role.tags, metrics=qmetrics)
             self.store.update(
-                mid, seq, status="done", content=step.output, model=step.model, mode="llm", elapsed_ms=step.elapsed_ms
+                mid, seq, status="done", content=content, model=step.model, mode="llm", elapsed_ms=step.elapsed_ms
             )
             return
-        m = self.store.get(mid) or {}
         # 降级发言醒目标注：模板输出不能被当成「多角色独立意见」
         reason = _first_line(step.error or "模型不可用")
-        text = (
-            f"> **规则模板输出，不是 {role.name} 的真实模型意见**（模型调用失败：{reason}）\n\n"
-            + fallback_speech(role, m, kind, self.store.feed(mid))
+        text = f"> **规则模板输出，不是 {role.name} 的真实模型意见**（模型调用失败：{reason}）\n\n" + fallback_speech(
+            role, m, kind, self.store.feed(mid)
         )
+        text = decorate_qmoji(text, role=role.id, tags=role.tags, metrics=qmetrics)
         self.store.update(
             mid,
             seq,

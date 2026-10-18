@@ -3,6 +3,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { Markdown } from '../markdown'
 import { modelLabel } from './Composer'
 import { QuantBot, QuantEyes, type BotState } from '../QuantBot'
+import { t } from '../../i18n'
 
 export function UserBubble({ children }: { children: ReactNode }) {
   return <div className="cb-user"><div className="cb-user-bubble">{children}</div></div>
@@ -50,15 +51,16 @@ export function ToolLine({ icon, label, args, status, elapsedMs, detail }: {
   elapsedMs?: number; detail?: string
 }) {
   const [open, setOpen] = useState(false)
-  const argText = Object.entries(args || {}).map(([k, v]) => `${k} ${String(v)}`).join(' · ')
+  const argText = Object.entries(args || {}).map(([k, v]) => `${t(k)} ${String(v)}`).join(' · ')
+  const labelText = t(label)
   return (
     <div className={`cb-tool ${status}`}>
       <button type="button" className="cb-tool-row" onClick={() => detail && setOpen(!open)} aria-expanded={open} disabled={!detail}>
         <span className="cb-tool-icon" aria-hidden>{status === 'running' ? <span className="cb-spin" /> : icon ?? '•'}</span>
-        <span className="cb-tool-label">{label}</span>
+        <span className="cb-tool-label">{labelText}</span>
         {argText && <span className="cb-tool-args">{argText}</span>}
         <span className="cb-tool-end">
-          {status === 'error' ? '失败' : status === 'ok' && elapsedMs !== undefined ? `${(elapsedMs / 1000).toFixed(1)}s` : ''}
+          {status === 'error' ? t('失败') : status === 'stopped' ? t('已停止') : status === 'ok' && elapsedMs !== undefined ? `${(elapsedMs / 1000).toFixed(1)}s` : ''}
         </span>
       </button>
       {open && detail && <pre className="cb-tool-detail">{detail}</pre>}

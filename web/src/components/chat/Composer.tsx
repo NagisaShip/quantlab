@@ -7,8 +7,8 @@ import type { ContextView, Effort, EffortOption, ModelOption } from '../../apiLa
 import { StepSlider } from '../StepSlider'
 import { ContextStats } from './LabControls'
 import '../../stylesBlocks.css'
-import { v3, type ModelUsage } from '../../api2'
-import { v4, type UsageItem } from '../../api3'
+import { v3, type ModelUsage } from '../../api/research'
+import { v4, type UsageItem } from '../../api/platform'
 import { LimitBars, fmtCost, fmtTokens as fmtTok } from '../modelUsage'
 
 const DEFAULT_EFFORTS: EffortOption[] = [
@@ -62,10 +62,14 @@ export function filterMentions(options: MentionOption[], query: string) {
   return options.filter((o) => !q || o.name.toLowerCase().includes(q) || o.id.toLowerCase().includes(q) || (o.hint ?? '').toLowerCase().includes(q)).slice(0, 8)
 }
 
-/** 点外面或按 Esc 关闭的弹出层。 */
+/** 点外面或按 Esc 关闭的弹出层；菜单优先向上展开，空间不足时自动翻到下方并限制高度。 */
 export function usePopover() {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+  const [layout, setLayout] = useState<{ placement: 'top' | 'bottom'; maxHeight: number }>({
+    placement: 'top', maxHeight: 420,
+  })
   useEffect(() => {
     if (!open) return
     const onDown = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false) }
@@ -74,7 +78,45 @@ export function usePopover() {
     document.addEventListener('keydown', onKey)
     return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey) }
   }, [open])
-  return { open, setOpen, ref }
+  useLayoutEffect(() => {
+    if (!open) {
+      setLayout((prev) => (prev.placement === 'top' && prev.maxHeight === 420 ? prev : { placement: 'top', maxHeight: 420 }))
+      return
+    }
+    let frame = 0
+    const update = () => {
+      const anchor = ref.current?.getBoundingClientRect()
+      const menu = menuRef.current
+      if (!anchor || !menu) return
+      const gap = 6
+      const margin = 12
+      const viewportHeight = window.visualViewport?.height ?? window.innerHeight
+      const above = Math.max(0, anchor.top - margin - gap)
+      const below = Math.max(0, viewportHeight - anchor.bottom - margin - gap)
+      const wanted = Math.min(420, menu.scrollHeight)
+      // 保留原来的向上习惯；上方放不下时，优先使用空间更大的那一侧，并让菜单在视口内滚动。
+      const placement = wanted <= above || (wanted > below && above >= below) ? 'top' : 'bottom'
+      const maxHeight = Math.max(0, Math.min(420, placement === 'top' ? above : below))
+      setLayout((prev) => (prev.placement === placement && Math.abs(prev.maxHeight - maxHeight) < 1
+        ? prev : { placement, maxHeight }))
+    }
+    const schedule = () => {
+      cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(update)
+    }
+    update()
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(schedule)
+    if (menuRef.current) observer?.observe(menuRef.current)
+    window.addEventListener('resize', schedule)
+    document.addEventListener('scroll', schedule, true)
+    return () => {
+      cancelAnimationFrame(frame)
+      observer?.disconnect()
+      window.removeEventListener('resize', schedule)
+      document.removeEventListener('scroll', schedule, true)
+    }
+  }, [open])
+  return { open, setOpen, ref, menuRef, placement: layout.placement, menuStyle: { maxHeight: layout.maxHeight } }
 }
 
 /** 模型显示名：anthropic/claude-opus-5-5 → Claude Opus 5.5；其他模型保留原名。 */
@@ -113,7 +155,7 @@ export function ModelMenu({ models, value, defaultModel, effort, efforts, onMode
         <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden><path d="M2 3.5 5 6.5 8 3.5" fill="none" stroke="currentColor" strokeWidth="1.4" /></svg>
       </button>
       {pop.open && (
-        <div className="cmp-menu cmp-menu-model" role="menu">
+        <div ref={pop.menuRef} className="cmp-menu cmp-menu-model" data-placement={pop.placement} style={pop.menuStyle} role="menu">
           <div className="cmp-menu-section">
             <div className="cmp-menu-label">思考努力程度</div>
             <StepSlider options={list} value={effort} onChange={onEffort} disabled={!effortSupported} label="思考努力程度" compact />
@@ -297,7 +339,7 @@ function textFile(text: string): File {
 
 export function Composer({
   value, onChange, onSend, onStop, running, disabled, placeholder, commands = [], above, left, right, autoFocus, sendLabel = '发送',
-  hasAttachments, onPasteFiles, mentions, hideDisclaimer, onLongText,
+  hasAttachments, onPasteFiles, mentions, hideDisclaimer, onLongText, queueCount = 0,
 }: {
   value: string
   onChange: (v: string) => void
@@ -317,6 +359,7 @@ export function Composer({
   mentions?: MentionOption[]               // 输入 @ 时可以点名的对象
   hideDisclaimer?: boolean                 // 输入框下方的「可能会出错」提醒（默认显示）
   onLongText?: (file: File) => void        // 超过 2 万字的内容转成 txt 文件交给它；不提供时截断到上限
+  queueCount?: number                      // 运行中已排队的消息数
 }) {
   const [overflow, setOverflow] = useState('')
   /** 粘贴 / 输入后超过上限：整段转成 txt 附件，输入框里只留一句说明 */
@@ -347,7 +390,7 @@ export function Composer({
   }, [value])
   useEffect(() => { setActive(0) }, [value])
 
-  const canSend = !running && !disabled && (value.trim().length > 0 || !!hasAttachments)
+  const canSend = !disabled && (value.trim().length > 0 || !!hasAttachments)
   const pick = (c: SlashCommand) => { onChange(c.cmd + ' '); ta.current?.focus() }
 
   return (
@@ -402,9 +445,16 @@ export function Composer({
           <div className="cmp-right">
             {right}
             {running && onStop ? (
-              <button type="button" className="cmp-send stop" onClick={onStop} aria-label="停止" title="停止">
-                <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden><rect x="2" y="2" width="8" height="8" rx="1.5" fill="currentColor" /></svg>
-              </button>
+              <>
+                {canSend && (
+                  <button type="button" className="cmp-send queue" onClick={onSend} aria-label="加入发送队列" title={`加入发送队列${queueCount ? `（已有 ${queueCount} 条）` : ''}`}>
+                    <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden><path d="M7 12V2M2.5 6.5 7 2l4.5 4.5" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                  </button>
+                )}
+                <button type="button" className="cmp-send stop" onClick={onStop} aria-label="停止" title="停止">
+                  <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden><rect x="2" y="2" width="8" height="8" rx="1.5" fill="currentColor" /></svg>
+                </button>
+              </>
             ) : (
               <button type="button" className="cmp-send" disabled={!canSend} onClick={onSend} aria-label={sendLabel} title={`${sendLabel}（Enter）`}>
                 <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden><path d="M7 12V2M2.5 6.5 7 2l4.5 4.5" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /></svg>

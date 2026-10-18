@@ -1,5 +1,5 @@
 /** 回测对比视图：累计收益率曲线叠加 + 指标并排（最好的一格加粗）。记录页与策略对比共用。 */
-import { fmtNum, fmtPct, type FullMetrics } from '../../api2'
+import { fmtNum, fmtPct, type FullMetrics } from '../../api/research'
 import type { CompareItem } from '../../apiCompare'
 import { LineChart, seriesColor } from '../../components/charts2'
 

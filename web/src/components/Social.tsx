@@ -6,7 +6,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { collab, type Group, type Member, type Ref } from '../apiCollab'
-import { v4 } from '../api3'
+import { v4 } from '../api/platform'
 import { Modal } from './ui'
 import { RefCard } from './RichText'
 

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
 import { TF_MS } from '../timeframes'
-import { api, dateOnly, shortTime, SOURCE_LABEL, type BarDTO, type Quality } from '../api'
+import { api, dateOnly, shortTime, SOURCE_LABEL, type BarDTO, type Quality } from '../api/core'
 import {
   Callout,
   EmptyState,
@@ -35,7 +35,7 @@ const barsFor = (range: string, tf: string) => {
 const DEFAULT_RANGE: Record<string, string> = { '1m': '1d', '5m': '1w', '15m': '1w', '30m': '1m', '1h': '1m', '4h': '6m', '1d': '1y' }
 const fmtPx = (v: number) => v.toLocaleString('en-US', { maximumFractionDigits: v >= 100 ? 2 : 5 })
 
-export default function DataCenterPage({ notify, onNavigate, arg }: PageProps & { arg?: string }) {
+export default function DataCenterPage({ notify, onNavigate, arg, features }: PageProps & { arg?: string }) {
   const tab = arg === 'hub' ? 'hub' : 'bars'
   const heading = (
     <>
@@ -51,13 +51,15 @@ export default function DataCenterPage({ notify, onNavigate, arg }: PageProps & 
     </>
   )
   if (tab === 'hub') return <>{heading}<DatahubSection notify={notify} /></>
-  return <BarsView notify={notify} heading={heading} />
+  return <BarsView notify={notify} heading={heading} features={features} />
 }
 
-function BarsView({ notify, heading }: Pick<PageProps, 'notify'> & { heading: ReactNode }) {
+function BarsView({ notify, heading, features }: Pick<PageProps, 'notify' | 'features'> & { heading: ReactNode }) {
   const [symbols, setSymbols] = useState<string[]>([])
   const [timeframes, setTimeframes] = useState<string[]>([])
   const [symbol, setSymbol] = useState('BTC/USDT')
+  const [market, setMarket] = useState<'spot' | 'perp'>('spot')
+  const effectiveSymbol = market === 'perp' ? `${symbol.split(':')[0]}:PERP` : symbol.split(':')[0]
   const [timeframe, setTimeframe] = useState('1h')
   const [exchange, setExchange] = useState('binance')
   const [range, setRange] = useState(() => { try { return localStorage.getItem('qa.kline.range') || '1m' } catch { return '1m' } })
@@ -104,8 +106,8 @@ function BarsView({ notify, heading }: Pick<PageProps, 'notify'> & { heading: Re
     try {
       // 三个请求互不依赖：任何一个失败（例如交易所超时）都不让其他两块一起空白
       const [b, q, s] = await Promise.allSettled([
-        api.bars(symbol, timeframe, barsFor(range, timeframe), exchange),
-        api.quality(symbol, timeframe, 1500, exchange),
+        api.bars(effectiveSymbol, timeframe, barsFor(range, timeframe), exchange),
+        api.quality(effectiveSymbol, timeframe, 1500, exchange),
         api.marketSummary(symbol, timeframe),
       ])
       if (b.status === 'fulfilled') { setBars(b.value.bars); setSource(b.value.source) }
@@ -120,7 +122,7 @@ function BarsView({ notify, heading }: Pick<PageProps, 'notify'> & { heading: Re
     } finally {
       setLoading(false)
     }
-  }, [symbol, timeframe, exchange, range])
+  }, [effectiveSymbol, timeframe, exchange, range])
 
   useEffect(() => {
     load()
@@ -184,10 +186,17 @@ function BarsView({ notify, heading }: Pick<PageProps, 'notify'> & { heading: Re
             {(symbols.length ? symbols : [symbol]).map((s) => <option key={s}>{s}</option>)}
           </select>
         </Field>
+        <Field label="市场">
+          <select value={market} onChange={(e) => setMarket(e.target.value as 'spot' | 'perp')}>
+            <option value="spot">现货</option>
+            <option value="perp" disabled={features?.['market.perp_linear'] === false}>线性永续</option>
+          </select>
+        </Field>
         <Field label="交易所">
           <select value={exchange} onChange={(e) => setExchange(e.target.value)}>
             <option value="binance">Binance</option>
             <option value="okx">OKX</option>
+            <option value="bybit">Bybit</option>
           </select>
         </Field>
         <div style={{ display: 'flex', alignItems: 'flex-end' }}>
@@ -238,10 +247,24 @@ function BarsView({ notify, heading }: Pick<PageProps, 'notify'> & { heading: Re
                   <button key={tf} type="button" aria-pressed={tf === timeframe} onClick={() => pickTf(tf)}>{tf}</button>
                 ))}
               </div>
-              <div className="kt-group" role="group" aria-label="时间段">
-                {RANGES.map((r) => (
-                  <button key={r.key} type="button" aria-pressed={r.key === range} onClick={() => pickRange(r.key)}>{r.label}</button>
-                ))}
+              <div className="kt-range" role="group" aria-label="时间段">
+                <div className="kt-range-current">
+                  <span>时间段</span>
+                  <b>{RANGES.find((r) => r.key === range)?.label || '1月'}</b>
+                </div>
+                <input
+                  type="range"
+                  min={0}
+                  max={RANGES.length - 1}
+                  step={1}
+                  value={Math.max(0, RANGES.findIndex((r) => r.key === range))}
+                  onChange={(e) => pickRange(RANGES[Number(e.target.value)]?.key ?? '1m')}
+                  aria-label="价格走势时间段"
+                  aria-valuetext={RANGES.find((r) => r.key === range)?.label || '1月'}
+                />
+                <div className="kt-range-ticks" aria-hidden>
+                  {RANGES.map((r) => <span key={r.key} className={r.key === range ? 'on' : ''}>{r.label}</span>)}
+                </div>
               </div>
               <div className="kt-group" role="group" aria-label="均线">
                 {[7, 20, 60, 120].map((n) => (

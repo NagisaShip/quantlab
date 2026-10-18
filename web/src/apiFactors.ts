@@ -40,6 +40,7 @@ export interface Factor {
   evaluated_at?: number
   health?: { t: number; rank_ic: number | null; oos_rank_ic: number | null }[]
   health_flag?: string | null
+  pinned?: boolean
   created_at: number
   updated_at: number
 }

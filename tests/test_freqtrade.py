@@ -15,7 +15,7 @@ from quant_agent.sdk.ft import DataFrame, vectorized_signals
 from quant_agent.strategies.freqtrade_import import convert, export, is_freqtrade
 
 SAMPLES = Path(__file__).parent / "freqtrade_samples"
-UNSUPPORTED = {"pattern_recognition", "pandas_ta_strategy", "futures_short"}
+UNSUPPORTED = {"pattern_recognition", "pandas_ta_strategy"}
 
 
 def _sources() -> dict[str, str]:
@@ -133,11 +133,20 @@ def test_api_check_import_export(client):
     assert meta["timeframe"] == "5m" and meta["source"] == "freqtrade"
     out = client.get(f"/api/freqtrade/export/{slug}")
     assert out.status_code == 200 and "class Strategy001" in out.text and "quant_agent" not in out.text
-    bad = client.post(
-        "/api/freqtrade/import",
-        json={"source": (SAMPLES / "futures_short.py").read_text(encoding="utf-8"), "checkup": False},
+    src_short = (SAMPLES / "futures_short.py").read_text(encoding="utf-8")
+    # 默认关闭；管理员显式开启后，才允许把做空/杠杆策略导入为永续策略。
+    off = client.post(
+        "/api/freqtrade/import", json={"source": src_short, "securities": ["BTC/USDT:PERP"], "checkup": False}
     )
+    assert off.json()["strategy"] is None and off.json()["report"]["errors"]
+    on = client.put("/api/workspace/features", json={"features": {"import.freqtrade_short": True}})
+    assert on.status_code == 200, on.text
+    bad = client.post("/api/freqtrade/import", json={"source": src_short, "securities": ["BTC/USDT"], "checkup": False})
     assert bad.json()["strategy"] is None and bad.json()["report"]["errors"]
+    good = client.post(
+        "/api/freqtrade/import", json={"source": src_short, "securities": ["BTC/USDT:PERP"], "checkup": False}
+    )
+    assert good.status_code == 200 and good.json()["strategy"], good.text
     assert client.post("/api/freqtrade/check", json={"source": "x = 1\n"}).status_code == 400
     assert "RSI" in client.get("/api/freqtrade/support").json()["ta"]
 
@@ -193,3 +202,19 @@ def test_ccxt_adapter_pages_ohlcv_with_fake_client():
     if not available():
         with pytest.raises(UnsupportedFeature):
             public_adapter("ccxt:kraken")
+
+
+def test_freqtrade_short_and_leverage_run_on_linear_perp():
+    src = (SAMPLES / "futures_short.py").read_text(encoding="utf-8")
+    rep = convert(src, smoke=False)
+    assert rep.ok and rep.can_short and rep.uses_leverage
+    bars = _bars("1h", 700)
+    bars = [
+        Bar("BTC/USDT:PERP", b.timeframe, b.open_time, b.close_time, b.open, b.high, b.low, b.close, b.volume)
+        for b in bars
+    ]
+    mod = load_source(rep.source, name="ft_short_perp")
+    res = run_backtest(mod, {"BTC/USDT:PERP": bars}, timeframe="1h")
+    assert not (res.errors or []), res.errors
+    assert any(f.get("side") == "sell" for f in res.fills if isinstance(f, dict))
+    assert float(res.ledger.get("liquidation_loss") or 0) >= 0

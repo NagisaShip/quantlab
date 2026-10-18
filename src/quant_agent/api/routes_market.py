@@ -6,7 +6,8 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 
-from ..data.service import TIMEFRAME_MS, DataUnavailable
+from ..data.service import DataUnavailable
+from ..live import micro
 from .deps import get_services
 
 router = APIRouter(prefix="/api/market", tags=["行情与数据"])
@@ -147,6 +148,8 @@ def cache_entries() -> dict:
         "entries": entries,
         "root": str(s.market.cache.root) if s.market.cache else "",
         "last_errors": s.market.last_error,
+        "pull_stats": s.market.pull_stats,
+        "min_pull_interval_ms": round(s.market.min_pull_interval * 1000, 1),
     }
 
 
@@ -276,10 +279,18 @@ def status_banner(exchange: str = "binance", symbol: str = "BTC/USDT") -> dict:
     workers = s.db.fetchall("SELECT id FROM workers WHERE last_seen>?", (now - 60_000,))
     net = netprobe.status(s.db)
     iso = isolation.probe()
+    mc = micro.config(s.store)
+    live_enabled = bool(mc.get("enabled"))
+    if live_enabled:
+        mode_label = "研究与仿真 · 微实盘已开启（真实资金，小额）"
+    elif micro.server_enabled():
+        mode_label = "研究与仿真 · 虚拟资金（微实盘可用，需管理员开启）"
+    else:
+        mode_label = "研究与仿真 · 虚拟资金（微实盘默认关闭）"
     return {
-        "mode": "research",
-        "mode_label": "研究与仿真 · 虚拟资金（live_enabled=false，平台没有真实下单路径）",
-        "live_enabled": False,
+        "mode": "micro_live" if live_enabled else "research",
+        "mode_label": mode_label,
+        "live_enabled": live_enabled,
         "market": cached["market"],
         "network": {"overall": net["overall"], "label": net["label"]},
         "worker": {"mode": tasks.worker_mode(), "online": len(workers)},

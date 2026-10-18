@@ -81,11 +81,13 @@ export interface PortfolioReport {
 }
 
 export interface PortfolioRun {
+  pinned?: boolean
   id: string; hash: string; optimizer: string; risk_model: string; expected: string; symbols: string[]; timeframe: string
   summary: PortfolioSummary; admitted: boolean; source: string; project_id: string; note: string; synthetic: boolean; created_at: number
 }
 
 export interface Scheme {
+  pinned?: boolean
   id: string; name: string; config: PortfolioConfig; symbols: string[]; timeframe: string
   summary: PortfolioSummary | null; admitted: boolean | null; latest: PortfolioReport['latest'] | null
   status: SchemeStatus; note: string; project_id: string | null; run_id: string | null; created_by: string

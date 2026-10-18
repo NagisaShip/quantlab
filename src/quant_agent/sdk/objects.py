@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any
 
+from ..exchanges.contracts import ContractSpec
 from .ledger import ZERO, Holding, Ledger, PerpPosition, dstr, is_perp
 
 
@@ -32,7 +33,7 @@ class Position:
     任何赋值都会报错，不能绕过撮合直接改仓位。
     """
 
-    __slots__ = ("_cost", "_opened", "_perp", "_price", "_qty", "_realized", "security")
+    __slots__ = ("_book_leg", "_cost", "_opened", "_perp", "_price", "_qty", "_realized", "_spec", "security")
 
     def __init__(
         self,
@@ -43,9 +44,13 @@ class Position:
         realized: Decimal = ZERO,
         opened_ts: int = 0,
         perp: PerpPosition | None = None,
+        book_leg: Any | None = None,
+        spec: ContractSpec | None = None,
     ) -> None:
         object.__setattr__(self, "security", security)
         object.__setattr__(self, "_perp", perp)
+        object.__setattr__(self, "_book_leg", book_leg)
+        object.__setattr__(self, "_spec", spec)
         object.__setattr__(self, "_qty", qty)
         object.__setattr__(self, "_cost", cost)
         object.__setattr__(self, "_price", price)
@@ -65,10 +70,17 @@ class Position:
             return cls(security)
         return cls(security, p.qty, p.qty * p.entry, p.last_price, p.realized, p.opened_ts, perp=p)
 
+    @classmethod
+    def of_book(cls, leg: Any, spec: ContractSpec, security: str) -> Position:
+        if leg is None or not leg.qty:
+            return cls(security)
+        qty = leg.signed_qty
+        return cls(security, qty, qty * leg.entry, leg.last_price, leg.realized, leg.opened_ts, book_leg=leg, spec=spec)
+
     # 永续合约专有
     @property
     def is_perp(self) -> bool:
-        return self._perp is not None or is_perp(self.security)
+        return self._perp is not None or self._book_leg is not None or is_perp(self.security)
 
     @property
     def side(self) -> str:
@@ -76,19 +88,27 @@ class Position:
 
     @property
     def leverage(self) -> float:
+        if self._book_leg is not None:
+            return float(self._book_leg.leverage)
         return float(self._perp.leverage) if self._perp is not None else 1.0
 
     @property
     def margin(self) -> float:
+        if self._book_leg is not None:
+            return float(self._book_leg.margin)
         return float(self._perp.margin) if self._perp is not None else 0.0
 
     @property
     def liquidation_price(self) -> float:
+        if self._book_leg is not None and self._spec is not None and self._qty:
+            return float(self._book_leg.liquidation_price(self._spec))
         return float(self._perp.liquidation_price) if self._perp is not None and self._qty else 0.0
 
     @property
     def funding(self) -> float:
         """本轮持仓累计资金费（正 = 收到）。"""
+        if self._book_leg is not None:
+            return float(self._book_leg.funding)
         return float(self._perp.funding) if self._perp is not None else 0.0
 
     def __setattr__(self, name: str, value: Any) -> None:
@@ -129,6 +149,9 @@ class Position:
 
     @property
     def value(self) -> float:
+        if self._book_leg is not None and self._spec is not None:
+            sign = Decimal(1) if self._qty > 0 else Decimal(-1) if self._qty < 0 else Decimal(0)
+            return float(self._book_leg.notional(self._spec, self._price) * sign)
         return float(self._qty * self._price)
 
     @property
@@ -137,6 +160,11 @@ class Position:
 
     @property
     def unrealized_pnl(self) -> float:
+        if self._book_leg is not None and self._spec is not None:
+            pnl = self._book_leg.unrealized(self._spec, self._price)
+            if self._spec.settlement != "USDT":
+                pnl *= self._price
+            return float(pnl)
         return float(self._qty * self._price - self._cost)
 
     @property
@@ -145,16 +173,17 @@ class Position:
 
     def to_dict(self) -> dict[str, Any]:
         extra: dict[str, Any] = {}
-        if self._perp is not None:
-            p = self._perp
+        if self._perp is not None or self._book_leg is not None:
+            p = self._book_leg or self._perp
+            liq = self.liquidation_price
             extra = {
                 "perp": True,
                 "side": self.side,
                 "leverage": dstr(p.leverage),
                 "margin": dstr(p.margin),
-                "liquidation_price": dstr(p.liquidation_price.quantize(Decimal("1e-8"))) if self._qty else "0",
+                "liquidation_price": dstr(Decimal(str(liq)).quantize(Decimal("1e-8"))) if self._qty else "0",
                 "funding": dstr(p.funding),
-                "notional": dstr(abs(self._qty) * self._price),
+                "notional": dstr(Decimal(str(abs(self.value)))),
             }
         return {
             **extra,
@@ -212,7 +241,13 @@ class Portfolio:
     @property
     def positions(self) -> dict[str, Position]:
         out = {k: Position.of(h, k) for k, h in self._ledger.holdings.items() if h.qty > 0}
-        out.update({k: Position.of_perp(p, k) for k, p in self._ledger.perps.items() if p.qty})
+        book = self._ledger.perp_book
+        if book is not None:
+            for leg in book.all_legs():
+                key = f"{leg.instrument}|{leg.side.upper()}" if book.hedge else leg.instrument
+                out[key] = Position.of_book(leg, book.spec(leg.instrument), leg.instrument)
+        else:
+            out.update({k: Position.of_perp(p, k) for k, p in self._ledger.perps.items() if p.qty})
         return out
 
     @property
@@ -250,6 +285,11 @@ class Portfolio:
 
     def position(self, security: str) -> Position:
         """取持仓；没有就返回一个数量为 0 的空持仓，避免策略里到处判空。"""
+        book = self._ledger.perp_book
+        if book is not None and is_perp(security):
+            legs = [x for x in book.all_legs() if x.instrument == security]
+            if legs:
+                return Position.of_book(legs[0], book.spec(security), security)
         if is_perp(security):
             return Position.of_perp(self._ledger.perps.get(security), security)
         return Position.of(self._ledger.holdings.get(security), security)
@@ -274,6 +314,35 @@ class Portfolio:
             "liquidation_loss": dstr(led.liquidation_loss),
             "positions": {k: v.to_dict() for k, v in self.positions.items()},
         }
+
+
+class Indicators:
+    """``ctx.indicators``：平台预计算指标，按运行缓存，每根 bar 只读一个值。
+
+    策略里推荐写 ``ctx.indicators.ema("BTC/USDT", 24)``，而不是在每次 rebalance 里
+    用 Python for 循环把整段 history 重算一遍。预热期返回 ``float("nan")``。
+    """
+
+    def __init__(self, ctx: Context) -> None:
+        self._ctx = ctx
+
+    def _value(self, security: str, name: str, period: int, field: str = "close") -> float:
+        rt = self._ctx._runtime
+        if rt is None or not hasattr(rt, "indicator"):
+            return float("nan")
+        return float(rt.indicator(security, name, int(period), field=field))
+
+    def sma(self, security: str, period: int, field: str = "close") -> float:
+        return self._value(security, "sma", period, field)
+
+    def ema(self, security: str, period: int, field: str = "close") -> float:
+        return self._value(security, "ema", period, field)
+
+    def atr(self, security: str, period: int = 14) -> float:
+        return self._value(security, "atr", period)
+
+    def rsi(self, security: str, period: int = 14) -> float:
+        return self._value(security, "rsi", period)
 
 
 @dataclass
@@ -322,6 +391,11 @@ class Context:
 
     def position(self, security: str) -> Position:
         return self.portfolio.position(security)
+
+    @property
+    def indicators(self) -> Indicators:
+        """平台预计算指标（ema / sma / atr / rsi），适合逐 bar 回测。"""
+        return Indicators(self)
 
     @property
     def cash(self) -> float:

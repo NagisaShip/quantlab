@@ -13,12 +13,14 @@ import {
   type BacktestResult,
   type CopilotResult,
   type DailyRow,
-} from '../api2'
+  type ReviewCard as ReviewData,
+} from '../api/research'
 import { CodeView } from '../components/CodeEditor'
 import { BarChart, COLORS, LineChart, seriesColor } from '../components/charts2'
 import { Markdown } from '../components/markdown'
 import { Callout, EmptyState, Loading, Modal, Panel, Tag } from '../components/ui'
 import { ShareToButton } from '../components/Social'
+import { v3 as communityApi } from '../api/research'
 import { cumulative } from './Editor'
 import { openInLab } from '../components/handoff'
 import { backtestAskContext, useAskAIContext } from '../components/AskAI'
@@ -43,8 +45,48 @@ export function writeCompare(ids: string[]) {
   }
 }
 
+const REVIEW_META: Record<ReviewData['verdict'], { label: string; tone: string }> = {
+  pass: { label: '通过', tone: 'ok' },
+  conditional: { label: '有条件通过', tone: 'warn' },
+  insufficient: { label: '证据不足', tone: 'warn' },
+  fail: { label: '不通过', tone: 'fail' },
+}
+
+function ReviewGate({ review }: { review: ReviewData }) {
+  const meta = REVIEW_META[review.verdict] || REVIEW_META.insufficient
+  const rows = review.items.filter((x) => x.severity !== 'info')
+  return (
+    <Panel
+      title="研究审查"
+      subtitle={review.blocks_promotion ? '存在高严重度问题：不能保存为可上线版本或晋级' : '每次回测自动生成；证据不足不会假装通过'}
+      actions={<Tag tone={meta.tone === 'ok' ? 'ok' : meta.tone === 'fail' ? 'warn' : 'warn'}>{meta.label}</Tag>}
+    >
+      <div className="overview-grid">
+        <div><span>阻断</span><b className={review.summary.block ? 'negative' : ''}>{review.summary.block}</b></div>
+        <div><span>警告</span><b>{review.summary.warn}</b></div>
+        <div><span>证据不足</span><b>{review.summary.unknown}</b></div>
+        <div><span>通过项</span><b>{review.summary.pass}</b></div>
+      </div>
+      {rows.length ? (
+        <div className="stack" style={{ marginTop: 12 }}>
+          {rows.map((x) => (
+            <Callout key={x.id} tone={x.severity === 'block' ? 'fail' : x.severity === 'warn' ? 'warn' : undefined}
+              title={`${x.severity === 'block' ? '阻断' : x.severity === 'warn' ? '警告' : '待确认'} · ${x.title}`}>
+              {x.detail}
+            </Callout>
+          ))}
+        </div>
+      ) : <div className="hint" style={{ marginTop: 10 }}>没有阻断项或警告项。</div>}
+      <div className="hint" style={{ marginTop: 10 }}>
+        审查模型：{review.model || 'deterministic'} · 生成时间：{fmtTime((review.generated_at || 0) * 1000)} UTC
+      </div>
+    </Panel>
+  )
+}
+
 export default function BacktestDetailPage({ id, onNavigate, notify }: PageProps & { id: string }) {
   const [bt, setBt] = useState<BacktestResult | null>(null)
+  const [favorite, setFavorite] = useState(false)
   const [error, setError] = useState('')
   const [tab, setTab] = useState<Tab>('fills')
   const [chart, setChart] = useState<'returns' | 'excess' | 'drawdown' | 'daily' | 'records'>('returns')
@@ -62,8 +104,9 @@ export default function BacktestDetailPage({ id, onNavigate, notify }: PageProps
     if (!bt) return null
     const s = cumulative(bt.equity_curve)
     const b = cumulative(bt.benchmark_curve)
+    const sb = bt.simple_benchmark_curve?.length ? cumulative(bt.simple_benchmark_curve) : []
     const excess = s.map((v, i) => (1 + v) / (1 + (b[i] ?? 0)) - 1)
-    return { s, b, excess, dd: bt.drawdown.map((d) => -d) }
+    return { s, b, sb, excess, dd: bt.drawdown.map((d) => -d) }
   }, [bt])
 
   if (error) return <Callout tone="fail" title="无法读取回测">{error}</Callout>
@@ -94,11 +137,22 @@ export default function BacktestDetailPage({ id, onNavigate, notify }: PageProps
     notify(next.includes(id) ? `已加入对比（共 ${next.length} 个）` : '已移出对比')
   }
 
+  const pin = async () => {
+    try {
+      const r = await v3.pinBacktest(id)
+      notify(r.pinned ? '已 PIN，自动清理不会删除这条记录' : '已取消 PIN')
+      v3.backtest(id).then(setBt).catch(() => undefined)
+    } catch (e) { notify((e as Error).message, true) }
+  }
+
   const remove = async () => {
+    if (row?.pinned) { notify('这条回测已 PIN 保护，请先取消 PIN', true); return }
     if (!await appConfirm('删除这条回测记录？')) return
-    await v3.deleteBacktest(id)
-    notify('已删除')
-    onNavigate(row?.slug ? `backtests/${row.slug}` : 'backtests')
+    try {
+      await v3.deleteBacktest(id)
+      notify('已删除')
+      onNavigate(row?.slug ? `backtests/${row.slug}` : 'backtests')
+    } catch (e) { notify((e as Error).message, true) }
   }
 
   const initCash = Number(row?.initial_cash ?? 0) || null
@@ -108,6 +162,7 @@ export default function BacktestDetailPage({ id, onNavigate, notify }: PageProps
     ['策略收益', fmtPct(m.total_return, 2, true), tone(m.total_return)],
     ['策略年化收益', fmtPct(m.annualized_return, 2, true), tone(m.annualized_return)],
     ['基准收益', fmtPct(m.benchmark_return, 2, true)],
+    ['简单规则收益', fmtPct(bt.simple_benchmark_metrics?.total_return, 2, true), tone(bt.simple_benchmark_metrics?.total_return)],
     ['超额收益', fmtPct(m.excess_return, 2, true), tone(m.excess_return)],
     ['Alpha', fmtNum(m.alpha, 3)],
     ['Beta', fmtNum(m.beta, 3)],
@@ -135,7 +190,10 @@ export default function BacktestDetailPage({ id, onNavigate, notify }: PageProps
         <h1 className="toolbar-title">{bt.strategy_name}</h1>
         <Tag mono>{row?.version ?? ''}</Tag>
         <span className={`table-pill ${bt.status === 'done' ? '' : 'fail'}`}>{bt.status === 'done' ? '回测完成' : '运行有错误'}</span>
+        {bt.cost_model?.execution_mode === 'tick' && <Tag>逐笔撮合</Tag>}
+        {bt.cost_model?.dynamic_slippage === true && <Tag>动态滑点</Tag>}
         <div className="spacer" />
+        <button type="button" className={`button small${favorite ? ' on' : ''}`} onClick={async () => { try { const r = await communityApi.toggleFavorite({ object_type: 'backtest', object_id: id, title: `${bt.strategy_name} 回测`, link: `backtest/${id}` }); setFavorite(r.favorite); notify(r.favorite ? '已收藏回测' : '已取消收藏') } catch (e) { notify((e as Error).message, true) } }}>{favorite ? '★ 已收藏' : '☆ 收藏'}</button>
         <ShareToButton item={{ type: 'backtest', id, title: `${bt.strategy_name} 回测` }} notify={notify} onNavigate={onNavigate} />
         <button className="button small" onClick={interpret}>✦ AI 解读</button>
         {bt.code && (
@@ -149,8 +207,10 @@ export default function BacktestDetailPage({ id, onNavigate, notify }: PageProps
         <button className="button small" onClick={toggleCompare}>{inCompare ? '✓ 已加入对比' : '加入对比'}</button>
         <button className="button small" onClick={() => onNavigate('backtests')}>回测列表</button>
         <button className="button small primary" onClick={() => setShare(true)}>分享到广场</button>
+        <button className={`button small${row?.pinned ? ' on' : ''}`} onClick={pin}>{row?.pinned ? '取消 PIN' : 'PIN 保护'}</button>
         <button className="button small" onClick={() => downloadText(`${id}.json`, JSON.stringify(bt, null, 2), 'application/json')}>导出报告</button>
-        <button className="button small danger" onClick={remove}>删除</button>
+        <button className="button small" onClick={() => { window.location.href = `/api/research/backtests/${id}/package` }}>导出研究包</button>
+        <button className="button small danger" disabled={!!row?.pinned} title={row?.pinned ? '先取消 PIN 再删除' : undefined} onClick={remove}>删除</button>
       </div>
 
       <div className={`source-banner ${synthetic ? 'warn' : 'real'}`}>
@@ -161,6 +221,18 @@ export default function BacktestDetailPage({ id, onNavigate, notify }: PageProps
         </div>
         <span className="banner-right">基准 {bt.benchmark}</span>
       </div>
+      {((bt.counters?.limit_locked || 0) + (bt.counters?.liquidity_drought || 0) > 0) && (
+        <Callout tone="warn" title="极端行情成交处理">
+          涨跌停锁定拒单 {Number(bt.counters?.limit_locked || 0)} 次；流动性枯竭 / 成交量不足 {Number(bt.counters?.liquidity_drought || 0)} 次。
+          这些委托没有被静默按理想价格成交，而是按无法成交或缩量记录。
+        </Callout>
+      )}
+      {bt.cost_model?.cost_source === 'strategy' && (
+        <Callout tone="warn" title="当前使用代码自定义费率">
+          策略里的 set_order_cost 已覆盖 UI「成本与高级」的默认值：吃单 {fmtPct(Number(bt.cost_model.taker_fee), 3)}、滑点 {String(bt.cost_model.slippage_bps)} bp。
+          如果这不是你想要的假设，改代码里的 set_order_cost，或在策略里删掉它改用平台默认成本。
+        </Callout>
+      )}
       {bt.warnings.map((w) => <Callout key={w} tone="warn">{w}</Callout>)}
       {bt.errors.length > 0 && <Callout tone="fail" title={`${bt.errors.length} 个运行错误`}>{bt.errors.slice(0, 5).join('；')}</Callout>}
       {bt.unfilled > 0 && <Callout>回测结束时有 {bt.unfilled} 笔委托因没有下一根 bar 而未成交，不影响以上指标。</Callout>}
@@ -173,6 +245,8 @@ export default function BacktestDetailPage({ id, onNavigate, notify }: PageProps
         </div>
         {m.notes?.length > 0 && <div className="hint" style={{ marginTop: 10 }}>{m.notes.join('；')}</div>}
       </Panel>
+
+      {bt.review && <ReviewGate review={bt.review} />}
 
       <Panel
         title="收益曲线"
@@ -194,13 +268,14 @@ export default function BacktestDetailPage({ id, onNavigate, notify }: PageProps
           <LineChart timestamps={bt.timestamps} series={[
             { name: '策略收益', values: series.s, color: COLORS.strategy, area: true },
             { name: `基准收益（${bt.benchmark}）`, values: series.b, color: COLORS.benchmark, dashed: true },
-          ]} height={320} ariaLabel="策略与基准累计收益" />
+            ...(series.sb.length ? [{ name: `简单规则（${bt.simple_benchmark}）`, values: series.sb, color: COLORS.benchmark, dashed: true }] : []),
+          ]} height={320} ariaLabel="策略、买入持有与简单规则累计收益" footer={<TradeFooter bt={bt} />} />
         )}
         {chart === 'excess' && (
-          <LineChart timestamps={bt.timestamps} series={[{ name: '超额收益', values: series.excess, color: COLORS.excess, area: true }]} height={320} />
+          <LineChart timestamps={bt.timestamps} series={[{ name: '超额收益', values: series.excess, color: COLORS.excess, area: true }]} height={320} footer={<TradeFooter bt={bt} />} />
         )}
         {chart === 'drawdown' && (
-          <LineChart timestamps={bt.timestamps} series={[{ name: '回撤（自历史高点）', values: series.dd, color: 'var(--muted)', area: true }]} height={320} />
+          <LineChart timestamps={bt.timestamps} series={[{ name: '回撤（自历史高点）', values: series.dd, color: 'var(--muted)', area: true }]} height={320} footer={<TradeFooter bt={bt} />} />
         )}
         {chart === 'daily' && (
           <BarChart values={bt.daily.map((d) => d.return)} labels={bt.daily.map((d) => d.date)} height={260} ariaLabel="每日收益" />
@@ -512,6 +587,41 @@ function DailyTable({ rows }: { rows: DailyRow[] }) {
   )
 }
 
+/** 全屏回测曲线下方：最近完成交易，横向可拖动查看。 */
+function TradeFooter({ bt }: { bt: BacktestResult }) {
+  const trades = (bt.round_trips || []).slice(-40).reverse()
+  const m = bt.metrics
+  return (
+    <div>
+      <div className="chart-trade-head">
+        <b>最近交易</b>
+        <span>完成 {m.trades ?? 0} 笔 · 成交 {bt.fills_total ?? 0} 次 · 手续费 {fmtMoney(m.total_fees)}</span>
+        <span>左右拖动查看完整表格</span>
+      </div>
+      {trades.length ? (
+        <table className="chart-trade-table">
+          <thead><tr><th>#</th><th>标的</th><th>开仓</th><th>平仓</th><th className="num">持有</th><th className="num">成本</th><th className="num">手续费</th><th className="num">盈亏</th><th className="num">收益率</th></tr></thead>
+          <tbody>
+            {trades.map((t, i) => (
+              <tr key={`${t.security}-${t.open_ts}-${i}`}>
+                <td>{trades.length - i}</td>
+                <td>{t.security}</td>
+                <td>{fmtTime(t.open_ts)}</td>
+                <td>{fmtTime(t.close_ts)}</td>
+                <td className="num">{t.holding_ms ? `${(t.holding_ms / 3_600_000).toFixed(1)}h` : '—'}</td>
+                <td className="num">{fmtMoney(t.cost_in)}</td>
+                <td className="num">{fmtMoney(t.fees, 4)}</td>
+                <td className={`num ${Number(t.realized) > 0 ? 'up' : Number(t.realized) < 0 ? 'down' : ''}`}>{fmtMoney(t.realized)}</td>
+                <td className={`num ${t.return > 0 ? 'up' : t.return < 0 ? 'down' : ''}`}>{fmtPct(t.return, 2, true)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : <div className="hint">这次回测没有完整交易记录；展开后仍可查看成交与持仓明细。</div>}
+    </div>
+  )
+}
+
 function Manifest({ bt }: { bt: BacktestResult }) {
   const mf = bt.manifest as Record<string, unknown>
   return (
@@ -594,6 +704,7 @@ function LedgerView({ bt }: { bt: BacktestResult }) {
   const wd = m.worst_day as { date: string; return: number } | null | undefined
   const L = bt.ledger
   const A = (bt.assumptions ?? {}) as Record<string, unknown>
+  const P = (A.perpetual ?? null) as Record<string, unknown> | null
   const counters = bt.counters ?? {}
   return (
     <div className="two-columns even">
@@ -630,8 +741,22 @@ function LedgerView({ bt }: { bt: BacktestResult }) {
       <div>
         <h3 className="section-title">口径声明</h3>
         <dl className="kv">
-          {Object.entries(A).filter(([k]) => k !== 'cost').map(([k, v]) => <Fragment key={k}><dt>{ASSUME[k] ?? k}</dt><dd>{String(v)}</dd></Fragment>)}
+          {Object.entries(A).filter(([k]) => k !== 'cost' && k !== 'perpetual').map(([k, v]) => <Fragment key={k}><dt>{ASSUME[k] ?? k}</dt><dd>{String(v)}</dd></Fragment>)}
         </dl>
+        {P && (
+          <>
+            <h3 className="section-title" style={{ marginTop: 18 }}>合约模型</h3>
+            <dl className="kv">
+              <dt>合约类型</dt><dd>{String(P.contract_type ?? 'linear')}</dd>
+              <dt>结算币种</dt><dd>{String(P.settlement_ccy ?? 'USDT')}</dd>
+              <dt>保证金 / 持仓</dt><dd>{String(P.margin_mode ?? 'isolated')} / {String(P.position_mode ?? 'one-way')}</dd>
+              <dt>资金费</dt><dd>{String(P.funding_basis ?? '—')}</dd>
+              <dt>强平</dt><dd>{String(P.liquidation_model ?? '—')}</dd>
+              <dt>强平损失</dt><dd className="mono">{String(P.liquidation_loss ?? 0)}</dd>
+            </dl>
+            <Callout tone="warn" title="研究近似与数据边界">{String(P.limitations ?? '')}</Callout>
+          </>
+        )}
         <h3 className="section-title" style={{ marginTop: 18 }}>撮合与风控计数</h3>
         <dl className="kv">
           <dt>限价触价歧义（未成交）</dt><dd>{counters.limit_touch_ambiguous ?? 0}</dd>
@@ -639,6 +764,9 @@ function LedgerView({ bt }: { bt: BacktestResult }) {
           <dt>过期信号（未补成交）</dt><dd>{counters.expired_signals ?? 0}</dd>
           <dt>资金 / 持仓不足拒绝</dt><dd>{counters.insufficient_funds ?? 0}</dd>
           <dt>风控拦截</dt><dd>{counters.risk_rejections ?? 0}</dd>
+          <dt>涨跌停锁定拒单</dt><dd>{counters.limit_locked ?? 0}</dd>
+          <dt>流动性枯竭拒单</dt><dd>{counters.liquidity_drought ?? 0}</dd>
+          <dt>逐笔路径成交</dt><dd>{counters.tick_path_fills ?? 0}</dd>
           <dt>重复事件丢弃</dt><dd>{counters.duplicate_events ?? 0}</dd>
         </dl>
         {(bt.flows?.length ?? 0) > 0 && (

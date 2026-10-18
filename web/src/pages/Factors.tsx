@@ -12,6 +12,7 @@ import { EmptyState, Field, Heading, Loading, Panel, Segments, Tag } from '../co
 import { HypothesisCard } from './lab/factor'
 import type { PageProps } from './types'
 import { appConfirm } from '../components/dialog'
+import { RecordPinButton } from '../components/RecordPin'
 
 type Tab = 'list' | 'new' | 'trials' | 'syntax'
 const TABS: { value: Tab; label: string }[] = [
@@ -69,7 +70,7 @@ function FactorList({ meta, onOpen, notify }: { meta: FactorMeta | null; onOpen:
           <table className="fx-table">
             <thead><tr>
               <th>因子</th><th>状态</th><th className="right">RankIC</th><th className="right">ICIR</th><th className="right">样本外保留</th>
-              <th className="right">换手</th><th className="right">多空夏普</th><th>评估于</th>
+              <th className="right">换手</th><th className="right">多空夏普</th><th>评估于</th><th>保护</th>
             </tr></thead>
             <tbody>
               {rows.map((f) => (
@@ -85,6 +86,7 @@ function FactorList({ meta, onOpen, notify }: { meta: FactorMeta | null; onOpen:
                   <td className="right num">{fp(f.summary?.turnover)}</td>
                   <td className="right num">{f3(f.summary?.ls_sharpe, 2)}</td>
                   <td className="muted">{day(f.evaluated_at)}</td>
+                  <td onClick={(e) => e.stopPropagation()}><RecordPinButton type="factor" id={f.id} pinned={f.pinned} notify={notify} /></td>
                 </tr>
               ))}
             </tbody>
@@ -135,6 +137,7 @@ function FactorDetail({ id, meta, notify, onDeleted }: { id: string; meta: Facto
           attached: `因子 ${f.expression}`, pins: f.hypothesis?.rationale ? [{ kind: 'note', title: '原假设', text: `${f.hypothesis.rationale}\n预期：${f.hypothesis.direction ?? ''}\n证伪：${f.hypothesis.falsify ?? ''}` }] : [],
         })}>在 AI 研究室中改进</button>
         <PythonCodeButton kind="factor" artifact={f.expression} name={f.name} />
+        <RecordPinButton type="factor" id={f.id} pinned={f.pinned} notify={notify} />
         <button className="button small danger" onClick={async () => { if (await appConfirm(`删除因子「${f.name}」？试验台账会保留。`)) { await factors.remove(id); onDeleted() } }}>删除</button>
       </>}>
         <code className="fr-expr big">{f.expression}</code>

@@ -1,5 +1,5 @@
 /** 回测页「策略对比」批次接口。 */
-import type { FullMetrics, Params, Spec } from './api2'
+import type { FullMetrics, Params, Spec } from './api/research'
 import { del, get, post } from './http'
 
 export interface CompareMember { slug: string; name: string; backtest_id: string | null; stress_backtest_id: string | null }

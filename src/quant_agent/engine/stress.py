@@ -1347,9 +1347,7 @@ def run_stress(
     done = [r for r in reports if r.get("completed")]
     idle = [r for r in done if not r.get("fills")]
     for r in idle:
-        flags.append(
-            {"scenario": r["id"], "kind": "no_trades", "message": f"{r['name']}：场景内没有成交，结论无效"}
-        )
+        flags.append({"scenario": r["id"], "kind": "no_trades", "message": f"{r['name']}：场景内没有成交，结论无效"})
     summary = {
         "passed": completed and len(idle) < len(done),
         "inconclusive": len(idle),

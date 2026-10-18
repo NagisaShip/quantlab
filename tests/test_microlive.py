@@ -157,6 +157,7 @@ def test_microlive_end_to_end(env, monkeypatch):
     slug = _graduated_strategy(c)
     st = c.get("/api/microlive").json()["status"]
     assert not st["ready"] and any("QAGENT_MICROLIVE" in b for b in st["blockers"])
+    assert "real money" in st["notice_en"] and st["ack_phrase_en"] == MI.ACK_PHRASE_EN
     monkeypatch.setenv(MI.SERVER_FLAG, "1")
 
     # 打开：要读告知、输入原话
@@ -273,3 +274,37 @@ def test_only_graduated_and_tier_raise_rules(env, monkeypatch):
     # 服务器急停文件
     (get_services().home / MI.KILL_FILE).write_text("stop")
     assert any("急停" in b for b in c.get("/api/microlive").json()["status"]["blockers"])
+
+
+def test_recheck_wipes_secret_when_withdraw_permission_appears(env, monkeypatch):
+    c, _holder, _clock, _step = env
+    r = c.post(
+        "/api/microlive/connections",
+        json={"exchange": "binance", "api_key": "livekey-123456", "api_secret": "sec-123456"},
+    )
+    assert r.status_code == 200, r.text
+    cid = r.json()["connection"]["id"]
+    monkeypatch.setattr(
+        MI, "permission_probe", lambda ex, creds: {"can_trade": True, "can_withdraw": True, "ip_restricted": True}
+    )
+    r = c.post(f"/api/microlive/connections/{cid}/test")
+    assert r.status_code == 200, r.text
+    assert r.json()["connection"]["status"] == "revoked"
+    with context.bind(c.headers["X-Workspace-Id"]):
+        assert MI.connections(get_services()).get(cid)["secret_ref"] is None
+
+
+def test_market_banner_reflects_micro_live_switch(env, monkeypatch):
+    c, _holder, _clock, _step = env
+    b = c.get("/api/market/banner").json()
+    assert b["live_enabled"] is False and "默认关闭" in b["mode_label"]
+
+    monkeypatch.setenv(MI.SERVER_FLAG, "1")
+    b = c.get("/api/market/banner").json()
+    assert b["live_enabled"] is False and "需管理员开启" in b["mode_label"]
+
+    st = c.get("/api/microlive").json()["status"]
+    r = c.post("/api/microlive/enable", json={"phrase": MI.ACK_PHRASE, "notice_version": st["notice_current"]})
+    assert r.status_code == 200, r.text
+    b = c.get("/api/market/banner").json()
+    assert b["live_enabled"] is True and "已开启" in b["mode_label"]

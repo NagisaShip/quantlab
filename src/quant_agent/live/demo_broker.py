@@ -156,6 +156,9 @@ class DemoBroker:
         """永续持仓（带符号，按标的币计）。"""
         return {}
 
+    def bills(self, symbol: str | None = None, start: int | None = None, end: int | None = None) -> list[dict]:
+        raise BrokerError(f"{self.label} 不支持账单查询")
+
     def place_market(self, symbol: str, side: str, qty: Decimal, client_order_id: str) -> OrderReport: ...
     def query(self, symbol: str, client_order_id: str) -> OrderReport: ...
 
@@ -243,6 +246,16 @@ class BinanceDemoBroker(DemoBroker):
             for b in self._signed("GET", "/fapi/v2/balance", {}, futures=True) or []:
                 out[b["asset"]] = out.get(b["asset"], Decimal(0)) + _d(b.get("balance"))
         return out
+
+    def bills(self, symbol: str | None = None, start: int | None = None, end: int | None = None) -> list[dict]:
+        params: dict[str, Any] = {"limit": 1000}
+        if symbol:
+            params["symbol"] = self._fsym(symbol)
+        if start:
+            params["startTime"] = int(start)
+        if end:
+            params["endTime"] = int(end)
+        return list(self._signed("GET", "/fapi/v1/income", params, futures=True) or [])
 
     @staticmethod
     def _fsym(symbol: str) -> str:
@@ -587,6 +600,16 @@ class OKXDemoBroker(DemoBroker):
         details = (rows[0] if rows else {}).get("details") or []
         return {d["ccy"]: _d(d.get("cashBal") or d.get("eq")) for d in details}
 
+    def bills(self, symbol: str | None = None, start: int | None = None, end: int | None = None) -> list[dict]:
+        params: dict[str, Any] = {"instType": "SWAP", "limit": "100"}
+        if symbol:
+            params["instId"] = self._inst(symbol)
+        if start:
+            params["begin"] = int(start)
+        if end:
+            params["end"] = int(end)
+        return list(self._call("GET", "/api/v5/account/bills", params) or [])
+
     def rules(self, symbol: str) -> Rules:
         if symbol not in self._rules:
             perp = is_perp(symbol)
@@ -860,6 +883,16 @@ class BybitDemoBroker(DemoBroker):
             for c in acct.get("coin") or []:
                 out[c["coin"]] = out.get(c["coin"], Decimal(0)) + _d(c.get("walletBalance"))
         return out
+
+    def bills(self, symbol: str | None = None, start: int | None = None, end: int | None = None) -> list[dict]:
+        params: dict[str, Any] = {"accountType": "UNIFIED", "category": "linear", "limit": 100}
+        if symbol:
+            params["symbol"] = self._sym(symbol)
+        if start:
+            params["startTime"] = int(start)
+        if end:
+            params["endTime"] = int(end)
+        return list(self._call("GET", "/v5/account/transaction-log", params) or [])
 
     def rules(self, symbol: str) -> Rules:
         if symbol not in self._rules:

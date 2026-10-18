@@ -10,17 +10,19 @@ from __future__ import annotations
 
 import hashlib
 import itertools
+import json
 import math
 import time
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from ..data.quality import TIMEFRAME_MS
+from ..data.service import DataUnavailable
 from ..exchanges.base import Bar
 from ..sdk import RuntimeCost, run_backtest
 from ..sdk.runtimes import LocalRunResult, RiskConfig
 
-PLATFORM_VERSION = "0.3.0"
+PLATFORM_VERSION = "0.1.0-preview"
 BACKTEST_TIME_LIMIT = 60.0
 OPT_RUN_TIME_LIMIT = 20.0
 MAX_COMBINATIONS = 150
@@ -42,6 +44,7 @@ class BacktestSpec:
     bars_limit: int = 1500
     warmup_bars: int = 100
     initial_cash: float = 10_000.0
+    initial_currency: str = "USDT"
     taker_fee: float = 0.001
     slippage_bps: float = 5.0
     spread_bps: float = 2.0
@@ -49,7 +52,20 @@ class BacktestSpec:
     cost_scale: float = 1.0
     rebalance_tolerance: float = 0.005
     fill_at: str = "next_open"
+    # 微结构成交：tick = 用 OHLC 路径模拟盘中逐笔；配合 50ms/1s 周期即子秒级撮合
+    execution_mode: str = "bar"
+    dynamic_slippage: bool = False
+    vol_slippage: float = 0.25
+    impact_a_bps: float = 0.0
+    impact_b_bps: float = 0.0
+    limit_move_pct: float = 0.0
+    min_liquidity_usd: float = 0.0
     exchange: str = "binance"
+    margin_mode: str = "isolated"
+    position_mode: str = "one-way"
+    contract_type: str = "linear"
+    expiry_ts: int | None = None
+    ledger_v2: bool = False
     source: str = "auto"
     benchmark: str | None = None
     params: dict[str, Any] = field(default_factory=dict)
@@ -81,6 +97,13 @@ class BacktestSpec:
             spread_bps=self.spread_bps,
             rebalance_tolerance=self.rebalance_tolerance,
             fill_at=self.fill_at,
+            execution_mode=self.execution_mode,
+            dynamic_slippage=self.dynamic_slippage,
+            vol_slippage=self.vol_slippage,
+            impact_a_bps=self.impact_a_bps,
+            impact_b_bps=self.impact_b_bps,
+            limit_move_pct=self.limit_move_pct,
+            min_liquidity_usd=self.min_liquidity_usd,
             insufficient_funds=self.insufficient_funds,
             fee_currency=self.fee_currency,
         )
@@ -97,6 +120,13 @@ def load_market(market: Any, spec: BacktestSpec) -> tuple[dict[str, list[Bar]], 
 
     指定起止日期时，自动向前多取 `warmup_bars` 根作为预热，保证计分从起始日开始。
     """
+    from ..exchanges.contracts import SUPPORTED_PERP_EXCHANGES, contract_type_of
+
+    if any(contract_type_of(sec) in ("linear", "inverse", "delivery") for sec in spec.securities):
+        if (spec.exchange or "binance").lower() not in SUPPORTED_PERP_EXCHANGES:
+            raise DataUnavailable(f"不支持的衍生品交易所：{spec.exchange}")
+        if any(contract_type_of(sec) == "delivery" for sec in spec.securities) and not spec.expiry_ts:
+            raise DataUnavailable("交割合约必须指定 expiry_ts（到期时间，毫秒 UTC）")
     step = TIMEFRAME_MS.get(spec.timeframe, 3_600_000)
     start = spec.start - spec.warmup_bars * step if spec.start else None
     bars: dict[str, list[Bar]] = {}
@@ -127,42 +157,63 @@ def load_market(market: Any, spec: BacktestSpec) -> tuple[dict[str, list[Bar]], 
 def load_funding(
     market: Any, spec: BacktestSpec, bars: dict[str, list[Bar]], datasets: list[dict[str, Any]] | None = None
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[str]]:
-    """永续合约的资金费率表，按时间点放进 research（键 `funding:<合约>`），回测在结算时刻逐笔结算。
+    """永续合约资金费事件表（结算时刻、费率、标记价、来源、摘要）。
 
-    返回 (research 表, 数据摘要, 警示)。取不到时不编造：警示里写明资金费按 0 计。
+    回测在结算时刻逐笔结算；标记价用于资金费名义价值与强平报告。取不到标记价时保留空值，
+    运行时回退到 bar 价格并在报告里明确标注，不编造价格。
     """
     tables: dict[str, Any] = {}
     summaries: list[dict[str, Any]] = []
     warnings: list[str] = []
+    from ..exchanges.contracts import contract_type_of
+
     synthetic = {d.get("symbol") for d in datasets or [] if d.get("source") == "synthetic"}
     for sec, rows in bars.items():
-        if not sec.upper().endswith(":PERP") or not rows or not hasattr(market, "funding_rates"):
+        if contract_type_of(sec) not in ("linear", "inverse") or not rows:
             continue
         src = "synthetic" if sec in synthetic or spec.source == "synthetic" else spec.source
-        got, label, err = market.funding_rates(
-            sec, exchange=spec.exchange, start=rows[0].open_time, end=rows[-1].close_time, source=src
-        )
-        if got:
+        events: list[dict[str, Any]] = []
+        if hasattr(market, "funding_events"):
+            events, label, err = market.funding_events(
+                sec, exchange=spec.exchange, start=rows[0].open_time, end=rows[-1].close_time, source=src
+            )
+        elif hasattr(market, "funding_rates"):
+            pairs, label, err = market.funding_rates(
+                sec, exchange=spec.exchange, start=rows[0].open_time, end=rows[-1].close_time, source=src
+            )
+            events = [{"ts": t, "rate": r, "mark_price": ""} for t, r in pairs]
+        else:
+            events, label, err = [], "", "行情服务不支持资金费率"
+        if events:
+            payload = [[int(e["ts"]), str(e["rate"]), str(e.get("mark_price") or "")] for e in events]
+            digest = hashlib.sha256(json.dumps(payload, separators=(",", ":")).encode("utf-8")).hexdigest()[:16]
             tables[f"funding:{sec}"] = {
-                "times": [int(t) for t, _ in got],
-                "rates": [str(r) for _, r in got],
+                "times": [int(e["ts"]) for e in events],
+                "rates": [str(e["rate"]) for e in events],
+                "mark_prices": [str(e.get("mark_price") or "") for e in events],
+                "interval_hours": 8,
                 "source": label,
+                "digest": digest,
             }
             summaries.append(
                 {
                     "symbol": sec,
                     "kind": "funding",
                     "source": label,
-                    "rows": len(got),
-                    "start_ts": got[0][0],
-                    "end_ts": got[-1][0],
+                    "rows": len(events),
+                    "mark_prices": sum(1 for e in events if e.get("mark_price")),
+                    "digest": digest,
+                    "start_ts": events[0]["ts"],
+                    "end_ts": events[-1]["ts"],
                 }
             )
             span = rows[-1].close_time - rows[0].open_time
-            if label == "exchange" and len(got) < span / (8 * 3_600_000) * 0.8:
+            if label == "exchange" and len(events) < span / (8 * 3_600_000) * 0.8:
                 warnings.append(
-                    f"{sec} 的资金费率只取到 {len(got)} 条，早于这些记录的时段按 0 计（OKX 只保留约 3 个月的历史费率）"
+                    f"{sec} 的资金费率只取到 {len(events)} 条，早于这些记录的时段按 0 计（OKX 只保留约 3 个月的历史费率）"
                 )
+            if not any(e.get("mark_price") for e in events):
+                warnings.append(f"{sec} 的资金费率没有标记价，结算回退到 bar 开盘/收盘价——资金费结果按简化模型计")
             if label == "synthetic":
                 warnings.append(f"{sec} 用的是合成资金费率，只能验证流程")
         else:
@@ -194,6 +245,7 @@ def execute(
         module,
         bars,
         initial_cash=spec.initial_cash,
+        initial_currency=spec.initial_currency,
         cost=spec.cost(),
         warmup_bars=warmup,
         timeframe=spec.timeframe,
@@ -205,6 +257,12 @@ def execute(
         cash_flows=spec.flows_for(bars),
         research=research,
         cost_scale=spec.cost_scale,
+        exchange=spec.exchange,
+        margin_mode=spec.margin_mode,
+        position_mode=spec.position_mode,
+        contract_type=spec.contract_type,
+        expiry_ts=spec.expiry_ts,
+        ledger_v2=spec.ledger_v2,
     )
 
 
@@ -234,7 +292,11 @@ def manifest(source: str, spec: BacktestSpec, datasets: list[dict[str, Any]], re
         ],
         "cost_model": result.get("cost_model"),
         "risk": result.get("risk"),
-        "fill_model": FILL_MODELS.get(spec.fill_at, spec.fill_at),
+        "fill_model": FILL_MODELS.get("tick" if spec.execution_mode == "tick" else spec.fill_at, spec.fill_at),
+        "margin_mode": spec.margin_mode,
+        "position_mode": spec.position_mode,
+        "contract_type": spec.contract_type,
+        "expiry_ts": spec.expiry_ts,
         "warmup_bars": spec.warmup_bars,
         "initial_cash": spec.initial_cash,
         "generated_at": int(time.time() * 1000),
@@ -244,6 +306,7 @@ def manifest(source: str, spec: BacktestSpec, datasets: list[dict[str, Any]], re
 FILL_MODELS = {
     "next_open": "下一根 bar 开盘价 ±（半价差 + 滑点）",
     "close": "当根 bar 收盘价 ±（半价差 + 滑点）",
+    "tick": "逐笔路径撮合：OHLC 路径 VWAP + 动态滑点/冲击；50ms~1s 周期即子秒级撮合",
 }
 
 SUMMARY_METRICS = (
@@ -255,6 +318,9 @@ SUMMARY_METRICS = (
     "volatility",
     "win_rate",
     "benchmark_return",
+    "simple_benchmark_return",
+    "excess_vs_simple",
+    "beats_simple",
     "excess_return",
     "alpha",
     "beta",

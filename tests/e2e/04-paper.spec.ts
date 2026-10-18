@@ -184,16 +184,19 @@ test.describe('04 · 实时模拟：启动 / 暂停 / 模拟平仓', () => {
     await expect(page.getByText('演示行情（时间函数生成，只用于体验流程）')).toBeVisible()
 
     // 暂停（window.confirm 不需要处理，暂停没有确认框）。
-    await page.getByRole('button', { name: '暂停' }).click()
+    // 刚启动时可能短暂处于排队 / 恢复中，暂停按钮会禁用；等服务端真正进入 running 再点击。
+    const pause = page.getByRole('button', { name: '暂停' })
+    await expect(pause).toBeEnabled({ timeout: 60_000 })
+    await pause.click()
     await expect(page.locator('.table-pill').first(), '暂停后应显示已暂停').toContainText('已暂停', {
       timeout: 60_000,
     })
     // 暂停后按钮变成“恢复”。
     await expect(page.getByRole('button', { name: '恢复' })).toBeVisible()
 
-    // 模拟平仓并结束：会弹 confirm。
-    page.once('dialog', (d) => d.accept())
+    // 模拟平仓并结束：使用应用内确认框（不是 window.confirm）。
     await page.getByRole('button', { name: '模拟平仓并结束' }).click()
+    await page.getByRole('alertdialog').getByRole('button', { name: '确定' }).click()
 
     await expect(page.locator('.table-pill').first(), '平仓后应显示已停止').toContainText('已停止', {
       timeout: 60_000,

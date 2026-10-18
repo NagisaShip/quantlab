@@ -61,11 +61,13 @@ export interface ExecReport {
 }
 
 export interface ExecRun {
+  pinned?: boolean
   id: string; hash: string; algo: string; style: string; horizon: number; symbols: string[]; summary: ExecSummary
   admitted: boolean; tape_sources: string[]; source: string; project_id: string; note: string; synthetic: boolean; created_at: number
 }
 
 export interface ExecScheme {
+  pinned?: boolean
   id: string; name: string; config: ExecConfig; symbols: string[]; summary: ExecSummary | null; admitted: boolean | null
   cost_model: { a_bps: number; b_bps: number; r2: number } | null
   status: ExecStatus; note: string; project_id: string | null; run_id: string | null; created_by: string; created_at: number; updated_at: number

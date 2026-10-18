@@ -1,6 +1,8 @@
-# API 参考
+# QuantLab v 0.1 preview · API 参考
 
-平台共 **405 个端点**。本文件由 `scripts/gen_api_doc.py` 从 FastAPI 的 OpenAPI 规范生成，
+[English](API-Reference.en.md) | [文档索引](README.md) | [返回 README](../README.md)
+
+平台共 **601 个端点**。本文件由 `scripts/gen_api_doc.py` 从 FastAPI 的 OpenAPI 规范生成，
 与运行中服务的 `/docs`（可交互调试）来自同一份定义。
 
 机器可读版本：`docs/openapi.json`（同一次生成）。
@@ -20,10 +22,15 @@
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
+| `GET` | `/api/auth/account` | 账号资料：用户名、显示名、绑定的邮箱与是否已验证 |
+| `PUT` | `/api/auth/account` | 修改用户名 / 显示名 |
+| `POST` | `/api/auth/email/code` | 给要绑定的邮箱发验证码（60 秒冷却，每小时 5 次） |
+| `POST` | `/api/auth/email/verify` | 填验证码完成绑定（之后可以用这个邮箱登录） |
 | `POST` | `/api/auth/login` | 登录，建立服务端会话 |
 | `POST` | `/api/auth/logout` | 退出登录，作废会话 |
 | `GET` | `/api/auth/me` | 当前用户、可访问的工作区与角色 |
 | `POST` | `/api/auth/password` | 修改密码（作废全部会话） |
+| `POST` | `/api/auth/quantlab-id/rotate` | 销毁并重新生成 QuantLab UID |
 | `POST` | `/api/auth/register` | 注册（首个用户成为管理员，之后凭邀请码） |
 | `GET` | `/api/auth/status` | 部署状态（是否已初始化、是否开放注册） |
 | `GET` | `/api/auth/totp` | 双因素认证状态（不回显密钥） |
@@ -36,12 +43,16 @@
 | `POST` | `/api/workspace/audit/archive` | 按保留期归档过期审计记录（管理员） |
 | `GET` | `/api/workspace/audit/archived` | 已归档的审计记录（管理员） |
 | `GET` | `/api/workspace/audit/export` | 导出审计日志为 CSV（管理员，单元格做公式中和） |
+| `GET` | `/api/workspace/features` | 工作区功能开关与实现状态 |
+| `PUT` | `/api/workspace/features` | 管理员动态开关现货/永续/真实资金等能力 |
 | `POST` | `/api/workspace/invites` | 创建邀请码（管理员） |
 | `DELETE` | `/api/workspace/invites/{invite_id}` | 作废邀请码（管理员） |
 | `GET` | `/api/workspace/members` | 成员与邀请 |
 | `DELETE` | `/api/workspace/members/{user_id}` | 移除成员（管理员） |
 | `PUT` | `/api/workspace/members/{user_id}` | 修改成员角色（管理员） |
 | `PUT` | `/api/workspace/settings` | 修改工作区名称、时区与运行额度（管理员） |
+| `GET` | `/api/workspace/storage` | 工作区存储分类、磁盘占用与保留策略 |
+| `POST` | `/api/workspace/storage/cleanup` | 按分类清理超过保留期的数据（默认只预览） |
 | `GET` | `/api/workspaces` | 我所在的工作区 |
 | `POST` | `/api/workspaces` | 新建工作区 |
 | `POST` | `/api/workspaces/join` | 凭邀请码加入工作区 |
@@ -81,11 +92,20 @@
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
+| `GET` | `/api/research/backtest-retention` | 当前成员的回测记录保留设置与占用 |
+| `PUT` | `/api/research/backtest-retention` | 保存当前成员的回测自动清理设置 |
+| `POST` | `/api/research/backtest-retention/cleanup` | 立即清理当前成员超出的最旧未 PIN 回测记录 |
+| `PUT` | `/api/research/backtest-retention/workspace` | 设置每个成员可保留的回测记录总数（工作区管理员） |
 | `GET` | `/api/research/backtests` | 回测记录列表 |
 | `POST` | `/api/research/backtests` | 运行回测（persist=false 即编译运行） |
+| `POST` | `/api/research/backtests/batch-delete` | 批量删除回测记录（跳过 PIN 保护或无权删除的记录） |
 | `POST` | `/api/research/backtests/compare` | 多次回测对比 |
+| `POST` | `/api/research/backtests/package/inspect` | 校验研究包 |
+| `POST` | `/api/research/backtests/package/replay` | 重放研究包并比对哈希 |
 | `DELETE` | `/api/research/backtests/{bt_id}` | 删除回测记录 |
 | `GET` | `/api/research/backtests/{bt_id}` | 回测详情（收益概述、交易、持仓、日志、清单） |
+| `GET` | `/api/research/backtests/{bt_id}/package` | 下载可复现研究包 |
+| `POST` | `/api/research/backtests/{bt_id}/pin` | 切换回测记录的 PIN 保护 |
 | `GET` | `/api/research/compare-batches` | 策略对比批次列表 |
 | `POST` | `/api/research/compare-batches` | 创建策略对比批次：冻结标的、区间、资金与成本 |
 | `DELETE` | `/api/research/compare-batches/{batch_id}` | 删除策略对比批次（回测记录保留） |
@@ -95,6 +115,15 @@
 | `GET` | `/api/research/optimizations` | 参数优化记录列表 |
 | `GET` | `/api/research/optimizations/{opt_id}` | 参数优化结果与过拟合诊断 |
 | `POST` | `/api/research/optimize` | 启动参数优化（样本内 / 样本外，后台任务） |
+| `POST` | `/api/research/pycode` | 研究产物 → Python 代码：因子（独立可运行，结果与平台一致）、模型 / 组合 / 执行（规格 + 复现代码） |
+| `GET` | `/api/research/record-retention` | 统一研究记录占用、各类型倍率与保留设置 |
+| `PUT` | `/api/research/record-retention` | 保存当前成员的研究记录自动清理设置 |
+| `POST` | `/api/research/record-retention/cleanup` | 按记录单位上限立即清理最旧的未 PIN 记录 |
+| `PUT` | `/api/research/record-retention/multipliers` | 设置各类研究记录的存储倍率（工作区管理员） |
+| `GET` | `/api/research/record-retention/records` | 统一记录列表（当前成员） |
+| `PUT` | `/api/research/record-retention/workspace` | 设置每个成员的记录单位上限（工作区管理员） |
+| `DELETE` | `/api/research/record-retention/{type}/{record_id}` | 删除任意自己的研究记录（PIN 需先取消） |
+| `POST` | `/api/research/record-retention/{type}/{record_id}/pin` | 切换任意研究记录的 PIN 保护 |
 | `POST` | `/api/research/strategies` | 新建策略（从模板或代码，同名不覆盖） |
 | `POST` | `/api/research/strategies/{slug}/apply-params` | 把一组参数写回策略（生成新版本） |
 | `POST` | `/api/research/strategies/{slug}/clone` | 克隆策略 |
@@ -176,11 +205,15 @@
 | `DELETE` | `/api/market/cache` | 清除一份 K 线缓存 |
 | `GET` | `/api/market/cache` | 本地 K 线缓存清单 |
 | `POST` | `/api/market/cache/fetch` | 预取一段真实历史行情进缓存 |
+| `DELETE` | `/api/market/db-cache` | 清空服务端数据库缓存（可只清一个命名空间） |
+| `GET` | `/api/market/db-cache` | 服务端数据库缓存：各类外部请求的缓存条目、命中与未命中 |
 | `GET` | `/api/market/network` | 部署地网络实测状态（72 小时；不足时显示待验证） |
 | `POST` | `/api/market/network/probe` | 立即探测一次行情接口可达性 |
 | `GET` | `/api/market/quality` | 数据质量报告（缺口 / 重复 / 未收盘） |
+| `GET` | `/api/market/quotes` | 关注列表行情：多个标的的收盘序列，未接入数据的标的如实标注 |
 | `GET` | `/api/market/summary` | 标的市场概览（价格、波动、区间） |
 | `GET` | `/api/market/symbols` | 支持的标的与周期 |
+| `POST` | `/api/market/sync` | 同步真实行情：分段拉取并补齐缺口 |
 | `GET` | `/api/market/ticker` | 最新价格与买卖价 |
 
 ## AI 策略助手
@@ -208,6 +241,10 @@
 | --- | --- | --- |
 | `DELETE` | `/api/community/comments/{comment_id}` | 删除评论 |
 | `POST` | `/api/community/comments/{comment_id}/like` | 评论点赞 |
+| `GET` | `/api/community/favorites` | 我的收藏：帖子、策略、回测等统一列表 |
+| `POST` | `/api/community/favorites` | 收藏内容；已收藏时再次调用会取消 |
+| `DELETE` | `/api/community/favorites/{object_type}/{object_id}` | 取消收藏 |
+| `GET` | `/api/community/favorites/{object_type}/{object_id}` | 检查某个对象是否已收藏 |
 | `GET` | `/api/community/posts` | 帖子列表（分类、标签、搜索、排序） |
 | `POST` | `/api/community/posts` | 发帖（可附策略与回测快照） |
 | `DELETE` | `/api/community/posts/{post_id}` | 删除自己的帖子 |
@@ -217,14 +254,24 @@
 | `POST` | `/api/community/posts/{post_id}/ai-review` | 请 AI 审稿人审阅 |
 | `POST` | `/api/community/posts/{post_id}/clone` | 克隆帖子里的策略到我的策略 |
 | `POST` | `/api/community/posts/{post_id}/comments` | 评论或回复 |
+| `POST` | `/api/community/posts/{post_id}/dislike` | 踩帖子；再次调用取消 |
 | `POST` | `/api/community/posts/{post_id}/favorite` | 收藏 / 取消 |
 | `POST` | `/api/community/posts/{post_id}/feature` | 设为 / 取消精华 |
 | `POST` | `/api/community/posts/{post_id}/like` | 点赞 / 取消 |
 | `POST` | `/api/community/posts/{post_id}/pin` | 置顶 / 取消 |
+| `POST` | `/api/community/posts/{post_id}/qmoji` | 给帖子贴一个 Qmoji 反应；再次调用取消 |
+| `POST` | `/api/community/posts/{post_id}/report` | 举报帖子 |
 | `GET` | `/api/community/profile` | 本机用户资料 |
 | `PUT` | `/api/community/profile` | 修改作者名与简介 |
+| `GET` | `/api/community/reports` | 帖子举报列表（工作区管理员） |
+| `POST` | `/api/community/reports/{report_id}/decide` | 处理或忽略帖子举报（工作区管理员） |
 | `GET` | `/api/community/stats` | 社区统计与贡献榜 |
 | `GET` | `/api/community/tags` | 热门标签 |
+| `GET` | `/api/community/users/{identifier}` | 用户主页：资料、关注/拉黑状态、私信策略与帖子 |
+| `DELETE` | `/api/community/users/{identifier}/block` | 取消拉黑 |
+| `POST` | `/api/community/users/{identifier}/block` | 拉黑用户：自动解除关注并隐藏其帖子 |
+| `DELETE` | `/api/community/users/{identifier}/follow` | 取消关注 |
+| `POST` | `/api/community/users/{identifier}/follow` | 关注用户 |
 
 ## 统一赛道与比较
 
@@ -328,15 +375,27 @@
 | --- | --- | --- |
 | `GET` | `/api/config` | 读取当前配置（密钥脱敏） |
 | `GET` | `/api/config/defaults` | 默认配置模板 |
+| `GET` | `/api/config/member-defaults` | 新成员默认限额：没有单独设置限额的成员使用工作区共享模型时按它计算 |
+| `PUT` | `/api/config/member-defaults` | 设置新成员默认限额（管理员；支持每日 / 每周 / 每月 / 累计与滚动时间段） |
+| `GET` | `/api/config/members` | 成员权限、限额、存储占用与近 30 天用量（管理员） |
+| `PUT` | `/api/config/members/{user_id}` | 设置成员的模型权限与限额（管理员） |
 | `GET` | `/api/config/models` | 列出所有可用的 provider/model 组合 |
 | `GET` | `/api/config/presets` | 常见模型服务商预设 |
+| `GET` | `/api/config/provider-quotas` | 按模型来源查询 5 小时 / 周 / 月 / 累计额度与用量 |
 | `POST` | `/api/config/providers` | 登记或更新一个 Provider |
+| `POST` | `/api/config/providers/discover` | 向服务商查询可用模型列表（OpenAI 兼容 /models 或 Anthropic /v1/models） |
 | `DELETE` | `/api/config/providers/{name}` | 删除界面登记的 Provider 与密钥 |
+| `GET` | `/api/config/quota-requests` | 额度申请：成员看自己的，管理员看全部 |
+| `POST` | `/api/config/quota-requests` | 申请提升使用工作区模型的额度 |
+| `POST` | `/api/config/quota-requests/{rid}/decide` | 批准或拒绝额度申请（管理员）；批准后自动更新该成员的限额 |
 | `PUT` | `/api/config/routing` | 按用途设置模型路由与降级链 |
 | `GET` | `/api/config/search` | 联网搜索配置状态（密钥只回显脱敏值） |
 | `PUT` | `/api/config/search` | 设置联网搜索密钥（部署级，加密存放；留空删除） |
+| `POST` | `/api/config/search/sources` | 添加自定义搜索来源（SearXNG / RSS） |
+| `DELETE` | `/api/config/search/sources/{source_id}` | 删除自定义搜索来源 |
 | `GET` | `/api/config/status` | 各用途是否有可用模型（决定 AI 功能是否降级） |
 | `POST` | `/api/config/test` | 真实调用一次模型，验证密钥与连通性 |
+| `GET` | `/api/config/usage` | 模型用量与费用统计（我的 / 整个工作区），以及当前限额状态 |
 
 ## AI 策略室
 
@@ -347,29 +406,54 @@
 | `GET` | `/api/lab/meta` | 策略室元信息：可选模型、团队、默认验收目标、模型是否就绪 |
 | `GET` | `/api/lab/projects` | 策略项目列表 |
 | `POST` | `/api/lab/projects` | 新建策略项目（可带初始代码、模板或钉住的上下文） |
-| `DELETE` | `/api/lab/projects/{pid}` | 删除策略项目（已保存的平台策略不受影响） |
+| `DELETE` | `/api/lab/projects/{pid}` | 删除对话（已保存的平台策略不受影响）；cascade=true 时连同它的全部分叉一起删除 |
 | `GET` | `/api/lab/projects/{pid}` | 项目详情与增量消息（after=已收到的最大序号，since=上次的 server_time） |
 | `PATCH` | `/api/lab/projects/{pid}` | 修改项目：标题、模型、验收目标、标的、归档 |
 | `POST` | `/api/lab/projects/{pid}/autopilot` | 自动迭代：调研 → 生成 → 回测 → 对照目标改进，结束后询问是否满意 |
 | `POST` | `/api/lab/projects/{pid}/backtest` | 用平台回测跑当前版本（cost_scale>1 为成本压力测试） |
 | `POST` | `/api/lab/projects/{pid}/code` | 保存手动编辑的代码为新版本（先做沙箱试跑） |
 | `POST` | `/api/lab/projects/{pid}/compact` | 压缩对话历史：把之前的对话总结成摘要钉进上下文，之后不再发原文 |
+| `POST` | `/api/lab/projects/{pid}/cost-sweep` | 成本压力扫描：并行回测多档成本倍数，找出不再满足目标的成本极限 |
 | `POST` | `/api/lab/projects/{pid}/decision` | 回答 AI 的提问：满意（保存为策略）/ 继续优化 / 换个方向 |
+| `POST` | `/api/lab/projects/{pid}/discussion` | 在对话里挂一张团队讨论卡片（/discuss 发起的讨论，发言以气泡展示） |
 | `GET` | `/api/lab/projects/{pid}/events` | 实时推送（SSE）：增量消息与项目状态，回合结束后自动关闭 |
+| `POST` | `/api/lab/projects/{pid}/fork` | 从某条消息分叉出一个新对话（挂在原对话下） |
 | `POST` | `/api/lab/projects/{pid}/goal` | 设定项目目标（/goal）：写入条件与回测范围，做合理性检查；可选立即开始自动迭代 |
+| `GET` | `/api/lab/projects/{pid}/images/{iid}` | 读取对话里附带的图片 |
 | `POST` | `/api/lab/projects/{pid}/messages` | 发送一条消息：模型带工具协作（/回测 /解释 /团队 /迭代 为快捷指令） |
+| `POST` | `/api/lab/projects/{pid}/messages/{seq}/feedback` | 给一条 Agent 消息点赞 / 点踩（可附意见） |
+| `POST` | `/api/lab/projects/{pid}/parameter-heatmap` | 二维参数敏感度热力图：网格回测并在对话里渲染参数平原 |
 | `POST` | `/api/lab/projects/{pid}/pins` | 把一段材料钉进模型上下文（调研结论、笔记、回测解读） |
 | `DELETE` | `/api/lab/projects/{pid}/pins/{pin_id}` | 把材料移出模型上下文 |
+| `POST` | `/api/lab/projects/{pid}/plan` | /plan：AI 列分步计划并一步步执行，直到全部完成且目标达标 |
+| `POST` | `/api/lab/projects/{pid}/render-errors` | 回答里的内容块没能显示：把错误交回 AI 自动修正（每条消息只修一次） |
+| `POST` | `/api/lab/projects/{pid}/report` | /report：按调研报告流程列计划、收集资料、分析，最后生成可导出 PDF 的报告 |
+| `GET` | `/api/lab/projects/{pid}/reports/{rid}` | 读取一份调研报告（Markdown 正文） |
+| `POST` | `/api/lab/projects/{pid}/rewind` | 编辑或重试一条用户消息：删掉它之后的对话，用新内容重新发送 |
 | `POST` | `/api/lab/projects/{pid}/save` | 把当前版本保存为平台策略草稿（可在编辑器、回测、模拟中继续使用） |
-| `POST` | `/api/lab/projects/{pid}/stop` | 请求停止正在运行的回合（在下一个检查点停下） |
+| `POST` | `/api/lab/projects/{pid}/stop` | 停止正在运行的回合：模型输出与联网搜索立即中断；其他工具在跑完当前一步后停下 |
+| `POST` | `/api/lab/projects/{pid}/stress-test` | 一键过拟合压力测试：滚动分段、参数敏感性、成本压力 |
 | `POST` | `/api/lab/projects/{pid}/versions/{v}/restore` | 切换到历史版本（不删除任何版本） |
 | `POST` | `/api/lab/projects/{pid}/walkforward` | 分段回测：把回测区间等分几段分别回测，检查策略是否只在某一段有效 |
+
+## Freqtrade 导入
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `POST` | `/api/freqtrade/check` | 检查一个 Freqtrade 策略能否导入（试跑一小段，不保存） |
+| `GET` | `/api/freqtrade/export/{slug}` | 把导入过的策略导回 Freqtrade 文件（参数写回 default） |
+| `POST` | `/api/freqtrade/import` | 导入 Freqtrade 策略为平台策略，并自动开始一次体检 |
+| `POST` | `/api/freqtrade/rewrite` | AI 把导入不了的 Freqtrade 策略改写成平台原生策略 |
+| `GET` | `/api/freqtrade/support` | 兼容范围：支持的指标、会被忽略和不支持的写法 |
 
 ## 上线验证
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | `GET` | `/api/validation/calibration` | 各交易所校准过的回测成本（回测表单里可以一键套用） |
+| `GET` | `/api/validation/checkup` | 体检记录（不含明细） |
+| `POST` | `/api/validation/checkup` | 开始一次策略体检（后台运行，轮询结果） |
+| `GET` | `/api/validation/checkup/{cid}` | 一次体检的完整结果 |
 | `GET` | `/api/validation/fidelity` | 真实度报告列表（可按策略过滤） |
 | `POST` | `/api/validation/fidelity` | 生成仿真真实度报告：在实验跑过的行情上重跑回测，逐项拆解收益差并给出成本校准建议 |
 | `GET` | `/api/validation/fidelity/{rid}` | 一份真实度报告 |
@@ -394,6 +478,7 @@
 | `GET` | `/api/demo/connections` | 模拟盘连接列表（密钥只回显掩码） |
 | `POST` | `/api/demo/connections` | 连接交易所模拟盘（验证通过才保存，密钥加密存储） |
 | `DELETE` | `/api/demo/connections/{cid}` | 撤销模拟盘连接并擦除密钥 |
+| `GET` | `/api/demo/connections/{cid}/contract-bills` | 拉取模拟账户账单并核验永续合约规则假设 |
 | `POST` | `/api/demo/connections/{cid}/test` | 重新测试模拟盘连接 |
 | `GET` | `/api/demo/environments` | 支持的交易所模拟环境 |
 | `GET` | `/api/demo/live` | 实时行情：正在形成的 K 线与推送状态 |
@@ -402,6 +487,9 @@
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
+| `GET` | `/api/datahub/auto` | 研究数据自动同步：是否开启、间隔、上次运行结果 |
+| `POST` | `/api/datahub/auto` | 开启 / 关闭研究数据自动同步（worker 按间隔把已有数据集补到最新） |
+| `POST` | `/api/datahub/auto/run` | 立即把已有数据集补到最新（后台执行） |
 | `GET` | `/api/datahub/connectors` | 连接器列表：类别、字段、是否需要密钥、已有数据集数与最近同步 |
 | `GET` | `/api/datahub/datasets` | 已有数据集（字段 × 标的 × 来源） |
 | `DELETE` | `/api/datahub/datasets/{key}` | 删除数据集 |
@@ -412,6 +500,70 @@
 | `GET` | `/api/datahub/liquidations` | 强平流记录器状态：是否在记录、收到的推送数、最近一条的时间 |
 | `POST` | `/api/datahub/liquidations` | 开始 / 停止记录币安全市场强平流，或把已结束的小时写进数据集 |
 | `POST` | `/api/datahub/sync` | 同步连接器数据（wait=false 时后台执行，数据集状态显示进度） |
+
+## 公开分享
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `POST` | `/api/collab/public-shares` | 为群组 / 用户 / 帖子 / 策略生成公开分享链接 |
+| `DELETE` | `/api/collab/public-shares/{token}` | 撤销公开分享链接 |
+| `GET` | `/api/public/shares/{token}` | 未登录可访问的公开分享预览 |
+
+## 协作与通知
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/api/collab/discover` | 公开目录：按名称 / QuantLab UID / 群号搜索公开用户与公开群组 |
+| `POST` | `/api/collab/dm` | 打开与某位成员的私聊（没有就新建），返回私聊会话 |
+| `GET` | `/api/collab/editors/{object_type}` | 每个对象的编辑者（列表上的头像标记） |
+| `GET` | `/api/collab/edits/{object_type}/{object_id}` | 编辑记录：谁（人 / Agent）在什么时候改出了哪个版本 |
+| `GET` | `/api/collab/groups` | 群组列表：我加入的与工作区内公开的群组 |
+| `POST` | `/api/collab/groups` | 新建群组（任何成员都可以组建） |
+| `DELETE` | `/api/collab/groups/{gid}` | 解散（归档）群组：群主或工作区管理员 |
+| `GET` | `/api/collab/groups/{gid}` | 群组详情与成员 |
+| `PUT` | `/api/collab/groups/{gid}` | 修改群组名称、简介、可见性与群成员的群组模型限额（群主 / 群管理员） |
+| `POST` | `/api/collab/groups/{gid}/join` | 加入公开群组 |
+| `POST` | `/api/collab/groups/{gid}/members` | 拉成员进群（群主 / 群管理员；公开群的成员也可以邀请） |
+| `DELETE` | `/api/collab/groups/{gid}/members/{user_id}` | 移出群成员（群主 / 群管理员）或退出群组（本人） |
+| `PUT` | `/api/collab/groups/{gid}/members/{user_id}` | 设置群角色或转让群主 |
+| `GET` | `/api/collab/groups/{gid}/messages` | 群聊消息（after 增量拉取，before 向上翻页） |
+| `POST` | `/api/collab/groups/{gid}/messages` | 发群消息（Markdown + 引用回测 / 策略 / 代码 / 文件；@ 提及进通知中心） |
+| `POST` | `/api/collab/groups/{gid}/number/rotate` | 销毁并重新生成 QuantLab 群号 |
+| `PUT` | `/api/collab/groups/{gid}/quota` | 给群组分配工作区共享模型额度（工作区管理员） |
+| `POST` | `/api/collab/groups/{gid}/read` | 标记群消息已读到某条 |
+| `GET` | `/api/collab/groups/{gid}/shared` | 在本群组内公开的策略与研究项目 |
+| `GET` | `/api/collab/groups/{gid}/tasks` | 群组任务看板 |
+| `POST` | `/api/collab/groups/{gid}/tasks` | 新建并指派任务（群成员） |
+| `GET` | `/api/collab/groups/{gid}/usage` | 群组模型用量与限额状态（群组服务商、全群共享模型额度、成员用量） |
+| `GET` | `/api/collab/lineage` | 策略血缘树：版本链、克隆派生、各版本的编辑者与回测 |
+| `GET` | `/api/collab/members` | 工作区成员目录（选择群成员、指派任务、@ 提及、私聊用；q 按名字 / 用户名 / 邮箱搜索） |
+| `DELETE` | `/api/collab/messages/{mid}` | 撤回消息（本人；群主 / 群管理员可删除任何消息） |
+| `PUT` | `/api/collab/messages/{mid}` | 编辑自己的消息 |
+| `POST` | `/api/collab/messages/{mid}/pin` | 置顶 / 取消置顶群消息（群主 / 群管理员） |
+| `POST` | `/api/collab/messages/{mid}/qmoji` | 给群消息贴一个 Qmoji 反应；再次调用取消 |
+| `POST` | `/api/collab/presence` | 在线心跳：我正在看 / 编辑这个对象；返回同时在场的其他成员 |
+| `GET` | `/api/collab/refs/search` | 引用选择器：按类型搜索可引用的回测、策略、帖子、文件与任务 |
+| `POST` | `/api/collab/share-to` | 把平台里的任意内容（回测、策略、报告、帖子、页面）分享到群组、私聊或策略广场 |
+| `GET` | `/api/collab/shares/{object_type}/{object_id}` | 读取策略 / 研究项目的可见性与作者 |
+| `PUT` | `/api/collab/shares/{object_type}/{object_id}` | 设置可见性：仅自己 / 工作区内公开 / 指定群组内公开 |
+| `GET` | `/api/collab/tasks/mine` | 指派给我的任务（跨群组） |
+| `DELETE` | `/api/collab/tasks/{tid}` | 删除任务（创建者或群主 / 群管理员） |
+| `PUT` | `/api/collab/tasks/{tid}` | 修改任务：改状态、重新指派、调整优先级与截止时间 |
+| `GET` | `/api/inbox` | 消息通知中心：我的通知（可只看未读、按类型筛选、向前翻页） |
+| `POST` | `/api/inbox/clear` | 删除通知：指定 id，或清空全部已读 |
+| `GET` | `/api/inbox/mutes` | 我的屏蔽列表（人、群组、通知类型、帖子） |
+| `POST` | `/api/inbox/mutes` | 屏蔽：不再收到某人 / 某群组 / 某类 / 某帖子的通知；屏蔽的人的群消息会折叠 |
+| `DELETE` | `/api/inbox/mutes/{target_type}/{target_id}` | 取消屏蔽 |
+| `POST` | `/api/inbox/read` | 标记已读：指定 id、某一类型，或全部 |
+| `GET` | `/api/inbox/summary` | 顶栏角标：未读通知数、我的待办任务数、待处理问题报告（管理员）与全站公告 |
+| `GET` | `/api/issues` | 问题报告：成员看自己的；管理员看自己管理的工作区（部署管理员看全部） |
+| `POST` | `/api/issues` | 提交问题报告（可附截图与文件） |
+| `GET` | `/api/issues/{iid}` | 问题报告详情与回复 |
+| `POST` | `/api/issues/{iid}/replies` | 回复问题报告（提交者补充，或管理员答复） |
+| `PUT` | `/api/issues/{iid}/status` | 修改问题报告状态（管理员；提交者可以关闭自己的报告） |
+| `POST` | `/api/uploads` | 上传文件（原始字节，Content-Type 为文件类型，?filename= 文件名；单个 10 MB） |
+| `GET` | `/api/uploads/{fid}` | 读取上传的文件（图片直接显示，其他类型下载） |
+| `GET` | `/api/uploads/{fid}/thumb` | 读取图片缩略图（列表与帖子卡使用，缺失时回退原图） |
 
 ## 因子库
 
@@ -429,6 +581,30 @@
 | `POST` | `/api/factors/{fid}/refresh` | 用最新数据重新评估因子，记录健康度（IC 是否衰减） |
 | `GET` | `/api/factors/{fid}/report` | 因子最近一次完整评估报告 |
 | `POST` | `/api/factors/{fid}/status` | 改变因子状态：候选 / 入库 / 衰减预警 / 退役 |
+
+## 对话媒体
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/api/media/image` | 下载并缓存一张外链图片（对话里的图片自动下载） |
+
+## 微实盘
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/api/microlive` | 微实盘状态：服务器与工作区开关、风险告知、急停、资金档位、运行中的实验 |
+| `POST` | `/api/microlive/connections` | 接入实盘 Key：必须能交易、不能提现划转、绑定 IP 白名单 |
+| `DELETE` | `/api/microlive/connections/{cid}` | 删除实盘 Key（平台保存的密文擦除） |
+| `POST` | `/api/microlive/connections/{cid}/test` | 重新自检一个实盘 Key |
+| `POST` | `/api/microlive/disable` | 关闭微实盘（不影响已在运行的实验，要停它们请用一键停止） |
+| `POST` | `/api/microlive/enable` | 打开微实盘（管理员读完风险告知后确认） |
+| `POST` | `/api/microlive/kill` | 一键停止：所有微实盘实验平仓并停止，之后拒绝新的启动 |
+| `GET` | `/api/microlive/notice` | 风险告知原文与版本 |
+| `POST` | `/api/microlive/prepare` | 生成启动摘要与 6 位确认码（5 分钟有效） |
+| `POST` | `/api/microlive/rearm` | 解除急停（管理员） |
+| `POST` | `/api/microlive/start` | 输入确认码启动微实盘 |
+| `POST` | `/api/microlive/tiers/{slug}/lower` | 资金上限降一档 |
+| `POST` | `/api/microlive/tiers/{slug}/raise` | 资金上限升一档（条件满足后由管理员确认） |
 
 ## 执行与监控
 
@@ -494,6 +670,29 @@
 | `POST` | `/api/models/{mid}/refresh` | 健康度：用冻结参数在最新数据上预测，记录训练区间之后的 RankIC 与特征漂移 |
 | `GET` | `/api/models/{mid}/report` | 模型的完整训练报告 |
 
+## 真实永续
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/api/realperp` | 真实永续状态、连接和运行中的实验 |
+| `POST` | `/api/realperp/connections` | 接入真实永续专用 Key |
+| `DELETE` | `/api/realperp/connections/{cid}` | 擦除真实永续 Key |
+| `POST` | `/api/realperp/connections/{cid}/test` | 重新检查真实永续 Key 与期货账户 |
+| `POST` | `/api/realperp/disable` | 关闭真实永续工作区开关 |
+| `POST` | `/api/realperp/enable` | 确认真实永续风险并打开工作区开关 |
+| `POST` | `/api/realperp/kill` | 一键平掉所有真实永续持仓并急停 |
+| `GET` | `/api/realperp/notice` | 真实永续风险告知 |
+| `POST` | `/api/realperp/prepare` | 生成真实永续启动摘要与确认码 |
+| `POST` | `/api/realperp/rearm` | 解除真实永续急停 |
+| `POST` | `/api/realperp/start` | 输入确认码启动真实永续 |
+
+## 研究导师
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/api/mentor/course` | 研究导师课程与当前进度 |
+| `PUT` | `/api/mentor/progress` | 更新研究导师课程完成进度 |
+
 ## 研究纪律与自动化
 
 | 方法 | 路径 | 说明 |
@@ -510,14 +709,14 @@
 | `GET` | `/api/rd/ledger` | 试验台账：各研究类型的试验次数，每个研究方向的最好成绩按试验次数修正（DSR / t 门槛） |
 | `POST` | `/api/rd/ledger/pbo` | 过拟合概率（CSCV）：同一研究项目的各个版本，或同一策略的历次回测 |
 | `GET` | `/api/rd/lineage` | 血缘图：信息源 → 因子 → 模型 → 组合 / 执行方案 → 策略 → 回测，以及需要重跑的提示 |
-| `GET` | `/api/rd/nightshift` | 夜班：预算设置、任务队列、正在跑的班次与历史 |
-| `PUT` | `/api/rd/nightshift/config` | 修改夜班预算与时间 |
-| `POST` | `/api/rd/nightshift/run` | 立即开始一个班次（后台运行） |
-| `GET` | `/api/rd/nightshift/shifts/{sid}` | 一个班次的详情 |
-| `POST` | `/api/rd/nightshift/stop` | 停止正在跑的班次（当前项目保留到最近一版） |
-| `POST` | `/api/rd/nightshift/tasks` | 往夜班队列里加一个研究任务 |
+| `GET` | `/api/rd/nightshift` | 定时任务：预算设置、任务队列、正在执行的批次与历史 |
+| `PUT` | `/api/rd/nightshift/config` | 修改定时任务预算与执行时间 |
+| `POST` | `/api/rd/nightshift/run` | 立即执行一次定时任务（后台运行） |
+| `GET` | `/api/rd/nightshift/shifts/{sid}` | 一次定时任务执行的详情 |
+| `POST` | `/api/rd/nightshift/stop` | 停止正在执行的定时任务（当前项目保留到最近一版） |
+| `POST` | `/api/rd/nightshift/tasks` | 往定时任务队列里加一个研究任务 |
 | `DELETE` | `/api/rd/nightshift/tasks/{tid}` | 从队列里移除（正在跑的不能移除） |
-| `GET` | `/api/rd/pipeline` | 总览页的研究流水线：因子、模型、组合、执行、夜班与纪律各一格 |
+| `GET` | `/api/rd/pipeline` | 总览页的研究流水线：因子、模型、组合、执行、定时任务与纪律各一格 |
 | `GET` | `/api/rd/shadows` | 影子运行列表与对比结论 |
 | `POST` | `/api/rd/shadows` | 开始影子运行：用和线上实验相同的设置并行模拟候选策略 |
 | `GET` | `/api/rd/shadows/{sid}` | 影子运行详情：两条净值、收益差、t 值、替换条件 |
@@ -540,3 +739,57 @@
 | `GET` | `/api/portfolio/{sid}` | 方案详情 |
 | `PATCH` | `/api/portfolio/{sid}` | 修改名称、状态、备注 |
 | `GET` | `/api/portfolio/{sid}/report` | 方案的完整评估报告 |
+
+## 能力矩阵
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/api/capabilities` | 平台能力矩阵：现货/永续/杠杆边界 |
+| `POST` | `/api/capabilities/contracts/verify-bills` | 用交易所账户账单核验 MMR / 资金费 / 强平假设 |
+| `GET` | `/api/capabilities/contracts/{exchange}/{symbol}` | 读取交易所合约规格与研究假设 |
+
+## 自适应与衰减
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/api/lifecycle` | 自适应与衰减总览：衰减判定、模型重训计划、市场状态与建议权重 |
+| `POST` | `/api/lifecycle/check` | 立刻对运行中的实验做一次衰减判定 |
+| `POST` | `/api/lifecycle/{session_id}/demote` | 按衰减监测的建议把策略退回上一阶段（需要人确认） |
+| `POST` | `/api/models/{mid}/retrain` | 立刻重训一次（只用截至重训时点的数据） |
+| `POST` | `/api/models/{mid}/retrain-plan` | 设置模型的定期重训计划 |
+
+## 运行节点
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/api/bot` | 聊天机器人列表与已绑定的聊天 |
+| `POST` | `/api/bot` | 添加聊天机器人（飞书 / 企业微信 / Telegram） |
+| `POST` | `/api/bot/bind-code` | 生成一次性绑定码 |
+| `DELETE` | `/api/bot/bindings/{binding_id}` | 解除聊天绑定 |
+| `POST` | `/api/bot/hook/feishu/{bot_id}` | 飞书事件回调 |
+| `GET` | `/api/bot/hook/wecom/{bot_id}` | 企业微信回调地址校验 |
+| `POST` | `/api/bot/hook/wecom/{bot_id}` | 企业微信消息回调 |
+| `DELETE` | `/api/bot/{bot_id}` | 删除聊天机器人 |
+| `GET` | `/api/node/board` | 手机看板：运行中的实验与节点状态（只读） |
+| `GET` | `/api/node/health` | 节点健康：心跳、失联实验、时钟偏差、限频 |
+
+## 部署运维
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `POST` | `/api/admin/announce` | 发布公告：给全部账号或某个工作区发站内通知（不受屏蔽影响），可同时挂顶栏横幅 |
+| `GET` | `/api/admin/audit` | 全站审计日志（可按操作、账号、工作区筛选） |
+| `GET` | `/api/admin/overview` | 服务器总览：版本、运行时长、数据库与磁盘、worker、运行队列、账号与模型用量 |
+| `GET` | `/api/admin/settings` | 平台设置：注册方式、顶栏横幅 |
+| `PUT` | `/api/admin/settings` | 修改平台设置 |
+| `GET` | `/api/admin/usage` | 全站模型用量：按天、按工作区、按账号、按服务商 |
+| `GET` | `/api/admin/users` | 全部账号：搜索、按状态筛选，附所在工作区数与近 30 天模型费用 |
+| `POST` | `/api/admin/users` | 直接创建账号（临时密码只显示一次），可同时加入某个工作区 |
+| `GET` | `/api/admin/users/{uid}` | 账号详情：所在工作区与角色、活跃会话、各工作区模型用量、最近操作 |
+| `POST` | `/api/admin/users/{uid}/admin` | 授予 / 撤销部署管理员 |
+| `POST` | `/api/admin/users/{uid}/ban` | 封禁账号：立即踢下线，之后无法登录（附原因，登录时提示） |
+| `POST` | `/api/admin/users/{uid}/reset-password` | 重置密码：生成临时密码（只显示一次），并作废全部会话 |
+| `POST` | `/api/admin/users/{uid}/sessions/revoke` | 强制下线：作废该账号的全部会话 |
+| `POST` | `/api/admin/users/{uid}/unban` | 解封账号 |
+| `GET` | `/api/admin/workspaces` | 全部工作区：所有者、成员数、群组数、近 30 天模型费用与运行数、状态 |
+| `PUT` | `/api/admin/workspaces/{wid}/status` | 停用 / 恢复工作区（停用后成员无法进入，数据保留） |

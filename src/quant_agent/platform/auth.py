@@ -40,9 +40,29 @@ DEFAULT_QUOTAS = {
     "max_runs_per_day": 200,  # 每天创建的运行数
     "max_bars_per_run": 1_000_000,  # 单次回测的 K 线数上限
     "max_paper_runs": 3,  # 同时运行的实时模拟数
+    "backtest_max_records_per_user": 100_000,  # 每名成员保留的回测记录总数
     "allow_python_strategies": True,  # Python 策略（在隔离子进程中运行；管理员可关闭，只留规则 DSL）
 }
-DEFAULT_SETTINGS = {"timezone": "Asia/Shanghai", "quotas": DEFAULT_QUOTAS}
+DEFAULT_FEEDBACK = {"enabled": False, "every_n_messages": 10, "auto_close_seconds": 0}
+DEFAULT_PRIVACY = {
+    "retain_agent_history": True,
+    "retain_uploads": True,
+    "allow_improvement_feedback": True,
+    "retention_days": 365,
+}
+DEFAULT_STORAGE = {
+    "auto_cleanup": False,
+    "threshold_percent": 90,
+    "target_percent": 75,
+    "keep_days": 30,
+}
+DEFAULT_SETTINGS = {
+    "timezone": "Asia/Shanghai",
+    "quotas": DEFAULT_QUOTAS,
+    "feedback": DEFAULT_FEEDBACK,
+    "privacy": DEFAULT_PRIVACY,
+    "storage": DEFAULT_STORAGE,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -80,13 +100,24 @@ _USERNAME_RE = re.compile(r"^[A-Za-z0-9_.\-一-鿿]{2,32}$")
 def normalize_username(raw: str) -> str:
     name = (raw or "").strip()
     if not _USERNAME_RE.match(name) or name.startswith((".", "-")):
-        raise AppError(ErrorCode.INVALID_PARAMETER, "用户名 2–32 个字符，只能用字母、数字、中文、下划线、点和短横线，且不能含 @")
+        raise AppError(
+            ErrorCode.INVALID_PARAMETER, "用户名 2–32 个字符，只能用字母、数字、中文、下划线、点和短横线，且不能含 @"
+        )
     return name
 
 
 def public_email(email: str | None) -> str:
     """对外显示的邮箱：占位地址显示为空（未绑定）。"""
     return "" if not email or email.endswith(UNBOUND_DOMAIN) else email
+
+
+def make_quantlab_uid(db: Database) -> str:
+    """生成不可预测、可重新生成的 QuantLab UID（QLU-XXXXXXXX）。"""
+    for _ in range(32):
+        candidate = f"QLU-{secrets.token_hex(4).upper()}"
+        if not db.fetchone("SELECT 1 AS x FROM users WHERE quantlab_uid=?", (candidate,)):
+            return candidate
+    raise AppError(ErrorCode.CONFLICT, "无法分配 QuantLab UID，请稍后重试")
 
 
 def validate_password(password: str) -> None:
@@ -204,11 +235,21 @@ class AuthService:
                 elif not self.open_registration():
                     raise AppError(ErrorCode.PERMISSION_DENIED, "本部署为受控注册：请向工作区管理员索取邀请码")
             user_id = uuid.uuid4().hex
+            quantlab_uid = f"QLU-{secrets.token_hex(4).upper()}"
             try:
                 t.execute(
-                    "INSERT INTO users (id, email, username, name, password_hash, is_admin, created_at)"
-                    " VALUES (?,?,?,?,?,?,?)",
-                    (user_id, email or f"{user_id}{UNBOUND_DOMAIN}", username, name, hash_password(password), first, now),
+                    "INSERT INTO users (id, email, username, name, password_hash, is_admin, created_at, quantlab_uid)"
+                    " VALUES (?,?,?,?,?,?,?,?)",
+                    (
+                        user_id,
+                        email or f"{user_id}{UNBOUND_DOMAIN}",
+                        username,
+                        name,
+                        hash_password(password),
+                        first,
+                        now,
+                        quantlab_uid,
+                    ),
                 )
             except IntegrityError as exc:
                 raise AppError(ErrorCode.CONFLICT, "该邮箱或用户名已注册") from exc
@@ -634,17 +675,36 @@ class AuthService:
             name = f"{base}{n}"
         return name
 
+    def rotate_quantlab_uid(self, user_id: str, *, password: str) -> dict[str, Any]:
+        """销毁旧 UID 并生成新 UID。旧号码立即无法用于搜索。"""
+        row = self.db.fetchone("SELECT password_hash FROM users WHERE id=?", (user_id,))
+        if row is None:
+            raise AppError(ErrorCode.NOT_FOUND, "账号不存在")
+        if not verify_password(password, row["password_hash"]):
+            raise AppError(ErrorCode.UNAUTHENTICATED, "密码不正确，未修改 QuantLab UID")
+        uid = make_quantlab_uid(self.db)
+        self.db.execute("UPDATE users SET quantlab_uid=? WHERE id=?", (uid, user_id))
+        return self.account(user_id)
+
     def backfill_usernames(self) -> int:
         """给还没有用户名的老账号补一个（邮箱 @ 前面的部分，重名加数字）。幂等，启动时调用。"""
         rows = self.db.fetchall("SELECT id, email FROM users WHERE username IS NULL OR username='' ORDER BY created_at")
         for r in rows:
-            self.db.execute("UPDATE users SET username=? WHERE id=?", (self._free_username(r["email"].split("@")[0]), r["id"]))
+            self.db.execute(
+                "UPDATE users SET username=? WHERE id=?", (self._free_username(r["email"].split("@")[0]), r["id"])
+            )
         return len(rows)
 
     def account(self, user_id: str) -> dict[str, Any]:
-        row = self.db.fetchone("SELECT id, email, username, name, email_verified_at FROM users WHERE id=?", (user_id,))
+        row = self.db.fetchone(
+            "SELECT id, email, username, name, email_verified_at, quantlab_uid FROM users WHERE id=?", (user_id,)
+        )
         if row is None:
             raise AppError(ErrorCode.NOT_FOUND, "账号不存在")
+        uid = row.get("quantlab_uid") or ""
+        if not uid:
+            uid = make_quantlab_uid(self.db)
+            self.db.execute("UPDATE users SET quantlab_uid=? WHERE id=?", (uid, user_id))
         email = public_email(row["email"])
         return {
             "id": row["id"],
@@ -652,12 +712,15 @@ class AuthService:
             "name": row["name"],
             "email": email,
             "email_verified": bool(email and row["email_verified_at"]),
+            "quantlab_uid": uid,
         }
 
     def update_account(self, user_id: str, *, username: str | None = None, name: str | None = None) -> dict[str, Any]:
         if username is not None:
             username = normalize_username(username)
-            other = self.db.fetchone("SELECT id FROM users WHERE lower(username)=? AND id<>?", (username.lower(), user_id))
+            other = self.db.fetchone(
+                "SELECT id FROM users WHERE lower(username)=? AND id<>?", (username.lower(), user_id)
+            )
             if other:
                 raise AppError(ErrorCode.CONFLICT, "用户名已被使用")
             self.db.execute("UPDATE users SET username=? WHERE id=?", (username, user_id))
@@ -670,7 +733,12 @@ class AuthService:
         from . import mailer
 
         email = email.strip().lower()
-        if "@" not in email or len(email) > 200 or email.endswith(UNBOUND_DOMAIN) or not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+        if (
+            "@" not in email
+            or len(email) > 200
+            or email.endswith(UNBOUND_DOMAIN)
+            or not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email)
+        ):
             raise AppError(ErrorCode.INVALID_PARAMETER, "邮箱格式不正确")
         taken = self.db.fetchone("SELECT id FROM users WHERE email=? AND id<>?", (email, user_id))
         if taken:
@@ -699,10 +767,23 @@ class AuthService:
         # 发出去之后才记录：发信失败不占用冷却与次数
         self.db.execute(
             "INSERT INTO email_codes (id, user_id, email, purpose, code_hash, created_at, expires_at) VALUES (?,?,?,?,?,?,?)",
-            (uuid.uuid4().hex, user_id, email, "bind", _token_hash(f"{email}|{code}"), now, now + self.EMAIL_CODE_TTL_MS),
+            (
+                uuid.uuid4().hex,
+                user_id,
+                email,
+                "bind",
+                _token_hash(f"{email}|{code}"),
+                now,
+                now + self.EMAIL_CODE_TTL_MS,
+            ),
         )
-        return {"sent": True, "email": email, "via": mode, "expires_in": self.EMAIL_CODE_TTL_MS // 1000,
-                "cooldown": self.EMAIL_CODE_COOLDOWN_MS // 1000}
+        return {
+            "sent": True,
+            "email": email,
+            "via": mode,
+            "expires_in": self.EMAIL_CODE_TTL_MS // 1000,
+            "cooldown": self.EMAIL_CODE_COOLDOWN_MS // 1000,
+        }
 
     def verify_email_code(self, user_id: str, email: str, code: str) -> dict[str, Any]:
         email = email.strip().lower()
@@ -752,7 +833,21 @@ class AuthService:
             raise AppError(ErrorCode.NOT_FOUND, "工作区不存在")
         settings = jload(row["settings"], {}) or {}
         quotas = {**DEFAULT_QUOTAS, **(settings.get("quotas") or {})}
-        return {**row, "is_demo": bool(row["is_demo"]), "settings": {**DEFAULT_SETTINGS, **settings, "quotas": quotas}}
+        feedback = {**DEFAULT_FEEDBACK, **(settings.get("feedback") or {})}
+        privacy = {**DEFAULT_PRIVACY, **(settings.get("privacy") or {})}
+        storage = {**DEFAULT_STORAGE, **(settings.get("storage") or {})}
+        return {
+            **row,
+            "is_demo": bool(row["is_demo"]),
+            "settings": {
+                **DEFAULT_SETTINGS,
+                **settings,
+                "quotas": quotas,
+                "feedback": feedback,
+                "privacy": privacy,
+                "storage": storage,
+            },
+        }
 
     def update_settings(self, workspace_id: str, patch: dict[str, Any]) -> dict[str, Any]:
         ws = self.workspace(workspace_id)
@@ -772,6 +867,39 @@ class AuthService:
                         raise AppError(ErrorCode.INVALID_PARAMETER, f"配额 {k} 不能为负数")
                     q[k] = n
             settings["quotas"] = q
+        if "features" in patch:
+            from .features import validate_patch
+
+            try:
+                f = validate_patch(patch["features"])
+            except ValueError as exc:
+                raise AppError(ErrorCode.INVALID_PARAMETER, str(exc)) from exc
+            settings["features"] = {**(settings.get("features") or {}), **f}
+        if "feedback" in patch:
+            raw = patch["feedback"] or {}
+            cur = {**DEFAULT_FEEDBACK, **(settings.get("feedback") or {})}
+            cur["enabled"] = bool(raw.get("enabled", cur["enabled"]))
+            cur["every_n_messages"] = max(1, min(1000, int(raw.get("every_n_messages", cur["every_n_messages"]))))
+            cur["auto_close_seconds"] = max(0, min(120, int(raw.get("auto_close_seconds", cur["auto_close_seconds"]))))
+            settings["feedback"] = cur
+        if "privacy" in patch:
+            raw = patch["privacy"] or {}
+            cur = {**DEFAULT_PRIVACY, **(settings.get("privacy") or {})}
+            for k in ("retain_agent_history", "retain_uploads", "allow_improvement_feedback"):
+                if k in raw:
+                    cur[k] = bool(raw[k])
+            cur["retention_days"] = max(0, min(3650, int(raw.get("retention_days", cur["retention_days"]))))
+            settings["privacy"] = cur
+        if "storage" in patch:
+            raw = patch["storage"] or {}
+            cur = {**DEFAULT_STORAGE, **(settings.get("storage") or {})}
+            cur["auto_cleanup"] = bool(raw.get("auto_cleanup", cur["auto_cleanup"]))
+            cur["threshold_percent"] = max(50, min(99, int(raw.get("threshold_percent", cur["threshold_percent"]))))
+            cur["target_percent"] = max(10, min(95, int(raw.get("target_percent", cur["target_percent"]))))
+            if cur["target_percent"] >= cur["threshold_percent"]:
+                cur["target_percent"] = max(10, cur["threshold_percent"] - 5)
+            cur["keep_days"] = max(0, min(3650, int(raw.get("keep_days", cur["keep_days"]))))
+            settings["storage"] = cur
         if "name" in patch:
             name = str(patch["name"]).strip()[:60]
             if name:

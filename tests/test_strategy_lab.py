@@ -63,6 +63,9 @@ def client(tmp_path, monkeypatch):
 def _project(client, **kw):
     body = {
         "idea": "BTC 1小时 20 和 60 均线金叉，止损 5%，仓位 70%",
+        "securities": ["BTC/USDT"],
+        "timeframe": "1h",
+        "market_auto": False,
         "data_source": "synthetic",
         "bars_limit": 600,
         "max_rounds": 3,
@@ -302,6 +305,26 @@ def test_fork_rewind_and_conversation_fields(client):
     assert patched["project"]["pinned"] and patched["project"]["folder"] == "BTC 研究"
 
 
+def test_patch_project_can_switch_market_to_auto(client):
+    p = _project(client)
+    r = client.patch(f"/api/lab/projects/{p['id']}", json={"securities": [], "market_auto": True})
+    assert r.status_code == 200, r.text
+    assert r.json()["project"]["securities"] == [] and r.json()["project"]["market_auto"] is True
+    r = client.patch(f"/api/lab/projects/{p['id']}", json={"securities": ["eth/usdt"], "market_auto": False})
+    assert r.json()["project"]["securities"] == ["ETH/USDT"] and r.json()["project"]["market_auto"] is False
+
+
+def test_new_project_defaults_to_auto_symbol():
+    from quant_agent.agents.strategy_lab import new_project
+
+    p = new_project({"idea": "趋势策略"})
+    assert p["securities"] == [] and p["market_auto"] is True
+    p = new_project({"idea": "趋势策略", "securities": ["eth/usdt"]})
+    assert p["securities"] == ["ETH/USDT"] and p["market_auto"] is False
+    p = new_project({"idea": "趋势策略", "securities": ["btc/usdt"], "market_auto": True})
+    assert p["securities"] == [] and p["market_auto"] is True
+
+
 def test_suggestions_and_ai_sets_market(client):
     from quant_agent.agents.strategy_lab import split_suggestions
 
@@ -363,6 +386,109 @@ def test_roles_get_all_tools_unless_restricted():
         assert set(seen["names"]) == expect
 
 
+def test_auto_compact_threshold_defaults_and_patch(client):
+    p = _project(client, model="fake/fake-1")
+    assert p["auto_compact_ratio"] == 0.8
+    view = client.get(f"/api/lab/projects/{p['id']}").json()
+    ctx = view["context"]
+    assert ctx["auto_compact_ratio"] == 0.8
+    assert ctx["auto_compact_tokens"] == int(ctx["budget"] * 0.8)
+
+    patched = client.patch(f"/api/lab/projects/{p['id']}", json={"auto_compact_ratio": 0.9}).json()["project"]
+    assert patched["auto_compact_ratio"] == 0.9
+    ctx = client.get(f"/api/lab/projects/{p['id']}").json()["context"]
+    assert ctx["auto_compact_tokens"] == int(ctx["budget"] * 0.9)
+    assert client.patch(f"/api/lab/projects/{p['id']}", json={"auto_compact_ratio": 0.99}).status_code == 422
+
+
+def test_auto_compact_waits_for_configured_threshold(client):
+    from quant_agent.api.routes_lab import _lab
+    from quant_agent.platform import context
+
+    router = ScriptedRouter(["第一次回答", "摘要：继续做 BTC 研究。", "第二次回答"])
+    get_services().router = router
+    p = _project(client, model="fake/fake-1", auto_compact_ratio=0.9)
+    ws = client.get("/api/auth/me").json()["workspace"]["id"]
+    with context.bind(ws):
+        lab = _lab()
+        project = lab.store.get(p["id"])
+        threshold = lab.auto_compact_tokens(project)
+        fixed = lab._fixed_context_tokens(project)
+        chunk_tokens = max(500, (threshold - fixed) // 8)
+        chunk = "a" * (chunk_tokens * 4)
+        for i in range(6):
+            lab.store.append(p["id"], {"role": "user" if i % 2 == 0 else "assistant", "kind": "text", "content": chunk})
+
+    first = client.post(f"/api/lab/projects/{p['id']}/messages", json={"text": "第一次继续", "wait": True}).json()
+    assert first["project"]["compacted_before"] == 0
+
+    with context.bind(ws):
+        lab = _lab()
+        chunk = "a" * (chunk_tokens * 4)
+        for i in range(6):
+            lab.store.append(p["id"], {"role": "user" if i % 2 == 0 else "assistant", "kind": "text", "content": chunk})
+
+    second = client.post(f"/api/lab/projects/{p['id']}/messages", json={"text": "第二次继续", "wait": True}).json()
+    assert second["project"]["compacted_before"] > 0
+
+
+def test_stale_running_project_is_recovered(client):
+    from quant_agent.agents.strategy_lab import stop_event
+    from quant_agent.api.routes_lab import _lab
+    from quant_agent.platform import context
+
+    p = _project(client)
+    ws = client.get("/api/auth/me").json()["workspace"]["id"]
+    with context.bind(ws):
+        lab = _lab()
+        lab.store.patch(p["id"], status="running", stop_requested=True, job={"kind": "chat", "phase": "联网搜索"})
+        card = lab.store.append(
+            p["id"],
+            {"role": "tool", "kind": "tool", "content": "", "data": {"name": "web_search", "status": "running"}},
+        )
+        assert lab.recover_stale(p["id"])
+        project = lab.store.get(p["id"])
+        assert project["status"] == "idle" and project["job"] is None and project["stop_requested"] is False
+        stopped = next(m for m in lab.store.messages(p["id"]) if m["seq"] == card["seq"])
+        assert stopped["data"]["status"] == "stopped"
+        assert not lab.recover_stale(p["id"])
+
+        lab.store.patch(p["id"], status="running", job={"kind": "chat", "phase": "联网搜索"})
+        lab.request_stop(p["id"])
+        assert lab.store.get(p["id"])["status"] == "idle"
+        stop_event(p["id"]).clear()
+
+
+def test_cancellable_tool_stops_immediately(client):
+    import contextvars
+    import threading
+    import time
+
+    from quant_agent.agents.strategy_lab import StopRequested, stop_event
+    from quant_agent.api.routes_lab import _lab
+    from quant_agent.platform import context
+
+    p = _project(client)
+    ws = client.get("/api/auth/me").json()["workspace"]["id"]
+    with context.bind(ws):
+        lab = _lab()
+        stop_event(p["id"]).clear()
+
+        def slow_tool():
+            time.sleep(2)
+            return {"ok": True}
+
+        ctx = contextvars.copy_context()
+        threading.Thread(target=lambda: (time.sleep(0.1), ctx.run(lab.request_stop, p["id"])), daemon=True).start()
+        t0 = time.monotonic()
+        with pytest.raises(StopRequested):
+            lab._tool(p["id"], "web_search", "联网搜索", {"query": "btc"}, slow_tool)
+        assert time.monotonic() - t0 < 0.8
+        card = [m for m in lab.store.messages(p["id"]) if m.get("kind") == "tool"][-1]
+        assert card["data"]["status"] == "stopped"
+        stop_event(p["id"]).clear()
+
+
 def test_auto_compact_before_long_turn(client):
     from quant_agent.api.routes_lab import _lab
     from quant_agent.platform import context
@@ -394,12 +520,20 @@ def test_llm_autopilot_revises_with_backtest_feedback(client):
 
 def test_running_project_rejects_second_turn(client):
     p = _project(client)
+    from quant_agent.agents import strategy_lab as SL
     from quant_agent.agents.strategy_lab import LabStore
     from quant_agent.platform import context
 
     with context.bind(client.headers["X-Workspace-Id"]):
         LabStore(get_services().store).patch(p["id"], status="running")
-    r = client.post(f"/api/lab/projects/{p['id']}/messages", json={"text": "hi"})
+        # 模拟真实的执行中回合：只有 _ACTIVE_RUNS 里存在的项目才不会被 recover_stale 回收。
+        with SL._RUNS_GUARD:
+            SL._ACTIVE_RUNS.add(p["id"])
+    try:
+        r = client.post(f"/api/lab/projects/{p['id']}/messages", json={"text": "hi"})
+    finally:
+        with SL._RUNS_GUARD:
+            SL._ACTIVE_RUNS.discard(p["id"])
     assert r.status_code == 409
 
 
@@ -724,9 +858,21 @@ def test_plan_runs_step_by_step_until_done(client):
     prompts = [m.content for c in router.calls for m in c["messages"] if m.role == "user"]
     assert any("第 2 步" in t and "写移动止损版" in t for t in prompts)
     systems = "\n".join(m.content for m in router.calls[-1]["messages"] if m.role == "system")
-    assert "【当前计划" in systems and "start_discussion" in systems and "queue_night" in systems
+    assert (
+        "【当前计划" in systems
+        and "start_discussion" in systems
+        and "schedule_task" in systems
+        and "queue_night" in systems
+    )
     names = {t.name for t in router.calls[0]["tools"]}
-    assert {"set_plan", "update_plan_step", "start_discussion", "queue_night", "context_usage"} <= names
+    assert {
+        "set_plan",
+        "update_plan_step",
+        "start_discussion",
+        "schedule_task",
+        "queue_night",
+        "context_usage",
+    } <= names
     assert view["project"]["status"] == "idle"
 
 
@@ -780,3 +926,51 @@ def test_stopping_a_plan_pauses_it(client):
     view = client.post(f"/api/lab/projects/{p['id']}/messages", json={"text": "随便聊聊", "wait": True}).json()
     assert view["messages"][-1]["content"] == "随便聊聊的回答"
     assert view["project"]["plan"]["steps"][0]["status"] in ("pending", "doing")
+
+
+def test_message_feedback_is_saved_and_can_be_toggled(client):
+    """消息点赞 / 评分落库，刷新后仍能读回；再次提交相同内容会取消。"""
+    p = _project(client)
+    view = client.post(f"/api/lab/projects/{p['id']}/messages", json={"text": "你好", "wait": True}).json()
+    msg = next(m for m in reversed(view["messages"]) if m["role"] == "assistant" and m["kind"] == "text")
+    url = f"/api/lab/projects/{p['id']}/messages/{msg['seq']}/feedback"
+
+    first = client.post(url, json={"rating": 1, "comment": "有帮助", "score": 5})
+    assert first.status_code == 200, first.text
+    assert first.json()["feedback"] == {"rating": 1, "comment": "有帮助", "score": 5}
+
+    stored = client.get(f"/api/lab/projects/{p['id']}").json()
+    saved = next(m for m in stored["messages"] if m["seq"] == msg["seq"])
+    assert saved["feedback"] == {"rating": 1, "comment": "有帮助", "score": 5}
+
+    # 同一评分、意见和星级再次提交 = 取消评价
+    assert client.post(url, json={"rating": 1, "comment": "有帮助", "score": 5}).json()["feedback"] is None
+    assert "feedback" not in next(
+        m for m in client.get(f"/api/lab/projects/{p['id']}").json()["messages"] if m["seq"] == msg["seq"]
+    )
+
+    updated = client.post(url, json={"rating": -1, "comment": "不准确", "score": 2}).json()["feedback"]
+    assert updated == {"rating": -1, "comment": "不准确", "score": 2}
+    # 点踩按钮只带 rating：保留评分卡写下的意见与星级
+    kept = client.post(url, json={"rating": 1}).json()["feedback"]
+    assert kept == {"rating": 1, "comment": "不准确", "score": 2}
+    # 再点一次相同评价才取消
+    assert client.post(url, json={"rating": 1}).json()["feedback"] is None
+    assert client.post(url, json={"rating": -1, "comment": "不准确", "score": 2}).status_code == 200
+
+    # 管理员可以在存储分类里预览并清理评价数据
+    import time
+
+    time.sleep(0.01)
+    scan = client.get("/api/workspace/storage").json()
+    assert any(c["key"] == "feedback" for c in scan["categories"])
+    dry = client.post(
+        "/api/workspace/storage/cleanup", json={"category": "feedback", "keep_days": 0, "dry_run": True}
+    ).json()
+    assert dry["deleted"]["records"] >= 1
+    real = client.post(
+        "/api/workspace/storage/cleanup", json={"category": "feedback", "keep_days": 0, "dry_run": False}
+    ).json()
+    assert real["deleted"]["records"] >= 1
+    after = client.get(f"/api/lab/projects/{p['id']}").json()
+    assert "feedback" not in next(m for m in after["messages"] if m["seq"] == msg["seq"])

@@ -8,20 +8,297 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 import httpx
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from ..llm.base import LLMError, Message
+from ..llm.providers import openai_headers
 from ..llm.router import default_config_dict
 from ..platform import context
 from ..platform.errors import AppError, ErrorCode
+from ..platform.storage_usage import upload_storage_by_user
 from .deps import get_services
 from .schemas import LimitRuleIn, ProviderIn, ProviderTestIn, RoutingIn
 
 router = APIRouter(prefix="/api/config", tags=["配置"])
+
+
+def _preset(
+    name: str,
+    label: str,
+    base_url: str,
+    models: list[str],
+    *,
+    currency: str = "CNY",
+    type: str = "openai_compatible",
+    key_env: str = "",
+) -> dict[str, Any]:
+    return {
+        "name": name,
+        "label": label,
+        "type": type,
+        "base_url": base_url,
+        "models": models,
+        "key_env": key_env,
+        "currency": currency,
+    }
+
+
+PROVIDER_PRESETS = [
+    _preset(
+        "deepseek",
+        "DeepSeek",
+        "https://api.deepseek.com/v1",
+        ["deepseek-chat", "deepseek-reasoner"],
+        key_env="DEEPSEEK_API_KEY",
+    ),
+    _preset(
+        "openai",
+        "[OI]",
+        "https://api.openai.com/v1",
+        ["gpt-4o", "gpt-4o-mini"],
+        currency="USD",
+        key_env="OPENAI_API_KEY",
+    ),
+    _preset(
+        "anthropic",
+        "Anthropic",
+        "https://api.anthropic.com",
+        ["claude-sonnet-5-5"],
+        currency="USD",
+        type="anthropic",
+        key_env="ANTHROPIC_API_KEY",
+    ),
+    _preset(
+        "gemini",
+        "Google Gemini",
+        "https://generativelanguage.googleapis.com/v1beta/openai/",
+        ["gemini-2.5-flash", "gemini-2.5-pro"],
+        currency="USD",
+        key_env="GEMINI_API_KEY",
+    ),
+    _preset(
+        "dashscope",
+        "通义千问（阿里云）",
+        "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        ["qwen-max", "qwen-plus"],
+        key_env="DASHSCOPE_API_KEY",
+    ),
+    _preset(
+        "dashscope-intl",
+        "通义千问（国际站）",
+        "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        ["qwen-max", "qwen-plus"],
+        currency="USD",
+        key_env="DASHSCOPE_API_KEY",
+    ),
+    _preset(
+        "moonshot",
+        "Kimi（月之暗面）",
+        "https://api.moonshot.cn/v1",
+        ["moonshot-v1-8k", "moonshot-v1-32k"],
+        key_env="MOONSHOT_API_KEY",
+    ),
+    _preset(
+        "zhipu",
+        "智谱 GLM",
+        "https://open.bigmodel.cn/api/paas/v4",
+        ["glm-4-plus", "glm-4-flash"],
+        key_env="ZHIPU_API_KEY",
+    ),
+    _preset(
+        "minimax",
+        "MiniMax",
+        "https://api.minimax.chat/v1",
+        ["MiniMax-Text-01", "abab6.5s-chat"],
+        key_env="MINIMAX_API_KEY",
+    ),
+    _preset(
+        "baichuan",
+        "百川智能",
+        "https://api.baichuan-ai.com/v1",
+        ["Baichuan4", "Baichuan3-Turbo"],
+        key_env="BAICHUAN_API_KEY",
+    ),
+    _preset(
+        "stepfun",
+        "阶跃星辰 StepFun",
+        "https://api.stepfun.com/v1",
+        ["step-2-16k", "step-1-8k"],
+        key_env="STEPFUN_API_KEY",
+    ),
+    _preset(
+        "siliconflow",
+        "硅基流动 SiliconFlow",
+        "https://api.siliconflow.cn/v1",
+        ["deepseek-ai/DeepSeek-V3", "Qwen/Qwen2.5-72B-Instruct"],
+        key_env="SILICONFLOW_API_KEY",
+    ),
+    _preset(
+        "volcengine",
+        "火山引擎方舟（豆包）",
+        "https://ark.cn-beijing.volces.com/api/v3",
+        ["doubao-seed-1-6-250615", "doubao-1-5-pro-32k-250115"],
+        key_env="ARK_API_KEY",
+    ),
+    _preset(
+        "hunyuan",
+        "腾讯混元",
+        "https://api.hunyuan.cloud.tencent.com/v1",
+        ["hunyuan-turbos-latest", "hunyuan-large"],
+        key_env="HUNYUAN_API_KEY",
+    ),
+    _preset(
+        "qianfan",
+        "百度千帆（文心）",
+        "https://qianfan.baidubce.com/v2",
+        ["ernie-4.0-8k-latest", "ernie-speed-128k"],
+        key_env="QIANFAN_API_KEY",
+    ),
+    _preset(
+        "modelscope",
+        "魔搭 ModelScope",
+        "https://api-inference.modelscope.cn/v1",
+        ["Qwen/Qwen2.5-72B-Instruct", "deepseek-ai/DeepSeek-V3"],
+        key_env="MODELSCOPE_API_KEY",
+    ),
+    _preset(
+        "opencode",
+        "OpenCode Go",
+        "https://opencode.ai/inference/go/v1",
+        ["deepseek-v4.1-flash", "deepseek-v4-pro"],
+        currency="USD",
+        type="openai_responses",
+        key_env="OPENCODE_API_KEY",
+    ),
+    _preset(
+        "openrouter",
+        "OpenRouter",
+        "https://openrouter.ai/api/v1",
+        ["openai/gpt-4o-mini", "anthropic/claude-3.5-sonnet"],
+        currency="USD",
+        key_env="OPENROUTER_API_KEY",
+    ),
+    _preset(
+        "groq",
+        "Groq",
+        "https://api.groq.com/openai/v1",
+        ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"],
+        currency="USD",
+        key_env="GROQ_API_KEY",
+    ),
+    _preset(
+        "mistral",
+        "Mistral AI",
+        "https://api.mistral.ai/v1",
+        ["mistral-large-latest", "mistral-small-latest"],
+        currency="USD",
+        key_env="MISTRAL_API_KEY",
+    ),
+    _preset("xai", "xAI Grok", "https://api.x.ai/v1", ["grok-4.6", "grok-4.7"], currency="USD", key_env="XAI_API_KEY"),
+    _preset(
+        "together",
+        "Together AI",
+        "https://api.together.xyz/v1",
+        ["meta-llama/Llama-3.3-70B-Instruct-Turbo", "mistralai/Mixtral-8x7B-Instruct-v0.1"],
+        currency="USD",
+        key_env="TOGETHER_API_KEY",
+    ),
+    _preset(
+        "fireworks",
+        "Fireworks AI",
+        "https://api.fireworks.ai/inference/v1",
+        ["accounts/fireworks/models/llama-v3p3-70b-instruct", "accounts/fireworks/models/qwen2p5-72b-instruct"],
+        currency="USD",
+        key_env="FIREWORKS_API_KEY",
+    ),
+    _preset(
+        "cerebras",
+        "Cerebras",
+        "https://api.cerebras.ai/v1",
+        ["llama-3.3-70b", "llama3.1-8b"],
+        currency="USD",
+        key_env="CEREBRAS_API_KEY",
+    ),
+    _preset(
+        "perplexity",
+        "Perplexity",
+        "https://api.perplexity.ai",
+        ["sonar", "sonar-pro"],
+        currency="USD",
+        key_env="PERPLEXITY_API_KEY",
+    ),
+    _preset(
+        "cohere",
+        "Cohere",
+        "https://api.cohere.ai/compatibility/v1",
+        ["command-r-plus", "command-r"],
+        currency="USD",
+        key_env="COHERE_API_KEY",
+    ),
+    _preset(
+        "nvidia",
+        "NVIDIA NIM",
+        "https://integrate.api.nvidia.com/v1",
+        ["meta/llama-3.3-70b-instruct", "qwen/qwen2.5-coder-32b-instruct"],
+        currency="USD",
+        key_env="NVIDIA_API_KEY",
+    ),
+    _preset(
+        "github",
+        "GitHub Models",
+        "https://models.github.ai/inference",
+        ["openai/gpt-4o-mini", "openai/gpt-4.1"],
+        currency="USD",
+        key_env="GITHUB_TOKEN",
+    ),
+    _preset(
+        "azure-openai",
+        "Azure OpenAI（替换资源名）",
+        "https://YOUR-RESOURCE.openai.azure.com/openai/v1",
+        ["gpt-4.1-mini"],
+        currency="USD",
+        key_env="AZURE_OPENAI_API_KEY",
+    ),
+    _preset(
+        "cloudflare",
+        "Cloudflare Workers AI（替换账号 ID）",
+        "https://api.cloudflare.com/client/v4/accounts/YOUR_ACCOUNT_ID/ai/v1",
+        ["@cf/meta/llama-3.1-8b-instruct"],
+        currency="USD",
+        key_env="CLOUDFLARE_API_TOKEN",
+    ),
+    _preset(
+        "nebius",
+        "Nebius AI Studio",
+        "https://api.studio.nebius.ai/v1",
+        ["meta-llama/Llama-3.3-70B-Instruct", "Qwen/Qwen2.5-72B-Instruct"],
+        currency="USD",
+        key_env="NEBIUS_API_KEY",
+    ),
+    _preset(
+        "sambanova",
+        "SambaNova",
+        "https://api.sambanova.ai/v1",
+        ["Meta-Llama-3.3-70B-Instruct", "Qwen2.5-72B-Instruct"],
+        currency="USD",
+        key_env="SAMBANOVA_API_KEY",
+    ),
+    _preset(
+        "upstage",
+        "Upstage Solar",
+        "https://api.upstage.ai/v1",
+        ["solar-pro2", "solar-mini"],
+        currency="USD",
+        key_env="UPSTAGE_API_KEY",
+    ),
+    _preset(
+        "local", "本地模型（Ollama / vLLM / LM Studio）", "http://127.0.0.1:11434/v1", ["qwen2.5-coder:14b"], key_env=""
+    ),
+]
 
 
 def _require_deploy_admin() -> None:
@@ -91,66 +368,7 @@ def list_models() -> dict:
 
 @router.get("/presets", summary="常见模型服务商模板（添加服务商时一键填充，不会自动启用）")
 def list_presets() -> dict:
-    return {
-        "presets": [
-            {
-                "name": "deepseek",
-                "label": "DeepSeek",
-                "type": "openai_compatible",
-                "base_url": "https://api.deepseek.com/v1",
-                "models": ["deepseek-chat", "deepseek-reasoner"],
-                "key_env": "",
-            },
-            {
-                "name": "openai",
-                "label": "[OI]",
-                "type": "openai_compatible",
-                "base_url": "https://api.openai.com/v1",
-                "models": ["gpt-4o", "gpt-4o-mini"],
-                "key_env": "",
-            },
-            {
-                "name": "anthropic",
-                "label": "Anthropic",
-                "type": "anthropic",
-                "base_url": "https://api.anthropic.com",
-                "models": ["claude-sonnet-5-5"],
-                "key_env": "",
-            },
-            {
-                "name": "dashscope",
-                "label": "通义千问（阿里云）",
-                "type": "openai_compatible",
-                "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-                "models": ["qwen-max", "qwen-plus"],
-                "key_env": "",
-            },
-            {
-                "name": "moonshot",
-                "label": "Kimi（月之暗面）",
-                "type": "openai_compatible",
-                "base_url": "https://api.moonshot.cn/v1",
-                "models": ["moonshot-v1-8k", "moonshot-v1-32k"],
-                "key_env": "",
-            },
-            {
-                "name": "zhipu",
-                "label": "智谱 GLM",
-                "type": "openai_compatible",
-                "base_url": "https://open.bigmodel.cn/api/paas/v4",
-                "models": ["glm-4-plus", "glm-4-flash"],
-                "key_env": "",
-            },
-            {
-                "name": "local",
-                "label": "本地模型（Ollama / vLLM）",
-                "type": "openai_compatible",
-                "base_url": "http://127.0.0.1:11434/v1",
-                "models": ["qwen2.5-coder:14b"],
-                "key_env": "",
-            },
-        ]
-    }
+    return {"presets": PROVIDER_PRESETS}
 
 
 def _scope(requested: str | None) -> str:
@@ -195,7 +413,7 @@ def discover_models(payload: DiscoverIn) -> dict:
         headers = {"x-api-key": key, "anthropic-version": "2023-06-01"}
     else:
         url = base + "/models"
-        headers = {"Authorization": f"Bearer {key}"} if key else {}
+        headers = openai_headers(base, key) if key else {}
     try:
         params = {"limit": 1000} if payload.type == "anthropic" else None
         resp = httpx.get(url, headers=headers, params=params, timeout=10.0)
@@ -276,6 +494,13 @@ def test_provider(payload: ProviderTestIn) -> dict:
     }
 
 
+@router.get("/provider-quotas", summary="按模型来源查询 5 小时 / 周 / 月 / 累计额度与用量")
+def provider_quotas(refresh: bool = Query(False)) -> dict:
+    s = get_services()
+    ctx, ws = _ctx()
+    return s.model_hub.provider_quota_cards(ws, ctx.user_id, ctx.role, refresh=refresh)
+
+
 # ---------------------------------------------------------------------------
 # 用量统计
 # ---------------------------------------------------------------------------
@@ -308,11 +533,12 @@ class MemberPolicyIn(BaseModel):
     limits: list[LimitRuleIn] | None = Field(None, description="使用工作区共享模型的限额")
 
 
-@router.get("/members", summary="成员的模型权限、限额与近 30 天用量（管理员）")
+@router.get("/members", summary="成员权限、限额、存储占用与近 30 天用量（管理员）")
 def member_policies() -> dict:
     s = get_services()
     ws = _require_ws_admin()
     stats = {r["user_id"]: r for r in s.model_hub.stats(ws, days=30)["by_user"]}
+    storage = upload_storage_by_user(s.db, ws)
     out = []
     for m in s.auth.members(ws):
         pol = s.model_hub.policy(ws, m["user_id"], m["role"])
@@ -325,6 +551,16 @@ def member_policies() -> dict:
                 "role": m["role"],
                 **pol,
                 "limit_status": s.model_hub.rule_status(ws, pol["limits"], scope="workspace", user_id=m["user_id"]),
+                "storage": storage.get(
+                    m["user_id"],
+                    {
+                        "used_bytes": 0,
+                        "original_bytes": 0,
+                        "thumbnail_bytes": 0,
+                        "file_count": 0,
+                        "latest_at": None,
+                    },
+                ),
                 "usage_30d": {
                     "calls": int(u.get("calls") or 0),
                     "tokens": int(u.get("tokens") or 0),
@@ -467,7 +703,9 @@ def add_search_source(payload: SearchSourceIn) -> dict:
     out = s.websearch.add_custom(s.write_secrets, label=payload.label, url=payload.url, kind=payload.kind, trusted=True)
     if not out.get("ok"):
         raise HTTPException(400, out.get("error") or "添加失败")
-    s.audit.record("config.search_source", object_type="web_search", object_id=out["source"]["id"], details=out["source"])
+    s.audit.record(
+        "config.search_source", object_type="web_search", object_id=out["source"]["id"], details=out["source"]
+    )
     return s.websearch.status()
 
 

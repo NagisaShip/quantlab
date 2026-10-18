@@ -159,7 +159,9 @@ h1, h2, h3, h4, p, dl, dd, dt { margin: 0; }
 }
 .tape-brand { display: flex; align-items: center; gap: 8px; color: #fff; font-weight: 600; letter-spacing: .2px; }
 .tape-brand svg { flex: 0 0 auto; }
-.tape-brand small { color: var(--tape-muted); font-weight: 400; margin-left: 2px; }
+.tape-brand-copy { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; line-height: 1.05; }
+.tape-brand-copy > span { line-height: 1.05; }
+.tape-brand small { color: var(--tape-muted); font-weight: 400; font-size: 9px; line-height: 1; }
 .tape-quotes { display: flex; gap: 22px; overflow: hidden; flex: 1; min-width: 0; }
 .quote { display: inline-flex; align-items: baseline; gap: 8px; font-family: var(--num); font-size: 13px; }
 .quote b { font-weight: 600; color: #e9eefb; letter-spacing: .2px; }
@@ -176,6 +178,17 @@ h1, h2, h3, h4, p, dl, dd, dt { margin: 0; }
 .tape-btn:hover { background: #1d2741; }
 .tape-btn .swatch { display: inline-flex; gap: 2px; }
 .tape-btn .swatch i { width: 7px; height: 7px; border-radius: 1px; display: block; }
+.tape-explain {
+  position: fixed; top: calc(var(--tape-h) + 54px); right: 14px; z-index: 90;
+  max-width: min(360px, calc(100vw - 28px)); padding: 8px 12px; border: 1px solid var(--line);
+  border-radius: 10px; background: var(--sheet); color: var(--ink-2); font-size: 12.5px; line-height: 1.55;
+  display: grid; gap: 2px; box-shadow: 0 12px 30px -18px rgba(10, 20, 50, .4);
+}
+.tape-explain b { font-size: 12.5px; font-weight: 650; color: var(--ink); }
+.tape-explain span { font-size: 12px; color: var(--muted); }
+@media (max-width: 720px) {
+  .tape-explain { top: calc(var(--tape-h) + 54px); left: 10px; right: 10px; max-width: none; }
+}
 
 .sidebar {
   position: fixed; top: var(--tape-h); bottom: 0; left: 0; width: var(--rail-w); z-index: 20;
@@ -269,7 +282,69 @@ input, select, textarea {
   border: 1px solid var(--line); background: var(--sheet); border-radius: var(--r);
   padding: 6px 9px; font-size: 13px; color: var(--ink); line-height: 1.5;
 }
-select { padding-right: 24px; }
+select:not([multiple]) {
+  appearance: none;
+  -webkit-appearance: none;
+  height: 28px;
+  min-height: 28px;
+  padding: 0 30px 0 10px;
+  border-radius: 8px;
+  background-color: var(--sheet);
+  color: var(--ink-2);
+  font-size: 12.5px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath d='M2 3.5 5 6.5 8 3.5' fill='none' stroke='%2398a2b5' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 10px 10px;
+  cursor: pointer;
+}
+select:not([multiple]):hover:not(:disabled) { border-color: var(--accent-line); background-color: var(--accent-soft); }
+select:disabled { cursor: not-allowed; }
+select option { background: var(--sheet); color: var(--ink); }
+select::-ms-expand { display: none; }
+
+/* Chromium 的自定义 select：连下拉弹层一起使用平台设计语言；旧浏览器保留上面的原生降级。 */
+@supports (appearance: base-select) {
+  select:not([multiple]) {
+    appearance: base-select;
+    height: 28px;
+    min-height: 28px;
+    padding: 0 28px 0 10px;
+    line-height: 26px;
+    white-space: nowrap;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath d='M2 3.5 5 6.5 8 3.5' fill='none' stroke='%2398a2b5' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    /* base-select 的文字基线略高：箭头跟随文字中心，而不是控件几何中心。 */
+    background-position: calc(100% - 10px) center;
+    background-size: 10px 10px;
+  }
+  /* 使用与模型选择器相同的 10×10 下三角，隐藏浏览器默认 picker 图标。 */
+  select:not([multiple])::picker-icon { display: none; }
+  select:not([multiple]):open {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath d='M2 6.5 5 3.5 8 6.5' fill='none' stroke='%2398a2b5' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  }
+  select:not([multiple])::picker(select) {
+    margin-top: 6px;
+    padding: 4px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--sheet);
+    box-shadow: 0 16px 38px -20px rgba(15, 25, 50, .38);
+    max-height: min(320px, 50vh);
+    overflow-y: auto;
+  }
+  /* 只在展开时给选项加卡片间距，避免选中项把收起状态的 select 撑成两行 */
+  select:not([multiple]):open option {
+    min-height: 32px;
+    padding: 7px 10px;
+    border-radius: 6px;
+    background: var(--sheet);
+    color: var(--ink-2);
+  }
+  select:not([multiple]):open option:hover { background: var(--hover); color: var(--ink); }
+  select:not([multiple]):open option:checked { background: var(--accent-soft); color: var(--accent); }
+  select:not([multiple]):open option::checkmark { color: var(--accent); }
+}
 textarea { resize: vertical; line-height: 1.65; font-family: var(--mono); font-size: 12.5px; }
 input:hover, select:hover, textarea:hover { border-color: var(--accent-line); }
 input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }

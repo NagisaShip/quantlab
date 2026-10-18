@@ -29,6 +29,7 @@
 .conv-label { font-size: 11.5px; color: var(--faint); flex: 1; }
 .conv-icon { width: 26px; height: 26px; border: 0; background: none; border-radius: 7px; color: var(--muted); display: inline-grid; place-items: center; cursor: pointer; }
 .conv-icon:hover { background: var(--hover); color: var(--ink); }
+.conv-icon.on { background: var(--sunken); color: var(--accent); }
 .conv-search { margin: 0 4px 6px; height: 28px; border: 1px solid transparent; background: transparent; border-radius: 8px; padding: 0 8px; font-size: 12.5px; }
 .conv-search:focus { outline: 0; border-color: var(--line); background: var(--sheet); }
 .conv-list { flex: 1; min-height: 0; overflow-y: auto; scrollbar-width: none; padding-bottom: 8px; }
@@ -101,6 +102,11 @@
 .side-switch-row > div { flex: 1; display: grid; gap: 2px; }
 .side-switch-row b { font-size: 12.5px; font-weight: 500; }
 .side-switch-row small { font-size: 11.5px; color: var(--muted); line-height: 1.5; }
+.auto-compact-threshold { display: grid; gap: 5px; padding: 6px 0 10px; }
+.auto-compact-threshold-head { display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: var(--muted); }
+.auto-compact-threshold-head b { color: var(--ink); font-family: var(--num); font-weight: 500; }
+.auto-compact-threshold input[type="range"] { width: 100%; margin: 0; cursor: pointer; }
+.auto-compact-threshold-note { font-size: 11px; color: var(--faint); }
 
 /* 目标概览 */
 .goal-sum { display: grid; gap: 10px; }
@@ -121,6 +127,7 @@
 .msg-wrap:hover .msg-bar, .msg-bar:focus-within { opacity: 1; }
 .msg-act { width: 26px; height: 26px; border: 0; background: none; border-radius: 7px; color: var(--muted); display: inline-grid; place-items: center; cursor: pointer; }
 .msg-act:hover:not(:disabled) { background: var(--hover); color: var(--ink); }
+.msg-act.on { background: var(--accent-soft); color: var(--accent); }
 .msg-act:disabled { opacity: .4; cursor: default; }
 .msg-time { font-size: 11px; color: var(--faint); padding: 0 6px; font-variant-numeric: tabular-nums; }
 .msg-edited { display: block; font-size: 11px; color: var(--faint); margin-top: 4px; }
@@ -208,6 +215,7 @@
 /* 对话列表：搜索 + 分组方式（按项目 / 按研究类型） */
 .conv-tools { display: flex; align-items: center; gap: 4px; margin: 0 4px 6px; }
 .conv-tools .conv-search { flex: 1; min-width: 0; margin: 0; }
+.conv-tools .conv-groupby { margin-left: auto; }
 .conv-groupby { display: inline-flex; flex: none; padding: 2px; gap: 1px; border-radius: 8px; background: var(--sunken); border: 1px solid var(--line-2); }
 .conv-groupby button {
   border: 0; background: none; padding: 1px 7px; border-radius: 6px; font-size: 11.5px; color: var(--muted); cursor: pointer; white-space: nowrap;
@@ -221,3 +229,44 @@
 .conv-type-dot.execution { background: #c2410c; }
 .conv-type-dot.pipeline { background: var(--ink-2); }
 .conv-type-dot.report { background: var(--faint); }
+
+
+/* Agent 消息评分卡：固定在右下角，不遮挡输入框，也允许用户主动关闭。 */
+.rating-prompt {
+  position: fixed;
+  right: 22px;
+  bottom: 22px;
+  z-index: 90;
+  width: min(370px, calc(100vw - 32px));
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--sheet);
+  box-shadow: 0 20px 54px -22px color-mix(in srgb, var(--ink) 36%, transparent);
+  animation: m-in var(--dur-3) var(--ease-out) both;
+}
+.rating-prompt-head { display: flex; align-items: flex-start; gap: 12px; }
+.rating-prompt-head > div { min-width: 0; flex: 1; display: grid; gap: 4px; }
+.rating-prompt-head b { font-size: 13.5px; font-weight: 600; color: var(--ink); }
+.rating-prompt-head small { font-size: 11.5px; line-height: 1.55; color: var(--muted); }
+.rating-prompt-x {
+  width: 26px; height: 26px; flex: none; border: 0; border-radius: 7px; background: none;
+  color: var(--faint); font-size: 20px; line-height: 1; cursor: pointer;
+}
+.rating-prompt-x:hover { background: var(--hover); color: var(--ink); }
+.rating-stars { display: flex; align-items: center; gap: 3px; margin: 12px 0 8px; }
+.rating-stars button {
+  width: 32px; height: 32px; display: inline-grid; place-items: center; border: 0; border-radius: 8px;
+  background: none; color: var(--faint); cursor: pointer; transition: color var(--dur-1) var(--ease-out), background var(--dur-1) var(--ease-out);
+}
+.rating-stars button:hover, .rating-stars button.on { color: #d9a21b; background: color-mix(in srgb, #d9a21b 10%, transparent); }
+.rating-prompt textarea { min-height: 72px; margin-top: 0; resize: vertical; font-family: inherit; font-size: 12.5px; line-height: 1.55; }
+.rating-prompt-foot { display: flex; align-items: center; gap: 7px; margin-top: 10px; flex-wrap: wrap; }
+.rating-prompt-foot > span { margin-right: auto; color: var(--faint); font-size: 11px; }
+.rating-prompt-thanks {
+  margin: 14px 2px 2px; padding: 12px 13px; border-radius: 10px; background: var(--accent-soft);
+  color: var(--accent); font-size: 13px; line-height: 1.6;
+}
+@media (max-width: 620px) {
+  .rating-prompt { right: 12px; bottom: 12px; width: calc(100vw - 24px); }
+}

@@ -136,7 +136,7 @@ def test_parallel_roles_get_same_material_and_brief_limit(tmp_path):
     runner = TeamRunner(router=None, role_store=roles, store=JsonStore(tmp_path))
     tasks = {}
 
-    def fake_invoke(role, task, max_steps=6):
+    def fake_invoke(role, task, max_steps=6, **kwargs):
         tasks[role.id] = task
         return TeamRunStep(role_id=role.id, role_name=role.name, model="m", status="ok", output=f"{role.name}观点")
 

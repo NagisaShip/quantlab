@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
-import { v4, type Banner } from '../api3'
-import { fmtTime } from '../api2'
+import { v4, type Banner } from '../api/platform'
+import { fmtTime } from '../api/research'
 import { useEventRefresh, useNewestActiveRunId, useRunEvents, type RunEventStatus } from '../hooks/useRunEvents'
 import { usePopover } from './chat/Composer'
 
@@ -18,7 +18,7 @@ const STREAM_LABEL: Record<RunEventStatus, string> = {
 
 /**
  * 运行状态：顶栏一个小标签（行情来源 + 提醒数），点开看运行模式、行情、最近有效事件、网络、
- * 后台任务、事件流、策略隔离与模型连接。平台本期只做研究与仿真，模式固定为虚拟资金。
+ * 后台任务、事件流、策略隔离与模型连接。默认是研究与仿真模式；微实盘必须显式开启。
  *
  * 刷新方式（T05）：标签本身没有 runId，但它显示的状态恰恰是被 run 的推进改变的。
  * 所以这里订阅当前工作区里**最新一个未结束的 run** 的事件流，有事件才刷新；
@@ -64,7 +64,7 @@ export default function RunBanner({ onNavigate, llmReady }: { onNavigate: (k: st
   const workerOk = b.worker.mode === 'inline' || b.worker.online > 0
   const streamBad = stream.status === 'offline' || stream.status === 'error'
   const rows: { ok: boolean | null; label: string; value: string; go?: string }[] = [
-    { ok: null, label: '运行模式', value: '研究模式 · 虚拟资金' },
+    { ok: null, label: '运行模式', value: b.mode_label },
     { ok: m.source === 'exchange', label: '行情', value: `${srcLabel} · ${m.symbol}` },
     { ok: fresh, label: '最近有效事件', value: m.last_event_ts ? `${fmtTime(m.last_event_ts)} UTC${age !== null ? `（${age} 分钟前）` : ''}` : '—' },
     { ok: net === 'AVAILABLE', label: '网络', value: b.network.label, go: 'settings/system' },

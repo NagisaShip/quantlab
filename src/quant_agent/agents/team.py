@@ -25,12 +25,15 @@ from typing import Any
 
 from ..context.manager import ContextManager
 from ..llm.router import ModelRouter
+from ..platform import context
 from ..store import Collections, JsonStore
 from .base import Agent, AgentRun
+from .qmoji import decorate_qmoji, metrics_from_materials
 from .roles import Role, RoleStore
 
 TEAM_SAFETY_PREFIX = (
-    "【团队共同红线】禁止调用交易所、网络或任何下单接口；禁止使用未来数据；"
+    "【团队共同红线】禁止调用任何交易 / 下单接口（模拟盘下单也必须由研究者确认）；禁止使用未来数据；"
+    "联网查询只允许只读公开资料，不能把外部资料说成平台实测；"
     "不得给出投资建议或收益承诺；区分事实与推测；不确定时明确说明。\n"
     "【证据规则】\n"
     "1. 每条观点前标注：【事实】可由代码 / 数据 / 回测结果直接验证（注明出处）；【假设】合理但未验证；"
@@ -41,6 +44,19 @@ TEAM_SAFETY_PREFIX = (
     "3. 数据覆盖不足、只有一段样本、没有交易明细时，先指出缺口，不要据此推断市场状态或策略适用性；\n"
     "4. 成本要写清单边还是往返、费率与滑点的单位，并基于实际交易次数估算；仓位上限、止损距离、单笔账户风险分开说；\n"
     "5. 汇总时以证据质量而不是共识数量或措辞流畅度为准。\n\n"
+    "【Qmoji 表情】\n"
+    "- 回测夏普 ≥ 2.5、超额收益 ≥ 3% 且交易数足够时，在结论末尾单独一行附 :qbot-alpha:；超额 ≥ 10% 用 :qbot-moon:。\n"
+    "- 风控因回撤过大 / 手续费口径不对而拦截时，附 :qbot-no: 或 :qbot-question:。\n"
+    "- 严重亏损（总收益 ≤ -10%）附 :qbot-cry:；大回撤附 :qbot-drawdown:。\n"
+    "- 提到过拟合 / 未来函数 / 插针时分别附 :qbot-overfit: / :qbot-future: / :qbot-wick:。\n"
+    "- 每条发言最多一个 Qmoji，放在结论末尾；不插入代码块、表格或数字中间；没有数据不要强行发。\n\n"
+)
+
+TEAM_TOOL_HINT = (
+    "\n【工具使用】涉及回测评审时，先用 list_backtests 找 backtest_id，再用 list_trades 核对逐笔成交、"
+    "用 trade_breakdown 看出场原因与分组；不要在没有明细时断言“读不到逐笔”。"
+    "算成本、收益、额度、仓位或复利时优先用 calculator，不要心算。"
+    "检查后台任务是否有人执行时用 node_health。\n"
 )
 
 #: 并行评审时附在任务后：各角色同时、独立发言，只写本领域的核心洞察，交给组长消解冲突
@@ -171,12 +187,15 @@ class TeamRunner:
         store: JsonStore | None = None,
         tools: ToolRegistry | None = None,
         max_workers: int = 4,
+        platform_tools: bool = False,
     ) -> None:
         self.router = router
         self.roles = role_store
         self.store = store or JsonStore()
         self.tools = tools or ToolRegistry()
         self.max_workers = max_workers
+        # API 注入时开启：团队角色与对话 Agent 共用平台只读 / 运行工具（confirm 类不开放）。
+        self.platform_tools = platform_tools
 
     # ---------------- 团队 CRUD ----------------
     def list_teams(self) -> list[Team]:
@@ -233,19 +252,20 @@ class TeamRunner:
             return run
 
         shared = self._build_material(topic, context, materials)
+        qmetrics = metrics_from_materials(materials)
 
         if team.mode == "parallel":
-            run.steps = self._run_parallel(roles, shared)
+            run.steps = self._run_parallel(roles, shared, qmetrics)
         elif team.mode == "debate":
-            run.steps = self._run_debate(roles, shared, team.challenge_rounds)
+            run.steps = self._run_debate(roles, shared, team.challenge_rounds, qmetrics)
         else:
-            run.steps = self._run_sequential(roles, shared)
+            run.steps = self._run_sequential(roles, shared, qmetrics)
 
         # 汇总
         synthesizer = self.roles.get(team.synthesizer_id) if team.synthesizer_id else None
         if synthesizer is None:
             synthesizer = roles[-1]
-        run.synthesis = self._synthesize(synthesizer, topic, run.steps)
+        run.synthesis = self._synthesize(synthesizer, topic, run.steps, qmetrics)
 
         ok = any(s.status == "ok" for s in run.steps)
         run.status = "done" if ok else "failed"
@@ -262,24 +282,28 @@ class TeamRunner:
         return self.store.get(Collections.TEAM_RUNS, run_id)
 
     # ---------------- 编排模式 ----------------
-    def _run_sequential(self, roles: list[Role], material: str) -> list[TeamRunStep]:
+    def _run_sequential(
+        self, roles: list[Role], material: str, qmetrics: dict[str, Any] | None = None
+    ) -> list[TeamRunStep]:
         steps: list[TeamRunStep] = []
         transcript: list[str] = []
         for role in roles:
             task = material
             if transcript:
                 task += "\n\n【前序角色产出】\n" + "\n\n".join(transcript)
-            step = self._invoke(role, task)
+            step = self._invoke(role, task, qmetrics=qmetrics)
             steps.append(step)
             if step.status == "ok":
                 transcript.append(f"### {role.name}\n{step.output}")
         return steps
 
-    def _run_parallel(self, roles: list[Role], material: str) -> list[TeamRunStep]:
+    def _run_parallel(
+        self, roles: list[Role], material: str, qmetrics: dict[str, Any] | None = None
+    ) -> list[TeamRunStep]:
         task = material + PARALLEL_BRIEF
 
         def one(role: Role) -> TeamRunStep:
-            return self._invoke(role, task)
+            return self._invoke(role, task, qmetrics=qmetrics)
 
         # 每个线程带上当前请求上下文（工作区 + 成员）：模型服务商按上下文解析，
         # 不带的话并行角色看不到任何服务商，全部「所有模型均失败」
@@ -287,8 +311,10 @@ class TeamRunner:
             futures = [pool.submit(contextvars.copy_context().run, one, r) for r in roles]
             return [f.result() for f in futures]
 
-    def _run_debate(self, roles: list[Role], material: str, rounds: int) -> list[TeamRunStep]:
-        steps = self._run_parallel(roles, material)
+    def _run_debate(
+        self, roles: list[Role], material: str, rounds: int, qmetrics: dict[str, Any] | None = None
+    ) -> list[TeamRunStep]:
+        steps = self._run_parallel(roles, material, qmetrics)
         for r in range(max(1, rounds)):
             critics = [role for role in roles if "质疑" in role.tags or "风控" in role.tags]
             if not critics:
@@ -300,13 +326,15 @@ class TeamRunner:
                     f"请针对以上观点进行第 {r + 1} 轮质疑：指出最脆弱的假设、构造具体反例、"
                     "指出哪些结论看起来像证据其实不是。"
                 )
-                steps.append(self._invoke(role, task))
+                steps.append(self._invoke(role, task, qmetrics=qmetrics))
         return steps
 
     #: 汇总时每个角色的发言最多带多少字：防止多角色长发言把汇总请求撑爆上下文 / 输出上限
     SYNTH_CHARS_PER_STEP = 1800
 
-    def _synthesize(self, role: Role, topic: str, steps: list[TeamRunStep]) -> str:
+    def _synthesize(
+        self, role: Role, topic: str, steps: list[TeamRunStep], qmetrics: dict[str, Any] | None = None
+    ) -> str:
         if not steps:
             return ""
         cap = self.SYNTH_CHARS_PER_STEP
@@ -324,16 +352,30 @@ class TeamRunner:
             "请按你的角色要求汇总：共识、分歧与你的判断、结论、下一步行动项。不要再调用工具，直接写汇总。"
         )
         # 汇总只需整合已有发言：不给工具，避免汇总人把步数花在查数据上、最后没写结论（曾返回「未产出内容」）
-        step = self._invoke(role, task, max_steps=2, use_tools=False)
+        step = self._invoke(role, task, max_steps=2, use_tools=False, qmetrics=qmetrics)
         if step.status == "ok":
             return step.output
-        return fallback_synthesis(steps, reason=step.error)
+        return decorate_qmoji(
+            fallback_synthesis(steps, reason=step.error), role=role.id, tags=role.tags, metrics=qmetrics
+        )
 
     # ---------------- 单角色调用 ----------------
-    def _invoke(self, role: Role, task: str, *, max_steps: int = 6, use_tools: bool = True) -> TeamRunStep:
+    def _invoke(
+        self,
+        role: Role,
+        task: str,
+        *,
+        max_steps: int = 6,
+        use_tools: bool = True,
+        qmetrics: dict[str, Any] | None = None,
+    ) -> TeamRunStep:
         started = time.time()
         # 默认把平台工具都交给角色、由 AI 自己决定何时调用；角色勾了「只用指定工具」才收窄
-        names = role.tools if getattr(role, "restrict_tools", False) else sorted({*self.tools.names(), *role.tools})
+        if getattr(role, "restrict_tools", False):
+            names = list(role.tools)
+        else:
+            # 团队与对话 Agent 使用同一套平台只读 / 运行工具；confirm 类操作没有人工审批入口，不交给角色。
+            names = sorted({*self.tools.names(), *self._platform_tool_names(), *role.tools})
         if not use_tools:
             names = []
         tools = [t for t in (self._make_tool(name) for name in names) if t is not None]
@@ -341,7 +383,9 @@ class TeamRunner:
             name=role.id,
             role="reasoning",
             router=self.router,
-            context=ContextManager(system_prompt=self._system_prompt(role)),
+            context=ContextManager(
+                system_prompt=self._system_prompt(role) + (TEAM_TOOL_HINT if self.platform_tools else "")
+            ),
             tools=tools,
             temperature=role.temperature,
             max_steps=max_steps,
@@ -361,12 +405,15 @@ class TeamRunner:
                 error=str(e),
             )
         status = "ok" if run.status == "done" and run.final.strip() else "error"
+        output = (
+            decorate_qmoji(run.final, role=role.id, tags=role.tags, metrics=qmetrics) if status == "ok" else run.final
+        )
         return TeamRunStep(
             role_id=role.id,
             role_name=role.name,
             model=run.model or (role.model or "默认"),
             status=status,
-            output=run.final,
+            output=output,
             elapsed_ms=int((time.time() - started) * 1000),
             error="" if status == "ok" else (run.final or "未产出内容"),
         )
@@ -378,25 +425,48 @@ class TeamRunner:
             parts.append(f"\n【输出格式要求】{role.output_format}")
         return "".join(parts)
 
+    def _platform_tool_names(self) -> list[str]:
+        if not self.platform_tools:
+            return []
+        from . import platform_tools as PT
+
+        return [name for name, tool in PT.registry().items() if tool.risk != "confirm"]
+
     def _make_tool(self, name: str):
         from .base import Tool
 
         handler = self.tools.get(name)
-        if handler is None:
-            return None
-        spec = self.tools.spec(name) or {}
-        if spec.get("parameters"):
+        if handler is not None:
+            spec = self.tools.spec(name) or {}
+            if spec.get("parameters"):
+                return Tool(
+                    name=name,
+                    description=spec["description"],
+                    parameters=spec["parameters"],
+                    handler=lambda **kw: handler(**kw),
+                )
             return Tool(
                 name=name,
-                description=spec["description"],
-                parameters=spec["parameters"],
-                handler=lambda **kw: handler(**kw),
+                description=spec.get("description") or f"平台工具 {name}",
+                parameters={"type": "object", "properties": {"query": {"type": "string"}}, "required": []},
+                handler=lambda **kw: handler(kw.get("query", "")),
             )
+        if not self.platform_tools:
+            return None
+        from . import platform_tools as PT
+
+        tool = PT.registry().get(name)
+        if tool is None or tool.risk == "confirm":
+            return None
+        try:
+            user = context.current().user_id or "system"
+        except Exception:
+            user = "system"
         return Tool(
             name=name,
-            description=spec.get("description") or f"平台工具 {name}",
-            parameters={"type": "object", "properties": {"query": {"type": "string"}}, "required": []},
-            handler=lambda **kw: handler(kw.get("query", "")),
+            description=f"{tool.title}：{tool.description} 可用时机：{tool.when}",
+            parameters=tool.schema(),
+            handler=lambda **kw: PT.invoke(name, kw, user=user)["result"],
         )
 
     @staticmethod
@@ -416,7 +486,9 @@ def fallback_synthesis(steps: list[TeamRunStep], *, reason: str = "") -> str:
     ok = [s for s in steps if s.status == "ok" and s.output.strip()]
     if not ok:
         return ""
-    lines = [f"【规则汇总】模型汇总未完成（{(reason or '未产出内容')[:120]}），以下为各角色要点原文摘录，未经整合与取舍："]
+    lines = [
+        f"【规则汇总】模型汇总未完成（{(reason or '未产出内容')[:120]}），以下为各角色要点原文摘录，未经整合与取舍："
+    ]
     for s in ok:
         first = " ".join(s.output.strip().split())[:400]
         lines.append(f"- **{s.role_name}**：{first}")

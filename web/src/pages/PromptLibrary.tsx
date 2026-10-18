@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { api, type PromptDoc } from '../api'
+import { api, type PromptDoc } from '../api/core'
 import { Callout, EmptyState, Heading, Loading, Panel, SourceBanner, Tag } from '../components/ui'
 import type { PageProps } from './types'
 
@@ -62,7 +62,7 @@ export default function PromptLibraryPage({ notify }: PageProps) {
       {!prompts.length ? (
         <Loading />
       ) : (
-        <div className="two-columns" style={{ gridTemplateColumns: '320px 1fr' }}>
+        <div className="two-columns prompt-split">
           <Panel
             title={`提示词（${visible.length} / ${prompts.length}）`}
             actions={

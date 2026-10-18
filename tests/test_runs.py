@@ -72,6 +72,28 @@ def test_single_lease_under_concurrent_claims(client):
     assert runs.get(run["id"])["state"] == RUNNING
 
 
+def test_run_search_and_cursor_pagination(client):
+    svc = get_services()
+    ws = _ws(svc)
+    for i in range(5):
+        svc.runs.create(workspace_id=ws, user_id="u", kind="noop", mode="backtest", title=f"needle-run-{i}")
+    first = client.get("/api/runs", params={"q": "needle-run", "limit": 2}).json()
+    assert len(first["items"]) == 2 and first["has_more"] is True
+    assert first["next_cursor"]
+    second = client.get(
+        "/api/runs",
+        params={
+            "q": "needle-run",
+            "limit": 2,
+            "before_created_at": first["next_cursor"]["created_at"],
+            "before_id": first["next_cursor"]["id"],
+        },
+    ).json()
+    assert len(second["items"]) == 2
+    assert not ({row["id"] for row in first["items"]} & {row["id"] for row in second["items"]})
+    assert client.get("/api/runs", params={"q": "no-such-run"}).json()["items"] == []
+
+
 def test_lease_fencing_and_recovery(client):
     svc = get_services()
     runs = svc.runs
@@ -207,7 +229,9 @@ def test_optimize_resumes_from_checkpoint(client):
         out = tasks.handle_optimize(TaskCtl(run=claimed, runs=svc.runs, owner="w", services=svc))
     cp = svc.runs.get(run["id"], checkpoint=True)["checkpoint"]
     assert len(cp["rows"]) == 3  # 只新算了 1 组
-    assert cp["rows"][:2] == done
+    assert [{k: v for k, v in row.items() if k not in ("in_rank", "out_rank")} for row in cp["rows"][:2]] == done
+    # 排名在 optimize() 全部算完后才附加，检查点也要拿到最终行，恢复结果才与直跑一致。
+    assert all("in_rank" in row for row in cp["rows"] if "in_sample" in row)
     assert out["id"].startswith("opt-")
 
 

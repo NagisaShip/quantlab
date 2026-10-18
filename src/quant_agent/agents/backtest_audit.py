@@ -111,7 +111,9 @@ def slice_full(result: dict[str, Any], segments: int, *, attribution: str = "clo
         key = "close_ts" if attribution == "close" else "open_ts"
         mine = [t for t in trips if t.get(key) is not None and a <= int(t[key]) <= b]
         carried_in = any(
-            t.get("open_ts") is not None and t.get("close_ts") is not None and int(t["open_ts"]) < a <= int(t["close_ts"])
+            t.get("open_ts") is not None
+            and t.get("close_ts") is not None
+            and int(t["open_ts"]) < a <= int(t["close_ts"])
             for t in trips
         )
         wins = [t for t in mine if (_f(t.get("return")) or 0) > 0]
@@ -228,7 +230,9 @@ def cost_audit(base: dict[str, Any], stressed: dict[str, Any], scale: float, *, 
             ok = abs(rep - own) <= max(0.01, 0.005 * abs(rep))
             check(f"{tag}回测手续费明细合计", ok, f"逐笔合计 {own:.2f}，汇总 {rep:.2f}")
         if st["fills_total"] is not None and st["fills"] < int(st["fills_total"]):
-            check(f"{tag}回测成交明细完整", False, f"只拿到 {st['fills']} / {st['fills_total']} 笔成交明细，无法逐笔核对")
+            check(
+                f"{tag}回测成交明细完整", False, f"只拿到 {st['fills']} / {st['fills_total']} 笔成交明细，无法逐笔核对"
+            )
     # 有效费率按倍数放大
     if b["fee_rate"] and s["fee_rate"]:
         ratio = s["fee_rate"] / b["fee_rate"]
@@ -252,16 +256,28 @@ def cost_audit(base: dict[str, Any], stressed: dict[str, Any], scale: float, *, 
         d_eq = b["final_equity"] - s["final_equity"]
         extra = (s["fees"] - b["fees"]) + ((s["slippage_rate"] or 0) - (b["slippage_rate"] or 0)) * s["notional"]
         if s["final_equity"] > b["final_equity"] * 1.0001:
-            check("净值随成本下降", False, f"成本放大后期末净值反而更高（{b['final_equity']:.2f} → {s['final_equity']:.2f}）")
+            check(
+                "净值随成本下降",
+                False,
+                f"成本放大后期末净值反而更高（{b['final_equity']:.2f} → {s['final_equity']:.2f}）",
+            )
         elif b["trades"] == s["trades"] and extra > 0:
             ok = abs(d_eq - extra) <= max(0.35 * extra, 0.002 * abs(b["final_equity"]))
             check("净值变化与多扣成本一致", ok, f"期末净值少 {d_eq:.2f}，按明细多扣成本约 {extra:.2f}")
         else:
             checks.append(
-                {"name": "净值变化", "ok": True, "detail": f"交易笔数 {b['trades']}→{s['trades']}，路径不同，净值差 {d_eq:.2f} 只作参考"}
+                {
+                    "name": "净值变化",
+                    "ok": True,
+                    "detail": f"交易笔数 {b['trades']}→{s['trades']}，路径不同，净值差 {d_eq:.2f} 只作参考",
+                }
             )
     consistent = not anomalies
-    drop = (b["total_return"] or 0) - (s["total_return"] or 0) if b["total_return"] is not None and s["total_return"] is not None else None
+    drop = (
+        (b["total_return"] or 0) - (s["total_return"] or 0)
+        if b["total_return"] is not None and s["total_return"] is not None
+        else None
+    )
     return {
         "scale": scale,
         "consistent": consistent,
@@ -270,7 +286,9 @@ def cost_audit(base: dict[str, Any], stressed: dict[str, Any], scale: float, *, 
         "return_drop": drop,
         "conclusion_allowed": {
             # 只有扣费对得上、且收益没有明显下降时才允许说「成本不是约束」
-            "cost_not_binding": bool(consistent and drop is not None and drop < 0.2 * abs(b["total_return"] or 0) + 0.005),
+            "cost_not_binding": bool(
+                consistent and drop is not None and drop < 0.2 * abs(b["total_return"] or 0) + 0.005
+            ),
         },
         "rule": (
             "成本核对未通过：报告必须标记「成本口径异常」，不得下「成本不是约束」的结论"
@@ -420,7 +438,9 @@ def report_numbers_check(text: str, facts: dict[str, Any]) -> list[str]:
                 n = int(m.group(1).replace(",", ""))
                 if valid_set and n not in valid_set:
                     label = "交易数" if key == "trades" else "K 线数"
-                    issues.append(f"报告写「{m.group(0)}」，平台记录的{label}是 {'/'.join(str(v) for v in sorted(valid_set))}")
+                    issues.append(
+                        f"报告写「{m.group(0)}」，平台记录的{label}是 {'/'.join(str(v) for v in sorted(valid_set))}"
+                    )
     for seg in facts.get("segments") or []:
         r = _f(seg.get("total_return"))
         if r is None:
@@ -439,7 +459,13 @@ def code_report_check(
     factor = factor_entry_check(factor_expr, code or "")
     numbers = report_numbers_check(report or "", facts or {}) if report else []
     issues = [t["problem"] for t in trailing] + factor + numbers
-    return {"ok": not issues, "issues": issues, "trailing_stop": trailing, "factor_vs_entry": factor, "numbers": numbers}
+    return {
+        "ok": not issues,
+        "issues": issues,
+        "trailing_stop": trailing,
+        "factor_vs_entry": factor,
+        "numbers": numbers,
+    }
 
 
 # ---------------------------------------------------------------------------

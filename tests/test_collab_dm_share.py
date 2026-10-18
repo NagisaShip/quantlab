@@ -20,7 +20,12 @@ def test_dm_share_and_presence(app):
     a.headers["X-Workspace-Id"] = a.get("/api/auth/me").json()["workspace"]["id"]
     inv = a.post("/api/workspace/invites", json={"role": "member"}).json()["invite"]["code"]
     b = TestClient(app, headers={"X-Requested-With": "pytest"})
-    assert b.post("/api/auth/register", json={"username": "bob", "password": "secret123abc", "invite_code": inv}).status_code == 200
+    assert (
+        b.post(
+            "/api/auth/register", json={"username": "bob", "password": "secret123abc", "invite_code": inv}
+        ).status_code
+        == 200
+    )
     bob_id = b.get("/api/auth/me").json()["user"]["id"]
     ws = b.get("/api/auth/me").json()["workspace"]["id"]
     for c in (a, b):
@@ -39,15 +44,31 @@ def test_dm_share_and_presence(app):
     assert summary["unread"].get("dm") == 1 and summary["group_unread"] == 1
 
     # 分享站内页面到私聊与广场
-    r = a.post("/api/collab/share-to", json={"target": "dm", "target_id": bob_id,
-                                              "ref": {"type": "link", "id": "factors/abc", "title": "动量因子"}, "note": "看看"})
+    r = a.post(
+        "/api/collab/share-to",
+        json={
+            "target": "dm",
+            "target_id": bob_id,
+            "ref": {"type": "link", "id": "factors/abc", "title": "动量因子"},
+            "note": "看看",
+        },
+    )
     assert r.status_code == 200, r.text
     msgs = b.get(f"/api/collab/groups/{g1['id']}/messages").json()["messages"]
     assert msgs[-1]["refs"][0]["type"] == "link"
-    bad = a.post("/api/collab/share-to", json={"target": "dm", "target_id": bob_id,
-                                                "ref": {"type": "link", "id": "https://evil.example/x", "title": "x"}})
+    bad = a.post(
+        "/api/collab/share-to",
+        json={
+            "target": "dm",
+            "target_id": bob_id,
+            "ref": {"type": "link", "id": "https://evil.example/x", "title": "x"},
+        },
+    )
     assert bad.status_code == 404
-    sq = a.post("/api/collab/share-to", json={"target": "square", "ref": {"type": "link", "id": "factors/abc", "title": "动量因子"}})
+    sq = a.post(
+        "/api/collab/share-to",
+        json={"target": "square", "ref": {"type": "link", "id": "factors/abc", "title": "动量因子"}},
+    )
     assert sq.status_code == 200 and sq.json()["link"].startswith("post/")
 
     # 在线状态：bob 看到 alice 正在编辑

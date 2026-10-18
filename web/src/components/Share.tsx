@@ -8,12 +8,28 @@ import { useEffect, useRef, useState } from 'react'
 import { collab, since, VIS_LABEL, type EditorMark, type EditRow, type ShareInfo, type Visibility } from '../apiCollab'
 import { QuantBot } from './QuantBot'
 
-const VIS_ICON: Record<Visibility, string> = { private: '🔒', workspace: '◎', group: '◍' }
+function VisibilityIcon({ v, size = 14 }: { v: Visibility; size?: number }) {
+  const common = {
+    width: size, height: size, viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor',
+    strokeWidth: 1.35, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const, 'aria-hidden': true,
+  }
+  if (v === 'private') {
+    return <svg {...common}><rect x="3.2" y="7" width="9.6" height="6.3" rx="1.7" /><path d="M5.2 7V5.4a2.8 2.8 0 0 1 5.6 0V7" /><path d="M8 9.4v1.8" /></svg>
+  }
+  if (v === 'group') {
+    return <svg {...common}><circle cx="6" cy="6" r="2.2" /><path d="M2.7 13c.3-2 1.6-3.2 3.3-3.2s3 1.2 3.3 3.2" /><circle cx="11.1" cy="6.8" r="1.7" /><path d="M10 9.8c1.8-.2 3.1.9 3.4 2.7" /></svg>
+  }
+  return <svg {...common}><circle cx="8" cy="8" r="5.7" /><path d="M2.5 8h11M8 2.3c1.7 1.5 2.5 3.4 2.5 5.7S9.7 12.2 8 13.7M8 2.3C6.3 3.8 5.5 5.7 5.5 8s.8 4.2 2.5 5.7" /></svg>
+}
+
+function CheckIcon() {
+  return <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="m3.5 8.4 2.8 2.8 6.2-6.3" /></svg>
+}
 
 export function VisibilityChip({ v, onClick }: { v: Visibility; onClick?: () => void }) {
   return (
     <button type="button" className={`vis-chip ${v}`} onClick={onClick} disabled={!onClick} title={VIS_LABEL[v]}>
-      <span aria-hidden>{VIS_ICON[v]}</span>{v === 'workspace' ? '公开' : v === 'private' ? '仅自己' : '群组'}
+      <span className="vis-ic" aria-hidden><VisibilityIcon v={v} size={12} /></span>{v === 'workspace' ? '公开' : v === 'private' ? '仅自己' : '群组'}
     </button>
   )
 }
@@ -56,7 +72,7 @@ export function ShareButton({ type, id, notify, onChanged, compact }: {
     <div className="cmp-pop-anchor share-anchor" ref={ref}>
       <button type="button" className={`button small share-btn ${cur}`} onClick={() => setOpen(!open)} aria-haspopup="dialog" aria-expanded={open}
         title={info?.owner_name ? `作者：${info.owner_name}` : undefined}>
-        <span aria-hidden>{VIS_ICON[cur]}</span>{compact ? (cur === 'workspace' ? '公开' : cur === 'private' ? '仅自己' : '群组') : VIS_LABEL[cur]}
+        <span className="share-trigger-ic" aria-hidden><VisibilityIcon v={cur} size={13} /></span>{compact ? (cur === 'workspace' ? '公开' : cur === 'private' ? '仅自己' : '群组') : VIS_LABEL[cur]}
       </button>
       {open && info && (
         <div className="share-pop" role="dialog" aria-label="可见性">
@@ -67,8 +83,9 @@ export function ShareButton({ type, id, notify, onChanged, compact }: {
           {(['private', 'workspace', 'group'] as Visibility[]).map((v) => (
             <label key={v} className={`share-opt${vis === v ? ' on' : ''}${!info.can_edit ? ' ro' : ''}`}>
               <input type="radio" name={`vis-${id}`} checked={vis === v} disabled={!info.can_edit} onChange={() => setVis(v)} />
-              <span className="share-ic" aria-hidden>{VIS_ICON[v]}</span>
-              <span><b>{VIS_LABEL[v]}</b><small>{v === 'private' ? '只有你（和工作区管理员）能看到、能用' : v === 'workspace' ? '工作区所有成员都能看到、克隆、回测' : '只有所选群组的成员能看到'}</small></span>
+              <span className="share-ic" aria-hidden><VisibilityIcon v={v} size={16} /></span>
+              <span className="share-copy"><b>{VIS_LABEL[v]}</b><small>{v === 'private' ? '只有你（和工作区管理员）能看到、能用' : v === 'workspace' ? '工作区所有成员都能看到、克隆、回测' : '只有所选群组的成员能看到'}</small></span>
+              <span className="share-opt-mark" aria-hidden>{vis === v && <CheckIcon />}</span>
             </label>
           ))}
           {vis === 'group' && (

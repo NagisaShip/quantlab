@@ -297,6 +297,12 @@ def assumptions_block(
     warmup_bars: int = 0,
     perps: list[str] | None = None,
     funding_sources: dict[str, str] | None = None,
+    margin_mode: str = "isolated",
+    position_mode: str = "one-way",
+    contract_type: str = "linear",
+    settlement_ccy: str = "USDT",
+    expiry_ts: int | None = None,
+    liquidation_loss: float | None = None,
 ) -> dict:
     """指标口径声明：采样频率、年化因子、无风险利率、收益基准、撮合与成本假设。报告必须带上它。"""
     bpy = BARS_PER_YEAR.get(timeframe, 8_760)
@@ -307,7 +313,17 @@ def assumptions_block(
         "risk_free_rate": risk_free_rate,
         "return_basis": "单位净值（时间加权，剔除出入金影响）" if flows else "权益曲线（无出入金，与单位净值等价）",
         "drawdown_basis": "按同一收益基准逐 bar 计算",
-        "fill_model": (cost or {}).get("fill_at", "next_open"),
+        "fill_model": (
+            "tick" if (cost or {}).get("execution_mode") == "tick" else (cost or {}).get("fill_at", "next_open")
+        ),
+        "execution_mode": (cost or {}).get("execution_mode", "bar"),
+        "dynamic_slippage": bool((cost or {}).get("dynamic_slippage")),
+        "impact_bps": {
+            "a": (cost or {}).get("impact_a_bps", 0.0),
+            "b": (cost or {}).get("impact_b_bps", 0.0),
+        },
+        "limit_move_pct": (cost or {}).get("limit_move_pct", 0.0),
+        "min_liquidity_usd": (cost or {}).get("min_liquidity_usd", 0.0),
         "insufficient_funds": (cost or {}).get("insufficient_funds", "reject"),
         "limit_model": "保守 K 线：严格穿越才成交，触价视为歧义不成交",
         "bracket_priority": "同一根 bar 同时触及止损与止盈时，止损优先",
@@ -321,21 +337,35 @@ def assumptions_block(
             "instruments": perps or [],
             "funding_sources": funding_sources or {},
             "funding_interval_hours": 8,
-            "funding_basis": "名义价值 × 费率 = 持仓数量 × 结算点标记价 × 费率",
             "funding_sign": "正费率多头付空头；负费率空头付多头",
             "funding_account": "expenses:funding（与交易手续费 expenses:fees 分开列示）",
             "funding_affects_cost_basis": False,
-            "margin_model": "逐仓、单向持仓：开仓占用 名义/杠杆 的保证金（杠杆用 set_leverage 设置，默认 1 倍）",
-            "mark_price": (
-                "标记价用永续合约自身的 K 线价格（收盘价估值、最高/最低价判断强平），不是交易所的指数加权标记价"
-            ),
+            "contract_type": contract_type,
+            "settlement_ccy": settlement_ccy,
+            "expiry_ts": expiry_ts,
+            "margin_mode": margin_mode,
+            "position_mode": position_mode,
+            "margin_model": (
+                "全仓：账户权益减去联合维持保证金为可用权益；联合强平一次性关闭所有腿"
+                if margin_mode == "cross"
+                else "逐仓：每条腿单独占用 名义/杠杆 的保证金，强平损失不超过该腿保证金"
+            )
+            + ("；独立多空腿" if position_mode == "hedge" else "；单向净持仓"),
+            "mark_price": "标记价使用传入的 bar 价格；交易所指数价格与标记价格需另行账单核验",
             "liquidation_model": (
-                "每根 bar 用最高/最低价检查强平价（维持保证金率 0.5%）；触及即按强平价平掉全部持仓，"
-                "损失全部逐仓保证金（剩余维持保证金视为强平费用没收，比交易所实际结果略保守）"
+                "全仓按账户权益与联合维持保证金检查；逐仓按每条腿的维持保证金检查。"
+                "触发后按滑点后的不利价格平仓，损失上限按账户/逐腿权益截断；采用保守的简化强平假设，交易所强平费与维持保证金档位仍为研究近似"
             ),
-            "funding_from_cash": "资金费从现金结算，不从逐仓保证金扣，所以不推动强平价",
+            "funding_basis": (
+                "反向合约：张数 × 合约面值(USD) × 费率 / 标记价，按基础币结算"
+                if contract_type == "inverse"
+                else "线性合约：张数 × 合约面值 × 标记价 × 费率，按 USDT 结算"
+            ),
+            "funding_from_cash": "资金费按腿结算到实际结算币种，并计入该腿 realized",
+            "liquidation_loss": liquidation_loss,
             "limitations": (
-                "不含阶梯维持保证金率、交易所费率上下限、结算精度取整与资金费的时间加权（首期不足 8 小时按整段计）"
+                "交易所规则为可审计的研究近似：不含完整阶梯 MMR、交易所费率上下限、结算精度、"
+                "指数价格/标记价分离、资金费时间加权与跨币种账户联合规则；反向/交割数据仍需账单核验"
             ),
         },
     }

@@ -120,7 +120,14 @@ class Trade:
 def positions(rt: Any) -> list[tuple[str, Decimal, Decimal]]:
     """(标的, 带符号数量, 开仓均价)。"""
     out = [(k, h.qty, h.avg_entry) for k, h in rt.ledger.holdings.items() if h.qty > 0]
-    out += [(k, p.qty, p.entry) for k, p in rt.ledger.perps.items() if p.qty]
+    book = getattr(rt.ledger, "perp_book", None)
+    if book is not None:
+        out += [
+            (f"{leg.instrument}|{leg.side}" if book.hedge else leg.instrument, leg.signed_qty, leg.entry)
+            for leg in book.all_legs()
+        ]
+    else:
+        out += [(k, p.qty, p.entry) for k, p in rt.ledger.perps.items() if p.qty]
     return out
 
 

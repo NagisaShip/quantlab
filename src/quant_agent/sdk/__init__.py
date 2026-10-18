@@ -13,11 +13,8 @@
 
     def rebalance(ctx):
         s = ctx.securities[0]
-        closes = history(s, g.slow, "close")
-        if len(closes) < g.slow:
-            return
-        fast = sum(closes[-g.fast:]) / g.fast
-        slow = sum(closes) / g.slow
+        fast = ctx.indicators.ema(s, g.fast)   # 平台预计算，逐 bar O(1)
+        slow = ctx.indicators.ema(s, g.slow)
         order_target_percent(s, 0.8 if fast > slow else 0.0)
 
 本地跑一遍：
@@ -31,9 +28,11 @@ from __future__ import annotations
 
 from .api import (
     after_trading_end,
+    atr,
     attribute_history,
     before_trading_start,
     cancel_all,
+    ema,
     factor,
     g,
     get_context,
@@ -42,13 +41,18 @@ from .api import (
     get_param,
     get_price,
     get_security_info,
+    get_strategy_version,
     get_universe,
     handle_data,
     history,
     initialize,
     is_locked,
     log,
+    on_bar,
+    on_fill,
     on_order_filled,
+    on_timer,
+    on_trade,
     optimize,
     order,
     order_target,
@@ -58,15 +62,20 @@ from .api import (
     order_value,
     predict,
     record,
+    restore,
+    rsi,
     run_daily,
     run_monthly,
+    run_timer,
     run_weekly,
     set_benchmark,
     set_execution,
     set_leverage,
+    set_margin_mode,
     set_option,
     set_order_cost,
     set_pairlist,
+    set_position_mode,
     set_protections,
     set_roi,
     set_slippage,
@@ -74,6 +83,9 @@ from .api import (
     set_take_profit,
     set_trailing_stop,
     set_universe,
+    sma,
+    snapshot,
+    zscore,
 )
 from .ledger import InsufficientFunds, Ledger, LedgerError
 from .objects import Context, GlobalVars, Portfolio, Position
@@ -118,12 +130,14 @@ __all__ = [
     "TargetPosition",
     "after_trading_end",
     "apply_fill",
+    "atr",
     "attribute_history",
     "before_trading_start",
     "cancel_all",
     "check_source",
     "current",
     "declared_params",
+    "ema",
     "factor",
     "g",
     "get_context",
@@ -132,6 +146,7 @@ __all__ = [
     "get_param",
     "get_price",
     "get_security_info",
+    "get_strategy_version",
     "get_universe",
     "handle_data",
     "history",
@@ -141,7 +156,11 @@ __all__ = [
     "load_source",
     "log",
     "mark_to_market",
+    "on_bar",
+    "on_fill",
     "on_order_filled",
+    "on_timer",
+    "on_trade",
     "optimize",
     "order",
     "order_target",
@@ -151,16 +170,21 @@ __all__ = [
     "order_value",
     "predict",
     "record",
+    "restore",
+    "rsi",
     "run_backtest",
     "run_daily",
     "run_monthly",
+    "run_timer",
     "run_weekly",
     "set_benchmark",
     "set_execution",
     "set_leverage",
+    "set_margin_mode",
     "set_option",
     "set_order_cost",
     "set_pairlist",
+    "set_position_mode",
     "set_protections",
     "set_roi",
     "set_slippage",
@@ -168,4 +192,7 @@ __all__ = [
     "set_take_profit",
     "set_trailing_stop",
     "set_universe",
+    "sma",
+    "snapshot",
+    "zscore",
 ]

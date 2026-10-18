@@ -287,7 +287,7 @@ class StrategyRepository:
             for hook in SAVE_HOOKS:
                 try:
                     hook(self, rec, previous.version if previous else "", origin)
-                except Exception:  # noqa: BLE001 - 标记失败不能让保存失败
+                except Exception:
                     import logging
 
                     logging.getLogger("quantlab.repo").exception("策略保存钩子失败：%s", slug)

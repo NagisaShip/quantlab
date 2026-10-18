@@ -5,10 +5,11 @@
 
 from __future__ import annotations
 
-from typing import Literal, Any
+import time
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from ..data.service import DataUnavailable
@@ -17,6 +18,8 @@ from ..engine.research import (
     load_market,
     summarize_metrics,
 )
+from ..platform import backtest_retention as BR
+from ..platform import context, isolation
 from ..platform.errors import AppError, ErrorCode
 from ..sdk import check_source, declared_params
 from ..store import Collections
@@ -44,6 +47,13 @@ router = APIRouter(prefix="/api/research", tags=["研究中心"])
 
 def _repo() -> StrategyRepository:
     return StrategyRepository(get_services().store.root / "strategies")
+
+
+def _ensure_market_features(spec: BacktestSpec) -> None:
+    from ..platform import features
+
+    for sec in spec.securities:
+        features.require_market(sec, spec.exchange)
 
 
 def _record_or_404(slug: str):
@@ -191,6 +201,7 @@ def run_backtest_endpoint(payload: ResearchBacktestIn, request: Request) -> Any:
         rec = _record_or_404(payload.slug)
         source, name = (payload.code if payload.code is not None else rec.source), rec.meta.name
         spec = _spec(payload, default_securities=rec.meta.securities, timeframe=rec.meta.timeframe)
+        _ensure_market_features(spec)
         lang = L.lang_of(rec.meta.kind)
     elif payload.code:
         source, name = payload.code, payload.name or "未命名策略"
@@ -207,6 +218,29 @@ def run_backtest_endpoint(payload: ResearchBacktestIn, request: Request) -> Any:
     else:
         spec.warmup_bars = max(spec.warmup_bars, L.load(lang, source, name="check").compiled.warmup_bars)
     services = get_services()
+    if payload.persist:
+        ctx = context.current()
+        # 先检查单策略上限，再检查统一记录单位配额。顺序很重要：单策略检查
+        # 失败时不能先把别的历史记录删掉。
+        BR.preflight(
+            services.store,
+            services.auth,
+            context.current_workspace(),
+            ctx.user_id or "",
+            slug=rec.meta.slug if rec else None,
+            strategy_name=name,
+        )
+        BR.guard_new_record(
+            services.store,
+            services.auth,
+            context.current_workspace(),
+            ctx.user_id or "",
+            ctx.role,
+            "backtest",
+            max_units=BR.effective_limit(
+                services.auth, services.model_hub, context.current_workspace(), ctx.user_id or "", ctx.role
+            ),
+        )
     version = _version_for(rec, lang, source, name, spec)
     m = {
         "lang": lang,
@@ -288,7 +322,10 @@ class PyCodeIn(BaseModel):
     name: str = Field("", max_length=60)
 
 
-@router.post("/pycode", summary="研究产物 → Python 代码：因子（独立可运行，结果与平台一致）、模型 / 组合 / 执行（规格 + 复现代码）")
+@router.post(
+    "/pycode",
+    summary="研究产物 → Python 代码：因子（独立可运行，结果与平台一致）、模型 / 组合 / 执行（规格 + 复现代码）",
+)
 def to_python(payload: PyCodeIn) -> dict:
     try:
         from ..research import pycode as PC
@@ -302,27 +339,401 @@ def to_python(payload: PyCodeIn) -> dict:
 
 @router.get("/backtests")
 def list_backtests(slug: str | None = None, limit: int = Query(50, ge=1, le=500)) -> dict:
-    rows = get_services().store.list(Collections.BACKTESTS)
+    services = get_services()
+    rows = services.store.list(Collections.BACKTESTS)
     if slug:
         rows = [r for r in rows if r.get("slug") == slug]
-    return {"backtests": rows[:limit], "total": len(rows)}
+    ctx = context.current()
+    prefs = BR.user_prefs(services.store, ctx.user_id or "")
+    max_records = BR.workspace_limit(services.auth, context.current_workspace())
+    return {
+        "backtests": rows[:limit],
+        "total": len(rows),
+        "retention": BR.usage(services.store, ctx.user_id or "", max_records=max_records, prefs=prefs),
+    }
 
 
 @router.get("/backtests/{bt_id}")
 def get_backtest(bt_id: str) -> dict:
-    body = get_services().store.get_blob("backtests", bt_id)
+    services = get_services()
+    body = services.store.get_blob("backtests", bt_id)
     if body is None:
         raise HTTPException(404, "回测记录不存在")
+    row = services.store.get(Collections.BACKTESTS, bt_id) or {}
+    if row:
+        body = {**body, "row": {**(body.get("row") or {}), "pinned": bool(row.get("pinned"))}}
     return body
+
+
+class BacktestRetentionIn(BaseModel):
+    auto_delete_oldest: bool = False
+    per_strategy_limit: int = Field(5, ge=1, le=100)
+    auto_delete_strategy_oldest: bool = True
+
+
+class BacktestWorkspaceRetentionIn(BaseModel):
+    max_records_per_user: int = Field(100_000, ge=1, le=1_000_000)
+
+
+@router.get("/backtest-retention", summary="当前成员的回测记录保留设置与占用")
+def get_backtest_retention() -> dict:
+    services = get_services()
+    ctx = context.current()
+    store = services.store
+    prefs = BR.user_prefs(store, ctx.user_id or "")
+    max_records = BR.workspace_limit(services.auth, context.current_workspace())
+    return {
+        "workspace": {"max_records_per_user": max_records},
+        "user": prefs,
+        "usage": BR.usage(store, ctx.user_id or "", max_records=max_records, prefs=prefs),
+        "is_workspace_admin": ctx.role == "admin",
+    }
+
+
+@router.put("/backtest-retention", summary="保存当前成员的回测自动清理设置")
+def put_backtest_retention(payload: BacktestRetentionIn) -> dict:
+    services = get_services()
+    ctx = context.current()
+    prefs = BR.save_user_prefs(services.store, ctx.user_id or "", payload.model_dump())
+    max_records = BR.workspace_limit(services.auth, context.current_workspace())
+    services.audit.record(
+        "research.backtest_retention",
+        object_type="user",
+        object_id=ctx.user_id,
+        details=prefs,
+    )
+    return {
+        "workspace": {"max_records_per_user": max_records},
+        "user": prefs,
+        "usage": BR.usage(services.store, ctx.user_id or "", max_records=max_records, prefs=prefs),
+    }
+
+
+class RecordMultipliersIn(BaseModel):
+    multipliers: dict[str, float] = Field(default_factory=dict)
+
+
+@router.get("/record-retention", summary="统一研究记录占用、各类型倍率与保留设置")
+def get_record_retention() -> dict:
+    services = get_services()
+    ctx = context.current()
+    store = services.store
+    include_legacy = ctx.role == "admin"
+    max_units = BR.effective_limit(
+        services.auth, services.model_hub, context.current_workspace(), ctx.user_id or "", ctx.role
+    )
+    prefs = BR.user_prefs(store, ctx.user_id or "")
+    usage = BR.record_usage(store, ctx.user_id or "", include_legacy=include_legacy, prefs=prefs)
+    usage.update(
+        {"max_units_per_user": max_units, "remaining_units": round(max(0, max_units - usage["total_units"]), 3)}
+    )
+    return {
+        "workspace": {"max_units_per_user": max_units, "max_records_per_user": max_units},
+        "user": prefs,
+        "usage": usage,
+        "is_workspace_admin": ctx.role == "admin",
+    }
+
+
+@router.put("/record-retention", summary="保存当前成员的研究记录自动清理设置")
+def put_record_retention(payload: BacktestRetentionIn) -> dict:
+    services = get_services()
+    ctx = context.current()
+    prefs = BR.save_user_prefs(services.store, ctx.user_id or "", payload.model_dump())
+    max_units = BR.effective_limit(
+        services.auth, services.model_hub, context.current_workspace(), ctx.user_id or "", ctx.role
+    )
+    usage = BR.record_usage(services.store, ctx.user_id or "", include_legacy=ctx.role == "admin", prefs=prefs)
+    usage.update(
+        {"max_units_per_user": max_units, "remaining_units": round(max(0, max_units - usage["total_units"]), 3)}
+    )
+    services.audit.record("research.record_retention", object_type="user", object_id=ctx.user_id, details=prefs)
+    return {
+        "workspace": {"max_units_per_user": max_units, "max_records_per_user": max_units},
+        "user": prefs,
+        "usage": usage,
+    }
+
+
+@router.put("/record-retention/workspace", summary="设置每个成员的记录单位上限（工作区管理员）")
+def put_record_retention_workspace(payload: BacktestWorkspaceRetentionIn) -> dict:
+    services = get_services()
+    ctx = context.current()
+    if ctx.role != "admin":
+        raise HTTPException(403, "只有工作区管理员可以修改记录单位上限")
+    ws_id = context.current_workspace()
+    prefs = BR.user_prefs(services.store, ctx.user_id or "")
+    # 历史键名继续用于兼容旧部署；值为统一记录单位，不再只是回测条数。
+    services.auth.update_settings(ws_id, {"quotas": {"backtest_max_records_per_user": payload.max_records_per_user}})
+    services.audit.record(
+        "workspace.record_retention",
+        object_type="workspace",
+        object_id=ws_id,
+        details={"max_units_per_user": payload.max_records_per_user},
+    )
+    usage = BR.record_usage(services.store, ctx.user_id or "", include_legacy=ctx.role == "admin", prefs=prefs)
+    usage.update(
+        {
+            "max_units_per_user": payload.max_records_per_user,
+            "remaining_units": round(max(0, payload.max_records_per_user - usage["total_units"]), 3),
+        }
+    )
+    return {
+        "workspace": {
+            "max_units_per_user": payload.max_records_per_user,
+            "max_records_per_user": payload.max_records_per_user,
+        },
+        "user": prefs,
+        "usage": usage,
+        "is_workspace_admin": True,
+    }
+
+
+@router.put("/record-retention/multipliers", summary="设置各类研究记录的存储倍率（工作区管理员）")
+def put_record_multipliers(payload: RecordMultipliersIn) -> dict:
+    services = get_services()
+    ctx = context.current()
+    if ctx.role != "admin":
+        raise HTTPException(403, "只有工作区管理员可以修改记录倍率")
+    multipliers = BR.save_record_multipliers(services.store, payload.multipliers)
+    services.audit.record(
+        "workspace.record_multipliers",
+        object_type="workspace",
+        object_id=context.current_workspace(),
+        details=multipliers,
+    )
+    return {"multipliers": multipliers, "types": BR.record_types_view()}
+
+
+@router.get("/record-retention/records", summary="统一记录列表（当前成员）")
+def list_retention_records(
+    type: str | None = None,
+    q: str | None = Query(None, max_length=160),
+    before_time: float | None = None,
+    before_id: str | None = None,
+    limit: int = Query(100, ge=1, le=200),
+) -> dict:
+    services = get_services()
+    ctx = context.current()
+    if type and type not in BR.RECORD_TYPE_BY_KEY:
+        raise HTTPException(400, "未知的记录类型")
+    rows = BR.record_rows_for_user(
+        services.store,
+        ctx.user_id or "",
+        type_key=type,
+        include_legacy=ctx.role == "admin",
+        q=q,
+        before_time=before_time,
+        before_id=before_id,
+        limit=limit + 1,
+    )
+    has_more = len(rows) > limit
+    items = rows[:limit]
+    next_cursor = {"time": BR._record_time(items[-1]), "id": items[-1].get("id", "")} if has_more and items else None
+    return {"items": items, "types": BR.record_types_view(), "has_more": has_more, "next_cursor": next_cursor}
+
+
+@router.post("/record-retention/{type}/{record_id}/pin", summary="切换任意研究记录的 PIN 保护")
+def pin_retention_record(type: str, record_id: str) -> dict:
+    services = get_services()
+    ctx = context.current()
+    item = BR.RECORD_TYPE_BY_KEY.get(type)
+    if item is None:
+        raise HTTPException(400, "未知的记录类型")
+    row = services.store.get(item.collection, record_id)
+    if row is None:
+        raise HTTPException(404, "记录不存在")
+    if row.get("created_by") not in (None, "", "user", ctx.user_id) and ctx.role != "admin":
+        raise HTTPException(403, "只能 PIN 自己的记录")
+    saved = BR.toggle_record_pin(services.store, item, row)
+    services.audit.record(
+        "research.record_pin", object_type=type, object_id=record_id, details={"pinned": saved.get("pinned")}
+    )
+    return {"pinned": bool(saved.get("pinned")), "record": saved}
+
+
+@router.delete("/record-retention/{type}/{record_id}", summary="删除任意自己的研究记录（PIN 需先取消）")
+def delete_retention_record(type: str, record_id: str) -> dict:
+    services = get_services()
+    ctx = context.current()
+    item = BR.RECORD_TYPE_BY_KEY.get(type)
+    if item is None:
+        raise HTTPException(400, "未知的记录类型")
+    row = services.store.get(item.collection, record_id)
+    if row is None:
+        raise HTTPException(404, "记录不存在")
+    if row.get("created_by") not in (None, "", "user", ctx.user_id) and ctx.role != "admin":
+        raise HTTPException(403, "只能删除自己的记录")
+    if row.get("pinned") and ctx.role != "admin":
+        raise HTTPException(409, "这条记录已 PIN 保护，请先取消 PIN 再删除")
+    ok = BR.delete_record(services.store, context.current_workspace(), item, row)
+    services.audit.record("research.record_delete", object_type=type, object_id=record_id)
+    return {"ok": ok}
+
+
+@router.post("/record-retention/cleanup", summary="按记录单位上限立即清理最旧的未 PIN 记录")
+def cleanup_record_retention() -> dict:
+    services = get_services()
+    ctx = context.current()
+    ws_id = context.current_workspace()
+    max_units = BR.effective_limit(services.auth, services.model_hub, ws_id, ctx.user_id or "", ctx.role)
+    prefs = BR.user_prefs(services.store, ctx.user_id or "")
+    deleted = BR.cleanup_total(services.store, ws_id, ctx.user_id or "", max_units=max_units, role=ctx.role)
+    usage = BR.record_usage(services.store, ctx.user_id or "", include_legacy=ctx.role == "admin", prefs=prefs)
+    usage.update(
+        {"max_units_per_user": max_units, "remaining_units": round(max(0, max_units - usage["total_units"]), 3)}
+    )
+    services.audit.record(
+        "research.record_cleanup",
+        object_type="user",
+        object_id=ctx.user_id,
+        details={"deleted": [r.get("id") for r in deleted], "max_units_per_user": max_units},
+    )
+    return {"deleted": len(deleted), "usage": usage}
+
+
+@router.put("/backtest-retention/workspace", summary="设置每个成员可保留的回测记录总数（工作区管理员）")
+def put_workspace_backtest_retention(payload: BacktestWorkspaceRetentionIn) -> dict:
+    services = get_services()
+    ctx = context.current()
+    if ctx.role != "admin":
+        raise HTTPException(403, "只有工作区管理员可以修改回测记录上限")
+    ws_id = context.current_workspace()
+    services.auth.update_settings(ws_id, {"quotas": {"backtest_max_records_per_user": payload.max_records_per_user}})
+    services.audit.record(
+        "workspace.backtest_retention",
+        object_type="workspace",
+        object_id=ws_id,
+        details={"max_records_per_user": payload.max_records_per_user},
+    )
+    prefs = BR.user_prefs(services.store, ctx.user_id or "")
+    return {
+        "workspace": {"max_records_per_user": payload.max_records_per_user},
+        "user": prefs,
+        "usage": BR.usage(services.store, ctx.user_id or "", max_records=payload.max_records_per_user, prefs=prefs),
+    }
+
+
+@router.post("/backtest-retention/cleanup", summary="立即清理当前成员超出的最旧未 PIN 回测记录")
+def cleanup_backtest_retention() -> dict:
+    services = get_services()
+    ctx = context.current()
+    ws_id = context.current_workspace()
+    store = services.store
+    prefs = BR.user_prefs(store, ctx.user_id or "")
+    max_records = BR.workspace_limit(services.auth, ws_id)
+    deleted = BR.cleanup_existing(store, ws_id, ctx.user_id or "", max_records=max_records, prefs=prefs)
+    services.audit.record(
+        "research.backtest_cleanup",
+        object_type="user",
+        object_id=ctx.user_id,
+        details={"deleted": [r.get("id") for r in deleted], "max_records_per_user": max_records},
+    )
+    return {
+        "deleted": len(deleted),
+        "workspace": {"max_records_per_user": max_records},
+        "user": prefs,
+        "usage": BR.usage(store, ctx.user_id or "", max_records=max_records, prefs=prefs),
+    }
+
+
+@router.get("/backtests/{bt_id}/package", summary="下载可复现研究包")
+def download_research_package(bt_id: str) -> Response:
+    """导出一次回测的可复现研究包（代码、数据、资金费、结果、审查）。"""
+    from ..research.package import build
+
+    services = get_services()
+    bt = services.store.get_blob("backtests", bt_id)
+    snap = services.store.get_blob("research_snapshots", bt_id)
+    if bt is None or snap is None:
+        raise HTTPException(404, "回测或研究快照不存在")
+    trace = {"run_id": bt.get("run_id"), "row": bt.get("row") or {}, "note": "AI 对话轨迹未随该旧记录保存"}
+    data, _manifest = build(backtest=bt, snapshot=snap, trace=trace)
+    return Response(
+        content=data,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{bt_id}.quantlab.zip"'},
+    )
+
+
+@router.post("/backtests/package/inspect", summary="校验研究包")
+async def inspect_research_package(request: Request) -> dict:
+    from ..research.package import inspect
+
+    data = await request.body()
+    try:
+        return inspect(data)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.post("/backtests/package/replay", summary="重放研究包并比对哈希")
+async def replay_research_package(request: Request) -> dict:
+    """校验研究包并在隔离进程中按包内数据重跑；返回代码/数据/参数/结果哈希对比。"""
+    import json
+    import uuid
+
+    from ..research.package import replay_context
+
+    data = await request.body()
+    try:
+        ctx = replay_context(data)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    spec = ctx.get("spec") or {}
+    manifest = ctx.get("manifest") or {}
+    run_id = f"replay-{uuid.uuid4().hex[:10]}"
+    request = {
+        "op": "backtest",
+        "lang": manifest.get("lang") or "python",
+        "source": ctx["source"],
+        "name": "research-package-replay",
+        "spec": spec,
+        "bars": ctx["data"],
+        "params": spec.get("params") or manifest.get("params"),
+        "research": ctx.get("funding") or {},
+        "run_id": run_id,
+        "time_limit": 120.0,
+    }
+    # 用当前进程的隔离策略；Windows 的 inprocess 回退会如实返回 mode。
+    result = await __import__("asyncio").to_thread(lambda: isolation.run_batch(request, timeout=180))
+    import hashlib
+
+    def sha(obj: Any) -> str:
+        return hashlib.sha256(
+            json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+        ).hexdigest()
+
+    checks = [
+        {"name": "代码哈希", "ok": hashlib.sha256(ctx["source"].encode()).hexdigest() == manifest.get("code_sha256")},
+        {"name": "数据哈希", "ok": sha(ctx["data"]) == manifest.get("data_sha256")},
+        {"name": "资金费哈希", "ok": sha(ctx.get("funding") or {}) == manifest.get("funding_sha256")},
+        {"name": "参数哈希", "ok": sha(spec.get("params") or {}) == manifest.get("params_sha256")},
+        {"name": "结果哈希", "ok": sha((result or {}).get("metrics") or {}) == manifest.get("result_sha256")},
+    ]
+    return {
+        "ok": all(c["ok"] for c in checks),
+        "checks": checks,
+        "run_id": run_id,
+        "result": result,
+        "manifest": manifest,
+    }
 
 
 @router.delete("/backtests/{bt_id}")
 def delete_backtest(bt_id: str) -> dict:
-    s = get_services().store
-    found = s.delete(Collections.BACKTESTS, bt_id)
-    s.delete_blob("backtests", bt_id)
-    if not found:
+    services = get_services()
+    store = services.store
+    row = store.get(Collections.BACKTESTS, bt_id)
+    if row is None:
         raise HTTPException(404, "回测记录不存在")
+    ctx = context.current()
+    if row.get("created_by") not in (None, ctx.user_id) and ctx.role != "admin":
+        raise HTTPException(403, "只能删除自己的回测记录")
+    if row.get("pinned") and ctx.role != "admin":
+        raise HTTPException(409, "这条回测已 PIN 保护，请先取消 PIN 再删除")
+    BR.delete_backtest_record(store, context.current_workspace(), row)
+    services.audit.record("research.backtest_delete", object_type="backtest", object_id=bt_id)
     return {"ok": True}
 
 
@@ -330,15 +741,51 @@ class BatchDeleteIn(BaseModel):
     ids: list[str] = Field(default_factory=list, max_length=500)
 
 
-@router.post("/backtests/batch-delete", summary="批量删除回测记录")
+@router.post("/backtests/batch-delete", summary="批量删除回测记录（跳过 PIN 保护或无权删除的记录）")
 def batch_delete_backtests(payload: BatchDeleteIn) -> dict:
-    s = get_services().store
+    services = get_services()
+    store = services.store
+    ctx = context.current()
     deleted = 0
+    skipped_pinned = 0
+    skipped_forbidden = 0
     for bt_id in dict.fromkeys(payload.ids):
-        if s.delete(Collections.BACKTESTS, bt_id):
-            deleted += 1
-        s.delete_blob("backtests", bt_id)
-    return {"ok": True, "deleted": deleted}
+        row = store.get(Collections.BACKTESTS, bt_id)
+        if row is None:
+            continue
+        if row.get("pinned"):
+            skipped_pinned += 1
+            continue
+        if row.get("created_by") not in (None, ctx.user_id) and ctx.role != "admin":
+            skipped_forbidden += 1
+            continue
+        BR.delete_backtest_record(store, context.current_workspace(), row)
+        deleted += 1
+    if deleted:
+        services.audit.record("research.backtest_batch_delete", object_type="backtest", details={"deleted": deleted})
+    return {"ok": True, "deleted": deleted, "skipped_pinned": skipped_pinned, "skipped_forbidden": skipped_forbidden}
+
+
+@router.post("/backtests/{bt_id}/pin", summary="切换回测记录的 PIN 保护")
+def pin_backtest(bt_id: str) -> dict:
+    services = get_services()
+    store = services.store
+    row = store.get(Collections.BACKTESTS, bt_id)
+    if row is None:
+        raise HTTPException(404, "回测记录不存在")
+    ctx = context.current()
+    if row.get("created_by") not in (None, ctx.user_id) and ctx.role != "admin":
+        raise HTTPException(403, "只能 PIN 自己的回测记录")
+    row["pinned"] = not bool(row.get("pinned"))
+    row["pinned_at"] = time.time() if row["pinned"] else None
+    saved = store.upsert(Collections.BACKTESTS, row)
+    services.audit.record(
+        "research.backtest_pin",
+        object_type="backtest",
+        object_id=bt_id,
+        details={"pinned": saved["pinned"]},
+    )
+    return {"pinned": bool(saved.get("pinned")), "row": saved}
 
 
 @router.post("/backtests/compare")
@@ -475,6 +922,8 @@ def delete_compare_batch(batch_id: str) -> dict:
 @router.post("/optimize")
 def start_optimize(payload: OptimizeIn) -> dict:
     rec = _record_or_404(payload.slug)
+    spec = _spec(payload, default_securities=rec.meta.securities, timeframe=rec.meta.timeframe)
+    _ensure_market_features(spec)
     lang = L.lang_of(rec.meta.kind)
     declared = L.declared_params(lang, rec.source)
     if not declared:
@@ -489,7 +938,9 @@ def start_optimize(payload: OptimizeIn) -> dict:
 
         # 依赖缺失要当场报错：放到后台 worker 里才失败的话，调参会「受理了却永远没有结果」
         if importlib.util.find_spec("optuna") is None:
-            raise HTTPException(400, "智能调参需要 optuna：在服务器上执行 pip install optuna 后重试；或改用网格优化（method=grid）")
+            raise HTTPException(
+                400, "智能调参需要 optuna：在服务器上执行 pip install optuna 后重试；或改用网格优化（method=grid）"
+            )
 
         try:
             raw = payload.space or declared_space(rec.source) or auto_space(declared)
@@ -521,6 +972,19 @@ def start_optimize(payload: OptimizeIn) -> dict:
     if len(combos) > MAX_COMBINATIONS:
         raise HTTPException(400, f"组合数 {len(combos)} 超过上限 {MAX_COMBINATIONS}，请缩小网格")
 
+    services = get_services()
+    app_ctx = context.current()
+    BR.guard_new_record(
+        services.store,
+        services.auth,
+        context.current_workspace(),
+        app_ctx.user_id or "",
+        app_ctx.role,
+        "optimization",
+        max_units=BR.effective_limit(
+            services.auth, services.model_hub, context.current_workspace(), app_ctx.user_id or "", app_ctx.role
+        ),
+    )
     version = register_version(rec)
     get_services().versions.require_runnable(version)
     m = {
@@ -557,7 +1021,11 @@ def start_optimize(payload: OptimizeIn) -> dict:
     if space:
         out["space"] = space
         out["space_source"] = (
-            "request" if payload.space else "PARAM_SPACE" if declared_space(rec.source) else "auto(PARAMS 默认值 ×0.5–2)"
+            "request"
+            if payload.space
+            else "PARAM_SPACE"
+            if declared_space(rec.source)
+            else "auto(PARAMS 默认值 ×0.5–2)"
         )
     return out
 

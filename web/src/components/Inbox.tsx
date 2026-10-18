@@ -3,7 +3,8 @@
  * 以及部署管理员发布的顶栏横幅。每 30 秒刷新一次角标；页面隐藏时不刷新。
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { inbox, NOTIFY_KIND_LABEL, since, type InboxSummary, type Notice } from '../apiCollab'
+import { collab, inbox, NOTIFY_KIND_LABEL, since, type InboxSummary, type Notice } from '../apiCollab'
+import { Icon } from './icons'
 import { QuantEyes } from './QuantBot'
 
 const POLL_MS = 20_000
@@ -51,12 +52,12 @@ export const pingInbox = () => window.dispatchEvent(new CustomEvent('qa:inbox-ch
 /** 头像右上角的红点：未读通知 + 群聊 / 私聊未读消息的总数。 */
 export function UnreadDot() {
   const { sum } = useInboxSummary()
-  const n = (sum?.unread.total ?? 0) + (sum?.group_unread ?? 0)
+  const n = sum?.unread.total ?? 0
   if (!n) return null
   return <span className="avatar-dot anim-pop" key={n} aria-label={`${n} 条未读`}>{n > 99 ? '99+' : n}</span>
 }
 
-const KIND_ICON: Record<string, string> = { mention: '@', task: '☐', group: '◎', comment: '✎', like: '▲', share: '⇪', issue: '!', announce: '📣', system: '·' }
+const KIND_ICON: Record<string, string> = { mention: 'bell', dm: 'message', task: 'validation', group: 'groups', comment: 'message', like: 'square', follow: 'teams', share: 'square', issue: 'issues', announce: 'inbox', system: 'overview' }
 
 export function InboxBell({ onNavigate }: { onNavigate: (k: string) => void }) {
   const { sum, reload } = useInboxSummary()
@@ -106,7 +107,7 @@ export function InboxBell({ onNavigate }: { onNavigate: (k: string) => void }) {
           </div>
           <div className="inbox-kinds">
             <button type="button" className={`chip small${kind === '' ? ' on' : ''}`} onClick={() => setKind('')}>全部</button>
-            {['mention', 'task', 'comment', 'group', 'issue', 'announce'].map((k) => (
+            {['mention', 'dm', 'task', 'comment', 'group', 'follow', 'issue', 'announce'].map((k) => (
               <button key={k} type="button" className={`chip small${kind === k ? ' on' : ''}`} onClick={() => setKind(k)}>
                 {NOTIFY_KIND_LABEL[k]}{(sum?.unread[k] ?? 0) > 0 && <small> {sum!.unread[k]}</small>}
               </button>
@@ -121,7 +122,7 @@ export function InboxBell({ onNavigate }: { onNavigate: (k: string) => void }) {
               <div className="stagger">
                 {items.slice(0, 30).map((n) => (
                   <button key={n.id} type="button" className={`inbox-item${n.read_at ? '' : ' unread'}`} onClick={() => openItem(n)}>
-                    <span className={`inbox-ic k-${n.kind}`} aria-hidden>{KIND_ICON[n.kind] ?? '·'}</span>
+                    <span className={`inbox-ic k-${n.kind}`} aria-hidden><Icon name={KIND_ICON[n.kind] ?? 'inbox'} size={14} /></span>
                     <span className="inbox-main">
                       <b>{n.title}</b>
                       {n.body && <small>{n.body}</small>}
@@ -159,6 +160,112 @@ export function PlatformBanner() {
       <b>{b.text}</b>
       {b.body && <span className="pb-body">{b.body}</span>}
       <button type="button" className="pb-x" aria-label="关闭公告" onClick={() => { try { localStorage.setItem(key, '1') } catch { /* */ } setHidden(true) }}>×</button>
+    </div>
+  )
+}
+
+interface MessageToastItem {
+  key: string
+  groupId: string
+  kind: 'group' | 'dm'
+  source: string
+  author: string
+  body: string
+}
+
+/** 全局新消息浮层：右下角显示来源与简介，4.5 秒后自动消失。 */
+export function MessageToasts({ meName, onNavigate }: { meName: string; onNavigate: (k: string) => void }) {
+  const [items, setItems] = useState<MessageToastItem[]>([])
+  const baseline = useRef<Map<string, string> | null>(null)
+  const mutedGroups = useRef(new Set<string>())
+  const mutedUsers = useRef(new Set<string>())
+  const timers = useRef<number[]>([])
+  const dismiss = useCallback((key: string) => setItems((prev) => prev.filter((x) => x.key !== key)), [])
+  const enqueue = useCallback((incoming: MessageToastItem[]) => {
+    if (!incoming.length) return
+    setItems((prev) => [...prev, ...incoming].slice(-3))
+    for (const item of incoming) timers.current.push(window.setTimeout(() => dismiss(item.key), 4500))
+  }, [dismiss])
+
+  useEffect(() => {
+    let alive = true
+    const loadMutes = () => inbox.mutes().then((r) => {
+      if (!alive) return
+      const groups = new Set<string>()
+      const users = new Set<string>()
+      for (const m of r.mutes) {
+        if (m.target_type === 'group') groups.add(m.target_id)
+        if (m.target_type === 'user') users.add(m.label || m.target_id)
+      }
+      mutedGroups.current = groups
+      mutedUsers.current = users
+    }).catch(() => undefined)
+
+    const tick = async () => {
+      if (document.visibilityState === 'hidden') return
+      try {
+        const r = await collab.groups()
+        if (!alive) return
+        const seen = new Map<string, string>()
+        const fresh: MessageToastItem[] = []
+        for (const g of r.groups) {
+          const m = g.last_message
+          if (!m || !g.my_role) continue
+          const key = `${m.at}|${m.author}|${m.body}`
+          seen.set(g.id, key)
+          if (!baseline.current || baseline.current.get(g.id) === key) continue
+          if (m.author === meName || m.author === '系统') continue
+          if (mutedGroups.current.has(g.id) || mutedUsers.current.has(m.author)) continue
+          const current = window.location.hash.replace(/^#\/?/, '')
+          if (current === `groups/${g.id}`) continue
+          fresh.push({
+            key: `${g.id}:${key}`,
+            groupId: g.id,
+            kind: g.kind === 'dm' ? 'dm' : 'group',
+            source: g.kind === 'dm' ? `私聊 · ${g.peer?.name || g.name}` : `群组 · ${g.name}`,
+            author: m.author,
+            body: (m.body || '[引用或附件]').replace(/\s+/g, ' ').slice(0, 120),
+          })
+        }
+        baseline.current = seen
+        enqueue(fresh)
+      } catch { /* 登录切换或网络波动时静默重试 */ }
+    }
+
+    loadMutes()
+    void tick()
+    const timer = window.setInterval(tick, 6000)
+    const onVisible = () => { if (document.visibilityState !== 'hidden') { loadMutes(); void tick() } }
+    const onInbox = () => { loadMutes() }
+    document.addEventListener('visibilitychange', onVisible)
+    window.addEventListener('qa:inbox-changed', onInbox)
+    return () => {
+      alive = false
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVisible)
+      window.removeEventListener('qa:inbox-changed', onInbox)
+      timers.current.forEach((t) => window.clearTimeout(t))
+      timers.current = []
+    }
+  }, [enqueue, meName])
+
+  if (!items.length) return null
+  return (
+    <div className="message-toasts" aria-live="polite" aria-label="新消息通知">
+      {items.map((item) => (
+        <button key={item.key} type="button" className="message-toast anim-in"
+          onClick={() => { dismiss(item.key); onNavigate(`groups/${item.groupId}`) }}
+          title={`打开 ${item.source}`}>
+          <span className="message-toast-icon"><Icon name={item.kind === 'dm' ? 'message' : 'groups'} size={16} /></span>
+          <span className="message-toast-main">
+            <span className="message-toast-source">{item.source}</span>
+            <b>{item.author}</b>
+            <small>{item.body}</small>
+          </span>
+          <span className="message-toast-close" aria-hidden>×</span>
+          <i className="message-toast-life" aria-hidden />
+        </button>
+      ))}
     </div>
   )
 }

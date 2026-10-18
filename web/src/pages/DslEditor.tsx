@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { v3 } from '../api2'
-import { v4, type DslProblem, type DslValidation } from '../api3'
+import { v3 } from '../api/research'
+import { v4, type DslProblem, type DslValidation } from '../api/platform'
 import { ruleCode } from '../apiRuleCode'
 import { ApiError } from '../http'
 import { Callout, Heading, Loading, Panel, Segments, Tag } from '../components/ui'

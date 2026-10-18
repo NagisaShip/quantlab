@@ -3,7 +3,7 @@
  * 点任意角色（或头像）打开编辑抽屉；团队成员直接从角色库里选。
  */
 import { useCallback, useEffect, useState } from 'react'
-import { api, shortTime, type Team } from '../api'
+import { api, shortTime, type Team } from '../api/core'
 import { missions, type Mission } from '../apiLab'
 import { Avatar } from '../components/Avatar'
 import { Heading } from '../components/ui'

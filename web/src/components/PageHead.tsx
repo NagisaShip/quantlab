@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { v3 } from '../api2'
+import { v3 } from '../api/research'
 import { validation } from '../apiValidation'
 import { store } from './prefs'
 

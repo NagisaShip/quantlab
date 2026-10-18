@@ -1,11 +1,13 @@
 import { Fragment, createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { get } from '../../http'
-import { v3, type BacktestResult } from '../../api2'
+import { v3, type BacktestResult } from '../../api/research'
 import { TF_MS } from '../../timeframes'
 import KlineChart, { type KBar, type KMark } from '../KlineChart'
 import { Chart, HeatmapChart, type ChartSpec } from './Chart'
 import { CodeBlock, RunResult } from './CodeBlock'
 import { DataTable, tableFromBlock } from './DataTable'
+import { ParameterHeatmapBody, type ParameterHeatmapData } from './ParameterHeatmap'
+import { StressTestCard } from './StressTestCard'
 import { ImageView } from './Media'
 import { useReportRenderError } from './renderErrors'
 import {
@@ -45,7 +47,7 @@ export function CiteMark({ n }: { n: string }) {
         {n}
       </a>
       {open && (
-        <span className="qb-cite-pop anim-pop" role="tooltip">
+        <span className="qb-cite-pop" role="tooltip">
           <b>{src.title || (src.url ? hostOf(src.url) : `来源 ${n}`)}</b>
           {src.snippet && <span>{src.snippet.slice(0, 220)}</span>}
           <small>{[kindLabel(src.kind), src.publisher, src.date, src.url && hostOf(src.url)].filter(Boolean).join(' · ')}</small>
@@ -129,6 +131,8 @@ export function RichBlock({ block, streaming }: { block: ParsedBlock; streaming?
       case 'backtest_report': return <BacktestReport data={d} />
       case 'kline_review': return <KlineReview data={d} />
       case 'factor_report': return <FactorBlock data={d} />
+      case 'parameter_heatmap': return <Frame type="parameter_heatmap" wide data={d}><ParameterHeatmapBody data={d as ParameterHeatmapData} /></Frame>
+      case 'stress_report': return <StressTestCard data={d} />
       case 'compare': return <CompareBlock data={d} />
       case 'citation': return <CitationList data={d} />
       case 'claims': return <ClaimsBlock data={d} />
@@ -265,6 +269,22 @@ function datasetLabel(bt: BacktestResult): string {
   return d ? `${d.source_label || d.source}${d.exchange ? ` · ${d.exchange}` : ''} · ${bt.securities?.join(', ')} ${bt.timeframe}` : ''
 }
 
+function costSourceBanner(bt: BacktestResult) {
+  const c = (bt.cost_model || {}) as Record<string, unknown>
+  if (c.cost_source !== 'strategy') return null
+  const pct = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? `${(v * 100).toFixed(3)}%` : '—')
+  const bps = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? `${v.toFixed(2)} bp` : '—')
+  const scale = Number(c.cost_scale || 1)
+  return (
+    <div className="qb-cost-banner" role="note">
+      <b>当前使用代码自定义费率</b>
+      <span>吃单 {pct(c.taker_fee)} · 滑点 {bps(c.slippage_bps)}</span>
+      {scale !== 1 && <span>（压力倍数 {scale}×，基准值 {pct(c.base_taker_fee ?? c.taker_fee)} / {bps(c.base_slippage_bps ?? c.slippage_bps)}）</span>}
+      <small>策略里的 set_order_cost 已覆盖 UI「成本与高级」的默认值；未调用时仍使用平台默认成本。</small>
+    </div>
+  )
+}
+
 function BacktestReport({ data }: { data: Record<string, unknown> & BlockBase }) {
   const id = String(data.backtest_id || data.id || '')
   const { bt, err } = useBacktest(id)
@@ -294,7 +314,19 @@ function BacktestReport({ data }: { data: Record<string, unknown> & BlockBase })
         <span className={`qb-dot st-${bt.status === 'done' ? (warnings.length ? 'warn' : 'ok') : 'error'}`} />
         {bt.status === 'done' ? '回测完成' : '回测失败'} · {win} · 用时 {(bt.duration_ms / 1000).toFixed(1)}s
         {synthetic && <span className="qb-ev warn">合成数据 · 非正式回测</span>}
+        {bt.cost_model?.execution_mode === 'tick' && <span className="qb-ev info">逐笔路径撮合</span>}
+        {bt.cost_model?.dynamic_slippage === true && <span className="qb-ev info">动态滑点</span>}
       </div>
+      {costSourceBanner(bt)}
+      {((bt.counters?.limit_locked || 0) + (bt.counters?.liquidity_drought || 0) > 0) && (
+        <div className="qb-callout tone-warn">
+          <b>极端行情成交处理</b>
+          <div>
+            {Number(bt.counters?.limit_locked || 0) > 0 && <span>涨跌停锁定拒单 {bt.counters!.limit_locked} 次；</span>}
+            {Number(bt.counters?.liquidity_drought || 0) > 0 && <span>流动性枯竭 / 成交量不足 {bt.counters!.liquidity_drought} 次。</span>}
+          </div>
+        </div>
+      )}
       {warnings.length > 0 && (
         <details className="qb-warn">
           <summary>{warnings.length} 条警告</summary>
@@ -346,7 +378,55 @@ function KlineReview({ data, embedded }: { data: Record<string, unknown> & Block
   }, [bt, symbol, timeframe])
   const trades = bt?.round_trips || []
   const fills = bt?.fills || []
-  const marks: KMark[] = useMemo(() => fills.filter((f) => !symbol || f.security === symbol).slice(0, 1500).map((f) => ({ ts: f.ts, side: f.side, price: Number(f.price), amount: Number(f.amount), text: f.reason })), [fills, symbol])
+  const marks: KMark[] = useMemo(() => {
+    const step = STEP[timeframe] || 3600e3
+    const rows = fills.filter((f) => !symbol || f.security === symbol).sort((a, b) => a.ts - b.ts).slice(0, 1500)
+    const ts = bt?.timestamps || []
+    const eq = bt?.equity_curve || []
+    const equityAt = (when: number) => {
+      if (!ts.length) return 0
+      let lo = 0, hi = ts.length - 1
+      while (lo < hi) {
+        const mid = Math.floor((lo + hi + 1) / 2)
+        if (ts[mid] <= when) lo = mid
+        else hi = mid - 1
+      }
+      return Number(eq[lo] || 0)
+    }
+    let units = 0
+    const grouped = new Map<string, KMark & { detail: string; count: number }>()
+    for (const f of rows) {
+      const price = Number(f.price)
+      const amount = Number(f.amount)
+      units += f.side === 'buy' ? amount : -amount
+      const equity = equityAt(f.ts)
+      const posPct = equity > 0 ? (units * price) / equity : 0
+      const short = `${f.side === 'buy' ? 'B' : 'S'} ${Math.round(posPct * 100)}%`
+      const key = `${Math.floor(f.ts / step)}|${f.side}`
+      const prev = grouped.get(key)
+      const reason = f.reason || f.note || '策略信号'
+      if (prev) {
+        prev.amount = (Number(prev.amount) || 0) + amount
+        prev.count += 1
+        prev.price = price
+        prev.text = short
+        prev.positionPct = posPct
+        prev.detail = `${prev.count} 笔成交 · ${reason}`
+      } else {
+        grouped.set(key, {
+          ts: Math.floor(f.ts / step) * step,
+          side: f.side,
+          price,
+          amount,
+          text: short,
+          positionPct: posPct,
+          detail: reason,
+          count: 1,
+        })
+      }
+    }
+    return [...grouped.values()].map(({ count: _count, ...m }) => m)
+  }, [fills, symbol, bt, timeframe])
   if (!id) return <div className="qb-block qb-bad qb-muted">K 线复盘需要 backtest_id</div>
   const body = err ? <div className="qb-muted">读取回测失败：{err}</div> : !bt ? <div className="qb-pending"><span className="cb-spin" /> 正在读取回测…</div> : (
     <>
@@ -504,7 +584,7 @@ function CompareBlock({ data }: { data: Record<string, unknown> & BlockBase }) {
   const versions = (data.versions as Version[]) || []
   const [loaded, setLoaded] = useState<Record<string, BacktestResult>>({})
   useEffect(() => {
-    versions.filter((v) => v.backtest_id && !v.metrics).forEach((v) => {
+    versions.filter((v) => v.backtest_id).forEach((v) => {
       loadBacktest(v.backtest_id!).then((bt) => setLoaded((x) => ({ ...x, [v.backtest_id!]: bt }))).catch(() => undefined)
     })
   }, [JSON.stringify(versions.map((v) => v.backtest_id))]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -512,6 +592,20 @@ function CompareBlock({ data }: { data: Record<string, unknown> & BlockBase }) {
   const metricsOf = (v: Version) => v.metrics || (v.backtest_id && loaded[v.backtest_id] ? (loaded[v.backtest_id].metrics as unknown as Record<string, number>) : {})
   const base = versions[0] ? metricsOf(versions[0]) : {}
   const hasOos = versions.some((v) => v.oos)
+  // 单变量消融 / 多版本对比：把能拿到的净值曲线同框叠加（同一时间轴，按首个版本对齐）
+  const overlay = useMemo(() => {
+    const rows = versions.map((v) => ({ v, bt: v.backtest_id ? loaded[v.backtest_id] : undefined })).filter((r) => r.bt?.timestamps?.length)
+    if (rows.length < 2) return null
+    const base = rows[0].bt!
+    const x = base.timestamps
+    const series = rows.map(({ v, bt }) => {
+      const eq = bt!.equity_curve || []
+      const eq0 = eq[0] || 1
+      const byTs = new Map(bt!.timestamps.map((t, i) => [t, eq[i] / eq0 - 1]))
+      return { name: v.label, data: x.map((t) => (byTs.has(t) ? (byTs.get(t) as number) : null)), dashed: v === versions[0] }
+    })
+    return { x, series }
+  }, [versions, loaded])
   const cell = (k: string, val: number | null | undefined, ref: number | null | undefined, first: boolean) => {
     const def = METRIC_DEFS[k]
     const fmt = def?.format || 'num'
@@ -526,6 +620,12 @@ function CompareBlock({ data }: { data: Record<string, unknown> & BlockBase }) {
   }
   return (
     <Frame type="compare" wide data={data}>
+      {overlay && (
+        <>
+          <div className="qb-sub">净值曲线叠加 <EvidenceTag e="measured" /></div>
+          <Chart height={230} spec={{ kind: 'line', x: overlay.x, y_format: 'pct_signed', series: overlay.series }} />
+        </>
+      )}
       <div className="qb-table-scroll">
         <table className="qb-compare">
           <thead>

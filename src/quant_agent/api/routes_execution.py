@@ -10,6 +10,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from ..platform import backtest_retention as BR
 from ..platform import context
 from ..research import execution as EX
 from ..research import goals as RG
@@ -130,13 +131,28 @@ def meta() -> dict:
 
 @router.post("/evaluate", summary="仿真一个执行方案：多个片段 + TWAP/市价基准，返回 TCA 报告（记一笔试验）")
 def evaluate(p: SimIn) -> dict:
+    services = get_services()
+    ctx = context.current()
+    BR.guard_new_record(
+        services.store,
+        services.auth,
+        context.current_workspace(),
+        ctx.user_id or "",
+        ctx.role,
+        "execution_run",
+        max_units=BR.effective_limit(
+            services.auth, services.model_hub, context.current_workspace(), ctx.user_id or "", ctx.role
+        ),
+    )
     cfg = _cfg(p.config)
     tapes = _tapes(p)
     try:
         report = EX.evaluate_scheme(cfg, tapes)
     except EX.ExecutionError as exc:
         raise HTTPException(400, str(exc)) from exc
-    run = _lib().record_run(cfg, report, symbols=[t.symbol for t in tapes], source="manual", note=p.note)
+    run = _lib().record_run(
+        cfg, report, symbols=[t.symbol for t in tapes], source="manual", note=p.note, created_by=ctx.user_id or "user"
+    )
     return {"run": run, "report": report}
 
 
@@ -384,6 +400,19 @@ def schemes(status: str | None = None) -> dict:
 
 @router.post("", summary="把一次仿真存为执行方案")
 def save(p: SaveIn) -> dict:
+    services = get_services()
+    ctx = context.current()
+    BR.guard_new_record(
+        services.store,
+        services.auth,
+        context.current_workspace(),
+        ctx.user_id or "",
+        ctx.role,
+        "execution",
+        max_units=BR.effective_limit(
+            services.auth, services.model_hub, context.current_workspace(), ctx.user_id or "", ctx.role
+        ),
+    )
     lib = _lib()
     run = lib.run(p.run_id)
     rep = lib.run_report(p.run_id)
@@ -398,6 +427,7 @@ def save(p: SaveIn) -> dict:
         note=p.note,
         scheme_id=p.scheme_id,
         run_id=p.run_id,
+        created_by=ctx.user_id or "user",
     )
     return {"scheme": rec}
 

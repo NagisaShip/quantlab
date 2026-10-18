@@ -40,7 +40,9 @@ def main() -> None:
             count += 1
     tags = sorted(groups, key=lambda t: (ORDER.index(t) if t in ORDER else len(ORDER), t))
     lines = [
-        "# API 参考",
+        "# QuantLab v 0.1 preview · API 参考",
+        "",
+        "[English](API-Reference.en.md) | [文档索引](README.md) | [返回 README](../README.md)",
         "",
         f"平台共 **{count} 个端点**。本文件由 `scripts/gen_api_doc.py` 从 FastAPI 的 OpenAPI 规范生成，",
         "与运行中服务的 `/docs`（可交互调试）来自同一份定义。",

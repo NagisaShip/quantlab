@@ -1,4 +1,4 @@
-"""AI 晨报：每天汇总市场状态、库内因子与模型健康度、组合与执行、夜班成果、等你决定的事。
+"""AI 晨报：每天汇总市场状态、库内因子与模型健康度、组合与执行、定时任务成果、等你决定的事。
 
 数据由 API 层收集好传进来；这里只负责排版成几个小节 + 一段可推送的纯文本。
 有模型时可以再让模型写一句"今天最值得关注的事"，没有模型时用规则挑。只陈述数据，不预测行情。
@@ -143,7 +143,7 @@ def compose(data: dict[str, Any]) -> dict[str, Any]:
             lines.append(f"{mark} {it.get('headline') or it.get('idea', '')[:40]}")
         if good:
             focus.append((0, f"夜班有 {good} 个成果达到验收目标，等你决定是否启用"))
-        sections.append({"key": "shift", "title": "夜班成果", "lines": lines, "tone": "ok" if good else ""})
+        sections.append({"key": "shift", "title": "定时任务成果", "lines": lines, "tone": "ok" if good else ""})
 
     lg = data.get("ledger") or {}
     if lg:

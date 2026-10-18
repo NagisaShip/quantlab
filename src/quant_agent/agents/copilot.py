@@ -33,6 +33,7 @@ from ..sdk import check_source, declared_params, load_source, run_backtest
 from ..strategies.params_util import ParamsError, rewrite_params
 from ..strategies.sdk_templates import get_template
 from .blocks_protocol import BLOCKS_GUIDE
+from .qmoji import decorate_qmoji, metrics_from_materials
 
 SDK_GUIDE = """
 平台策略 SDK（与聚宽写法一致，函数可直接调用、无需 import）：
@@ -61,6 +62,17 @@ SDK_GUIDE = """
 - ctx.portfolio.total_value / available_cash / positions；ctx.total_value；ctx.cash
 - ctx.position(security) → .amount .avg_cost .value .unrealized_pnl
 
+指标与性能（必须遵守）
+- 逐 bar 回测优先用平台预计算指标：ctx.indicators.ema(security, period)、sma、atr、rsi；
+  平台整条序列只算一次，每根 bar 只读当前值，1m 线几十万根也不会 O(n²)
+- 需要自己处理序列时用预置 NumPy 算子：ema(values, period)、sma、atr(highs, lows, closes, period)、
+  rsi、zscore；不要写 `for v in values[n:]` 这类纯 Python 递推，也不要在每次 rebalance 里重复切片长 history
+- 指标预热期返回 nan（比较结果为 False）；据此跳过信号即可
+
+成本优先级（必须遵守）
+- 代码显式 set_order_cost(taker_fee=..., slippage_bps=...) 会覆盖回测 UI / 平台默认成本，报告会标注「代码自定义费率」
+- 不需要改成本就不要调用 set_order_cost；不要写「平台会覆盖成本」之类注释（方向相反，会误导使用者）
+
 其他
 - set_benchmark(security)、set_order_cost(taker_fee=0.001, slippage_bps=5)
 - log.info(...)、record(name=value)（画到回测图上）
@@ -84,6 +96,16 @@ SYSTEM = f"""你是 QuantLab Bot —— QuantLab 加密货币量化研究平台�
 4. 代码要完整、可直接运行，不要省略号或"此处略"。
 5. 不承诺收益，不用"稳赚""保证"等措辞；明确指出策略的局限与适用行情。
 6. 用户描述缺少关键信息时，先按最常见、最保守的假设实现，并在说明里列出你做的假设。
+7. 性能：指标一律优先用 ctx.indicators.* 或预置 NumPy 算子，禁止在每根 bar 的 rebalance 里用纯 Python for 循环重算指标；
+   写 1m / 多标的研究代码时尤其要避免 O(n²) 切片。
+8. 成本：只有确实需要改变成本时才调用 set_order_cost；代码显式设置后以代码为准并覆盖 UI 默认值。
+
+【Qmoji 表情】
+- 回测夏普 ≥ 2.5、超额收益 ≥ 3% 且交易数足够时，在结论末尾单独一行附 :qbot-alpha:；超额 ≥ 10% 用 :qbot-moon:。
+- 风控因回撤过大 / 手续费口径不对而拦截时，附 :qbot-no: 或 :qbot-question:。
+- 严重亏损（总收益 ≤ -10%）附 :qbot-cry:；大回撤附 :qbot-drawdown:。
+- 提到过拟合 / 未来函数 / 插针时分别附 :qbot-overfit: / :qbot-future: / :qbot-wick:。
+- 每条回复最多一个 Qmoji，放在结论末尾；不插入代码块、表格或数字中间；没有数据不要强行发。
 
 {SDK_GUIDE}
 """
@@ -105,6 +127,13 @@ ASK_SYSTEM = f"""你是 QuantLab Bot —— QuantLab 加密货币量化研究平
 2. 不承诺收益，不用“稳赚”“保证”等措辞；指出样本外风险、成本与过拟合可能。
 3. 需要改代码时给出完整可运行的代码块，并遵守下面的平台 SDK；不得调用交易所、网络、文件，不得使用未来数据。
 4. 你只做分析与草案，不能下单，也不能替用户批准策略上线。
+
+【Qmoji 表情】
+- 回测夏普 ≥ 2.5、超额收益 ≥ 3% 且交易数足够时，在结论末尾单独一行附 :qbot-alpha:；超额 ≥ 10% 用 :qbot-moon:。
+- 风控因回撤过大 / 手续费口径不对而拦截时，附 :qbot-no: 或 :qbot-question:。
+- 严重亏损（总收益 ≤ -10%）附 :qbot-cry:；大回撤附 :qbot-drawdown:。
+- 提到过拟合 / 未来函数 / 插针时分别附 :qbot-overfit: / :qbot-future: / :qbot-wick:。
+- 每条回复最多一个 Qmoji，放在结论末尾；不插入代码块、表格或数字中间；没有数据不要强行发。
 
 {SDK_GUIDE}
 """
@@ -209,6 +238,23 @@ class CopilotResult:
 # ---------------------------------------------------------------------------
 # 试跑：静态检查 + 在合成数据上跑一遍
 # ---------------------------------------------------------------------------
+PERF_LOOP = re.compile(r"for\s+\w+\s+in\s+(?:values|closes|prices|highs|lows|history\()[^\n]*\[")
+PERF_INDICATOR = re.compile(r"def\s+_(?:ema|atr|rsi|sma)\s*\(")
+
+
+def performance_warnings(code: str) -> list[str]:
+    """不阻断运行，但提醒 Agent 修掉会在 1m / tick 级数据上退化的写法。"""
+    out: list[str] = []
+    if PERF_LOOP.search(code) or PERF_INDICATOR.search(code):
+        out.append(
+            "检测到手写的指标递推 / 循环切片：逐 bar 回测请优先用 ctx.indicators.ema / atr / rsi，"
+            "或预置 NumPy 算子 ema() / atr()；否则 1m 线几十万根时会退化成 O(n²)"
+        )
+    if "history(" in code and "ctx.indicators." not in code and "ema(" not in code and "atr(" not in code:
+        out.append("代码反复读取 history 但没有使用平台预计算指标；确认没有在每根 bar 重算整段序列")
+    return out
+
+
 def smoke_test(code: str, securities: list[str] | None = None, timeframe: str = "1h") -> dict[str, Any]:
     """生成代码的守门人：静态检查 + 合成数据试跑。只验证"能不能跑"，不评价好坏。"""
     from ..data.service import synthetic_bars
@@ -232,6 +278,7 @@ def smoke_test(code: str, securities: list[str] | None = None, timeframe: str = 
         "stage": "run",
         "issues": [],
         "errors": errors,
+        "warnings": performance_warnings(code),
         "fills": len(result.fills),
         "params": result.params,
         "note": "试跑使用教学合成数据，只检验代码能否正常运行，不代表策略表现",
@@ -559,7 +606,12 @@ class StrategyCopilot:
             return CopilotResult(
                 action="interpret",
                 mode="llm",
-                content=text,
+                content=decorate_qmoji(
+                    text,
+                    role="backtest_analyst",
+                    tags=["回测", "研究"],
+                    metrics=metrics_from_materials({"backtest": backtest}),
+                ),
                 model=model,
                 elapsed_ms=int((time.perf_counter() - t0) * 1000),
             )
@@ -567,7 +619,12 @@ class StrategyCopilot:
             return CopilotResult(
                 action="interpret",
                 mode="fallback",
-                content=rule_interpret(backtest),
+                content=decorate_qmoji(
+                    rule_interpret(backtest),
+                    role="backtest_analyst",
+                    tags=["回测", "研究"],
+                    metrics=metrics_from_materials({"backtest": backtest}),
+                ),
                 notes=[f"降级原因：{_short_reason(str(exc))}"],
             )
 
@@ -587,7 +644,12 @@ class StrategyCopilot:
             return CopilotResult(
                 action="review",
                 mode="llm",
-                content=text,
+                content=decorate_qmoji(
+                    text,
+                    role="research_auditor",
+                    tags=["研究", "回测"],
+                    metrics=metrics_from_materials({"backtest": backtest}) if backtest else {},
+                ),
                 model=model,
                 elapsed_ms=int((time.perf_counter() - t0) * 1000),
             )
@@ -595,7 +657,12 @@ class StrategyCopilot:
             return CopilotResult(
                 action="review",
                 mode="fallback",
-                content=rule_review(code, backtest),
+                content=decorate_qmoji(
+                    rule_review(code, backtest),
+                    role="research_auditor",
+                    tags=["研究", "回测"],
+                    metrics=metrics_from_materials({"backtest": backtest}) if backtest else {},
+                ),
                 notes=[f"降级原因：{_short_reason(str(exc))}"],
             )
 

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
-import { api, type Preset } from '../api'
-import { v3, type LimitRule, type ModelConfigView, type ModelSetting, type ModelUsage, type ProviderScope, type ProviderView } from '../api2'
+import { api, type Preset } from '../api/core'
+import { v3, type LimitRule, type ModelConfigView, type ModelSetting, type ModelUsage, type ProviderScope, type ProviderView } from '../api/research'
 import { LimitBars, LimitEditor, UsageSummary } from '../components/modelUsage'
 import { Callout, Heading, Loading } from '../components/ui'
 import { get, request } from '../http'
@@ -98,9 +98,9 @@ const blank = (scope: ProviderScope): Draft => ({
 
 function draftFromPreset(p: Preset, scope: ProviderScope, prev?: Draft): Draft {
   return {
-    ...blank(scope), mode: 'preset', name: p.name, type: p.type === 'anthropic' ? 'anthropic' : 'openai_compatible',
+    ...blank(scope), mode: 'preset', name: p.name, type: protocolOf(p.type),
     api_key: prev?.api_key ?? '', models: p.models.filter(Boolean).map((m) => rowOf(m)),
-    currency: p.name === 'openai' || p.name === 'anthropic' ? 'USD' : 'CNY',
+    currency: p.currency ?? (p.name === 'openai' || p.name === 'anthropic' ? 'USD' : 'CNY'),
   }
 }
 
@@ -419,7 +419,7 @@ function ProviderEditor({ draft, setDraft, presets, existing, isAdmin, onCancel,
 
       {isPreset ? (
         <>
-          {!draft.editing && <p className="prov-note">从模板选择 DeepSeek、OpenAI、Anthropic、Kimi 等服务商，填入 API 密钥即可使用。</p>}
+          {!draft.editing && <p className="prov-note">从模板选择 30+ 个常用服务商（含 Gemini、OpenRouter、Azure、Groq、通义、智谱、豆包等），填入 API 密钥即可使用。</p>}
           {!draft.editing && (
             <label className="prov-field">服务商
               <select value={draft.name} onChange={(e) => { const p = presets.find((x) => x.name === e.target.value); if (p) { setFound(null); setDraft(draftFromPreset(p, draft.scope, draft)) } }}>

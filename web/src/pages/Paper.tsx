@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { fmtMoney, fmtNum, fmtPct, fmtTime, tone, v3, type PaperSessionView, type StrategyFile } from '../api2'
+import { fmtMoney, fmtNum, fmtPct, fmtTime, tone, v3, type PaperSessionView, type StrategyFile } from '../api/research'
 import { COLORS, LineChart } from '../components/charts2'
 import { Callout, EmptyState, Fold, Heading, Loading, Panel, SourceBanner, Tag } from '../components/ui'
 import { useEventRefresh, useNewestActiveRunId, useRunEvents, type RunEvent, type RunEventStatus } from '../hooks/useRunEvents'

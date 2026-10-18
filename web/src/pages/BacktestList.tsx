@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
-import { ago, fmtDate, fmtNum, fmtPct, tone, v3, type BacktestRow } from '../api2'
+import { ago, fmtDate, fmtNum, fmtPct, tone, v3, type BacktestRetentionUsage, type BacktestRow } from '../api/research'
 import { Callout, EmptyState, Heading, Loading, Panel, Tag } from '../components/ui'
 import { readCompare, writeCompare } from './BacktestDetail'
 import type { CompareItem } from '../apiCompare'
@@ -89,13 +89,14 @@ function Records({ slug, onNavigate, notify, tabs }: Pick<PageProps, 'onNavigate
   const [picked, setPicked] = useState<string[]>([])
   const [folded, setFolded] = useState<string[]>([])
   const [folders, setFolders] = useState<Record<string, string>>({})
+  const [retention, setRetention] = useState<BacktestRetentionUsage | null>(null)
   useEffect(() => {
     if (group !== 'project') return
     lab.projects().then((r) => setFolders(Object.fromEntries(r.projects.filter((p) => p.folder).map((p) => [p.id, p.folder as string])))).catch(() => undefined)
   }, [group])
 
   const load = useCallback(() => {
-    v3.backtests(slug, 300).then((r) => setRows(r.backtests)).catch((e) => setError(e.message))
+    v3.backtests(slug, 300).then((r) => { setRows(r.backtests); setRetention(r.retention) }).catch((e) => setError(e.message))
   }, [slug])
   useEffect(load, [load])
 
@@ -122,16 +123,23 @@ function Records({ slug, onNavigate, notify, tabs }: Pick<PageProps, 'onNavigate
   }
 
   const remove = async (id: string) => {
+    const row = rows?.find((r) => r.id === id)
+    if (row?.pinned) { notify('这条回测已 PIN 保护，请先取消 PIN', true); return }
     if (!await appConfirm('删除这条回测记录？')) return
-    await v3.deleteBacktest(id)
-    toggleOff(id)
-    load()
+    try { await v3.deleteBacktest(id); toggleOff(id); load() } catch (e) { notify((e as Error).message, true) }
+  }
+  const togglePin = async (row: BacktestRow) => {
+    try {
+      const r = await v3.pinBacktest(row.id)
+      notify(r.pinned ? '已 PIN，记录不会被自动清理' : '已取消 PIN')
+      load()
+    } catch (e) { notify((e as Error).message, true) }
   }
   const removeMany = async () => {
     if (!picked.length || !await appConfirm(`删除选中的 ${picked.length} 条回测记录？删除后不能恢复。`)) return
     try {
       const r = await v3.deleteBacktests(picked)
-      notify(`已删除 ${r.deleted} 条回测记录`)
+      notify(`已删除 ${r.deleted} 条回测记录${r.skipped_pinned ? `，跳过 ${r.skipped_pinned} 条 PIN 保护记录` : ''}${r.skipped_forbidden ? `，跳过 ${r.skipped_forbidden} 条无权删除记录` : ''}`)
       const next = selected.filter((x) => !picked.includes(x))
       setSelected(next); writeCompare(next); setPicked([]); setManage(false); load()
     } catch (e) { notify((e as Error).message, true) }
@@ -151,6 +159,7 @@ function Records({ slug, onNavigate, notify, tabs }: Pick<PageProps, 'onNavigate
           <div className="button-row">
             {slug && <button className="button" onClick={() => onNavigate(`editor/${slug}`)}>回到编辑器</button>}
             {slug && <button className="button" onClick={() => onNavigate('backtests')}>全部回测</button>}
+            <button className="button" onClick={() => onNavigate('settings/retention')}>记录设置</button>
             <button className="button primary" disabled={selected.length < 2} onClick={runCompare}>对比所选（{selected.length}）</button>
           </div>
         }
@@ -164,7 +173,7 @@ function Records({ slug, onNavigate, notify, tabs }: Pick<PageProps, 'onNavigate
         </Panel>
       )}
 
-      <Panel title={`记录（${rows?.length ?? 0}）`} flush actions={
+      <Panel title={`记录（${rows?.length ?? 0}）`} subtitle={retention ? `我的保存额度 ${retention.total}/${retention.max_records_per_user} · PIN ${retention.pinned}` : undefined} flush actions={
         <div className="button-row bt-manage">
           <label className="bt-group">分组
             <select value={group} onChange={(e) => { setGroup(e.target.value as Group); store.set('qa.bt.group', e.target.value) }}>
@@ -173,7 +182,7 @@ function Records({ slug, onNavigate, notify, tabs }: Pick<PageProps, 'onNavigate
           </label>
           {manage ? <>
             <span className="muted small">已选 {picked.length}</span>
-            <button className="button small" onClick={() => setPicked(picked.length === (rows?.length ?? 0) ? [] : (rows ?? []).map((r) => r.id))}>{picked.length === (rows?.length ?? 0) && picked.length ? '全不选' : '全选'}</button>
+            <button className="button small" onClick={() => { const ids = (rows ?? []).filter((r) => !r.pinned).map((r) => r.id); setPicked(ids.every((id) => picked.includes(id)) ? [] : ids) }}>{picked.length && (rows ?? []).filter((r) => !r.pinned).every((r) => picked.includes(r.id)) ? '全不选' : '全选未 PIN'}</button>
             <button className="button small danger" disabled={!picked.length} onClick={removeMany}>删除所选</button>
             <button className="button small ghost" onClick={() => { setManage(false); setPicked([]) }}>完成</button>
           </> : <button className="button small" onClick={() => setManage(true)} disabled={!rows?.length}>批量管理</button>}
@@ -190,7 +199,7 @@ function Records({ slug, onNavigate, notify, tabs }: Pick<PageProps, 'onNavigate
                 <tr><th /><th>策略</th><th>区间</th><th>数据</th><th className="right">收益</th><th className="right">基准</th><th className="right">超额</th><th className="right">回撤</th><th className="right">夏普</th><th className="right">交易</th><th>运行</th><th /></tr>
               </thead>
               {groups.map((g) => {
-                const ids = g.rows.map((r) => r.id)
+                const ids = g.rows.filter((r) => !r.pinned).map((r) => r.id)
                 const all = ids.every((x) => picked.includes(x))
                 const closed = folded.includes(g.key)
                 return (
@@ -211,9 +220,9 @@ function Records({ slug, onNavigate, notify, tabs }: Pick<PageProps, 'onNavigate
                     {!closed && g.rows.map((r) => (
                       <tr key={r.id} className={picked.includes(r.id) ? 'picked' : undefined}>
                         <td>{manage
-                          ? <input type="checkbox" checked={picked.includes(r.id)} onChange={() => setPicked(picked.includes(r.id) ? picked.filter((x) => x !== r.id) : [...picked, r.id])} aria-label="选择这条回测" style={{ margin: 0, width: 'auto' }} />
+                          ? <input type="checkbox" checked={picked.includes(r.id)} disabled={!!r.pinned} title={r.pinned ? 'PIN 保护中，先取消 PIN' : undefined} onChange={() => setPicked(picked.includes(r.id) ? picked.filter((x) => x !== r.id) : [...picked, r.id])} aria-label="选择这条回测" style={{ margin: 0, width: 'auto' }} />
                           : <input type="checkbox" checked={selected.includes(r.id)} onChange={() => toggle(r.id)} aria-label="加入对比" style={{ margin: 0, width: 'auto' }} />}</td>
-                        <td className="wrap"><a className="link-strong" href={`#/backtest/${r.id}`}>{r.strategy_name}</a><small>{r.version}{r.label ? ` · ${r.label}` : ''}</small></td>
+                        <td className="wrap"><a className="link-strong" href={`#/backtest/${r.id}`}>{r.strategy_name}</a>{r.pinned && <> <Tag tone="pass">PIN</Tag></>}<small>{r.version}{r.label ? ` · ${r.label}` : ''}</small></td>
                         <td>{fmtDate(r.start_ts)}<small>→ {fmtDate(r.end_ts)} · {r.timeframe}</small></td>
                         <td>{r.data_sources.map((s) => <Tag key={s} tone={s === 'synthetic' ? 'warn' : 'ok'}>{s === 'synthetic' ? '合成' : s === 'exchange' ? '真实' : s}</Tag>)}</td>
                         <td className={`right ${tone(r.metrics.total_return)}`}>{fmtPct(r.metrics.total_return, 2, true)}</td>
@@ -223,7 +232,7 @@ function Records({ slug, onNavigate, notify, tabs }: Pick<PageProps, 'onNavigate
                         <td className="right">{fmtNum(r.metrics.sharpe)}</td>
                         <td className="right">{r.metrics.trades ?? '—'}</td>
                         <td>{ago(r.created_at)}{r.status !== 'done' && <small className="negative">有错误</small>}</td>
-                        <td><button className="button small danger" onClick={() => remove(r.id)}>删除</button></td>
+                        <td className="bt-row-actions"><button className={`button small${r.pinned ? ' on' : ''}`} title={r.pinned ? '取消 PIN 保护' : 'PIN 保护，自动清理时不会删除'} onClick={() => togglePin(r)}>{r.pinned ? '取消 PIN' : 'PIN'}</button><button className="button small danger" disabled={!!r.pinned} title={r.pinned ? '先取消 PIN 再删除' : undefined} onClick={() => remove(r.id)}>删除</button></td>
                       </tr>
                     ))}
                   </tbody>

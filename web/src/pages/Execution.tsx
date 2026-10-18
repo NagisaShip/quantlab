@@ -4,7 +4,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { PythonCodeButton } from '../components/PythonCode'
-import { v4, type ImportItem } from '../api3'
+import { v4, type ImportItem } from '../api/platform'
 import {
   execution, type Capacity, type CostModel, type ExecConfig, type ExecMeta, type ExecReport, type ExecRun, type ExecScheme,
   type ExecSource, type ExecStatus, type RadarRow, type Recording, type Replay,
@@ -18,6 +18,7 @@ import { UseInStrategy } from '../components/modelReport'
 import { EmptyState, Field, Heading, Loading, Panel, Segments, Tag } from '../components/ui'
 import type { PageProps } from './types'
 import { appConfirm } from '../components/dialog'
+import { RecordPinButton } from '../components/RecordPin'
 
 type Tab = 'list' | 'design' | 'replay' | 'radar' | 'costs' | 'record' | 'runs'
 const TABS: { value: Tab; label: string }[] = [
@@ -76,7 +77,7 @@ function SchemeList({ meta, algoLabel, onOpen, notify }: { meta: ExecMeta | null
       ) : (
         <div className="table-wrap">
           <table className="fx-table">
-            <thead><tr><th>方案</th><th>状态</th><th className="right">成本 bp</th><th className="right">比 TWAP 省</th><th className="right">相对 VWAP</th><th className="right">完成率</th><th className="right">被动成交</th><th>更新</th></tr></thead>
+            <thead><tr><th>方案</th><th>状态</th><th className="right">成本 bp</th><th className="right">比 TWAP 省</th><th className="right">相对 VWAP</th><th className="right">完成率</th><th className="right">被动成交</th><th>更新</th><th>保护</th></tr></thead>
             <tbody>{rows.map((s) => (
               <tr key={s.id} className="clickable" onClick={() => onOpen(s.id)}>
                 <td><strong>{s.name}</strong><span className="ml-sub">{algoLabel(s.config.algo)} · {s.config.horizon} 步 · {s.symbols.join(', ')}</span></td>
@@ -87,6 +88,7 @@ function SchemeList({ meta, algoLabel, onOpen, notify }: { meta: ExecMeta | null
                 <td className="right num">{pc(s.summary?.fill_rate, 1)}</td>
                 <td className="right num">{pc(s.summary?.maker_ratio)}</td>
                 <td className="muted">{when(s.updated_at)}</td>
+                <td onClick={(e) => e.stopPropagation()}><RecordPinButton type="execution" id={s.id} pinned={s.pinned} notify={notify} /></td>
               </tr>
             ))}</tbody>
           </table>
@@ -605,7 +607,7 @@ function Runs({ algoLabel, onOpen, notify }: { algoLabel: (id: string) => string
       {data.runs.length === 0 ? <EmptyState glyph="☰" title="还没有试验" /> : (
         <div className="table-wrap">
           <table className="fx-table">
-            <thead><tr><th>方案</th><th className="right">成本 bp</th><th className="right">比 TWAP 省</th><th className="right">完成率</th><th>盘口</th><th>检查</th><th>来源</th><th>时间</th></tr></thead>
+            <thead><tr><th>方案</th><th className="right">成本 bp</th><th className="right">比 TWAP 省</th><th className="right">完成率</th><th>盘口</th><th>检查</th><th>来源</th><th>时间</th><th>保护</th></tr></thead>
             <tbody>{data.runs.map((r) => (
               <tr key={r.id} className="clickable" onClick={() => onOpen(r.id)}>
                 <td><strong>{algoLabel(r.algo)}</strong><span className="ml-sub">{r.horizon} 步 · {r.symbols.join(', ')}{r.note ? ` · ${r.note}` : ''}</span></td>
@@ -616,6 +618,7 @@ function Runs({ algoLabel, onOpen, notify }: { algoLabel: (id: string) => string
                 <td>{r.admitted ? <Tag tone="ok">可启用</Tag> : <Tag>未通过</Tag>}</td>
                 <td className="muted">{r.source === 'lab' ? 'AI 研究室' : '仿真设计'}</td>
                 <td className="muted">{when(r.created_at)}</td>
+                <td onClick={(e) => e.stopPropagation()}><RecordPinButton type="execution_run" id={r.id} pinned={r.pinned} notify={notify} /></td>
               </tr>
             ))}</tbody>
           </table>
@@ -638,6 +641,7 @@ function RunDetail({ id, meta, algoLabel, notify, onSaved }: { id: string; meta:
   return (
     <Panel title={algoLabel(data.run.algo)} subtitle={`${when(data.run.created_at)} · ${data.run.horizon} 步 · ${data.run.symbols.join(', ')}`} actions={<>
       <input className="fx-search" placeholder="方案名称" value={name} onChange={(e) => setName(e.target.value)} aria-label="方案名称" />
+      <RecordPinButton type="execution_run" id={id} pinned={data.run.pinned} notify={notify} />
       <button className="button small" onClick={() => save('candidate')}>存为候选</button>
       <button className="button small primary" disabled={!data.report.admitted} onClick={() => save('active')}>启用</button>
     </>}>

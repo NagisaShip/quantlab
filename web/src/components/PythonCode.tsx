@@ -3,7 +3,7 @@
  * 因子是独立可运行的 numpy 代码（算子与平台一致，结果逐元素相同）；模型 / 组合 / 执行是规格 + 用平台引擎复现的代码。
  */
 import { useState } from 'react'
-import { downloadText } from '../api2'
+import { downloadText } from '../api/research'
 import { post } from '../http'
 import { CodeView } from './CodeEditor'
 import { Loading, Modal } from './ui'

@@ -12,6 +12,8 @@
  * - **独立 worker 进程**：验收要求"回测经 worker"。所以这里 `QAGENT_WORKER=external`，
  *   webServer 数组起两个进程：API（serve）与 worker（`qagent worker`）。
  *   两者共享同一个 `QAGENT_HOME`、同一个 SQLite 文件，走真实的租约 / 认领 / 检查点路径。
+ *   API 必须用 `--no-with-worker` 启动，否则 serve 会在显式 worker 就绪前再拉起一个，
+ *   两个 worker 争抢同一 run 的租约会让纸面模拟随机不推进。
  * - **失败可排错**：trace 用 `on-first-retry`，失败必留截图与视频，产物落到
  *   `tests/e2e/.artifacts/`（已 gitignore），CI 失败时整体上传。
  *
@@ -103,7 +105,7 @@ export default defineConfig({
 
   webServer: [
     {
-      command: `"${PYTHON}" -X utf8 -m quant_agent.cli serve --host 127.0.0.1 --port ${PORT}`,
+      command: `"${PYTHON}" -X utf8 -m quant_agent.cli serve --host 127.0.0.1 --port ${PORT} --no-with-worker`,
       cwd: REPO_ROOT,
       env: serverEnv,
       url: `${BASE_URL}/api/health`,

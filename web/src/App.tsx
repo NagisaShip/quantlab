@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { api, type ConfigView, type Health } from './api'
-import { BusyOverlay, PageErrorBoundary, Toast } from './components/ui'
+import { api, type ConfigView, type Health } from './api/core'
+import { BusyOverlay, Callout, PageErrorBoundary, Toast } from './components/ui'
 import { RoleDrawer } from './components/roles'
 import { Icon, LogoMark } from './components/icons'
+import { UserAvatar } from './components/UserAvatar'
 import Tape from './components/Tape'
 import DataCenterPage from './pages/DataCenter'
 import FactorsPage from './pages/Factors'
@@ -29,6 +30,8 @@ import BacktestListPage from './pages/BacktestList'
 import OptimizePage from './pages/Optimize'
 import PaperPage from './pages/Paper'
 import CommunityPage, { ComposePage, PostPage } from './pages/Community'
+import ProfilePage from './pages/Profile'
+import FavoritesPage from './pages/Favorites'
 import ApiDocsPage from './pages/ApiDocs'
 import BrandPage from './pages/Brand'
 import LoginPage from './pages/Login'
@@ -39,14 +42,15 @@ import DemoAccountsPage from './pages/DemoAccounts'
 import DslEditorPage from './pages/DslEditor'
 import RunBanner from './components/RunBanner'
 import MicroLivePage from './pages/MicroLive'
+import RealPerpPage from './pages/RealPerp'
 import AskAIPanel from './components/AskAI'
 import GroupsPage from './pages/Groups'
 import InboxPage from './pages/Inbox'
 import IssuesPage, { NewIssueModal } from './pages/Issues'
 import AdminPage from './pages/Admin'
 import LineagePage from './pages/LineagePage'
-import { InboxBell, PlatformBanner, UnreadDot } from './components/Inbox'
-import { v4, type Me } from './api3'
+import { InboxBell, MessageToasts, PlatformBanner, UnreadDot } from './components/Inbox'
+import { v4, type Me } from './api/platform'
 import { ApiError, currentWorkspace, setWorkspace } from './http'
 import { Loading } from './components/ui'
 import { PageHead } from './components/PageHead'
@@ -54,6 +58,10 @@ import { PageSlot } from './components/pageSlot'
 import { SearchButton } from './components/SearchPalette'
 import { SettingsShell, settingsKeyOf } from './components/SettingsShell'
 import { SidebarConversations } from './pages/lab/Conversations'
+import PrivacyPage from './pages/Privacy'
+import ResearchFlowPage from './pages/ResearchFlow'
+import PublicSharePage from './pages/PublicShare'
+import MentorPage from './pages/Mentor'
 import { SideToggle, SideResizer, useSidebar } from './components/sidebar'
 import { lang, setLang, t } from './i18n'
 
@@ -69,6 +77,8 @@ type PageKey =
   | 'discipline'
   | 'validation'
   | 'lab'
+  | 'flow'
+  | 'mentor'
   | 'backtests'
   | 'paper'
   | 'square'
@@ -84,6 +94,7 @@ type PageKey =
   | 'accounts'
   | 'demo'
   | 'microlive'
+  | 'realperp'
   | 'settings'
   | 'groups'
   | 'inbox'
@@ -97,9 +108,12 @@ type PageKey =
   | 'optimize'
   | 'post'
   | 'report'
+  | 'profile'
+  | 'favorites'
+  | 'privacy'
 
 /** 这些页面在全屏「设置」里打开，不显示主侧栏。 */
-const SETTINGS_PAGES = new Set<PageKey>(['settings', 'models', 'roles', 'prompts', 'long-running', 'docs', 'brand', 'admin'])
+const SETTINGS_PAGES = new Set<PageKey>(['settings', 'models', 'roles', 'prompts', 'docs', 'brand', 'admin'])
 
 /** 对话类页面铺满主区域，不要页边距与页脚。 */
 const FULL_BLEED = new Set<PageKey>(['lab', 'teams', 'groups'])
@@ -114,6 +128,7 @@ const NAV: { group: string; step?: number; items: { key: PageKey; label: string 
     items: [
       { key: 'home', label: '首页' },
       { key: 'lab', label: 'AI 研究室' },
+      { key: 'flow', label: '研究流程' },
     ],
   },
   {
@@ -145,7 +160,14 @@ const NAV: { group: string; step?: number; items: { key: PageKey; label: string 
       { key: 'paper', label: '纸面模拟' },
       { key: 'demo', label: '交易所模拟盘' },
       { key: 'microlive', label: '微实盘' },
+      { key: 'realperp', label: '真实永续' },
       { key: 'live', label: '实盘对照' },
+    ],
+  },
+  {
+    group: '自动化',
+    items: [
+      { key: 'long-running', label: '定时任务' },
     ],
   },
   {
@@ -153,6 +175,7 @@ const NAV: { group: string; step?: number; items: { key: PageKey; label: string 
     items: [
       { key: 'groups', label: '群组与任务' },
       { key: 'square', label: '策略广场' },
+      { key: 'favorites', label: '我的收藏' },
       { key: 'issues', label: '问题反馈' },
     ],
   },
@@ -183,37 +206,44 @@ const PAGE_TITLES: Record<PageKey, string> = {
   discipline: '试验台账',
   validation: '上线验证',
   lab: 'AI 研究室',
+  flow: '研究流程',
+  mentor: '研究导师',
   backtests: '回测',
   paper: '纸面模拟',
   live: '实盘对照',
   accounts: '只读账户',
   demo: '交易所模拟盘',
   microlive: '微实盘',
+  realperp: '真实永续',
   settings: '设置',
   dsl: '规则策略编辑器',
   square: '策略广场',
   data: '行情与数据',
   teams: '团队讨论',
   roles: '角色与团队',
-  'long-running': '夜班',
+  'long-running': '定时任务',
   prompts: '提示词',
   models: '模型',
-  docs: '策略 API 文档',
+  docs: 'API 文档',
   brand: '视觉规范',
   editor: '策略编辑器',
   backtest: '回测详情',
   optimize: '参数优化',
   post: '帖子',
   report: '调研报告',
+  profile: '用户主页',
+  favorites: '我的收藏',
   groups: '群组与任务',
   inbox: '通知中心',
   issues: '问题反馈',
   admin: '运维控制台',
   lineage: '策略血缘',
+  privacy: '隐私政策',
 }
 
 /** 详情页在导航里高亮哪个入口。 */
 const PARENT: Partial<Record<PageKey, PageKey>> = {
+  mentor: 'flow',
   board: 'paper',
   editor: 'strategies',
   backtest: 'backtests',
@@ -222,6 +252,7 @@ const PARENT: Partial<Record<PageKey, PageKey>> = {
   dsl: 'strategies',
   report: 'lab',
   inbox: 'groups',
+  profile: 'square',
 }
 
 const NAV_LABEL: Partial<Record<PageKey, string>> = Object.fromEntries(NAV.flatMap((g) => g.items.map((i) => [i.key, i.label])))
@@ -246,6 +277,8 @@ function HubTabs({ tabs, page }: { tabs: { key: PageKey; label: string }[]; page
 
 /** 每个页面一句话说明它是做什么的，显示在页头标题下面。 */
 const PURPOSE: Partial<Record<PageKey, string>> = {
+  flow: '把数据、因子、策略、模型、组合、执行、验证与运行串成一条可操作的研究流程',
+  mentor: '用课程、检查项和红旗理解一笔研究为什么可信',
   data: '看行情、查数据质量、导入自己的 K 线',
   factors: '研究和管理选币信号，样本外通过才进库',
   modellib: '用因子训练预测模型，和线性基线比',
@@ -259,6 +292,7 @@ const PURPOSE: Partial<Record<PageKey, string>> = {
   paper: '用实时行情模拟成交，不下真实订单',
   demo: '接交易所的模拟账户，下模拟单、核对成交',
   microlive: '用很小的真实资金运行已毕业的策略',
+  realperp: '独立真实永续通道：杠杆、保证金、强平与自动急停',
   live: '用真实成交核对模拟结果',
   accounts: '只读 Key 读取余额和成交，不能下单',
   square: '分享思路、复核别人的回测、一键克隆策略；成员与 Agent 发的帖子分开标注',
@@ -266,10 +300,12 @@ const PURPOSE: Partial<Record<PageKey, string>> = {
   inbox: '所有通知集中在这里，可以按人、群组、类型屏蔽',
   issues: '遇到问题或有建议，提交给管理员处理，支持附截图与文件',
   lineage: '每个策略的版本链与克隆分支：谁改的、跑过哪些回测',
+  profile: '查看成员资料、关注关系、帖子与私信设置',
+  favorites: '帖子、策略、回测等内容统一收藏',
   roles: 'AI 研究室里的角色和团队',
   models: '配置 AI 研究室用的大模型',
   prompts: '各角色的提示词，可以改写',
-  'long-running': '你休息时按队列自动做研究',
+  'long-running': '每天按设定时间自动执行研究队列，结果写入晨报',
   settings: '工作区、成员、额度和运行节点',
   docs: '策略 SDK 的完整参考',
   brand: 'QuantLab Bot 的造型、表情语法与使用边界',
@@ -298,6 +334,7 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
   const [config, setConfig] = useState<ConfigView | null>(null)
   const [toast, setToast] = useState<{ message: string; error?: boolean } | null>(null)
   const [busy, setBusy] = useState<{ title: string; note?: string } | null>(null)
+  const [features, setFeatures] = useState<Record<string, boolean>>({})
 
   // 从 AI 对话里点链接跳到别的页面（回测、策略、报告……）时记下来源对话，目标页顶部显示「返回对话」
   const [returnTo, setReturnTo] = useState<{ route: string; title: string } | null>(() => {
@@ -309,10 +346,12 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
       const prev = (e.oldURL.split('#')[1] || '').replace(/^\/?/, '')
       if (next.page === 'lab') setReturnTo(null)
       else if (/^lab\/[\w-]+/.test(prev) && !SETTINGS_PAGES.has(next.page)) {
-        setReturnTo({ route: prev.split('?')[0], title: document.title.replace(/ · QuantLab$/, '') })
+        setReturnTo({ route: prev.split('?')[0], title: document.title.replace(/ · QuantLab v 0.1 preview$/, '') })
       }
       setRoute(next)
-      window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior })
+      // AI 研究室有自己的消息滚动容器：对话之间切换时保留窗口滚动；从其他页面进入时回到顶部。
+      const prevPage = prev.split('/')[0]
+      if (next.page !== 'lab' || prevPage !== 'lab') window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior })
     }
     window.addEventListener('hashchange', onHash)
     return () => window.removeEventListener('hashchange', onHash)
@@ -350,7 +389,11 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
   }, [refreshStatus, page])
 
   useEffect(() => {
-    document.title = `${t(PAGE_TITLES[page])} · QuantLab`
+    v4.workspaceFeatures().then((r) => setFeatures(r.enabled)).catch(() => { /* 读取失败时由服务端继续强制校验 */ })
+  }, [page, me.workspace?.id])
+
+  useEffect(() => {
+    document.title = `${t(PAGE_TITLES[page])} · QuantLab v 0.1 preview`
   }, [page])
 
   const reachable = health ? Object.entries(health.adapters).filter(([, v]) => v.reachable).map(([k]) => k) : []
@@ -363,7 +406,8 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
   })
   const flowPref = flowPrefState
   const setFlowPref = (v: boolean) => { setFlowPrefState(v); try { localStorage.setItem('qa.nav.flow', v ? '1' : '0') } catch { /* 私密模式等 */ } }
-  const pageProps = { onNavigate: go, notify, setBusy }
+  const pageProps = { onNavigate: go, notify, setBusy, features, me }
+  const navItems = (items: { key: PageKey; label: string }[]) => items.filter((i) => !(i.key === 'microlive' && features['execution.real_spot'] === false) && !(i.key === 'realperp' && features['execution.real_perp'] === false))
   const showHead = page !== 'home' && !FULL_BLEED.has(page) && !PARENT[page]
   const hub = PARENT[page] ? undefined : HUBS[HUB_OF[page] ?? page]
   const nav = navOf(page)
@@ -411,7 +455,11 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
       case 'report':
         return <ReportPage arg={arg} {...pageProps} />
       case 'lab':
-        return <StrategyLabPage arg={arg || undefined} {...pageProps} />
+        return <StrategyLabPage key={arg || 'new'} arg={arg || undefined} {...pageProps} />
+      case 'flow':
+        return <ResearchFlowPage {...pageProps} />
+      case 'mentor':
+        return <MentorPage {...pageProps} />
       case 'strategies':
         return <MyStrategiesPage {...pageProps} />
       case 'factors':
@@ -440,14 +488,20 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
         return <PaperPage key={arg || 'list'} id={arg || undefined} {...pageProps} />
       case 'square':
         return <CommunityPage {...pageProps} />
+      case 'profile':
+        return <ProfilePage identifier={arg} {...pageProps} />
+      case 'favorites':
+        return <FavoritesPage {...pageProps} />
       case 'groups':
-        return <GroupsPage arg={arg || undefined} me={me} {...pageProps} />
+        return <GroupsPage arg={arg || undefined} {...pageProps} />
       case 'inbox':
         return <InboxPage {...pageProps} />
       case 'issues':
-        return <IssuesPage key={arg || 'list'} arg={arg || undefined} me={me} {...pageProps} />
+        return <IssuesPage key={arg || 'list'} arg={arg || undefined} {...pageProps} />
+      case 'privacy':
+        return <PrivacyPage />
       case 'admin':
-        return <AdminPage key={arg || 'overview'} tab={arg || undefined} me={me} {...pageProps} />
+        return <AdminPage key={arg || 'overview'} tab={arg || undefined} {...pageProps} />
       case 'lineage':
         return <LineagePage arg={arg || undefined} {...pageProps} />
       case 'post':
@@ -481,14 +535,18 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
         return <ModelConfigPage {...pageProps} />
       case 'live':
         return <LivePage key={arg || 'live'} arg={arg || undefined} {...pageProps} />
+      case 'realperp':
+        if (features['execution.real_perp'] === false) return <Callout tone="warn">当前工作区已关闭「真实资金永续」。请工作区管理员在设置 → 功能开关中开启后再进入。</Callout>
+        return <RealPerpPage isAdmin={me.workspace?.role === 'admin'} {...pageProps} />
       case 'microlive':
+        if (features['execution.real_spot'] === false) return <Callout tone="warn">当前工作区已关闭「真实资金现货」。请工作区管理员在设置 → 功能开关中开启后再进入微实盘。</Callout>
         return <MicroLivePage isAdmin={me.workspace?.role === 'admin'} {...pageProps} />
       case 'demo':
         return <DemoAccountsPage readonly={me.workspace?.role === 'reviewer'} {...pageProps} />
       case 'accounts':
         return <AccountsPage readonly={me.workspace?.role === 'reviewer'} {...pageProps} />
       case 'settings':
-        return <SettingsPage key={arg || 'ws'} tab={arg || undefined} me={me} onMeChanged={onMeChanged} {...pageProps} />
+        return <SettingsPage key={arg || 'ws'} tab={arg || undefined} onMeChanged={onMeChanged} {...pageProps} />
       case 'dsl':
         return <DslEditorPage key={arg || 'new'} slug={arg || undefined} {...pageProps} />
       default:
@@ -505,6 +563,7 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
         {busy && <BusyOverlay title={busy.title} note={busy.note} />}
         <RoleDrawer notify={notify} />
         <DialogHost />
+        <MessageToasts meName={me.user.name || me.user.username || ''} onNavigate={go} />
         {toast && <Toast message={toast.message} error={toast.error} onDone={() => setToast(null)} />}
       </>
     )
@@ -515,7 +574,7 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
       {drawer && <div className="drawer-backdrop" onClick={() => setDrawer(false)} aria-hidden />}
       <aside className={`sidebar${drawer ? ' open' : ''}`} aria-hidden={side.collapsed || undefined}>
         <div className="side-top">
-          <a className="side-brand" href="#/home"><LogoMark size={20} />QuantLab</a>
+          <a className="side-brand" href="#/home"><LogoMark size={20} /><span className="side-brand-copy"><span>QuantLab</span><small>v 0.1 preview</small></span></a>
           <SearchButton onNavigate={go} />
           <SideToggle collapsed={false} onToggle={side.toggle} />
           <button type="button" className="drawer-close" onClick={() => setDrawer(false)} aria-label={t('关闭导航')}>
@@ -526,7 +585,7 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
         <nav aria-label="主导航">
           {NAV.filter((g) => !g.step).slice(0, 1).map((group) => (
             <div key="top">
-              {group.items.map((item) => (
+              {navItems(group.items).map((item) => (
                 <button key={item.key} className="nav-item" aria-current={nav === item.key ? 'page' : undefined} onClick={() => go(item.key)}>
                   <Icon name={item.key} />
                   {item.label}
@@ -541,7 +600,7 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
               <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden><path d="m3.5 2 3 3-3 3" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" /></svg>
             </button>
             {NAV.filter((g) => g.step).map((group) => {
-              const items = flowOpen ? group.items : group.items.filter((i) => nav === i.key)
+              const items = flowOpen ? navItems(group.items) : navItems(group.items).filter((i) => nav === i.key)
               if (!items.length) return null
               return (
                 <div key={group.group} className="nav-flow-stage">
@@ -559,7 +618,7 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
           {NAV.filter((g) => !g.step).slice(1).map((group) => (
             <div key={group.group || 'more'}>
               {group.group && <div className="nav-label">{group.group}</div>}
-              {group.items.map((item) => (
+              {navItems(group.items).map((item) => (
                 <button key={item.key} className="nav-item" aria-current={nav === item.key ? 'page' : undefined} onClick={() => go(item.key)}>
                   <Icon name={item.key} />
                   {item.label}
@@ -624,6 +683,7 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
       <RoleDrawer notify={notify} />
       <DialogHost />
       <AskAIPanel />
+      <MessageToasts meName={me.user.name || me.user.username || ''} onNavigate={go} />
       {toast && <Toast message={toast.message} error={toast.error} onDone={() => setToast(null)} />}
     </>
   )
@@ -652,10 +712,10 @@ function AccountMenu({ me, reachable, llmReady, onNavigate, notify }: { me: Me; 
     <div className="user-row acct" ref={ref}>
       {reporting && <NewIssueModal onClose={() => setReporting(false)} notify={notify} onDone={(id) => { setReporting(false); onNavigate(`issues/${id}`) }} />}
       <button className="acct-trigger" onClick={() => setOpen(!open)} aria-expanded={open} aria-haspopup="menu">
-        <span className="avatar">{name.slice(0, 1).toUpperCase()}<UnreadDot /></span>
+        <span className="avatar"><UserAvatar color={me.user.avatar_color} size={30} title={name} /><UnreadDot /></span>
         <div className="acct-text">
           <div>{name}</div>
-          <small>{ws?.name ?? '未选择工作区'} · {ROLE_NAME[ws?.role ?? 'member']}</small>
+          <small>{me.user.quantlab_uid ? `${me.user.quantlab_uid} · ` : ''}{ws?.name ?? '未选择工作区'} · {ROLE_NAME[ws?.role ?? 'member']}</small>
         </div>
         <span className="acct-caret" aria-hidden="true">⌃</span>
       </button>
@@ -668,7 +728,7 @@ function AccountMenu({ me, reachable, llmReady, onNavigate, notify }: { me: Me; 
           <hr />
           <div className="acct-label">工作区</div>
           {me.workspaces.map((w) => (
-            <button key={w.id} role="menuitem" aria-current={w.id === ws?.id} onClick={() => {
+            <button key={w.id} role="menuitem" title={`${w.name} · ${ROLE_NAME[w.role]}`} aria-current={w.id === ws?.id} onClick={() => {
               setWorkspace(w.id)
               window.location.hash = '/home'
               window.location.reload()
@@ -676,20 +736,22 @@ function AccountMenu({ me, reachable, llmReady, onNavigate, notify }: { me: Me; 
               <span>{w.name}</span><span className={`role-chip ${w.role}`}>{ROLE_NAME[w.role]}</span>
             </button>
           ))}
-          <button role="menuitem" onClick={() => pick('settings/workspace')}>新建 / 加入工作区…</button>
-          <button role="menuitem" onClick={() => pick('settings/members')}>成员与邀请…</button>
+          <button role="menuitem" title="新建 / 加入工作区…" onClick={() => pick('settings/workspace')}>新建 / 加入工作区…</button>
+          <button role="menuitem" title="成员与邀请…" onClick={() => pick('settings/members')}>成员与邀请…</button>
+          <button role="menuitem" title="研究记录配额、倍率和自动清理…" onClick={() => pick('settings/retention')}>研究记录…</button>
           <hr />
-          <button role="menuitem" onClick={() => pick('inbox')}>通知中心与屏蔽…</button>
-          <button role="menuitem" onClick={() => { setOpen(false); setReporting(true) }}>报告问题…</button>
-          {me.user.is_admin && <button role="menuitem" onClick={() => pick('admin/overview')}><span>运维控制台</span><span className="role-chip admin">部署管理员</span></button>}
+          <button role="menuitem" title="通知中心与屏蔽…" onClick={() => pick('inbox')}>通知中心与屏蔽…</button>
+          <button role="menuitem" title="查看平台隐私政策…" onClick={() => pick('privacy')}>隐私政策…</button>
+          <button role="menuitem" title="报告问题…" onClick={() => { setOpen(false); setReporting(true) }}>报告问题…</button>
+          {me.user.is_admin && <button role="menuitem" title="运维控制台 · 部署管理员" onClick={() => pick('admin/overview')}><span>运维控制台</span><span className="role-chip admin">部署管理员</span></button>}
           <hr />
           <div className="acct-label">语言</div>
           <div className="acct-lang" role="group" aria-label="界面语言">
-            <button type="button" aria-pressed={lang === 'zh'} onClick={() => lang !== 'zh' && setLang('zh')}>简体中文</button>
+            <button type="button" data-no-i18n aria-pressed={lang === 'zh'} onClick={() => lang !== 'zh' && setLang('zh')}>简体中文</button>
             <button type="button" aria-pressed={lang === 'en'} onClick={() => lang !== 'en' && setLang('en')}>English</button>
           </div>
           <hr />
-          <button role="menuitem" onClick={() => pick(llmReady ? 'settings/account' : 'models')}>
+          <button role="menuitem" title={llmReady ? '设置' : '模型未配置'} onClick={() => pick(llmReady ? 'settings/account' : 'models')}>
             <span>设置</span>{!llmReady && <span className="role-chip warn">模型未配置</span>}
           </button>
           <hr />
@@ -703,6 +765,15 @@ function AccountMenu({ me, reachable, llmReady, onNavigate, notify }: { me: Me; 
 /** 会话门：未登录显示登录页；登录后校正目标工作区（服务端校验成员关系）。 */
 export default function App() {
   const [me, setMe] = useState<Me | null | 'anon'>(null)
+  const [hash, setHash] = useState(() => window.location.hash)
+  const [shareAuth, setShareAuth] = useState(false)
+  useEffect(() => {
+    const onHash = () => setHash(window.location.hash)
+    window.addEventListener('hashchange', onHash)
+    return () => window.removeEventListener('hashchange', onHash)
+  }, [])
+  const shareToken = /^#\/share\/([A-Za-z0-9_-]+)/.exec(hash)?.[1] || ''
+  useEffect(() => { setShareAuth(false) }, [shareToken])
   const load = useCallback(async () => {
     try {
       let m = await v4.me()
@@ -735,6 +806,11 @@ export default function App() {
       window.removeEventListener('qa:workspace-invalid', onWs)
     }
   }, [load])
+  if (shareToken) {
+    if (shareAuth) return <LoginPage onDone={() => { setShareAuth(false); setMe(null); load() }} />
+    return <PublicSharePage token={shareToken} onLogin={() => setShareAuth(true)}
+      onOpen={(route) => { window.location.hash = `/${route}` }} />
+  }
   if (me === null) return <div style={{ padding: 80 }}><Loading label="正在验证会话" /></div>
   if (me === 'anon') return <LoginPage onDone={() => { setMe(null); load() }} />
   return <Workbench me={me} onMeChanged={load} />

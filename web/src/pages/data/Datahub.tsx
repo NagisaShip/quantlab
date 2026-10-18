@@ -8,6 +8,7 @@ import { LineChart } from '../../components/charts2'
 import { Callout, EmptyState, Field, Loading, Panel, Tag } from '../../components/ui'
 import type { PageProps } from '../types'
 import { appConfirm } from '../../components/dialog'
+import { get } from '../../http'
 
 const day = (ms?: number | null) => (ms ? new Date(ms).toISOString().slice(0, 10) : '—')
 const ago = (ms?: number | null) => {
@@ -22,13 +23,21 @@ export default function DatahubSection({ notify }: Pick<PageProps, 'notify'>) {
   const [datasets, setDatasets] = useState<Dataset[]>([])
   const [syncing, setSyncing] = useState<string | null>(null)
   const [preview, setPreview] = useState<{ ds: Dataset; rows: [number, number, number][] } | null>(null)
+  const [fieldScope, setFieldScope] = useState<Record<string, string>>({})
+  const [cache, setCache] = useState<{ entries: number; bytes: number } | null>(null)
 
   const load = useCallback(async () => {
     try {
-      const [c, d] = await Promise.all([datahub.connectors(), datahub.datasets()])
+      const [c, d, cacheRows] = await Promise.all([
+        datahub.connectors(),
+        datahub.datasets(),
+        get<{ entries: { bytes: number }[] }>('/api/market/cache').catch(() => ({ entries: [] })),
+      ])
       setConns(c.connectors)
       setCanKeys(c.can_edit_keys)
+      setFieldScope(c.field_scope || {})
       setDatasets(d.datasets)
+      setCache({ entries: cacheRows.entries.length, bytes: cacheRows.entries.reduce((n, x) => n + (x.bytes || 0), 0) })
     } catch (e) { notify((e as Error).message, true) }
   }, [notify])
   useEffect(() => { load() }, [load])
@@ -56,6 +65,14 @@ export default function DatahubSection({ notify }: Pick<PageProps, 'notify'>) {
         自定义数据用 <code>x_名字</code>。没有同步过的字段，评估时会如实报「未接入数据」，先在这里同步。
       </Callout>
       <AutoSyncBar notify={notify} onSynced={load} />
+      <div className="dh-catalog" aria-label="数据目录摘要">
+        <div><b>{conns.length}</b><span>连接器</span></div>
+        <div><b>{new Set(conns.map((c) => c.category)).size}</b><span>数据类别</span></div>
+        <div><b>{Object.keys(fieldScope).length}</b><span>可用字段</span></div>
+        <div><b>{datasets.length}</b><span>数据集</span></div>
+        <div><b>{cache?.entries ?? '—'}</b><span>本地行情文件</span></div>
+        <div><b>{cache ? `${(cache.bytes / 1024 / 1024).toFixed(1)} MB` : '—'}</b><span>本地缓存</span></div>
+      </div>
       <div className="dh-grid">
         {conns.map((c) => <ConnectorCard key={c.id} c={c} canKeys={canKeys} busy={syncing === c.id} onSync={(x) => sync(c, x)}
           onKey={async (k) => { try { await datahub.setKey(c.id, k); notify(k ? '密钥已保存' : '密钥已清除'); load() } catch (e) { notify((e as Error).message, true) } }}

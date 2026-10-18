@@ -148,7 +148,9 @@ def auto_run() -> dict:
 
     hub = _hub()
     ctx = contextvars.copy_context()
-    threading.Thread(target=ctx.run, args=(lambda: hub.auto_sync(force=True),), daemon=True, name="datahub-auto").start()
+    threading.Thread(
+        target=ctx.run, args=(lambda: hub.auto_sync(force=True),), daemon=True, name="datahub-auto"
+    ).start()
     return {"ok": True, "queued": True}
 
 

@@ -36,6 +36,7 @@ PUBLIC_PATHS = {
     "/api/auth/logout",
     "/api/health",
     "/api/healthz",
+    "/api/capabilities",
 }
 UNSAFE = {"POST", "PUT", "PATCH", "DELETE"}
 # 审阅者也允许的写操作（只涉及自己的账号）
@@ -101,6 +102,7 @@ class PlatformMiddleware:
                 or not path.startswith("/api/")
                 or path in PUBLIC_PATHS
                 or path.startswith("/api/bot/hook/")
+                or path.startswith("/api/public/")
             ):  # 聊天软件的回调：靠各家签名校验，不走登录
                 if scope["type"] == "http":
                     return await self.app(scope, receive, _with_trace(send, trace_id))

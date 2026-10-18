@@ -87,14 +87,14 @@ export function QuotePicker({ currentId, onPick, onClose }: { currentId: string;
           <div className="mpick-list" style={{ maxHeight: 420 }}>
             {!list ? <div className="hint" style={{ padding: 8 }}>加载中…</div> : shown.map((p) => (
               <button key={p.id} type="button" className={`mpick-item${p.id === pid ? ' on' : ''}`} onClick={() => setPid(p.id)}>
-                <span className="mpick-name"><b>{p.title}{p.id === currentId && <small>（当前）</small>}</b><small>{p.securities.join(', ')} · {p.timeframe}</small></span>
+                <span className="mpick-name"><b>{p.title}{p.id === currentId && <small>（当前）</small>}</b><small>{p.securities.length ? p.securities.join(', ') : '标的自动'} · {p.timeframe}</small></span>
               </button>
             ))}
           </div>
         </div>
         <div className="quote-picker-msgs">
           {pid !== currentId && (
-            <button type="button" className="button small" onClick={() => onPick({ key: `c:${pid}`, pid, title })}>引用整个对话「{clip(title, 18)}」</button>
+            <button type="button" className="button small" onClick={() => onPick({ key: `c:${pid}`, pid, title })}>{`引用整个对话「${clip(title, 18)}」`}</button>
           )}
           <div className="hint" style={{ margin: '8px 0 6px' }}>或者引用其中一条 AI 回答：</div>
           <div className="quote-msg-list">

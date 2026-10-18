@@ -11,6 +11,8 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from ..platform import backtest_retention as BR
+from ..platform import context
 from ..research import factor_expr as FX
 from ..research import goals as RG
 from ..research.datahub import DataHub
@@ -230,6 +232,19 @@ def list_factors(status: str | None = None, q: str = "") -> dict:
 
 @router.post("", summary="保存因子到库（默认先评估，报告一并保存）")
 def create_factor(payload: FactorIn) -> dict:
+    services = get_services()
+    ctx = context.current()
+    BR.guard_new_record(
+        services.store,
+        services.auth,
+        context.current_workspace(),
+        ctx.user_id or "",
+        ctx.role,
+        "factor",
+        max_units=BR.effective_limit(
+            services.auth, services.model_hub, context.current_workspace(), ctx.user_id or "", ctx.role
+        ),
+    )
     lib = _lib()
     try:
         expr = str(FX.parse(payload.expression))
@@ -250,7 +265,13 @@ def create_factor(payload: FactorIn) -> dict:
             cost_bps=10.0,
         )
     rec = lib.save(
-        {**payload.model_dump(exclude={"evaluate"}), "expression": expr, "universe": universe}, report=report
+        {
+            **payload.model_dump(exclude={"evaluate"}),
+            "expression": expr,
+            "universe": universe,
+            "created_by": ctx.user_id or "user",
+        },
+        report=report,
     )
     return {"factor": _brief(lib, rec)}
 
@@ -278,8 +299,14 @@ def patch_factor(fid: str, payload: FactorPatch) -> dict:
 @router.delete("/{fid}", summary="删除因子（试验台账保留）")
 def delete_factor(fid: str) -> dict:
     lib = _lib()
-    if lib.get(fid) is None:
+    rec = lib.get(fid)
+    if rec is None:
         raise HTTPException(404, "因子不存在")
+    ctx = context.current()
+    if rec.get("pinned") and ctx.role != "admin":
+        raise HTTPException(409, "这条因子已 PIN 保护，请先取消 PIN")
+    if rec.get("created_by") not in (None, "", "user", ctx.user_id) and ctx.role != "admin":
+        raise HTTPException(403, "只能删除自己的因子")
     return {"ok": lib.delete(fid)}
 
 

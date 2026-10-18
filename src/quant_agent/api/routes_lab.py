@@ -11,14 +11,13 @@ from __future__ import annotations
 import base64
 import binascii
 import inspect
+import time
 from types import SimpleNamespace
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
-
-from ..timeframes import TimeframeStr
 
 from ..agents import lab_goal as G
 from ..agents.strategy_lab import DEFAULT_GOALS, LabStore, LabTools, StrategyLab, new_project
@@ -28,7 +27,9 @@ from ..llm.base import split_data_url
 from ..platform.errors import AppError, ErrorCode
 from ..research import goals as RG
 from ..sdk import declared_params
+from ..store import Collections
 from ..strategies.sdk_templates import TEMPLATES, get_template
+from ..timeframes import TimeframeStr
 from .deps import get_services
 
 try:  # 因子研究依赖 numpy；没装时平台其余功能照常可用，因子相关接口给出明确提示
@@ -112,18 +113,20 @@ class ProjectIn(BaseModel):
     hypothesis: dict[str, Any] | None = None
     permission: Literal["auto", "manual", "accept_edits", "plan", "bypass"] = "auto"
     folder: str = Field("", max_length=40)
-    market_auto: bool = Field(False, description="标的与周期交给 AI 根据对话决定")
+    market_auto: bool | None = Field(None, description="标的与周期交给 AI 根据对话决定；省略时按是否提供了标的自动判断")
     suggest: bool = True
     max_tool_calls: int = Field(1000, ge=1, le=5000, description="单轮对话最多调用工具的次数")
     workflow: Literal["", "auto", "pipeline", "report"] = Field("", description="研究流程：自动 / 完整流程 / 调研报告")
     approvals: list[Literal["delete", "trading", "config", "save", "edit", "run"]] | None = None
     auto_team_context: bool = Field(True, description="团队讨论结论自动加入上下文")
+    auto_compact_ratio: float = Field(0.8, ge=0.5, le=0.95, description="上下文达到模型窗口的该比例时自动压缩")
 
 
 class ProjectPatch(BaseModel):
     title: str | None = Field(None, max_length=60)
     idea: str | None = Field(None, max_length=20_000)
     securities: list[str] | None = None
+    market_auto: bool | None = Field(None, description="标的交给 AI 根据对话选择")
     timeframe: TimeframeStr | None = None
     model: str | None = None
     effort: Effort | None = None
@@ -141,7 +144,10 @@ class ProjectPatch(BaseModel):
     )
     pinned: bool | None = Field(None, description="置顶")
     folder: str | None = Field(None, max_length=40, description="所属项目（文件夹）；空串表示不归入项目")
-    auto_compact: bool | None = Field(None, description="上下文超出原文预算时自动压缩较早的对话")
+    auto_compact: bool | None = Field(None, description="上下文达到阈值时自动压缩较早的对话")
+    auto_compact_ratio: float | None = Field(
+        None, ge=0.5, le=0.95, description="自动压缩阈值：模型上下文窗口的比例，默认 0.8"
+    )
     max_tool_calls: int | None = Field(None, ge=1, le=5000)
     workflow: Literal["", "auto", "pipeline", "report"] | None = None
     auto_team_context: bool | None = None
@@ -222,7 +228,20 @@ class WaitIn(BaseModel):
 # ---------------------------------------------------------------------------
 # 平台能力 → 策略室工具
 # ---------------------------------------------------------------------------
-def _platform_backtest(project: dict[str, Any], code: str, *, cost_scale: float = 1.0, label: str = "") -> dict:
+def _platform_backtest(
+    project: dict[str, Any],
+    code: str,
+    *,
+    cost_scale: float = 1.0,
+    label: str = "",
+    execution_mode: str = "bar",
+    dynamic_slippage: bool = False,
+    vol_slippage: float = 0.25,
+    impact_a_bps: float = 0.0,
+    impact_b_bps: float = 0.0,
+    limit_move_pct: float = 0.0,
+    min_liquidity_usd: float = 0.0,
+) -> dict:
     from .routes_research import run_backtest_endpoint
     from .schemas import ResearchBacktestIn
 
@@ -240,6 +259,13 @@ def _platform_backtest(project: dict[str, Any], code: str, *, cost_scale: float 
         slippage_bps=5.0,
         spread_bps=2.0,
         cost_scale=cost_scale,
+        execution_mode="tick" if execution_mode == "tick" else "bar",
+        dynamic_slippage=bool(dynamic_slippage),
+        vol_slippage=float(vol_slippage or 0.0),
+        impact_a_bps=float(impact_a_bps or 0.0),
+        impact_b_bps=float(impact_b_bps or 0.0),
+        limit_move_pct=float(limit_move_pct or 0.0),
+        min_liquidity_usd=float(min_liquidity_usd or 0.0),
         source=_data_source(project),
         persist=True,
         label=label[:60],
@@ -272,11 +298,18 @@ def _platform_backtest(project: dict[str, Any], code: str, *, cost_scale: float 
         k: float(used[k]) if used.get(k) is not None else float(getattr(payload, k))
         for k in ("taker_fee", "slippage_bps", "spread_bps")
     }
+    # 压力倍数会让 effective_cost 里的费率翻倍；判断「代码是否覆盖」要用翻倍前的基准值，
+    # 否则 2× 成本测试会被误标成「代码自定义费率」。
+    base_used = {
+        k: float(used.get(f"base_{k}", used.get(k, getattr(payload, k))))
+        for k in ("taker_fee", "slippage_bps", "spread_bps")
+    }
     overridden = {
         k: {"platform_default": float(getattr(payload, k)), "used": v}
-        for k, v in eff.items()
+        for k, v in base_used.items()
         if abs(v - float(getattr(payload, k))) > 1e-12
     }
+    code_override = (result.get("cost_model") or {}).get("cost_source") == "strategy"
     definitions = R.definitions(
         initial_cash=payload.initial_cash,
         fill_model=(result.get("assumptions") or {}).get("fill_model") or "",
@@ -284,9 +317,14 @@ def _platform_backtest(project: dict[str, Any], code: str, *, cost_scale: float 
         **eff,
     )
     definitions["cost_source"] = (
-        "策略代码 set_order_cost 覆盖了平台默认成本：" + "、".join(f"{k} {v['platform_default']:g}→{v['used']:g}" for k, v in overridden.items())
+        "策略代码 set_order_cost 覆盖了平台默认成本："
+        + "、".join(f"{k} {v['platform_default']:g}→{v['used']:g}" for k, v in overridden.items())
         if overridden
-        else "平台默认成本（策略没有用 set_order_cost 覆盖）"
+        else (
+            "策略代码显式调用了 set_order_cost（数值与平台默认相同）"
+            if code_override
+            else "平台默认成本（策略没有用 set_order_cost 覆盖）"
+        )
     )
     return {
         "datasets": [
@@ -297,6 +335,7 @@ def _platform_backtest(project: dict[str, Any], code: str, *, cost_scale: float 
         "consistency": R.consistency(metrics, initial_cash=payload.initial_cash),
         "zero_trade_diagnosis": R.zero_trade_diagnosis({**result, "metrics": metrics}),
         "cost_scale": cost_scale,
+        "cost_model": result.get("cost_model") or {},
         **_rest(out, result, eq, step, metrics),
     }
 
@@ -314,6 +353,8 @@ def _rest(out: dict, result: dict, eq: list, step: int, metrics: dict) -> dict:
         "run_id": out.get("run_id"),
         "metrics": metrics,
         "equity": [round(float(v), 2) for v in eq[::step]],
+        "cost_model": result.get("cost_model") or {},
+        "cost_source": (result.get("cost_model") or {}).get("cost_source", "platform"),
         "benchmark": [round(float(v), 2) for v in (result.get("benchmark_curve") or [])[::step]],
         "data_sources": sorted({d.get("source_label") or d.get("source") for d in result.get("datasets") or []}),
         "warnings": (result.get("warnings") or [])[:3],
@@ -340,7 +381,7 @@ def _discuss(project: dict[str, Any], topic: str) -> dict:
         team_id=project.get("team_id")
         or (LAB_REVIEW_TEAM if any(t.id == LAB_REVIEW_TEAM for t in teams) else (teams[0].id if teams else None)),
         lab_project_id=project["id"],
-        symbol=(project.get("securities") or ["BTC/USDT"])[0],
+        symbol="" if project.get("market_auto") or not project.get("securities") else project["securities"][0],
         timeframe=project.get("timeframe") or "1h",
     )
     r = _runner()
@@ -408,7 +449,7 @@ def _create_conversation(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _night(project: dict[str, Any], idea: str) -> dict:
-    """AI 发起 /night：放进夜班队列。"""
+    """AI 发起 /schedule（旧别名 /night）：加入每日定时任务队列。"""
     from .routes_rd import NS, _store, _user
 
     task = NS.add_task(
@@ -595,6 +636,7 @@ def _lab_for(pid: str) -> StrategyLab:
 def _project_or_404(lab: StrategyLab, pid: str) -> dict[str, Any]:
     from .routes_collab import guard_visible
 
+    lab.recover_stale(pid)
     p = lab.store.get(pid)
     if p is None:
         raise HTTPException(404, "策略项目不存在")
@@ -613,15 +655,40 @@ def _brief(p: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _feedback_view(rec: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "rating": rec["rating"],
+        "comment": rec.get("comment") or "",
+        "score": rec.get("score"),
+    }
+
+
 def _view(lab: StrategyLab, p: dict[str, Any], after: int = 0, since: float = 0.0) -> dict[str, Any]:
     import time
 
-    now = time.time()
+    from ..platform import context
+
+    messages = lab.store.messages(p["id"], after=after, since=since)
+    uid = context.current().user_id or ""
+    if uid and messages:
+        rows = [
+            r
+            for r in get_services().store.list(Collections.MESSAGE_FEEDBACK)
+            if r.get("project_id") == p["id"] and r.get("user_id") == uid
+        ]
+        if rows:
+            by_seq = {int(r["seq"]): _feedback_view(r) for r in rows}
+            messages = [
+                {**m, "feedback": by_seq[int(m["seq"])]}
+                if m.get("role") == "assistant" and int(m["seq"]) in by_seq
+                else m
+                for m in messages
+            ]
     return {
         "project": p,
-        "messages": lab.store.messages(p["id"], after=after, since=since),
+        "messages": messages,
         "context": lab.context_view(p),
-        "server_time": now,
+        "server_time": time.time(),
     }
 
 
@@ -798,14 +865,20 @@ def patch_project(pid: str, payload: ProjectPatch) -> dict:
         if (goal := G.merge_legacy(p, changes["goals"])) is not None:
             changes["goal"] = goal
     if "securities" in changes:
-        changes["securities"] = [x.strip().upper() for x in changes["securities"] if x.strip()] or p["securities"]
+        changes["securities"] = [x.strip().upper() for x in changes["securities"] if x.strip()]
+        if "market_auto" not in changes:
+            changes["market_auto"] = not changes["securities"]
+    if changes.get("market_auto") is True:
+        changes["securities"] = []
     if "title" in changes:
         changes["title_auto"] = False  # 研究者自己改过标题，AI 不再改
     lab.store.patch(pid, **changes)
     return {"project": _project_or_404(lab, pid)}
 
 
-@router.delete("/projects/{pid}", summary="删除对话（已保存的平台策略不受影响）；cascade=true 时连同它的全部分叉一起删除")
+@router.delete(
+    "/projects/{pid}", summary="删除对话（已保存的平台策略不受影响）；cascade=true 时连同它的全部分叉一起删除"
+)
 def delete_project(pid: str, cascade: bool = False) -> dict:
     lab = _lab_for(pid)
     _project_or_404(lab, pid)
@@ -853,6 +926,54 @@ def send_message(pid: str, payload: MessageIn) -> dict:
     return _start(lab, pid, "chat", lambda: lab.chat(pid, payload.text), payload.wait)
 
 
+class MessageFeedbackIn(BaseModel):
+    rating: Literal[1, -1]
+    comment: str = Field("", max_length=2000)
+    score: int | None = Field(None, ge=1, le=5)
+
+
+@router.post("/projects/{pid}/messages/{seq}/feedback", summary="给一条 Agent 消息点赞 / 点踩（可附意见）")
+def message_feedback(pid: str, seq: int, payload: MessageFeedbackIn) -> dict:
+    from ..platform import context
+
+    lab = _lab_for(pid)
+    _project_or_404(lab, pid)
+    if not any(m["seq"] == seq and m.get("role") == "assistant" for m in lab.store.messages(pid)):
+        raise HTTPException(404, "消息不存在")
+    uid = context.current().user_id or ""
+    if not uid:
+        raise HTTPException(401, "请先登录")
+    key = f"{pid}:{seq}:{uid}"
+    old = get_services().store.get(Collections.MESSAGE_FEEDBACK, key) or {}
+    # 点赞 / 点踩只带 rating：保留评分卡写入的意见与星级，避免覆盖已有评价。
+    comment = payload.comment.strip() or (old.get("comment") or "").strip()
+    score = payload.score if payload.score is not None else old.get("score")
+    if (
+        old
+        and old.get("rating") == payload.rating
+        and (old.get("comment") or "").strip() == comment
+        and old.get("score") == score
+    ):
+        get_services().store.delete(Collections.MESSAGE_FEEDBACK, key)
+        return {"ok": True, "feedback": None}
+    settings = get_services().auth.workspace(context.current_workspace()).get("settings") or {}
+    improvement_allowed = bool((settings.get("privacy") or {}).get("allow_improvement_feedback", True))
+    rec = {
+        "id": key,
+        "project_id": pid,
+        "seq": seq,
+        "user_id": uid,
+        "rating": payload.rating,
+        "comment": comment,
+        "score": score,
+        "improvement_allowed": improvement_allowed,
+        "created_at": old.get("created_at") or int(time.time() * 1000),
+        "updated_at": int(time.time() * 1000),
+    }
+    get_services().store.upsert(Collections.MESSAGE_FEEDBACK, rec)
+    return {"ok": True, "feedback": _feedback_view(rec)}
+
+
 class RenderErrorItem(BaseModel):
     kind: str = Field(..., max_length=20)
     message: str = Field("", max_length=400)
@@ -864,7 +985,9 @@ class RenderErrorsIn(BaseModel):
     errors: list[RenderErrorItem] = Field(..., min_length=1, max_length=8)
 
 
-@router.post("/projects/{pid}/render-errors", summary="回答里的内容块没能显示：把错误交回 AI 自动修正（每条消息只修一次）")
+@router.post(
+    "/projects/{pid}/render-errors", summary="回答里的内容块没能显示：把错误交回 AI 自动修正（每条消息只修一次）"
+)
 def report_render_errors(pid: str, payload: RenderErrorsIn) -> dict:
     lab = _lab_for(pid)
     p = _project_or_404(lab, pid)
@@ -877,14 +1000,22 @@ def report_render_errors(pid: str, payload: RenderErrorsIn) -> dict:
     lab.store.update(pid, payload.seq, data={"render_repair": len(payload.errors)})
     label = {"mermaid": "Mermaid 图", "math": "LaTeX 公式", "block": "ql 内容块", "svg": "SVG", "html": "HTML"}
     lines = [
-        f"{i}. {label.get(e.kind, e.kind)}：{e.message}\n```\n{e.source[:800]}\n```" for i, e in enumerate(payload.errors, 1)
+        f"{i}. {label.get(e.kind, e.kind)}：{e.message}\n```\n{e.source[:800]}\n```"
+        for i, e in enumerate(payload.errors, 1)
     ]
     text = (
         f"【渲染失败】你上一条回答里有 {len(payload.errors)} 处内容没能在页面上显示：\n"
         + "\n".join(lines)
         + "\n请逐一修正（只重新输出修好的部分并简短说明改了什么），不要重复整段回答。"
     )
-    lab.store.append(pid, {"role": "event", "kind": "text", "content": f"检测到 {len(payload.errors)} 处内容渲染失败，已交给 AI 自动修正"})
+    lab.store.append(
+        pid,
+        {
+            "role": "event",
+            "kind": "text",
+            "content": f"检测到 {len(payload.errors)} 处内容渲染失败，已交给 AI 自动修正",
+        },
+    )
     lab.store.append(pid, {"role": "user", "kind": "text", "content": text, "data": {"auto": "render_repair"}})
     return _start(lab, pid, "chat", lambda: lab.chat(pid, text), False)
 
@@ -1057,7 +1188,8 @@ def set_goal(pid: str, payload: GoalSetIn) -> dict:
 class WalkForwardIn(BaseModel):
     segments: int = Field(3, ge=2, le=6)
     mode: Literal["sliced", "independent"] = Field(
-        "sliced", description="sliced 一次全区间回测按时间切段（连续复利、可复原全区间）；independent 每段重置资金单独回测"
+        "sliced",
+        description="sliced 一次全区间回测按时间切段（连续复利、可复原全区间）；independent 每段重置资金单独回测",
     )
     attribution: Literal["close", "open"] = Field("close", description="完整交易按平仓还是开仓时间归段")
     wait: bool = False
@@ -1067,7 +1199,13 @@ class WalkForwardIn(BaseModel):
 def walk_forward(pid: str, payload: WalkForwardIn) -> dict:
     lab = _lab_for(pid)
     _project_or_404(lab, pid)
-    return _start(lab, pid, "walkforward", lambda: lab.walk_forward(pid, segments=payload.segments, mode=payload.mode, attribution=payload.attribution), payload.wait)
+    return _start(
+        lab,
+        pid,
+        "walkforward",
+        lambda: lab.walk_forward(pid, segments=payload.segments, mode=payload.mode, attribution=payload.attribution),
+        payload.wait,
+    )
 
 
 @router.post("/projects/{pid}/compact", summary="压缩对话历史：把之前的对话总结成摘要钉进上下文，之后不再发原文")
@@ -1248,7 +1386,9 @@ def get_report(pid: str, rid: str) -> dict:
     return {"report": rep, "project": {k: p.get(k) for k in ("id", "title", "securities", "timeframe")}}
 
 
-@router.post("/projects/{pid}/stop", summary="停止正在运行的回合：模型输出立即中断；工具（回测等）在跑完当前一步后停下")
+@router.post(
+    "/projects/{pid}/stop", summary="停止正在运行的回合：模型输出与联网搜索立即中断；其他工具在跑完当前一步后停下"
+)
 def stop_project(pid: str) -> dict:
     import time
 
@@ -1282,6 +1422,69 @@ def cost_sweep_project(pid: str, payload: SweepIn) -> dict:
     if type(lab) is not StrategyLab:
         raise HTTPException(400, "成本压力扫描目前只支持策略研究；因子 / 模型等请用 /stress 做单档成本评估")
     return _start(lab, pid, "backtest", lambda: lab.cost_sweep(pid, payload.scales or None), payload.wait)
+
+
+class ParamHeatmapIn(BaseModel):
+    x_param: str = ""
+    y_param: str = ""
+    x_values: list[float] = Field(default_factory=list, max_length=8)
+    y_values: list[float] = Field(default_factory=list, max_length=8)
+    metric: str = Field(
+        "sharpe",
+        pattern="^(sharpe|total_return|annualized_return|excess_return|max_drawdown|calmar|sortino|win_rate|profit_factor)$",
+    )
+    wait: bool = False
+
+
+@router.post("/projects/{pid}/parameter-heatmap", summary="二维参数敏感度热力图：网格回测并在对话里渲染参数平原")
+def parameter_heatmap_project(pid: str, payload: ParamHeatmapIn) -> dict:
+    lab = _lab_for(pid)
+    _project_or_404(lab, pid)
+    if type(lab) is not StrategyLab:
+        raise HTTPException(400, "参数热力图目前只支持策略研究")
+    return _start(
+        lab,
+        pid,
+        "backtest",
+        lambda: lab.parameter_heatmap(
+            pid,
+            x_param=payload.x_param,
+            y_param=payload.y_param,
+            x_values=payload.x_values or None,
+            y_values=payload.y_values or None,
+            metric=payload.metric,
+        ),
+        payload.wait,
+    )
+
+
+class StressTestIn(BaseModel):
+    segments: int = Field(3, ge=2, le=6)
+    windows: int = Field(4, ge=3, le=12)
+    cost_scales: list[float] = Field(default_factory=list, max_length=8)
+    sensitivity: bool = True
+    wait: bool = False
+
+
+@router.post("/projects/{pid}/stress-test", summary="一键过拟合压力测试：滚动分段、参数敏感性、成本压力")
+def stress_test_project(pid: str, payload: StressTestIn) -> dict:
+    lab = _lab_for(pid)
+    _project_or_404(lab, pid)
+    if type(lab) is not StrategyLab:
+        raise HTTPException(400, "一键压力测试目前只支持策略研究")
+    return _start(
+        lab,
+        pid,
+        "backtest",
+        lambda: lab.stress_test(
+            pid,
+            segments=payload.segments,
+            windows=payload.windows,
+            cost_scales=payload.cost_scales or None,
+            sensitivity=payload.sensitivity,
+        ),
+        payload.wait,
+    )
 
 
 @router.post("/projects/{pid}/code", summary="保存手动编辑的代码为新版本（先做沙箱试跑）")

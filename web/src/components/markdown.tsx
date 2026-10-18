@@ -4,7 +4,8 @@ import { DataTable } from './blocks/DataTable'
 import { CopyTableButton, HtmlBlock, InlineHtml, SvgBlock } from './blocks/Html'
 import { GalleryProvider, ImageView, MathTex, Mermaid } from './blocks/Media'
 import { CitationCtx, CiteMark, RichBlock, collectCitations } from './blocks/RichBlock'
-import { parseBlock, safeHref } from './blocks/protocol'
+import { mergeRedundantBlocks, parseBlock, safeHref } from './blocks/protocol'
+import { Qmoji, qmojiById } from './Qmoji'
 import '../stylesBlocks.css'
 
 /**
@@ -23,7 +24,7 @@ const NoteCtx = createContext<{ anchor: string; notes: Map<string, number> } | n
 
 export function Markdown({ text, compact, streaming }: { text: string; compact?: boolean; streaming?: boolean }) {
   const anchor = 'md' + useId().replace(/[^a-zA-Z0-9]/g, '')
-  const src = text || ''
+  const src = useMemo(() => mergeRedundantBlocks(text || ''), [text])
   const sources = useMemo(() => collectCitations(src), [src])
   const { body, footnotes, notes } = useMemo(() => {
     const { rest, defs } = extractFootnotes(src)
@@ -62,6 +63,8 @@ const BULLET = /^( *)([-*+])([ \t]+|$)(.*)$/
 const ORDERED = /^( *)(\d{1,9})([.)])([ \t]+|$)(.*)$/
 const TABLE_DELIM = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/
 const MATH_OPEN = /^\s*(\$\$|\\\[)(.*)$/
+const CUSTOM_CALLOUT = /^ {0,3}<callout(?:\s+([^>]*))?>(.*)$/i
+const CUSTOM_DIFFICULTY = /^ {0,3}<difficulty>(.*)$/i
 /** 块级 HTML 起始标签：这些标签开头的一段按 HTML 处理（行内标签如 <b> 留给段落） */
 const HTML_BLOCK = /^ {0,3}<(\/?)(details|div|table|thead|tbody|tr|svg|figure|figcaption|section|article|aside|center|dl|dt|dd|pre|p|blockquote|ul|ol|li|h[1-6]|hr|img|picture|video|audio|nav|header|footer|main|address|fieldset|caption|colgroup|col)(\s|>|\/>|$)|^ {0,3}<!--/i
 const VOID = new Set(['hr', 'img', 'col', 'br'])
@@ -131,6 +134,14 @@ function renderBlocks(src: string, ctx: Ctx): ReactNode[] {
       continue
     }
     if (HR.test(line)) { out.push(<hr key={key++} />); i++; continue }
+    // 模型有时会写轻量的 <callout 说明> / <difficulty> 标签；优先转成平台提示块，
+    // 避免把标签原文直接显示在回答里。
+    if (CUSTOM_CALLOUT.test(line) || CUSTOM_DIFFICULTY.test(line)) {
+      const { node, next } = customTag(lines, i, ctx, key++)
+      out.push(node)
+      i = next
+      continue
+    }
     // 原生 HTML 块
     if (HTML_BLOCK.test(line)) {
       const { node, next } = htmlBlock(lines, i, ctx, key++)
@@ -195,9 +206,10 @@ function renderBlocks(src: string, ctx: Ctx): ReactNode[] {
 const ALERT_LABEL: Record<string, string> = { note: '说明', tip: '提示', important: '重要', warning: '注意', caution: '警告' }
 
 function Heading({ level, children }: { level: number; children: ReactNode }) {
-  // Markdown 的 # 对应页面里的 h2（页面标题占 h1），层级用 md-h1…md-h6 区分样式
-  const Tag = `h${Math.min(6, level + 1)}` as 'h2'
-  return <Tag className={`md-h md-h${level}`}>{children}</Tag>
+  // 保留 Markdown 原始语义层级：# -> h1、## -> h2 …，样式仍由 md-h1…md-h6 控制。
+  const n = Math.max(1, Math.min(6, level))
+  const Tag = `h${n}` as 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6'
+  return <Tag className={`md-h md-h${n}`}>{children}</Tag>
 }
 
 /* ------------------------------------------------------------------ 列表 */
@@ -323,7 +335,7 @@ function htmlBlock(lines: string[], start: number, ctx: Ctx, key: number): { nod
     return { node: null, next: i + 1 }
   }
   const tag = (first.match(/^<\/?([a-zA-Z][\w-]*)/)?.[1] || '').toLowerCase()
-  if (tag === 'details') return details(lines, start, ctx, key)
+  if (tag === 'details' && /^<details(?:\s|>)/i.test(first)) return details(lines, start, ctx, key)
   // 找到与起始标签配平的结束标签；没有结束标签（或是空元素）就到空行为止
   const open = new RegExp(`<${tag}(\\s|>|/>)`, 'gi')
   const close = new RegExp(`</${tag}\\s*>`, 'gi')
@@ -347,10 +359,60 @@ function htmlBlock(lines: string[], start: number, ctx: Ctx, key: number): { nod
   return { node: <HtmlBlock key={key} html={html} />, next: i }
 }
 
+/** 轻量自定义标签：<callout 说明>…</callout>、<difficulty>…</difficulty>。 */
+function customTag(lines: string[], start: number, ctx: Ctx, key: number): { node: ReactNode; next: number } {
+  const line = lines[start]
+  const callout = line.match(CUSTOM_CALLOUT)
+  const difficulty = line.match(CUSTOM_DIFFICULTY)
+  const close = callout ? '</callout>' : '</difficulty>'
+  let body = (callout ? callout[2] : difficulty?.[1] || '').trim()
+  let i = start + 1
+  if (body.includes(close)) {
+    body = body.slice(0, body.indexOf(close)).trim()
+  } else {
+    const parts = body ? [body] : []
+    while (i < lines.length) {
+      const raw = lines[i]
+      if (raw.includes(close)) {
+        parts.push(raw.slice(0, raw.indexOf(close)))
+        i++
+        break
+      }
+      if (!raw.trim() || CUSTOM_CALLOUT.test(raw) || CUSTOM_DIFFICULTY.test(raw)) break
+      parts.push(raw)
+      i++
+    }
+    body = parts.join('\n').trim()
+  }
+  if (difficulty) {
+    return {
+      node: (
+        <div key={key} className="md-callout md-callout-difficulty" role="note">
+          <div className="md-callout-label">行动建议</div>
+          {renderBlocks(body, ctx)}
+        </div>
+      ),
+      next: i,
+    }
+  }
+  const rawTitle = (callout?.[1] || '说明').trim().replace(/^["']|["']$/g, '')
+  const tone = /警告|注意|风险|warn/i.test(rawTitle) ? 'warn' : /错误|失败|danger/i.test(rawTitle) ? 'danger' : 'note'
+  return {
+    node: (
+      <div key={key} className={`md-callout md-callout-${tone}`} role="note">
+        <div className="md-callout-label">{rawTitle || '说明'}</div>
+        {renderBlocks(body, ctx)}
+      </div>
+    ),
+    next: i,
+  }
+}
+
 /** <details><summary>标题</summary> …Markdown… </details>：可折叠，正文照样按 Markdown 渲染（支持嵌套）。 */
 function details(lines: string[], start: number, ctx: Ctx, key: number): { node: ReactNode; next: number } {
   let text = lines.slice(start).join('\n')
-  const head = text.match(/^\s*<details(\s+open)?[^>]*>/i)!
+  const head = text.match(/^\s*<details(\s+open)?[^>]*>/i)
+  if (!head) return { node: <HtmlBlock key={key} html={text} />, next: lines.length }
   const isOpen = !!head[1]
   text = text.slice(head[0].length)
   // 配平 </details>
@@ -437,6 +499,7 @@ const TOKEN_SRC = [
   /(\[\^([^\]\s]+)\](?!\(|:))/.source,                                  // 32-33 脚注 / 引用 [^x]
   /(\[(\d{1,3})\](?!\())/.source,                                       // 34-35 引用 [n]
   /(https?:\/\/[^\s<>()，。；、]+[^\s<>()，。；、.,;:!?'"])/.source,       // 36 裸链接
+  /(:qbot-([a-z0-9-]+):)/.source,                                      // 37-38 QuantLab Qmoji 短码
 ].join('|')
 
 export function inline(text: string): ReactNode[] {
@@ -470,6 +533,10 @@ export function inline(text: string): ReactNode[] {
     else if (m[32]) out.push(<FootRef key={k++} id={m[33]} />)
     else if (m[34]) out.push(<CiteMark key={k++} n={m[35]} />)
     else if (m[36]) out.push(<a key={k++} href={t} target="_blank" rel="noreferrer noopener">{t.length > 60 ? t.slice(0, 57) + '…' : t}</a>)
+    else if (m[37]) {
+      const q = qmojiById(m[38])
+      out.push(q ? <Qmoji key={k++} id={q.id} size={18} animated="once" /> : t)
+    }
     last = m.index + t.length
   }
   if (last < text.length) out.push(text.slice(last))

@@ -19,7 +19,6 @@ from typing import Any
 import httpx
 
 from ..timeframes import TimeframeTable
-
 from .base import (
     Balance,
     Bar,
@@ -102,7 +101,9 @@ class OKXAdapter(BaseAdapter):
         return out
 
     def fetch_bars(self, symbol: str, timeframe: str, start: int, end: int) -> list[Bar]:
-        perp = symbol.upper().endswith(":PERP")
+        from .contracts import is_derivative
+
+        perp = is_derivative(symbol)
         inst_id = inst_id_of(symbol)
         bar_param = _OKX_BAR_MAP.get(timeframe)
         if bar_param is None:
@@ -145,8 +146,10 @@ class OKXAdapter(BaseAdapter):
 
     def fetch_funding_rates(self, symbol: str, start: int, end: int) -> list[FundingRate]:
         """永续资金费率历史（/api/v5/public/funding-rate-history，每页 100 条，交易所只保留约 3 个月）。"""
-        if not symbol.upper().endswith(":PERP"):
-            raise UnsupportedFeature(f"{symbol} 是现货，没有资金费率（永续写成 BTC/USDT:PERP）")
+        from .contracts import contract_type_of
+
+        if contract_type_of(symbol) not in ("linear", "inverse"):
+            raise UnsupportedFeature(f"{symbol} 没有资金费率（永续写成 :PERP 或 :INVERSE）")
         inst = inst_id_of(symbol)
         out: list[FundingRate] = []
         after = end
@@ -363,9 +366,21 @@ class OKXAdapter(BaseAdapter):
 
 
 def inst_id_of(symbol: str) -> str:
-    """BTC/USDT → BTC-USDT；BTC/USDT:PERP → BTC-USDT-SWAP。"""
+    """Map spot / linear / inverse / delivery symbols to OKX instId."""
+    from .contracts import contract_type_of
+
+    kind = contract_type_of(symbol)
     base = symbol.split(":")[0].replace("/", "-")
-    return f"{base}-SWAP" if symbol.upper().endswith(":PERP") else base
+    if kind == "linear":
+        return f"{base}-SWAP"
+    if kind == "inverse":
+        root = symbol.split("/", 1)[0]
+        return f"{root}-USD-SWAP"
+    if kind == "delivery":
+        # Delivery contract identifiers include an expiry; callers should provide
+        # the full exchange id via a symbol snapshot when available.
+        return f"{base}-FUTURES"
+    return base
 
 
 def _okx_json(resp: httpx.Response) -> dict[str, Any]:

@@ -14,12 +14,10 @@
         run_daily(rebalance, time="close")
 
     def rebalance(ctx):
-        closes = history(ctx.securities[0], g.slow, field="close")
-        if len(closes) < g.slow:
-            return
-        fast_ma = sum(closes[-g.fast:]) / g.fast
-        slow_ma = sum(closes) / g.slow
-        order_target_percent(ctx.securities[0], 0.8 if fast_ma > slow_ma else 0.0)
+        s = ctx.securities[0]
+        fast_ma = ctx.indicators.ema(s, g.fast)   # 平台预计算，逐 bar O(1)
+        slow_ma = ctx.indicators.ema(s, g.slow)
+        order_target_percent(s, 0.8 if fast_ma > slow_ma else 0.0)
 
 约定：
 - 所有下单函数只表达**目标**，成交价、费用、滑点由引擎计算。
@@ -32,13 +30,16 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
+from . import indicators as _indicators
 from .runtime import OrderRequest, ScheduleEntry, current
 
 __all__ = [
     "after_trading_end",
+    "atr",
     "attribute_history",
     "before_trading_start",
     "cancel_all",
+    "ema",
     "factor",
     "g",
     "get_context",
@@ -69,6 +70,7 @@ __all__ = [
     "predict",
     "record",
     "restore",
+    "rsi",
     "run_daily",
     "run_monthly",
     "run_timer",
@@ -86,7 +88,9 @@ __all__ = [
     "set_take_profit",
     "set_trailing_stop",
     "set_universe",
+    "sma",
     "snapshot",
+    "zscore",
 ]
 
 
@@ -325,6 +329,7 @@ def order_value(
     expire_bars: int | None = None,
     time_in_force: str = "GTC",
     on_expire: str = "cancel",
+    position_side: str = "",
 ) -> Any:
     """按**金额**下单。正数买入，负数卖出。
 
@@ -347,6 +352,7 @@ def order_value(
             expire_bars=expire_bars,
             time_in_force=time_in_force,
             on_expire=on_expire,
+            position_side=position_side,
         )
     )
 
@@ -360,6 +366,7 @@ def order_target_value(
     expire_bars: int | None = None,
     time_in_force: str = "GTC",
     on_expire: str = "cancel",
+    position_side: str = "",
 ) -> Any:
     """把该标的**市值**调到指定金额。"""
     return current().submit(
@@ -374,6 +381,7 @@ def order_target_value(
             expire_bars=expire_bars,
             time_in_force=time_in_force,
             on_expire=on_expire,
+            position_side=position_side,
         )
     )
 
@@ -387,6 +395,7 @@ def order_target_percent(
     expire_bars: int | None = None,
     time_in_force: str = "GTC",
     on_expire: str = "cancel",
+    position_side: str = "",
 ) -> Any:
     """把该标的市值调到**总权益的百分之几**。0.8 表示八成仓，0 表示清仓。
 
@@ -407,8 +416,28 @@ def order_target_percent(
             expire_bars=expire_bars,
             time_in_force=time_in_force,
             on_expire=on_expire,
+            position_side=position_side,
         )
     )
+
+
+def set_margin_mode(mode: str) -> None:
+    """设置本次研究的保证金模式：``isolated``（逐仓）或 ``cross``（全仓）。
+
+    必须在开仓前调用；切换已有持仓会被拒绝，避免把历史仓位静默重算。
+    """
+    fn = getattr(current(), "set_margin_mode", None)
+    if not callable(fn):
+        raise RuntimeError("当前运行环境不支持保证金模式切换")
+    fn(mode)
+
+
+def set_position_mode(mode: str) -> None:
+    """设置 ``one-way``（单向净持仓）或 ``hedge``（独立多空腿）。"""
+    fn = getattr(current(), "set_position_mode", None)
+    if not callable(fn):
+        raise RuntimeError("当前运行环境不支持持仓模式切换")
+    fn(mode)
 
 
 def set_leverage(security: str, leverage: float) -> None:
@@ -546,6 +575,38 @@ def set_benchmark(security: str) -> None:
     current().set_benchmark(security)
 
 
+# ---------------------------------------------------------------------------
+# 预置指标（NumPy 实现）
+# ---------------------------------------------------------------------------
+def ema(values: Iterable[float], period: int) -> list[float]:
+    """指数移动平均（NumPy 实现，一次算完整条序列）。
+
+    逐 bar 回测更推荐 `ctx.indicators.ema(security, period)`：平台只预计算一次，
+    每根 bar 读取当前值，不会重复切片重算。
+    """
+    return _indicators.ema(list(values), int(period))
+
+
+def sma(values: Iterable[float], period: int) -> list[float]:
+    """简单移动平均（NumPy 实现）。"""
+    return _indicators.sma(list(values), int(period))
+
+
+def atr(highs: Iterable[float], lows: Iterable[float], closes: Iterable[float], period: int = 14) -> list[float]:
+    """平均真实波幅（Wilder，NumPy 实现）。"""
+    return _indicators.atr(list(highs), list(lows), list(closes), int(period))
+
+
+def rsi(values: Iterable[float], period: int = 14) -> list[float]:
+    """相对强弱指标（Wilder，NumPy 实现）。"""
+    return _indicators.rsi(list(values), int(period))
+
+
+def zscore(values: Iterable[float], period: int) -> list[float]:
+    """滚动 Z 分数（NumPy 实现）。"""
+    return _indicators.zscore(list(values), int(period))
+
+
 def set_order_cost(
     cost: dict[str, float] | None = None,
     *,
@@ -556,6 +617,9 @@ def set_order_cost(
 
     可传 dict，也可用关键字：`set_order_cost(taker_fee=0.001, slippage_bps=5)`。
     这些是**实验假设**，不代表交易所实际收费。
+
+    优先级：代码里显式调用本函数会覆盖回测 / UI 的默认成本，回测报告会标注
+    「当前使用代码自定义费率」；没有调用时使用平台默认成本。
     """
     merged: dict[str, float] = {}
     if cost:

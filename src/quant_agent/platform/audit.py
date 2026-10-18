@@ -74,6 +74,7 @@ class AuditLog:
         since: int | None = None,
         until: int | None = None,
         user_id: str | None = None,
+        q: str | None = None,
     ) -> list[dict]:
         sql = (
             "SELECT a.id, a.ts, a.action, a.object_type, a.object_id, a.trace_id, a.ip, a.details, a.user_id, u.name A"
@@ -97,6 +98,15 @@ class AuditLog:
         if user_id:
             sql += " AND a.user_id = ?"
             params.append(user_id)
+        term = (q or "").strip().lower()
+        if term:
+            like = f"%{term}%"
+            sql += (
+                " AND (LOWER(a.action) LIKE ? OR LOWER(a.object_type) LIKE ? OR LOWER(a.object_id) LIKE ?"
+                " OR LOWER(a.trace_id) LIKE ? OR LOWER(a.ip) LIKE ? OR LOWER(COALESCE(a.details, '')) LIKE ?"
+                " OR LOWER(COALESCE(u.name, '')) LIKE ? OR LOWER(COALESCE(a.user_id, '')) LIKE ?)"
+            )
+            params.extend([like] * 8)
         sql += " ORDER BY a.id DESC LIMIT ?"
         params.append(min(limit, 1000))
         rows = self.db.fetchall(sql, params)

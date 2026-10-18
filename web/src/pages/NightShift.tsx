@@ -1,4 +1,4 @@
-/** 夜班（无人值守按队列研究，带预算）与 AI 晨报。挂在「夜班」页的前两个标签下。 */
+/** 定时任务（每天按时间自动执行研究队列，带预算）与 AI 晨报。 */
 import { useCallback, useEffect, useState } from 'react'
 import { rd, when, type Brief, type Domain, type NightConfig, type NightTask, type Shift } from '../apiRd'
 import { Callout, EmptyState, Field, Loading, Panel, Tag } from '../components/ui'
@@ -11,6 +11,13 @@ const TASK_STATUS: Record<NightTask['status'], [string, string]> = {
 const SHIFT_STATUS: Record<Shift['status'], [string, string]> = { running: ['进行中', 'agent'], done: ['已结束', 'ok'], interrupted: ['中断', 'fail'] }
 const KIND_FALLBACK: Record<string, string> = { strategy: '策略', factor: '因子', model: '模型', portfolio: '组合', execution: '执行' }
 const pad = (n: number) => String(n).padStart(2, '0')
+const nextRun = (cfg: NightConfig) => {
+  const now = new Date()
+  const target = new Date(now)
+  target.setHours(cfg.hour, cfg.minute, 0, 0)
+  if (target.getTime() <= now.getTime()) target.setDate(target.getDate() + 1)
+  return `${target.toDateString() === now.toDateString() ? '今天' : '明天'} ${pad(cfg.hour)}:${pad(cfg.minute)}`
+}
 
 type Night = Awaited<ReturnType<typeof rd.night>>
 
@@ -29,19 +36,19 @@ export function NightShiftView({ notify, onNavigate }: Pick<PageProps, 'notify' 
     return () => window.clearInterval(t)
   }, [d?.running, load])
 
-  if (!d || !cfg) return <Loading label="正在读取夜班" />
+  if (!d || !cfg) return <Loading label="正在读取定时任务" />
   const kinds = d.kinds ?? KIND_FALLBACK
   const queued = d.tasks.filter((t) => t.status === 'queued')
   const run = d.running
   const saveCfg = async (patch: Partial<NightConfig>) => {
-    try { const r = await rd.nightConfig(patch); setCfg(r.config); notify('夜班设置已保存') } catch (e) { notify((e as Error).message, true) }
+    try { const r = await rd.nightConfig(patch); setCfg(r.config); notify('定时任务计划已保存') } catch (e) { notify((e as Error).message, true) }
   }
   const add = async () => {
     if (idea.trim().length < 2) return
-    try { await rd.addTask({ kind, idea: idea.trim(), executor }); setIdea(''); await load(); notify('已加入队列') } catch (e) { notify((e as Error).message, true) }
+    try { await rd.addTask({ kind, idea: idea.trim(), executor }); setIdea(''); await load(); notify('已加入定时任务队列') } catch (e) { notify((e as Error).message, true) }
   }
   const startNow = async () => {
-    try { await rd.runNight(); notify('班次已开始，在后台运行'); window.setTimeout(load, 800) } catch (e) { notify((e as Error).message, true) }
+    try { await rd.runNight(); notify('定时任务已开始执行'); window.setTimeout(load, 800) } catch (e) { notify((e as Error).message, true) }
   }
   const stop = async () => {
     try { await rd.stopNight(); notify('已请求停止，当前项目保留到最近一版'); window.setTimeout(load, 800) } catch (e) { notify((e as Error).message, true) }
@@ -50,18 +57,18 @@ export function NightShiftView({ notify, onNavigate }: Pick<PageProps, 'notify' 
   return (
     <>
       {run ? (
-        <Callout title={`夜班进行中 · 开始于 ${when(run.started_at)}`}>
+        <Callout title={`定时任务执行中 · 开始于 ${when(run.started_at)}`}>
           <ShiftBudget s={run} /> <button className="button small danger" onClick={stop} style={{ marginLeft: 8 }}>停止</button>
         </Callout>
       ) : cfg.enabled ? (
-        <Callout title={`每天 ${pad(cfg.hour)}:${pad(cfg.minute)} 自动开班`}>队列里现在有 {queued.length} 个任务。到点由后台 worker 开始；也可以现在手动开一班。</Callout>
+        <Callout title={`每天 ${pad(cfg.hour)}:${pad(cfg.minute)} 自动执行 · 下次 ${nextRun(cfg)}`}>当前有 {queued.length} 个待执行任务。到点由后台 worker 自动执行；也可以立即执行一次。</Callout>
       ) : (
-        <Callout tone="warn" title="夜班没有开启">打开后每天定时按队列做研究，预算用完就停。只产出候选成果，第二天由你决定是否启用。</Callout>
+        <Callout tone="warn" title="定时任务未开启">开启后会每天按设定时间自动执行队列，预算用完就停。只产出候选成果，是否启用由你决定。</Callout>
       )}
 
       <div className="two-columns even">
-        <Panel title="研究队列" subtitle="每个任务会在 AI 研究室里新建一个项目并自动迭代，按顺序处理。"
-          actions={<button className="button small primary" disabled={!!run || !queued.length} onClick={startNow}>▷ 现在开一班</button>}>
+        <Panel title="每日任务队列" subtitle="每个任务会在 AI 研究室里新建一个项目并自动迭代，按顺序执行。"
+          actions={<button className="button small primary" disabled={!!run || !queued.length} onClick={startNow}>▷ 立即执行一次</button>}>
           <div className="rd-addtask">
             <select value={kind} onChange={(e) => setKind(e.target.value as Domain)} aria-label="研究类型">
               {Object.entries(kinds).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
@@ -74,7 +81,7 @@ export function NightShiftView({ notify, onNavigate }: Pick<PageProps, 'notify' 
             <button className="button" disabled={idea.trim().length < 2} onClick={add}>加入</button>
           </div>
           {d.tasks.length === 0 ? (
-            <EmptyState glyph="☾" title="队列是空的">在这里加任务，或在 AI 研究室选「夜班」把想法排进来。</EmptyState>
+            <EmptyState glyph="◷" title="还没有定时任务">在这里添加任务，或在 AI 研究室用 /schedule 把想法排进每日计划。</EmptyState>
           ) : (
             <ul className="plain-list rd-tasks">
               {d.tasks.slice(0, 30).map((t) => (
@@ -97,10 +104,10 @@ export function NightShiftView({ notify, onNavigate }: Pick<PageProps, 'notify' 
           )}
         </Panel>
 
-        <Panel title="预算与时间" subtitle="任一预算用完，正在跑的项目会停在最近一版，后面的任务留到下一班。">
-          <label className="rd-check"><input type="checkbox" checked={cfg.enabled} onChange={(e) => saveCfg({ enabled: e.target.checked })} /> 每天定时开班</label>
+        <Panel title="执行计划与预算" subtitle="设置每天自动执行的时间；任一预算用完，当前项目停在最近一版，剩余任务留到下次执行。">
+          <label className="rd-check"><input type="checkbox" checked={cfg.enabled} onChange={(e) => saveCfg({ enabled: e.target.checked })} /> 启用每日自动执行</label>
           <div className="rd-grid">
-            <Field label="开班时间">
+            <Field label="每日执行时间">
               <span className="rd-time">
                 <select value={cfg.hour} onChange={(e) => setCfg({ ...cfg, hour: Number(e.target.value) })}>{Array.from({ length: 24 }, (_, h) => <option key={h} value={h}>{pad(h)}</option>)}</select>
                 :
@@ -118,12 +125,12 @@ export function NightShiftView({ notify, onNavigate }: Pick<PageProps, 'notify' 
               </select>
             </Field>
           </div>
-          <div className="button-row"><button className="button primary" onClick={() => saveCfg(cfg)}>保存</button></div>
+          <div className="button-row"><button className="button primary" onClick={() => saveCfg(cfg)}>保存计划</button></div>
         </Panel>
       </div>
 
-      <Panel flush title="班次记录">
-        {d.shifts.length === 0 ? <EmptyState glyph="☾" title="还没有跑过夜班">开一班后，每个任务的结果和预算用量都会记在这里。</EmptyState> : (
+      <Panel flush title="执行记录">
+        {d.shifts.length === 0 ? <EmptyState glyph="◷" title="还没有执行记录">执行一次后，每个任务的结果和预算用量都会记在这里。</EmptyState> : (
           <ul className="plain-list rd-shifts">
             {d.shifts.map((s) => (
               <li key={s.id}>
@@ -179,13 +186,13 @@ export function BriefView({ notify }: Pick<PageProps, 'notify' | 'onNavigate'>) 
   return (
     <div className="rd-brief-layout">
       <div>
-        <Panel title={cur ? cur.title : 'AI 晨报'} subtitle="汇总市场状态、因子/模型健康、组合风险、执行成本、模拟和影子运行、夜班结果，以及等你决定的事。只陈述数据，不预测。"
+        <Panel title={cur ? cur.title : 'AI 晨报'} subtitle="汇总市场状态、因子/模型健康、组合风险、执行成本、模拟和影子运行、定时任务成果，以及等你决定的事。只陈述数据，不预测。"
           actions={<>
             <select value={channel} onChange={(e) => setChannel(e.target.value)} aria-label="推送通道">{CHANNELS.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}</select>
             <button className="button small" disabled={busy} onClick={() => make(false)}>生成</button>
             <button className="button small primary" disabled={busy} onClick={() => make(true)}>生成并推送</button>
           </>}>
-          {!cur ? <EmptyState glyph="☀" title="还没有晨报">点「生成」先看一份；开启夜班后，每班结束会自动生成。</EmptyState> : (
+          {!cur ? <EmptyState glyph="☀" title="还没有晨报">点「生成」先看一份；开启定时任务后，每次执行结束会自动生成。</EmptyState> : (
             <>
               <p className="rd-headline">{cur.headline}</p>
               {cur.focus.length > 0 && (
@@ -199,7 +206,7 @@ export function BriefView({ notify }: Pick<PageProps, 'notify' | 'onNavigate'>) 
                   </section>
                 ))}
               </div>
-              <div className="hint">{when(cur.at)} · {cur.source === 'nightshift' ? '夜班结束后自动生成' : cur.source === 'schedule' ? '定时生成' : '手动生成'}{cur.pushed.length ? ` · 已推送到 ${cur.pushed.join('、')}` : ''}</div>
+              <div className="hint">{when(cur.at)} · {cur.source === 'nightshift' ? '定时任务结束后自动生成' : cur.source === 'schedule' ? '定时生成' : '手动生成'}{cur.pushed.length ? ` · 已推送到 ${cur.pushed.join('、')}` : ''}</div>
             </>
           )}
         </Panel>

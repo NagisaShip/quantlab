@@ -2,88 +2,152 @@
  * 消息通知中心：全部通知（按类型筛选、只看未读、批量已读 / 清理），以及屏蔽设置
  * （屏蔽某位成员、某个群组、某类通知、某篇帖子的回复）。公告与问题报告的回复不能屏蔽。
  */
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { collab, inbox, NOTIFY_KIND_LABEL, since, type Member, type Mute, type Notice } from '../apiCollab'
-import { EmptyState, Loading, Panel } from '../components/ui'
+import { EmptyState, Loading, Panel, Tag } from '../components/ui'
+import { Icon } from '../components/icons'
 import { pingInbox } from '../components/Inbox'
 import type { PageProps } from './types'
 
 const MUTE_LABEL: Record<string, string> = { user: '成员', group: '群组', kind: '通知类型', post: '帖子' }
 
 export default function InboxPage({ onNavigate, notify }: PageProps) {
-  const [kind, setKind] = useState('')
+  type FeedFilter = 'all' | 'message' | 'task' | 'system' | 'other'
+  const [filter, setFilter] = useState<FeedFilter>('all')
   const [unreadOnly, setUnreadOnly] = useState(false)
   const [items, setItems] = useState<Notice[] | null>(null)
   const [unread, setUnread] = useState<Record<string, number>>({})
   const [more, setMore] = useState(false)
+  const [adminIds, setAdminIds] = useState<Set<string>>(new Set())
   const load = useCallback(() => {
-    inbox.list({ kind: kind || undefined, unread: unreadOnly }).then((r) => { setItems(r.items); setUnread(r.unread); setMore(r.items.length >= 50) }).catch((e) => notify(e.message, true))
-  }, [kind, unreadOnly, notify])
+    inbox.list({ unread: unreadOnly }).then((r) => { setItems(r.items); setUnread(r.unread); setMore(r.items.length >= 50) }).catch((e) => notify(e.message, true))
+  }, [unreadOnly, notify])
   useEffect(load, [load])
+  useEffect(() => { collab.members().then((r) => setAdminIds(new Set(r.members.filter((m) => m.role === 'admin').map((m) => m.user_id)))).catch(() => undefined) }, [])
+  useEffect(() => {
+    const tick = () => { if (document.visibilityState !== 'hidden') load() }
+    const timer = window.setInterval(tick, 15_000)
+    document.addEventListener('visibilitychange', tick)
+    return () => { window.clearInterval(timer); document.removeEventListener('visibilitychange', tick) }
+  }, [load])
   const loadMore = async () => {
     const last = items?.at(-1)?.id
     if (!last) return
-    const r = await inbox.list({ kind: kind || undefined, unread: unreadOnly, before: last })
-    setItems([...(items ?? []), ...r.items])
+    const r = await inbox.list({ unread: unreadOnly, before: last })
+    setItems((prev) => {
+      const map = new Map((prev ?? []).map((n) => [n.id, n]))
+      for (const n of r.items) map.set(n.id, n)
+      return [...map.values()].sort((a, b) => b.created_at - a.created_at)
+    })
     setMore(r.items.length >= 50)
   }
   const act = async (fn: () => Promise<unknown>, ok?: string) => {
     try { await fn(); if (ok) notify(ok); load(); pingInbox() } catch (e) { notify((e as Error).message, true) }
   }
+  const messageKinds = useMemo(() => new Set(['mention', 'dm', 'group', 'comment', 'share']), [])
+  const systemKinds = useMemo(() => new Set(['announce', 'system']), [])
+  const match = useCallback((n: Notice, f: FeedFilter) => {
+    if (f === 'all') return true
+    if (f === 'task') return n.kind === 'task'
+    if (f === 'system') return systemKinds.has(n.kind)
+    if (f === 'message') return messageKinds.has(n.kind)
+    return !messageKinds.has(n.kind) && !systemKinds.has(n.kind) && n.kind !== 'task'
+  }, [messageKinds, systemKinds])
+  const count = (f: FeedFilter) => f === 'all'
+    ? (unread.total ?? 0)
+    : Object.entries(unread).reduce((n, [k, v]) => k === 'total' ? n : n + (match({ kind: k } as Notice, f) ? v : 0), 0)
+  const visible = (items ?? []).filter((n) => match(n, filter))
+  const filters: { key: FeedFilter; label: string; icon: string }[] = [
+    { key: 'all', label: '全部', icon: 'inbox' },
+    { key: 'message', label: '消息', icon: 'message' },
+    { key: 'task', label: '任务', icon: 'validation' },
+    { key: 'system', label: '系统', icon: 'overview' },
+    { key: 'other', label: '其他', icon: 'square' },
+  ]
+  const stats = [
+    { label: '未读通知', value: unread.total ?? 0, tone: 'accent', icon: 'inbox' },
+    { label: '消息', value: count('message'), tone: 'message', icon: 'message' },
+    { label: '任务', value: count('task'), tone: 'task', icon: 'validation' },
+    { label: '系统公告', value: count('system'), tone: 'system', icon: 'overview' },
+  ]
+  const emptyTitle = unreadOnly ? '没有未读通知' : filter === 'message' ? '还没有收到的消息' : '还没有通知'
   return (
-    <div className="inbox-page">
-      <div>
-        <div className="community-bar">
-          <div className="tabs flat">
-            <button aria-pressed={kind === ''} onClick={() => setKind('')}>全部{unread.total ? <small> {unread.total}</small> : null}</button>
-            {Object.entries(NOTIFY_KIND_LABEL).map(([k, l]) => (
-              <button key={k} aria-pressed={kind === k} onClick={() => setKind(k)}>{l}{unread[k] ? <small> {unread[k]}</small> : null}</button>
+    <div className="inbox-page inbox-page-v2">
+      <div className="inbox-main">
+        <div className="inbox-summary-grid" aria-label="通知概况">
+          {stats.map((s) => (
+            <div key={s.label} className={`inbox-stat tone-${s.tone}`}>
+              <span className="inbox-stat-icon"><Icon name={s.icon} size={17} /></span>
+              <span><b>{s.value}</b><small>{s.label}</small></span>
+            </div>
+          ))}
+        </div>
+
+        <div className="inbox-toolbar">
+          <div className="inbox-filter-chips" role="tablist" aria-label="通知筛选">
+            {filters.map((f) => (
+              <button key={f.key} type="button" role="tab" aria-selected={filter === f.key} className={`inbox-filter${filter === f.key ? ' on' : ''}`} onClick={() => setFilter(f.key)}>
+                <Icon name={f.icon} size={13} />{f.label}{count(f.key) > 0 && <small>{count(f.key)}</small>}
+              </button>
             ))}
           </div>
-          <div className="community-tools">
+          <div className="inbox-toolbar-actions">
             <label className="check"><input type="checkbox" checked={unreadOnly} onChange={(e) => setUnreadOnly(e.target.checked)} />只看未读</label>
-            <button className="button small" onClick={() => act(() => inbox.read({ kind: kind || undefined }), '已全部标为已读')}>全部已读</button>
-            <button className="button small" onClick={() => act(() => inbox.clear({ read_only: true }), '已清理已读通知')}>清理已读</button>
+            <button type="button" className="button small" onClick={() => load()} title="刷新通知">刷新</button>
+            <button type="button" className="button small" onClick={() => act(() => inbox.read({}), '已全部标为已读')} disabled={!unread.total}>全部已读</button>
+            <button type="button" className="button small" onClick={() => act(() => inbox.clear({ read_only: true }), '已清理已读通知')}>清理已读</button>
           </div>
         </div>
-        {!items ? <Loading /> : !items.length ? (
-          <EmptyState title={unreadOnly ? '没有未读通知' : '还没有通知'}>有人 @ 你、给你指派任务、评论你的帖子、回复你的问题报告时，会出现在这里。</EmptyState>
+
+        {!items ? <Loading /> : !visible.length ? (
+          <EmptyState title={emptyTitle}>{filter === 'message' ? '群聊、私聊和 @ 提及会集中显示在这里，并保留消息简介。' : '有人 @ 你、给你指派任务、评论你的帖子或回复问题时，会出现在这里。'}</EmptyState>
         ) : (
-          <div className="inbox-full stagger">
-            {items.map((n) => (
-              <div key={n.id} className={`inbox-row${n.read_at ? '' : ' unread'}`}>
-                <span className={`inbox-ic k-${n.kind}`} aria-hidden>{n.kind === 'mention' ? '@' : n.kind === 'task' ? '☐' : n.kind === 'issue' ? '!' : n.kind === 'announce' ? '📣' : '·'}</span>
+          <div className="inbox-feed">
+            {visible.map((n) => (
+              <article key={n.id} className={`inbox-row inbox-message-row${n.read_at ? '' : ' unread'}`}>
+                <span className={`inbox-kind-icon k-${n.kind}`} aria-hidden><Icon name={KIND_ICON[n.kind] ?? 'inbox'} size={17} /></span>
                 <button type="button" className="inbox-row-main" onClick={async () => {
                   if (!n.read_at) await inbox.read({ ids: [n.id] }).catch(() => undefined)
                   pingInbox()
                   if (n.link) onNavigate(n.link); else load()
                 }}>
-                  <b>{n.title}</b>
+                  <span className="inbox-row-source">
+                    <Tag tone={KIND_TONE[n.kind]}>{NOTIFY_KIND_LABEL[n.kind] ?? n.kind}</Tag>
+                    {n.actor_name && <span><b>{n.actor_name}</b></span>}
+                    <time>{since(n.created_at)}</time>
+                    {!n.read_at && <i className="inbox-unread-mark" aria-label="未读" />}
+                  </span>
+                  <b className="inbox-row-title">{n.title}</b>
                   {n.body && <span className="inbox-row-body">{n.body}</span>}
-                  <small>{NOTIFY_KIND_LABEL[n.kind] ?? n.kind}{n.actor_name ? ` · ${n.actor_name}` : ''} · {since(n.created_at)}</small>
+                  {n.source_type === 'message' && <span className="inbox-row-open"><Icon name="message" size={12} />打开消息</span>}
                 </button>
                 <div className="inbox-row-actions">
                   {!n.read_at && <button type="button" className="link-btn" onClick={() => act(() => inbox.read({ ids: [n.id] }))}>标为已读</button>}
-                  {n.actor_id && n.kind !== 'announce' && n.kind !== 'issue' && (
+                  {n.actor_id && !adminIds.has(n.actor_id) && n.kind !== 'announce' && n.kind !== 'issue' && (
                     <button type="button" className="link-btn" onClick={() => act(() => inbox.mute('user', n.actor_id!, n.actor_name), `已屏蔽 ${n.actor_name}`)}>屏蔽此人</button>
                   )}
                   {n.kind !== 'announce' && n.kind !== 'issue' && (
-                    <button type="button" className="link-btn" onClick={() => act(() => inbox.mute('kind', n.kind, NOTIFY_KIND_LABEL[n.kind] ?? n.kind), `不再接收「${NOTIFY_KIND_LABEL[n.kind] ?? n.kind}」通知`)}>不再接收此类</button>
+                    <button type="button" className="link-btn" onClick={() => act(() => inbox.mute('kind', n.kind, NOTIFY_KIND_LABEL[n.kind] ?? n.kind), `不再接收「${NOTIFY_KIND_LABEL[n.kind] ?? n.kind}」通知`)}>屏蔽此类</button>
                   )}
                   <button type="button" className="link-btn" onClick={() => act(() => inbox.clear({ ids: [n.id] }))}>删除</button>
                 </div>
-              </div>
+              </article>
             ))}
-            {more && <button type="button" className="button small" onClick={loadMore}>加载更多</button>}
+            {more && <button type="button" className="button small inbox-more" onClick={loadMore}>加载更多</button>}
           </div>
         )}
       </div>
-      <aside className="community-side">
+      <aside className="inbox-side">
         <MuteSettings notify={notify} />
       </aside>
     </div>
   )
 }
+
+const KIND_ICON: Record<string, string> = {
+  mention: 'bell', dm: 'message', group: 'groups', task: 'validation', comment: 'message', like: 'square', follow: 'teams', share: 'square', issue: 'issues', announce: 'inbox', system: 'overview',
+}
+const KIND_TONE: Record<string, string> = { mention: 'warn', dm: 'ok', group: '', task: 'warn', follow: 'ok', issue: 'fail', announce: 'warn' }
 
 export function MuteSettings({ notify }: { notify: PageProps['notify'] }) {
   const [mutes, setMutes] = useState<Mute[] | null>(null)
@@ -113,7 +177,7 @@ export function MuteSettings({ notify }: { notify: PageProps['notify'] }) {
       <div className="field-row">
         <select value={pick} onChange={(e) => setPick(e.target.value)} aria-label="选择成员">
           <option value="">选择成员…</option>
-          {members.filter((m) => !m.muted).map((m) => <option key={m.user_id} value={m.user_id}>{m.name}</option>)}
+          {members.filter((m) => !m.muted && m.role !== 'admin').map((m) => <option key={m.user_id} value={m.user_id}>{m.name}</option>)}
         </select>
         <button type="button" className="button small" disabled={!pick} onClick={() => {
           const m = members.find((x) => x.user_id === pick)

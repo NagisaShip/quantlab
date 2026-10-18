@@ -14,8 +14,20 @@ from typing import Any
 from . import factor_expr as FX
 
 # 平台求值用的底层函数：原样拷进生成的代码，保证口径完全一致（窗口 80% 有效值、并列平均名次、EMA 满窗后出值…）
-_BASE = ("_quiet", "_rolling", "_nanwindow", "_delay", "_ts_rank", "_ts_corr", "_cs_rank", "_cs", "_cs_zscore",
-         "_decay_linear", "_ema", "_call")
+_BASE = (
+    "_quiet",
+    "_rolling",
+    "_nanwindow",
+    "_delay",
+    "_ts_rank",
+    "_ts_corr",
+    "_cs_rank",
+    "_cs",
+    "_cs_zscore",
+    "_decay_linear",
+    "_ema",
+    "_call",
+)
 _GLUE = """
 
 def _fin(x):
@@ -70,7 +82,7 @@ def _py(n: FX.Node, shape: str = "P['close'].shape") -> str:
     """表达式节点 → 调用平台同名算子的 Python 表达式（numpy 面板：每个字段是 [时间, 标的] 数组）。"""
     if n.kind == "num":
         v = float(n.value)
-        return f"np.full({shape}, {repr(v)})"
+        return f"np.full({shape}, {v!r})"
     if n.kind == "field":
         return f'P["{n.value}"]'
     if n.kind == "neg":
@@ -122,35 +134,42 @@ def factor_python(expr: str, *, name: str = "factor", horizon: int | None = None
     fields = FX.fields_used(node)
     fn = _fn_name(name)
     field_doc = "\n".join(f"    - {f}: {FX.FIELDS.get(f, {}).get('label', '自定义数据')}" for f in fields)
-    return "\n".join([
-        f'"""因子「{name}」的 Python 实现（QuantLab 从表达式自动生成，算子实现与平台完全一致）。',
-        "",
-        f"表达式：{expr}",
-        f"输入面板 P：字段名 → [时间, 标的] 的 numpy 数组。用到的字段：\n{field_doc}",
-        f"最长回看：{FX.max_lookback(node)} 根 K 线" + (f"；预测周期：{horizon} 根" if horizon else ""),
-        '"""',
-        "import math",
-        "",
-        "import numpy as np",
-        "",
-        "",
-        _base_source().rstrip(),
-        "",
-        "",
-        f"def {fn}(P: dict) -> np.ndarray:",
-        f"    return {_py(node)}",
-        _DEMO.rstrip(),
-        f"    missing = [f for f in {fields!r} if f not in P]",
-        "    if missing:",
-        "        print('示例面板里没有这些字段，请用真实数据：', missing)",
-        "    else:",
-        f"        print({fn}(P)[-5:])",
-        "",
-    ])
+    return "\n".join(
+        [
+            f'"""因子「{name}」的 Python 实现（QuantLab 从表达式自动生成，算子实现与平台完全一致）。',
+            "",
+            f"表达式：{expr}",
+            f"输入面板 P：字段名 → [时间, 标的] 的 numpy 数组。用到的字段：\n{field_doc}",
+            f"最长回看：{FX.max_lookback(node)} 根 K 线" + (f"；预测周期：{horizon} 根" if horizon else ""),
+            '"""',
+            "import math",
+            "",
+            "import numpy as np",
+            "",
+            "",
+            _base_source().rstrip(),
+            "",
+            "",
+            f"def {fn}(P: dict) -> np.ndarray:",
+            f"    return {_py(node)}",
+            _DEMO.rstrip(),
+            f"    missing = [f for f in {fields!r} if f not in P]",
+            "    if missing:",
+            "        print('示例面板里没有这些字段，请用真实数据：', missing)",
+            "    else:",
+            f"        print({fn}(P)[-5:])",
+            "",
+        ]
+    )
 
 
 def _spec_literal(spec: dict[str, Any]) -> str:
-    return json.dumps(spec, ensure_ascii=False, indent=4).replace(": true", ": True").replace(": false", ": False").replace(": null", ": None")
+    return (
+        json.dumps(spec, ensure_ascii=False, indent=4)
+        .replace(": true", ": True")
+        .replace(": false", ": False")
+        .replace(": null", ": None")
+    )
 
 
 def model_python(spec: dict[str, Any], *, name: str = "model") -> str:
@@ -161,110 +180,116 @@ def model_python(spec: dict[str, Any], *, name: str = "model") -> str:
         except Exception:
             continue
     feat_lines = "\n".join(f'        "{n}": {body},  # {expr}' for n, expr, body in feats)
-    return "\n".join([
-        f'"""预测模型「{name}」：训练规格与特征的 Python 实现（QuantLab 自动生成）。',
-        "",
-        f"学习器：{spec.get('model')}；标签：{spec.get('label')}；预测周期：{spec.get('horizon')} 根 K 线；"
-        f"周期 {spec.get('timeframe')}；标的 {', '.join(spec.get('symbols') or []) or '项目默认'}",
-        "评估口径：滚动样本外（walk-forward），与线性基线对比，并做特征泄漏检查。",
-        '"""',
-        "import math",
-        "",
-        "import numpy as np",
-        "",
-        f"SPEC = {_spec_literal(spec)}",
-        "",
-        "",
-        _base_source().rstrip(),
-        "",
-        "",
-        "def features(P: dict) -> dict:",
-        '    """每个特征一张 [时间, 标的] 数组，口径与平台一致。"""',
-        "    return {",
-        feat_lines,
-        "    }",
-        "",
-        "",
-        "def train_on_platform():",
-        '    """在 QuantLab 环境里用同一套引擎复现训练与评估（滚动样本外、基线、泄漏检查、重要性）。"""',
-        "    from quant_agent.api.deps import get_services",
-        "    from quant_agent.api.routes_lab import _datahub",
-        "    from quant_agent.research import models as M",
-        "    from quant_agent.research.panel import build_panel",
-        "",
-        "    spec = M.normalize_spec(SPEC)",
-        "    s = get_services()",
-        "    panel = build_panel(s.market, _datahub(), spec['symbols'] or ['BTC/USDT', 'ETH/USDT'], spec['timeframe'],",
-        "                        fields=M.fields_for(spec), bars_limit=spec['bars_limit'])",
-        "    out = M.train_and_evaluate(spec, panel)",
-        "    print((out.get('report') or {}).get('summary'))",
-        "    return out",
-        "",
-    ])
+    return "\n".join(
+        [
+            f'"""预测模型「{name}」：训练规格与特征的 Python 实现（QuantLab 自动生成）。',
+            "",
+            f"学习器：{spec.get('model')}；标签：{spec.get('label')}；预测周期：{spec.get('horizon')} 根 K 线；"
+            f"周期 {spec.get('timeframe')}；标的 {', '.join(spec.get('symbols') or []) or '项目默认'}",
+            "评估口径：滚动样本外（walk-forward），与线性基线对比，并做特征泄漏检查。",
+            '"""',
+            "import math",
+            "",
+            "import numpy as np",
+            "",
+            f"SPEC = {_spec_literal(spec)}",
+            "",
+            "",
+            _base_source().rstrip(),
+            "",
+            "",
+            "def features(P: dict) -> dict:",
+            '    """每个特征一张 [时间, 标的] 数组，口径与平台一致。"""',
+            "    return {",
+            feat_lines,
+            "    }",
+            "",
+            "",
+            "def train_on_platform():",
+            '    """在 QuantLab 环境里用同一套引擎复现训练与评估（滚动样本外、基线、泄漏检查、重要性）。"""',
+            "    from quant_agent.api.deps import get_services",
+            "    from quant_agent.api.routes_lab import _datahub",
+            "    from quant_agent.research import models as M",
+            "    from quant_agent.research.panel import build_panel",
+            "",
+            "    spec = M.normalize_spec(SPEC)",
+            "    s = get_services()",
+            "    panel = build_panel(s.market, _datahub(), spec['symbols'] or ['BTC/USDT', 'ETH/USDT'], spec['timeframe'],",
+            "                        fields=M.fields_for(spec), bars_limit=spec['bars_limit'])",
+            "    out = M.train_and_evaluate(spec, panel)",
+            "    print((out.get('report') or {}).get('summary'))",
+            "    return out",
+            "",
+        ]
+    )
 
 
 def portfolio_python(cfg: dict[str, Any], *, name: str = "portfolio") -> str:
-    return "\n".join([
-        f'"""组合方案「{name}」（QuantLab 自动生成）：优化器 {cfg.get("optimizer")}、风险模型 {cfg.get("risk_model")}、'
-        f'预期收益 {cfg.get("expected")}，每 {cfg.get("rebalance")} 根再平衡，回看 {cfg.get("lookback")} 根。',
-        "",
-        "约束与风控规则原样写在 CONFIG 里；evaluate() 用平台同一套引擎复现评估（含成本、换手与压力测试）。",
-        '"""',
-        f"CONFIG = {_spec_literal(cfg)}",
-        "",
-        "",
-        "def evaluate(cost_bps: float = 10.0):",
-        "    from quant_agent.api.deps import get_services",
-        "    from quant_agent.api.routes_lab import _datahub",
-        "    from quant_agent.research import portfolio as PF",
-        "    from quant_agent.research.panel import build_panel",
-        "",
-        "    cfg = PF.normalize_config(CONFIG)",
-        "    s = get_services()",
-        "    symbols = cfg.get('symbols') or ['BTC/USDT', 'ETH/USDT', 'SOL/USDT']",
-        "    panel = build_panel(s.market, _datahub(), symbols, cfg.get('timeframe') or '4h', fields=['close', 'volume'])",
-        "    report = PF.evaluate_scheme(cfg, panel, cost_bps=cost_bps)",
-        "    print(report.get('summary'))",
-        "    return report",
-        "",
-        "",
-        "def target_weights(returns):",
-        '    """给定最近 lookback 根的收益矩阵（时间 × 标的，numpy），按方案算目标权重。"""',
-        "    import numpy as np",
-        "    from quant_agent.research import portfolio as PF",
-        "",
-        "    cfg = PF.normalize_config(CONFIG)",
-        "    R = np.asarray(returns, dtype=float)[-cfg['lookback']:]",
-        "    S = PF.covariance(R, cfg['risk_model'])",
-        "    mu = R.mean(axis=0)",
-        "    return PF.solve(cfg, S, mu, R)",
-        "",
-    ])
+    return "\n".join(
+        [
+            f'"""组合方案「{name}」（QuantLab 自动生成）：优化器 {cfg.get("optimizer")}、风险模型 {cfg.get("risk_model")}、'
+            f"预期收益 {cfg.get('expected')}，每 {cfg.get('rebalance')} 根再平衡，回看 {cfg.get('lookback')} 根。",
+            "",
+            "约束与风控规则原样写在 CONFIG 里；evaluate() 用平台同一套引擎复现评估（含成本、换手与压力测试）。",
+            '"""',
+            f"CONFIG = {_spec_literal(cfg)}",
+            "",
+            "",
+            "def evaluate(cost_bps: float = 10.0):",
+            "    from quant_agent.api.deps import get_services",
+            "    from quant_agent.api.routes_lab import _datahub",
+            "    from quant_agent.research import portfolio as PF",
+            "    from quant_agent.research.panel import build_panel",
+            "",
+            "    cfg = PF.normalize_config(CONFIG)",
+            "    s = get_services()",
+            "    symbols = cfg.get('symbols') or ['BTC/USDT', 'ETH/USDT', 'SOL/USDT']",
+            "    panel = build_panel(s.market, _datahub(), symbols, cfg.get('timeframe') or '4h', fields=['close', 'volume'])",
+            "    report = PF.evaluate_scheme(cfg, panel, cost_bps=cost_bps)",
+            "    print(report.get('summary'))",
+            "    return report",
+            "",
+            "",
+            "def target_weights(returns):",
+            '    """给定最近 lookback 根的收益矩阵（时间 × 标的，numpy），按方案算目标权重。"""',
+            "    import numpy as np",
+            "    from quant_agent.research import portfolio as PF",
+            "",
+            "    cfg = PF.normalize_config(CONFIG)",
+            "    R = np.asarray(returns, dtype=float)[-cfg['lookback']:]",
+            "    S = PF.covariance(R, cfg['risk_model'])",
+            "    mu = R.mean(axis=0)",
+            "    return PF.solve(cfg, S, mu, R)",
+            "",
+        ]
+    )
 
 
 def execution_python(cfg: dict[str, Any], *, name: str = "execution") -> str:
-    return "\n".join([
-        f'"""执行方案「{name}」（QuantLab 自动生成）：算法 {cfg.get("algo")}。全程仿真，没有真实下单。',
-        "",
-        "CONFIG 是方案规格；simulate() 用平台同一套撮合与成本模型（盘口、冲击、TCA）复现评估。",
-        '"""',
-        f"CONFIG = {_spec_literal(cfg)}",
-        "",
-        "",
-        "def simulate(symbols=None, steps: int = 3000):",
-        "    from quant_agent.api.deps import get_services",
-        "    from quant_agent.research import execution as EX",
-        "    from quant_agent.research.execution_lib import ExecutionLibrary",
-        "    from quant_agent.research.execution_lib import load_tapes",
-        "",
-        "    cfg = EX.normalize_config(CONFIG)",
-        "    s = get_services()",
-        "    tapes = load_tapes(s.market, ExecutionLibrary(s.store), symbols or ['BTC/USDT'], source='kline', steps=steps)",
-        "    report = EX.evaluate_scheme(cfg, tapes)",
-        "    print(report.get('summary'))",
-        "    return report",
-        "",
-    ])
+    return "\n".join(
+        [
+            f'"""执行方案「{name}」（QuantLab 自动生成）：算法 {cfg.get("algo")}。全程仿真，没有真实下单。',
+            "",
+            "CONFIG 是方案规格；simulate() 用平台同一套撮合与成本模型（盘口、冲击、TCA）复现评估。",
+            '"""',
+            f"CONFIG = {_spec_literal(cfg)}",
+            "",
+            "",
+            "def simulate(symbols=None, steps: int = 3000):",
+            "    from quant_agent.api.deps import get_services",
+            "    from quant_agent.research import execution as EX",
+            "    from quant_agent.research.execution_lib import ExecutionLibrary",
+            "    from quant_agent.research.execution_lib import load_tapes",
+            "",
+            "    cfg = EX.normalize_config(CONFIG)",
+            "    s = get_services()",
+            "    tapes = load_tapes(s.market, ExecutionLibrary(s.store), symbols or ['BTC/USDT'], source='kline', steps=steps)",
+            "    report = EX.evaluate_scheme(cfg, tapes)",
+            "    print(report.get('summary'))",
+            "    return report",
+            "",
+        ]
+    )
 
 
 def to_python(kind: str, artifact: Any, *, name: str = "") -> str:

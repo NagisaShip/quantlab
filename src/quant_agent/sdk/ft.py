@@ -1925,6 +1925,7 @@ class FtAdapter:
         self._cache: dict[tuple[str, str], tuple[int, dict[str, np.ndarray]]] = {}
         self.params: dict[str, Any] = {}
         self.offline: DataFrame | None = None  # 不在平台内核里时（整段向量化参照）用这份数据
+        self._short_scope_warned = False
         self.configure(params)
 
     def configure(self, params: dict[str, Any] | None) -> None:
@@ -1987,10 +1988,16 @@ class FtAdapter:
         df = self._informative(df, pair)
         enter = getattr(self.s, "populate_entry_trend", None) or getattr(self.s, "populate_buy_trend", None)
         exit_ = getattr(self.s, "populate_exit_trend", None) or getattr(self.s, "populate_sell_trend", None)
+        short_enter = getattr(self.s, "populate_short_trend", None)
+        short_exit = getattr(self.s, "populate_cover_trend", None)
         if enter:
             df = enter(df, md) or df
         if exit_:
             df = exit_(df, md) or df
+        if short_enter:
+            df = short_enter(df, md) or df
+        if short_exit:
+            df = short_exit(df, md) or df
         return df
 
     def _informative(self, df: DataFrame, pair: str) -> DataFrame:
@@ -2005,12 +2012,11 @@ class FtAdapter:
         return df
 
     @staticmethod
-    def last_signals(df: DataFrame, i: int = -1) -> tuple[int, int, str, str]:
+    def _signal_row(df: DataFrame, i: int = -1) -> dict[str, Any]:
         def col(*names: str) -> Any:
             for n in names:
                 if n in df:
-                    v = df[n].values[i]
-                    return v
+                    return df[n].values[i]
             return None
 
         def on(v: Any) -> int:
@@ -2019,9 +2025,24 @@ class FtAdapter:
             except (TypeError, ValueError):
                 return 0
 
-        enter, exit_ = on(col("enter_long", "buy")), on(col("exit_long", "sell"))
-        etag, xtag = col("enter_tag", "buy_tag"), col("exit_tag")
-        return enter, exit_, (etag if isinstance(etag, str) else ""), (xtag if isinstance(xtag, str) else "")
+        def tag(*names: str) -> str:
+            v = col(*names)
+            return v if isinstance(v, str) else ""
+
+        return {
+            "enter_long": on(col("enter_long", "buy")),
+            "exit_long": on(col("exit_long", "sell")),
+            "enter_short": on(col("enter_short")),
+            "exit_short": on(col("exit_short")),
+            "enter_tag": tag("enter_tag", "buy_tag"),
+            "exit_long_tag": tag("exit_long_tag", "exit_tag", "sell_tag"),
+            "exit_short_tag": tag("exit_short_tag", "exit_tag"),
+        }
+
+    @staticmethod
+    def last_signals(df: DataFrame, i: int = -1) -> tuple[int, int, str, str]:
+        row = FtAdapter._signal_row(df, i)
+        return row["enter_long"], row["exit_long"], row["enter_tag"], row["exit_long_tag"]
 
     # ---- 生命周期 ----
     def initialize(self, ctx: Any) -> None:
@@ -2043,6 +2064,28 @@ class FtAdapter:
                 else:
                     off = float(s.trailing_stop_positive_offset or 0)
                     api.set_trailing_stop(sec, float(pos), activate=off if off > 0 else 0.0)
+            if sec.upper().endswith(":PERP") and callable(getattr(s, "leverage", None)):
+                lev = 1.0
+                for pos_side in ("long", "short"):
+                    try:
+                        raw = s.leverage(
+                            pair=sec,
+                            current_time=_dt(ctx.current_dt),
+                            current_rate=1.0,
+                            proposed_leverage=1.0,
+                            max_leverage=125.0,
+                            entry_tag=None,
+                            side=pos_side,
+                        )
+                        if raw is not None:
+                            lev = max(lev, float(raw))
+                    except TypeError:
+                        continue
+                    except Exception as exc:
+                        api.log.warning(f"Freqtrade leverage() 调用失败，按 1 倍运行：{exc}")
+                        break
+                if lev > 1:
+                    api.set_leverage(sec, min(125.0, lev))
         try:
             s.bot_start()
         except Exception:
@@ -2065,24 +2108,45 @@ class FtAdapter:
             pass
         n = self.max_trades(ctx)
         positions = ctx.portfolio.positions
-        open_now = sum(1 for p in positions.values() if float(p.amount or 0) > 0)
+        open_now = sum(1 for p in positions.values() if abs(float(p.amount or 0)) > 0)
         for pair in ctx.securities:
             df = self.analyze(self.frame(pair), pair)
             self.last_frames[pair] = df
             if not len(df):
                 continue
-            enter, exit_, etag, xtag = self.last_signals(df)
+            row = self._signal_row(df)
             if self.record:
-                self.signals.append((int(ctx.current_dt), pair, enter, exit_))
-            held = float(getattr(positions.get(pair), "amount", 0) or 0) > 0
-            if held and exit_ and s.use_exit_signal:
+                self.signals.append((int(ctx.current_dt), pair, row["enter_long"], row["exit_long"]))
+            held = float(getattr(positions.get(pair), "amount", 0) or 0)
+            perp = pair.upper().endswith(":PERP")
+            short_ok = bool(getattr(s, "can_short", False)) and perp
+            if getattr(s, "can_short", False) and not perp and not self._short_scope_warned:
+                self._short_scope_warned = True
+                api.log.warning(f"{pair} 是现货标的：Freqtrade can_short 的做空信号被忽略；做空请使用 :PERP 标的")
+            if held > 0 and row["exit_long"] and s.use_exit_signal:
                 if s.exit_profit_only:
                     p = positions[pair]
                     price = api.get_current_data()[pair]["last_price"]
                     if float(price) / float(p.avg_cost or price) - 1 <= float(s.exit_profit_offset or 0):
                         continue
-                api.order_target(pair, 0, reason=xtag or "exit_signal")
-            elif not held and enter and not exit_ and open_now < n:
+                api.order_target(pair, 0, reason=row["exit_long_tag"] or "exit_signal")
+            elif held < 0 and row["exit_short"] and s.use_exit_signal:
+                if s.exit_profit_only:
+                    p = positions[pair]
+                    price = api.get_current_data()[pair]["last_price"]
+                    if 1 - float(price) / float(p.avg_cost or price) <= float(s.exit_profit_offset or 0):
+                        continue
+                api.order_target(pair, 0, reason=row["exit_short_tag"] or "exit_signal")
+            elif not held and open_now < n:
+                side = (
+                    "long"
+                    if row["enter_long"] and not row["enter_short"]
+                    else "short"
+                    if short_ok and row["enter_short"] and not row["enter_long"]
+                    else ""
+                )
+                if not side:
+                    continue
                 ok = True
                 confirm = getattr(s, "confirm_trade_entry", None)
                 if callable(confirm):
@@ -2096,14 +2160,15 @@ class FtAdapter:
                                 rate=price,
                                 time_in_force="GTC",
                                 current_time=_dt(ctx.current_dt),
-                                entry_tag=etag or None,
-                                side="long",
+                                entry_tag=row["enter_tag"] or None,
+                                side=side,
                             )
                         )
                     except TypeError:
                         ok = True
                 if ok:
-                    api.order_target_percent(pair, 0.99 / n, reason=etag or "enter_long")
+                    target = 0.99 / n if side == "long" else -0.99 / n
+                    api.order_target_percent(pair, target, reason=row["enter_tag"] or f"enter_{side}")
                     open_now += 1
 
     def custom_stoploss(self, ctx: Any, trade: Any) -> Any:

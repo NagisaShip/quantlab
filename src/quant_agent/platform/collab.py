@@ -16,13 +16,17 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import re
+import secrets
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from .db import Database, jdump, jload, now_ms
 from .errors import AppError, ErrorCode
+from .storage_usage import upload_storage
 
 GROUP_ROLES = ("owner", "admin", "member")
 TASK_STATUS = ("todo", "doing", "review", "done", "cancelled")
@@ -37,6 +41,7 @@ NOTIFY_KINDS = {
     "group": "群组",
     "comment": "评论与回复",
     "like": "点赞与克隆",
+    "follow": "关注",
     "share": "共享",
     "issue": "问题报告",
     "announce": "公告",
@@ -98,6 +103,22 @@ def _err(msg: str, code: ErrorCode = ErrorCode.INVALID_PARAMETER) -> AppError:
 
 def _deny(msg: str) -> AppError:
     return AppError(ErrorCode.PERMISSION_DENIED, msg)
+
+
+def _code_key(raw: str) -> str:
+    value = re.sub(r"[^0-9a-z]", "", (raw or "").lower())
+    for prefix in ("qlg", "qlu", "quantlab"):
+        if value.startswith(prefix):
+            return value[len(prefix) :]
+    return value
+
+
+def _new_group_no(db: Database) -> str:
+    for _ in range(32):
+        candidate = f"QLG-{secrets.token_hex(4).upper()}"
+        if not db.fetchone("SELECT 1 AS x FROM collab_groups WHERE quantlab_no=?", (candidate,)):
+            return candidate
+    raise _err("无法分配 QuantLab 群号，请稍后重试")
 
 
 def _missing(msg: str) -> AppError:
@@ -167,7 +188,9 @@ class CollabService:
     def muted(self, user_id: str) -> set[tuple[str, str]]:
         return {
             (r["target_type"], r["target_id"])
-            for r in self.db.fetchall("SELECT target_type, target_id FROM notification_mutes WHERE user_id=?", (user_id,))
+            for r in self.db.fetchall(
+                "SELECT target_type, target_id FROM notification_mutes WHERE user_id=?", (user_id,)
+            )
         }
 
     def notify(
@@ -355,8 +378,7 @@ class CollabService:
 
     def group_member_ids(self, gid: str) -> list[str]:
         return [
-            r["user_id"]
-            for r in self.db.fetchall("SELECT user_id FROM collab_group_members WHERE group_id=?", (gid,))
+            r["user_id"] for r in self.db.fetchall("SELECT user_id FROM collab_group_members WHERE group_id=?", (gid,))
         ]
 
     def _view_group(self, row: dict[str, Any], user_id: str) -> dict[str, Any]:
@@ -398,6 +420,7 @@ class CollabService:
             "peer": {"user_id": peer, "name": self.names([peer]).get(peer, "?")} if peer else None,
             "description": row["description"],
             "visibility": row["visibility"],
+            "quantlab_no": row.get("quantlab_no") or "",
             "owner_id": row["owner_id"],
             "created_at": row["created_at"],
             "archived": bool(row.get("archived_at")),
@@ -447,7 +470,13 @@ class CollabService:
         return view
 
     def create_group(
-        self, ws: str, owner_id: str, *, name: str, description: str = "", visibility: str = "open",
+        self,
+        ws: str,
+        owner_id: str,
+        *,
+        name: str,
+        description: str = "",
+        visibility: str = "open",
         members: list[str] | None = None,
     ) -> str:
         name = re.sub(r"\s+", " ", name).strip()[:40]
@@ -460,13 +489,14 @@ class CollabService:
         ):
             raise AppError(ErrorCode.CONFLICT, f"已有同名群组「{name}」")
         gid = uuid.uuid4().hex[:12]
+        quantlab_no = _new_group_no(self.db)
         now = now_ms()
         ws_members = set(self.ws_member_ids(ws))
         with self.db.tx() as t:
             t.execute(
                 "INSERT INTO collab_groups (id, workspace_id, name, description, visibility, owner_id, settings, "
-                "created_at) VALUES (?,?,?,?,?,?,?,?)",
-                (gid, ws, name, description[:500], visibility, owner_id, "{}", now),
+                "created_at, quantlab_no) VALUES (?,?,?,?,?,?,?,?,?)",
+                (gid, ws, name, description[:500], visibility, owner_id, "{}", now, quantlab_no),
             )
             t.execute(
                 "INSERT INTO collab_group_members (group_id, user_id, role, joined_at) VALUES (?,?,?,?)",
@@ -550,6 +580,52 @@ class CollabService:
         row = self.db.fetchone("SELECT settings FROM collab_groups WHERE id=?", (gid,))
         return jload(row["settings"], {}) if row else {}
 
+    def rotate_group_number(self, gid: str) -> str:
+        """销毁旧群号并生成新群号；群组本身、消息和任务不变。"""
+        row = self._group_row(gid)
+        if '"dm"' in (row.get("settings") or ""):
+            raise _err("私聊没有公开群号")
+        number = _new_group_no(self.db)
+        self.db.execute("UPDATE collab_groups SET quantlab_no=? WHERE id=?", (number, gid))
+        return number
+
+    def discover(self, ws: str, viewer: str, query: str = "") -> dict[str, Any]:
+        """公开目录：只返回显式公开的用户资料与公开群组。按名称或号码搜索。"""
+        q = (query or "").strip()
+        like = f"%{q}%"
+        key = _code_key(q)
+        groups = self.db.fetchall(
+            "SELECT * FROM collab_groups WHERE workspace_id=? AND archived_at IS NULL AND visibility='open' "
+            "AND settings NOT LIKE '%\"dm\"%' AND (?='' OR name LIKE ? OR replace(lower(quantlab_no),'-','') LIKE ?) "
+            "ORDER BY created_at DESC LIMIT 30",
+            (ws, q, like, f"%{key.lower()}%"),
+        )
+        users = self.db.fetchall(
+            "SELECT u.id, u.username, u.name, u.quantlab_uid, p.bio, p.avatar_color, m.role "
+            "FROM users u JOIN memberships m ON m.user_id=u.id "
+            "JOIN community_profiles p ON p.user_id=u.id "
+            "WHERE m.workspace_id=? AND m.status='active' AND u.is_active=1 AND p.public_profile=1 "
+            "AND (?='' OR u.name LIKE ? OR u.username LIKE ? OR replace(lower(u.quantlab_uid),'-','') LIKE ?) "
+            "ORDER BY u.name LIMIT 30",
+            (ws, q, like, like, f"%{key.lower()}%"),
+        )
+        return {
+            "query": q,
+            "groups": [self._view_group(r, viewer) for r in groups],
+            "users": [
+                {
+                    "id": r["id"],
+                    "name": r["name"],
+                    "username": r.get("username") or "",
+                    "quantlab_uid": r.get("quantlab_uid") or "",
+                    "bio": r.get("bio") or "",
+                    "avatar_color": r.get("avatar_color") or "#2E5C9A",
+                    "role": r.get("role") or "member",
+                }
+                for r in users
+            ],
+        }
+
     def archive_group(self, gid: str) -> None:
         self.db.execute("UPDATE collab_groups SET archived_at=? WHERE id=?", (now_ms(), gid))
 
@@ -605,7 +681,9 @@ class CollabService:
             raise _err("群主不能退出或被移出，请先转让群主")
         self.db.execute("DELETE FROM collab_group_members WHERE group_id=? AND user_id=?", (gid, user_id))
         name = self.names([user_id]).get(user_id, "?")
-        self._system_message(gid, row["workspace_id"], f"{name} 退出了群组" if left else f"{by_name} 将 {name} 移出了群组")
+        self._system_message(
+            gid, row["workspace_id"], f"{name} 退出了群组" if left else f"{by_name} 将 {name} 移出了群组"
+        )
 
     def set_member_role(self, gid: str, user_id: str, role: str, *, actor_id: str) -> None:
         if role not in GROUP_ROLES:
@@ -663,7 +741,17 @@ class CollabService:
             mid = t.insert_id(
                 "INSERT INTO collab_messages (group_id, workspace_id, author_id, author_name, author_kind, body, refs, "
                 "reply_to, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
-                (gid, row["workspace_id"], author_id, author_name, author_kind, body, jdump(refs_clean), reply_to, now_ms()),
+                (
+                    gid,
+                    row["workspace_id"],
+                    author_id,
+                    author_name,
+                    author_kind,
+                    body,
+                    jdump(refs_clean),
+                    reply_to,
+                    now_ms(),
+                ),
             )
             t.execute(
                 "UPDATE collab_group_members SET last_read_id=? WHERE group_id=? AND user_id=?", (mid, gid, author_id)
@@ -684,7 +772,7 @@ class CollabService:
                 workspace_id=row["workspace_id"],
                 group_id=gid,
             )
-            return self.message(mid)
+            return self.message(mid, viewer=author_id)
         # @提及：@所有人 / @成员名
         names = self.names(members)
         mentioned: set[str] = set()
@@ -702,7 +790,7 @@ class CollabService:
                 mentioned,
                 kind="mention",
                 title=f"{author_name} 在「{row['name']}」中提到了你",
-                body=body[:200],
+                body=body[:200] or "[引用或附件]",
                 link=f"groups/{gid}",
                 actor_id=author_id,
                 actor_name=author_name,
@@ -711,16 +799,51 @@ class CollabService:
                 workspace_id=row["workspace_id"],
                 group_id=gid,
             )
-        return self.message(mid)
+        remaining = [u for u in members if u != author_id and u not in mentioned]
+        if remaining:
+            self.notify(
+                remaining,
+                kind="group",
+                title=f"{author_name} 在「{row['name']}」发来消息",
+                body=body[:200] or "[引用或附件]",
+                link=f"groups/{gid}",
+                actor_id=author_id,
+                actor_name=author_name,
+                source_type="message",
+                source_id=str(mid),
+                workspace_id=row["workspace_id"],
+                group_id=gid,
+            )
+        return self.message(mid, viewer=author_id)
 
-    def message(self, mid: int) -> dict[str, Any]:
+    def message(self, mid: int, *, viewer: str = "") -> dict[str, Any]:
         row = self.db.fetchone("SELECT * FROM collab_messages WHERE id=?", (mid,))
         if row is None:
             raise _missing("消息不存在")
-        return self._view_message(row)
+        return self._view_message(row, self._reactions_for([mid], viewer).get(mid, []))
+
+    def _reactions_for(self, ids: list[int], viewer: str = "") -> dict[int, list[dict[str, Any]]]:
+        clean = list(dict.fromkeys(int(i) for i in ids if i))
+        if not clean:
+            return {}
+        marks = ",".join("?" for _ in clean)
+        rows = self.db.fetchall(
+            f"SELECT message_id, emoji, COUNT(*) AS count, "
+            f"MAX(CASE WHEN user_id=? THEN 1 ELSE 0 END) AS mine "
+            f"FROM collab_message_reactions WHERE message_id IN ({marks}) "
+            "GROUP BY message_id, emoji ORDER BY MIN(created_at)",
+            (viewer, *clean),
+        )
+        out: dict[int, list[dict[str, Any]]] = {i: [] for i in clean}
+        for row in rows:
+            mid = int(row["message_id"])
+            out.setdefault(mid, []).append(
+                {"emoji": str(row["emoji"]), "count": int(row["count"]), "mine": bool(row["mine"])}
+            )
+        return out
 
     @staticmethod
-    def _view_message(row: dict[str, Any]) -> dict[str, Any]:
+    def _view_message(row: dict[str, Any], reactions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         deleted = bool(row.get("deleted_at"))
         return {
             "id": row["id"],
@@ -735,10 +858,36 @@ class CollabService:
             "created_at": row["created_at"],
             "edited_at": row.get("edited_at"),
             "deleted": deleted,
+            "reactions": [] if deleted else (reactions or []),
         }
 
+    def react_message(self, mid: int, user_id: str, emoji: str) -> dict[str, Any]:
+        row = self.db.fetchone("SELECT id, deleted_at FROM collab_messages WHERE id=?", (mid,))
+        if row is None:
+            raise _missing("消息不存在")
+        if row.get("deleted_at"):
+            raise _err("已撤回的消息不能回应")
+        existing = self.db.fetchone(
+            "SELECT 1 FROM collab_message_reactions WHERE message_id=? AND user_id=? AND emoji=?",
+            (mid, user_id, emoji),
+        )
+        with self.db.tx() as t:
+            if existing:
+                t.execute(
+                    "DELETE FROM collab_message_reactions WHERE message_id=? AND user_id=? AND emoji=?",
+                    (mid, user_id, emoji),
+                )
+            else:
+                t.execute(
+                    "INSERT INTO collab_message_reactions (message_id, user_id, emoji, created_at) VALUES (?,?,?,?)",
+                    (mid, user_id, emoji, now_ms()),
+                )
+        reactions = self._reactions_for([mid], user_id).get(mid, [])
+        count = next((int(r["count"]) for r in reactions if r["emoji"] == emoji), 0)
+        return {"emoji": emoji, "on": not existing, "count": count, "reactions": reactions}
+
     def messages(
-        self, gid: str, *, after_id: int = 0, before_id: int | None = None, limit: int = 60
+        self, gid: str, *, after_id: int = 0, before_id: int | None = None, limit: int = 60, viewer: str = ""
     ) -> list[dict[str, Any]]:
         if after_id:
             rows = self.db.fetchall(
@@ -752,19 +901,28 @@ class CollabService:
                 args.append(before_id)
             rows = self.db.fetchall(sql + " ORDER BY id DESC LIMIT ?", (*args, limit))
             rows.reverse()
-        return [self._view_message(r) for r in rows]
+        reactions = self._reactions_for([int(r["id"]) for r in rows], viewer)
+        return [self._view_message(r, reactions.get(int(r["id"]), [])) for r in rows]
 
-    def pinned_messages(self, gid: str) -> list[dict[str, Any]]:
+    def pinned_messages(self, gid: str, *, viewer: str = "") -> list[dict[str, Any]]:
         rows = self.db.fetchall(
-            "SELECT * FROM collab_messages WHERE group_id=? AND pinned=1 AND deleted_at IS NULL ORDER BY id DESC", (gid,)
+            "SELECT * FROM collab_messages WHERE group_id=? AND pinned=1 AND deleted_at IS NULL ORDER BY id DESC",
+            (gid,),
         )
-        return [self._view_message(r) for r in rows]
+        reactions = self._reactions_for([int(r["id"]) for r in rows], viewer)
+        return [self._view_message(r, reactions.get(int(r["id"]), [])) for r in rows]
 
     def mark_group_read(self, gid: str, user_id: str, last_id: int) -> None:
         self.db.execute(
             "UPDATE collab_group_members SET last_read_id=? WHERE group_id=? AND user_id=? AND last_read_id<?",
             (last_id, gid, user_id, last_id),
         )
+        group = self.db.fetchone("SELECT workspace_id FROM collab_groups WHERE id=?", (gid,))
+        if group:
+            self.db.execute(
+                "UPDATE notifications_inbox SET read_at=? WHERE user_id=? AND workspace_id=? AND link=? AND read_at IS NULL",
+                (now_ms(), user_id, group["workspace_id"], f"groups/{gid}"),
+            )
 
     def edit_message(self, mid: int, user_id: str, body: str) -> dict[str, Any]:
         row = self.db.fetchone("SELECT * FROM collab_messages WHERE id=?", (mid,))
@@ -773,7 +931,7 @@ class CollabService:
         if row["author_id"] != user_id:
             raise _deny("只能编辑自己的消息")
         self.db.execute("UPDATE collab_messages SET body=?, edited_at=? WHERE id=?", (body[:20000], now_ms(), mid))
-        return self.message(mid)
+        return self.message(mid, viewer=user_id)
 
     def delete_message(self, mid: int, user_id: str, *, moderator: bool) -> None:
         row = self.db.fetchone("SELECT * FROM collab_messages WHERE id=?", (mid,))
@@ -795,19 +953,38 @@ class CollabService:
     def _view_task(self, row: dict[str, Any], names: dict[str, str] | None = None) -> dict[str, Any]:
         names = names if names is not None else self.names([row.get("assignee_id") or "", row["created_by"]])
         return {
-            **{k: row[k] for k in (
-                "id", "group_id", "title", "description", "assignee_id", "created_by", "status", "priority",
-                "due_at", "created_at", "updated_at", "done_at",
-            )},
+            **{
+                k: row[k]
+                for k in (
+                    "id",
+                    "group_id",
+                    "title",
+                    "description",
+                    "assignee_id",
+                    "created_by",
+                    "status",
+                    "priority",
+                    "due_at",
+                    "created_at",
+                    "updated_at",
+                    "done_at",
+                )
+            },
             "refs": jload(row["refs"], []),
             "assignee_name": names.get(row.get("assignee_id") or "", ""),
             "creator_name": names.get(row["created_by"], ""),
             "status_label": TASK_STATUS_LABEL.get(row["status"], row["status"]),
-            "overdue": bool(row.get("due_at") and row["due_at"] < now_ms() and row["status"] not in ("done", "cancelled")),
+            "overdue": bool(
+                row.get("due_at") and row["due_at"] < now_ms() and row["status"] not in ("done", "cancelled")
+            ),
         }
 
     def tasks(
-        self, *, group_id: str | None = None, assignee_id: str | None = None, ws: str | None = None,
+        self,
+        *,
+        group_id: str | None = None,
+        assignee_id: str | None = None,
+        ws: str | None = None,
         include_closed: bool = True,
     ) -> list[dict[str, Any]]:
         sql = "SELECT * FROM collab_tasks WHERE 1=1"
@@ -837,8 +1014,17 @@ class CollabService:
         return self._view_task(row)
 
     def create_task(
-        self, gid: str, *, by: str, by_name: str, title: str, description: str = "", assignee_id: str | None = None,
-        priority: str = "normal", due_at: int | None = None, refs: Any = None,
+        self,
+        gid: str,
+        *,
+        by: str,
+        by_name: str,
+        title: str,
+        description: str = "",
+        assignee_id: str | None = None,
+        priority: str = "normal",
+        due_at: int | None = None,
+        refs: Any = None,
     ) -> dict[str, Any]:
         row = self._group_row(gid)
         title = title.strip()[:120]
@@ -853,8 +1039,21 @@ class CollabService:
         self.db.execute(
             "INSERT INTO collab_tasks (id, group_id, workspace_id, title, description, assignee_id, created_by, status, "
             "priority, due_at, refs, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (tid, gid, row["workspace_id"], title, description[:4000], assignee_id or None, by, "todo", priority,
-             due_at, jdump(clean_refs(refs)), now, now),
+            (
+                tid,
+                gid,
+                row["workspace_id"],
+                title,
+                description[:4000],
+                assignee_id or None,
+                by,
+                "todo",
+                priority,
+                due_at,
+                jdump(clean_refs(refs)),
+                now,
+                now,
+            ),
         )
         who = self.names([assignee_id]).get(assignee_id or "", "") if assignee_id else ""
         self._system_message(
@@ -862,9 +1061,17 @@ class CollabService:
         )
         if assignee_id:
             self.notify(
-                [assignee_id], kind="task", title=f"{by_name} 给你指派了任务「{title}」", body=description[:200],
-                link=f"groups/{gid}/tasks", actor_id=by, actor_name=by_name, source_type="task", source_id=tid,
-                workspace_id=row["workspace_id"], group_id=gid,
+                [assignee_id],
+                kind="task",
+                title=f"{by_name} 给你指派了任务「{title}」",
+                body=description[:200],
+                link=f"groups/{gid}/tasks",
+                actor_id=by,
+                actor_name=by_name,
+                source_type="task",
+                source_id=tid,
+                workspace_id=row["workspace_id"],
+                group_id=gid,
             )
         return self.task(tid)
 
@@ -912,17 +1119,31 @@ class CollabService:
         title = fields.get("title") or row["title"]
         if new_assignee:
             self.notify(
-                [new_assignee], kind="task", title=f"{by_name} 把任务「{title}」指派给了你",
-                link=f"groups/{gid}/tasks", actor_id=by, actor_name=by_name, source_type="task", source_id=tid,
-                workspace_id=row["workspace_id"], group_id=gid,
+                [new_assignee],
+                kind="task",
+                title=f"{by_name} 把任务「{title}」指派给了你",
+                link=f"groups/{gid}/tasks",
+                actor_id=by,
+                actor_name=by_name,
+                source_type="task",
+                source_id=tid,
+                workspace_id=row["workspace_id"],
+                group_id=gid,
             )
         if "status" in fields:
             label = TASK_STATUS_LABEL[fields["status"]]
             self._system_message(gid, row["workspace_id"], f"{by_name} 把任务「{title}」标为{label}")
             self.notify(
-                [row["created_by"], row.get("assignee_id") or ""], kind="task",
-                title=f"任务「{title}」→ {label}", link=f"groups/{gid}/tasks", actor_id=by, actor_name=by_name,
-                source_type="task", source_id=tid, workspace_id=row["workspace_id"], group_id=gid,
+                [row["created_by"], row.get("assignee_id") or ""],
+                kind="task",
+                title=f"任务「{title}」→ {label}",
+                link=f"groups/{gid}/tasks",
+                actor_id=by,
+                actor_name=by_name,
+                source_type="task",
+                source_id=tid,
+                workspace_id=row["workspace_id"],
+                group_id=gid,
             )
         return self.task(tid)
 
@@ -945,9 +1166,7 @@ class CollabService:
         return row
 
     def shares(self, ws: str, object_type: str) -> dict[str, dict[str, Any]]:
-        rows = self.db.fetchall(
-            "SELECT * FROM collab_shares WHERE workspace_id=? AND object_type=?", (ws, object_type)
-        )
+        rows = self.db.fetchall("SELECT * FROM collab_shares WHERE workspace_id=? AND object_type=?", (ws, object_type))
         return {r["object_id"]: {**r, "group_ids": jload(r["group_ids"], [])} for r in rows}
 
     def owner_of(self, ws: str, object_type: str, object_id: str) -> str | None:
@@ -977,7 +1196,14 @@ class CollabService:
             pass
 
     def set_share(
-        self, ws: str, object_type: str, object_id: str, *, user_id: str, ws_admin: bool, visibility: str,
+        self,
+        ws: str,
+        object_type: str,
+        object_id: str,
+        *,
+        user_id: str,
+        ws_admin: bool,
+        visibility: str,
         group_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         if object_type not in SHARE_TYPES:
@@ -1019,10 +1245,16 @@ class CollabService:
             for g in gids:
                 members.update(self.group_member_ids(g))
             self.notify(
-                members, kind="share", title=f"有一个{'策略' if object_type == 'strategy' else '研究项目'}在群组内共享给你",
-                body=object_id, link=("editor/" if object_type == "strategy" else "lab/") + object_id,
-                actor_id=user_id, actor_name=self.names([user_id]).get(user_id, ""), source_type=object_type,
-                source_id=object_id, workspace_id=ws,
+                members,
+                kind="share",
+                title=f"有一个{'策略' if object_type == 'strategy' else '研究项目'}在群组内共享给你",
+                body=object_id,
+                link=("editor/" if object_type == "strategy" else "lab/") + object_id,
+                actor_id=user_id,
+                actor_name=self.names([user_id]).get(user_id, ""),
+                source_type=object_type,
+                source_id=object_id,
+                workspace_id=ws,
             )
         return self.share(ws, object_type, object_id) or {}
 
@@ -1052,14 +1284,37 @@ class CollabService:
 
     # ================================================================== 编辑人员标记
     def mark_edit(
-        self, ws: str, object_type: str, object_id: str, *, user_id: str, user_name: str, action: str,
-        version: str = "", parent_version: str = "", derived_from: str = "", note: str = "", actor_kind: str = "human",
+        self,
+        ws: str,
+        object_type: str,
+        object_id: str,
+        *,
+        user_id: str,
+        user_name: str,
+        action: str,
+        version: str = "",
+        parent_version: str = "",
+        derived_from: str = "",
+        note: str = "",
+        actor_kind: str = "human",
     ) -> None:
         self.db.execute(
             "INSERT INTO collab_edits (workspace_id, object_type, object_id, user_id, user_name, actor_kind, action, "
             "version, parent_version, derived_from, note, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-            (ws, object_type, object_id, user_id or "system", user_name[:60], actor_kind, action, version[:40],
-             parent_version[:40], derived_from[:200], note[:300], now_ms()),
+            (
+                ws,
+                object_type,
+                object_id,
+                user_id or "system",
+                user_name[:60],
+                actor_kind,
+                action,
+                version[:40],
+                parent_version[:40],
+                derived_from[:200],
+                note[:300],
+                now_ms(),
+            ),
         )
 
     def edits(self, ws: str, object_type: str, object_id: str | None = None, limit: int = 500) -> list[dict[str, Any]]:
@@ -1084,8 +1339,13 @@ class CollabService:
         out: dict[str, list[dict[str, Any]]] = {}
         for r in rows:
             out.setdefault(r["object_id"], []).append(
-                {"user_id": r["user_id"], "name": r["user_name"], "actor_kind": r["actor_kind"],
-                 "count": int(r["n"]), "last_at": int(r["last_at"])}
+                {
+                    "user_id": r["user_id"],
+                    "name": r["user_name"],
+                    "actor_kind": r["actor_kind"],
+                    "count": int(r["n"]),
+                    "last_at": int(r["last_at"]),
+                }
             )
         for v in out.values():
             v.sort(key=lambda e: -e["last_at"])
@@ -1093,8 +1353,16 @@ class CollabService:
 
     # ================================================================== 问题报告
     def create_issue(
-        self, *, ws: str | None, user_id: str, title: str, body: str, category: str, severity: str,
-        attachments: list[str], context_info: dict[str, Any],
+        self,
+        *,
+        ws: str | None,
+        user_id: str,
+        title: str,
+        body: str,
+        category: str,
+        severity: str,
+        attachments: list[str],
+        context_info: dict[str, Any],
     ) -> str:
         title = title.strip()[:120]
         if len(title) < 2:
@@ -1109,8 +1377,20 @@ class CollabService:
         self.db.execute(
             "INSERT INTO issue_reports (id, workspace_id, user_id, title, body, category, severity, status, "
             "attachments, context, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-            (iid, ws, user_id, title, body[:20000], category, severity, "open", jdump(files),
-             jdump({k: str(v)[:300] for k, v in list((context_info or {}).items())[:12]}), now, now),
+            (
+                iid,
+                ws,
+                user_id,
+                title,
+                body[:20000],
+                category,
+                severity,
+                "open",
+                jdump(files),
+                jdump({k: str(v)[:300] for k, v in list((context_info or {}).items())[:12]}),
+                now,
+                now,
+            ),
         )
         return iid
 
@@ -1123,8 +1403,13 @@ class CollabService:
         return out
 
     def issues(
-        self, *, user_id: str | None = None, workspace_ids: list[str] | None = None, status: str | None = None,
-        all_issues: bool = False, limit: int = 200,
+        self,
+        *,
+        user_id: str | None = None,
+        workspace_ids: list[str] | None = None,
+        status: str | None = None,
+        all_issues: bool = False,
+        limit: int = 200,
     ) -> list[dict[str, Any]]:
         sql = "SELECT * FROM issue_reports WHERE 1=1"
         args: list[Any] = []
@@ -1152,8 +1437,21 @@ class CollabService:
 
     def _view_issue(self, r: dict[str, Any], names: dict[str, str], replies: int = 0) -> dict[str, Any]:
         return {
-            **{k: r[k] for k in ("id", "workspace_id", "user_id", "title", "body", "category", "severity", "status",
-                                 "created_at", "updated_at")},
+            **{
+                k: r[k]
+                for k in (
+                    "id",
+                    "workspace_id",
+                    "user_id",
+                    "title",
+                    "body",
+                    "category",
+                    "severity",
+                    "status",
+                    "created_at",
+                    "updated_at",
+                )
+            },
             "attachments": jload(r["attachments"], []),
             "context": jload(r["context"], {}),
             "user_name": names.get(r["user_id"], "?"),
@@ -1172,8 +1470,9 @@ class CollabService:
         row = self.issue_row(iid)
         replies = self.db.fetchall("SELECT * FROM issue_replies WHERE issue_id=? ORDER BY id", (iid,))
         view = self._view_issue(row, self.names([row["user_id"]]), replies=len(replies))
-        view["replies"] = [{**r, "is_staff": bool(r["is_staff"]), "attachments": jload(r["attachments"], [])}
-                           for r in replies]
+        view["replies"] = [
+            {**r, "is_staff": bool(r["is_staff"]), "attachments": jload(r["attachments"], [])} for r in replies
+        ]
         return view
 
     def reply_issue(
@@ -1197,9 +1496,17 @@ class CollabService:
         self.db.execute("UPDATE issue_reports SET status=?, updated_at=? WHERE id=?", (status, now, iid))
         if staff and row["user_id"] != user_id:
             self.notify(
-                [row["user_id"]], kind="issue", title=f"管理员回复了你的问题「{row['title']}」", body=body[:200],
-                link=f"issues/{iid}", actor_id=user_id, actor_name=user_name, source_type="issue", source_id=iid,
-                workspace_id=row["workspace_id"], force=True,
+                [row["user_id"]],
+                kind="issue",
+                title=f"管理员回复了你的问题「{row['title']}」",
+                body=body[:200],
+                link=f"issues/{iid}",
+                actor_id=user_id,
+                actor_name=user_name,
+                source_type="issue",
+                source_id=iid,
+                workspace_id=row["workspace_id"],
+                force=True,
             )
 
     def set_issue_status(self, iid: str, status: str, *, by: str, by_name: str) -> None:
@@ -1209,9 +1516,16 @@ class CollabService:
         self.db.execute("UPDATE issue_reports SET status=?, updated_at=? WHERE id=?", (status, now_ms(), iid))
         if row["user_id"] != by:
             self.notify(
-                [row["user_id"]], kind="issue", title=f"你的问题「{row['title']}」已标为{ISSUE_STATUS[status]}",
-                link=f"issues/{iid}", actor_id=by, actor_name=by_name, source_type="issue", source_id=iid,
-                workspace_id=row["workspace_id"], force=True,
+                [row["user_id"]],
+                kind="issue",
+                title=f"你的问题「{row['title']}」已标为{ISSUE_STATUS[status]}",
+                link=f"issues/{iid}",
+                actor_id=by,
+                actor_name=by_name,
+                source_type="issue",
+                source_id=iid,
+                workspace_id=row["workspace_id"],
+                force=True,
             )
 
     def issue_counts(self) -> dict[str, int]:
@@ -1223,7 +1537,16 @@ class CollabService:
     def upload_dir(self) -> Path:
         return self.home / "uploads"
 
-    def save_upload(self, *, ws: str | None, user_id: str, filename: str, mime: str, data: bytes) -> dict[str, Any]:
+    def save_upload(
+        self,
+        *,
+        ws: str | None,
+        user_id: str,
+        filename: str,
+        mime: str,
+        data: bytes,
+        quota_guard: Callable[[int, int], None] | None = None,
+    ) -> dict[str, Any]:
         name = re.sub(r"[\\/\x00-\x1f]", "_", filename or "file").strip()[:120] or "file"
         ext = Path(name).suffix.lower()
         mime = (mime or "").split(";")[0].strip().lower()
@@ -1247,12 +1570,91 @@ class CollabService:
         self.upload_dir.mkdir(parents=True, exist_ok=True)
         (self.upload_dir / fid).write_bytes(data)
         sha = hashlib.sha256(data).hexdigest()
-        self.db.execute(
-            "INSERT INTO uploads (id, workspace_id, user_id, filename, mime, size, sha256, created_at) "
-            "VALUES (?,?,?,?,?,?,?,?)",
-            (fid, ws, user_id, name, mime, len(data), sha, now_ms()),
-        )
-        return {"id": fid, "filename": name, "mime": mime, "size": len(data)}
+        thumb = self._make_thumbnail(fid, data, mime)
+        thumb_bytes = int(thumb.get("thumb_size") or 0)
+        pending_bytes = len(data) + thumb_bytes
+        try:
+            with self.db.tx() as t:
+                used_bytes = 0
+                if ws and user_id:
+                    # PostgreSQL 下锁住成员行，串行化同一成员的上传前检查与写入；
+                    # SQLite 的 BEGIN IMMEDIATE 已经提供同等的写串行化。
+                    if self.db.dialect == "postgres":
+                        t.execute(
+                            "SELECT 1 FROM memberships WHERE workspace_id=? AND user_id=? FOR UPDATE",
+                            (ws, user_id),
+                        )
+                    used_bytes = int(
+                        t.scalar(
+                            "SELECT COALESCE(SUM(size + COALESCE(thumb_size, 0)), 0) AS n "
+                            "FROM uploads WHERE workspace_id=? AND user_id=?",
+                            (ws, user_id),
+                        )
+                        or 0
+                    )
+                if quota_guard is not None:
+                    quota_guard(used_bytes, pending_bytes)
+                t.execute(
+                    "INSERT INTO uploads (id, workspace_id, user_id, filename, mime, size, sha256, created_at, "
+                    "thumb_mime, thumb_size, width, height) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        fid,
+                        ws,
+                        user_id,
+                        name,
+                        mime,
+                        len(data),
+                        sha,
+                        now_ms(),
+                        thumb.get("thumb_mime"),
+                        thumb.get("thumb_size"),
+                        thumb.get("width"),
+                        thumb.get("height"),
+                    ),
+                )
+        except BaseException:
+            # 配额拒绝或数据库写入失败时，不留下原文件 / 缩略图。
+            for target in (self.upload_dir / fid, self.upload_dir / f"thumb-{fid}.webp"):
+                try:
+                    target.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            raise
+        return {
+            "id": fid,
+            "filename": name,
+            "mime": mime,
+            "size": len(data),
+            "thumb_url": f"/api/uploads/{fid}/thumb" if thumb else None,
+            **thumb,
+        }
+
+    def _make_thumbnail(self, fid: str, data: bytes, mime: str) -> dict[str, Any]:
+        """上传时生成最长边 640px 的 WebP 缩略图；原图完整保留。"""
+        if not mime.startswith("image/") or mime in ("image/svg+xml", "image/gif"):
+            return {}
+        try:
+            from PIL import Image, ImageOps
+        except ImportError:
+            return {}
+        try:
+            with Image.open(io.BytesIO(data)) as src:
+                src.seek(0)
+                im = ImageOps.exif_transpose(src)
+                width, height = im.size
+                im.thumbnail((640, 640), Image.Resampling.LANCZOS)
+                if im.mode not in ("RGB", "RGBA"):
+                    im = im.convert("RGBA" if "A" in im.getbands() else "RGB")
+                target = self.upload_dir / f"thumb-{fid}.webp"
+                im.save(target, "WEBP", quality=82, method=4)
+            return {
+                "thumb_mime": "image/webp",
+                "thumb_size": target.stat().st_size,
+                "width": width,
+                "height": height,
+            }
+        except Exception:
+            return {}
 
     def upload(self, fid: str) -> dict[str, Any] | None:
         if not re.fullmatch(r"[0-9a-f]{32}", fid or ""):
@@ -1262,5 +1664,12 @@ class CollabService:
     def upload_file(self, fid: str) -> Path:
         return self.upload_dir / fid
 
+    def upload_thumb_file(self, fid: str) -> Path:
+        return self.upload_dir / f"thumb-{fid}.webp"
+
+    def storage_stats(self, ws: str, user_id: str | None = None) -> dict[str, Any]:
+        """当前工作区或成员的上传存储统计（含缩略图）。"""
+        return upload_storage(self.db, ws, user_id)
+
     def storage_bytes(self) -> int:
-        return int(self.db.scalar("SELECT COALESCE(SUM(size), 0) AS n FROM uploads") or 0)
+        return int(self.db.scalar("SELECT COALESCE(SUM(size + COALESCE(thumb_size, 0)), 0) AS n FROM uploads") or 0)

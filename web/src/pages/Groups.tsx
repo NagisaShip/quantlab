@@ -6,19 +6,23 @@
  *       群内共享的策略与研究、群组模型与额度、群设置（成员、角色、可见性、解散）。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { LimitRule } from '../api2'
+import type { LimitRule } from '../api/research'
 import {
   collab, groupProviders, inbox, PRIORITY_LABEL, since, TASK_COLUMNS,
-  type Group, type GroupRole, type GroupUsage, type Member, type Message, type Ref, type SharedItem, type Task, type TaskPriority, type TaskStatus,
+  type DiscoverResult, type Group, type GroupRole, type GroupUsage, type Member, type Message, type Ref, type SharedItem, type Task, type TaskPriority, type TaskStatus,
 } from '../apiCollab'
 import { Callout, EmptyState, Loading, Modal, Tag } from '../components/ui'
 import { RichBody, RichEditor } from '../components/RichText'
 import { LimitBars, LimitEditor, fmtCost, fmtTokens } from '../components/modelUsage'
 import { QuantBot } from '../components/QuantBot'
+import { QmojiReactionBar } from '../components/QmojiReactionBar'
+import { Icon } from '../components/icons'
+import { UserAvatar } from '../components/UserAvatar'
 import { appConfirm } from '../components/dialog'
 import { pingInbox } from '../components/Inbox'
 import { MemberPicker } from '../components/Social'
-import type { Me } from '../api3'
+import { copyText, SharePublicButton } from '../components/PublicShare'
+import type { Me } from '../api/platform'
 import type { PageProps } from './types'
 
 type Tab = 'chat' | 'tasks' | 'shared' | 'models' | 'settings'
@@ -40,12 +44,20 @@ export default function GroupsPage({ arg, me, onNavigate, notify }: PageProps & 
     collab.groups().then((r) => setGroups(r.groups)).catch((e) => notify(e.message, true))
     collab.myTasks().then((r) => setMyTasks(r.tasks.length)).catch(() => undefined)
   }, [notify])
-  useEffect(() => { load(); collab.members().then((r) => setMembers(r.members)).catch(() => undefined) }, [load])
+  const loadMembers = useCallback(() => {
+    collab.members().then((r) => setMembers(r.members)).catch(() => undefined)
+  }, [])
+  useEffect(() => { load(); loadMembers() }, [load, loadMembers])
   useEffect(() => { const t = window.setInterval(load, 15000); return () => window.clearInterval(t) }, [load])
 
   const [dmOpen, setDmOpen] = useState(false)
+  const [sideOpen, setSideOpen] = useState(false)
+  const [directory, setDirectory] = useState<DiscoverResult | null>(null)
   const label = (g: Group) => (g.kind === 'dm' ? g.peer?.name ?? '私聊' : g.name)
-  const hit = (g: Group) => !q || label(g).toLowerCase().includes(q.toLowerCase())
+  const hit = (g: Group) => {
+    const query = q.trim().toLowerCase()
+    return !query || `${label(g)} ${g.quantlab_no || ''} ${g.description || ''}`.toLowerCase().includes(query)
+  }
   const dms = (groups ?? []).filter((g) => g.kind === 'dm' && hit(g))
   const mine = (groups ?? []).filter((g) => g.kind !== 'dm' && g.my_role && hit(g))
   const open = (groups ?? []).filter((g) => g.kind !== 'dm' && !g.my_role && hit(g))
@@ -54,19 +66,34 @@ export default function GroupsPage({ arg, me, onNavigate, notify }: PageProps & 
   const startDm = async (uid: string) => {
     try {
       const r = await collab.dm(uid)
-      setDmOpen(false); load(); onNavigate(`groups/${r.group.id}`)
+      setDmOpen(false); setSideOpen(false); load(); onNavigate(`groups/${r.group.id}`)
     } catch (e) { notify((e as Error).message, true) }
   }
+  const goGroup = (id: string) => { setSideOpen(false); onNavigate(`groups/${id}`) }
+  useEffect(() => {
+    const query = q.trim()
+    if (query.length < 2) { setDirectory(null); return }
+    let alive = true
+    const timer = window.setTimeout(() => {
+      collab.discover(query).then((r) => { if (alive) setDirectory(r) }).catch(() => { if (alive) setDirectory(null) })
+    }, 180)
+    return () => { alive = false; window.clearTimeout(timer) }
+  }, [q])
 
   return (
-    <div className="grp-layout">
-      <aside className="grp-side">
+    <div className={`grp-layout${gid ? '' : ' grp-list-mode'}${sideOpen ? ' grp-drawer-open' : ''}`}>
+      {sideOpen && <button type="button" className="grp-drawer-backdrop" aria-label="关闭群组列表" onClick={() => setSideOpen(false)} />}
+      <aside className={`grp-side${sideOpen ? ' open' : ''}`} aria-label="群组列表">
+        <div className="grp-side-head">
+          <div><b>群组与任务</b><small>名称、QLG 群号或 QLU UID 都可搜索</small></div>
+          <button type="button" className="grp-side-close" onClick={() => setSideOpen(false)} aria-label="关闭群组列表">×</button>
+        </div>
         <div className="grp-side-top">
-          <input className="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索群组或私聊" aria-label="搜索群组或私聊" />
+          <input className="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索名称 / 群号 / UID" aria-label="搜索名称、QuantLab 群号或 UID" />
           <button type="button" className="button small primary" onClick={() => setCreating(true)}>＋ 群组</button>
           <button type="button" className="button small" onClick={() => setDmOpen(true)} title="和工作区里的某位成员私聊">私聊</button>
         </div>
-        <button type="button" className={`grp-item tasks${showTasks ? ' on' : ''}`} onClick={() => onNavigate('groups/tasks')}>
+        <button type="button" className={`grp-item tasks${showTasks ? ' on' : ''}`} onClick={() => { setSideOpen(false); onNavigate('groups/tasks') }}>
           <span className="grp-av tasks" aria-hidden>☐</span>
           <span className="grp-main"><b>我的任务</b><small>指派给我、还没完成的</small></span>
           {myTasks > 0 && <span className="grp-badge">{myTasks}</span>}
@@ -75,24 +102,42 @@ export default function GroupsPage({ arg, me, onNavigate, notify }: PageProps & 
           <>
             {dms.length > 0 && <div className="grp-label">私聊 · {dms.length}</div>}
             <div className="stagger">
-              {dms.map((g) => <GroupItem key={g.id} g={g} on={g.id === gid} onClick={() => onNavigate(`groups/${g.id}`)} />)}
+              {dms.map((g) => <GroupItem key={g.id} g={g} on={g.id === gid} onClick={() => goGroup(g.id)} />)}
             </div>
             <div className="grp-label">我加入的群组 · {mine.length}</div>
             <div className="stagger">
-              {mine.map((g) => <GroupItem key={g.id} g={g} on={g.id === gid} onClick={() => onNavigate(`groups/${g.id}`)} />)}
+              {mine.map((g) => <GroupItem key={g.id} g={g} on={g.id === gid} onClick={() => goGroup(g.id)} />)}
             </div>
             {!mine.length && <div className="grp-none">还没有加入群组。新建一个，或加入下面的公开群组。</div>}
             {open.length > 0 && <div className="grp-label">可加入的公开群组 · {open.length}</div>}
             <div className="stagger">
-              {open.map((g) => <GroupItem key={g.id} g={g} on={g.id === gid} onClick={() => onNavigate(`groups/${g.id}`)} />)}
+              {open.map((g) => <GroupItem key={g.id} g={g} on={g.id === gid} onClick={() => goGroup(g.id)} />)}
             </div>
+            {directory && q.trim().length >= 2 && (
+              <div className="grp-directory">
+                <div className="grp-label">公开目录 · 名称 / 号码</div>
+                {directory.users.map((u) => (
+                  <button key={u.id} type="button" className="grp-directory-row" onClick={() => { setSideOpen(false); onNavigate(`profile/${u.id}`) }}>
+                    <UserAvatar color={u.avatar_color} size={30} title={u.name} />
+                    <span><b>{u.name}</b><small>{u.quantlab_uid} {u.username ? `· @${u.username}` : ''}</small></span>
+                  </button>
+                ))}
+                {directory.groups.filter((g) => !groups?.some((x) => x.id === g.id)).map((g) => (
+                  <button key={g.id} type="button" className="grp-directory-row" onClick={() => goGroup(g.id)}>
+                    <span className="grp-av" aria-hidden>{g.name.slice(0, 1)}</span>
+                    <span><b>{g.name}</b><small>{g.quantlab_no} · {g.member_count} 人</small></span>
+                  </button>
+                ))}
+                {!directory.users.length && !directory.groups.length && <div className="grp-none">没有匹配的公开用户或群组。只有显式公开的用户会出现在目录里。</div>}
+              </div>
+            )}
           </>
         )}
       </aside>
       <section className="grp-main-pane">
-        {showTasks ? <MyTasks onNavigate={onNavigate} notify={notify} onChanged={load} />
+        {showTasks ? <MyTasks onNavigate={onNavigate} notify={notify} onChanged={load} onOpenGroups={() => setSideOpen(true)} />
           : current ? <GroupView key={current.id} group={current} tab={(TABS.find((t) => t.key === sub)?.key ?? 'chat')} me={me} members={members}
-            onNavigate={onNavigate} notify={notify} onChanged={load} />
+            onNavigate={onNavigate} notify={notify} onChanged={load} onStartDm={startDm} onMembersChanged={loadMembers} onOpenGroups={() => setSideOpen(true)} />
             : groups && gid ? <EmptyState title="群组不存在或已解散" action={<button className="button" onClick={() => onNavigate('groups')}>返回</button>} />
               : (
                 <EmptyState title="选一个群组开始讨论"
@@ -121,7 +166,7 @@ function GroupItem({ g, on, onClick }: { g: Group; on: boolean; onClick: () => v
       <span className={`grp-av${dm ? ' dm' : ''}`} aria-hidden>{name.slice(0, 1)}</span>
       <span className="grp-main">
         <b>{name}{!dm && g.visibility === 'private' && <span className="grp-lock" title="私密群组">🔒</span>}</b>
-        <small>{g.last_message ? `${g.last_message.author}：${g.last_message.body}` : g.description || `${g.member_count} 人`}</small>
+        <small>{!dm && g.quantlab_no ? `${g.quantlab_no} · ` : ''}{g.last_message ? `${g.last_message.author}：${g.last_message.body}` : g.description || `${g.member_count} 人`}</small>
       </span>
       <span className="grp-meta">
         {g.last_message && <em>{since(g.last_message.at)}</em>}
@@ -161,81 +206,136 @@ function CreateGroupModal({ members, meId, onClose, onCreated, notify }: {
 }
 
 /* ------------------------------------------------------------------ 群组视图 */
-function GroupView({ group: g0, tab, me, members, onNavigate, notify, onChanged }: {
+function GroupView({ group: g0, tab, me, members, onNavigate, notify, onChanged, onStartDm, onMembersChanged, onOpenGroups }: {
   group: Group; tab: Tab; me: Me; members: Member[]; onNavigate: (k: string) => void; notify: PageProps['notify']; onChanged: () => void
+  onStartDm: (uid: string) => void; onMembersChanged: () => void; onOpenGroups: () => void
 }) {
   const [g, setG] = useState<Group>(g0)
   const reload = useCallback(() => { collab.group(g0.id).then((r) => setG(r.group)).catch(() => undefined) }, [g0.id])
   useEffect(reload, [reload])
+  useEffect(() => { if (tab === 'settings') onMembersChanged() }, [tab, onMembersChanged])
   const isMember = !!g.my_role
   const isMod = g.my_role === 'owner' || g.my_role === 'admin' || me.workspace?.role === 'admin'
   const go = (t: Tab) => onNavigate(`groups/${g.id}${t === 'chat' ? '' : `/${t}`}`)
   const dm = g.kind === 'dm'
   const peer = members.find((m) => m.user_id === g.peer?.user_id)
+  const memberInfo = useMemo(() => new Map(members.map((m) => [m.user_id, m])), [members])
   const tabs = dm ? TABS.filter((t) => t.key === 'chat' || t.key === 'shared') : TABS
   return (
     <div className="grp-view">
       <header className="grp-head">
-        <span className={`grp-av big${dm ? ' dm' : ''}`} aria-hidden>{(dm ? g.peer?.name ?? '?' : g.name).slice(0, 1)}</span>
+        <button type="button" className="grp-mobile-list" onClick={onOpenGroups} aria-label="打开群组列表">
+          <Icon name="teams" size={16} /><span>群组</span>
+        </button>
+        {dm ? <UserAvatar color={peer?.avatar_color} size={42} title={g.peer?.name} /> : <span className="grp-av big" aria-hidden>{g.name.slice(0, 1)}</span>}
         <div className="grp-title">
           {dm ? (
             <>
               <h2>{g.peer?.name} <Tag>私聊</Tag></h2>
-              <small>{peer?.username ? `@${peer.username} · ` : ''}{peer?.online ? '在线' : '离线'} · 只有你们两人能看到</small>
+              <small>{peer?.username ? `@${peer.username} · ` : ''}{peer?.online ? '在线' : '离线'} · 只有你们两人能看到{g.dm_can_send === false && g.dm_reason ? ` · ${g.dm_reason}` : ''}</small>
             </>
           ) : (
             <>
-              <h2>{g.name} {g.visibility === 'private' ? <Tag>私密</Tag> : <Tag>公开</Tag>}</h2>
-              <small>{g.description || '没有简介'} · {g.member_count} 名成员{g.my_role ? ` · 我是${ROLE_LABEL[g.my_role]}` : ''}</small>
+              <h2><span className="grp-title-name">{g.name}</span> {g.visibility === 'private' ? <Tag>私密</Tag> : <Tag>公开</Tag>}</h2>
+              <small className="grp-title-meta">
+                <button type="button" className="grp-number-copy" title="复制 QuantLab 群号" onClick={() => { copyText(g.quantlab_no).then(() => notify('群号已复制')).catch(() => undefined) }}>{g.quantlab_no || 'QLG-—'}</button>
+                <span>{g.description || '没有简介'} · {g.member_count} 名成员{g.my_role ? ` · 我是${ROLE_LABEL[g.my_role]}` : ''}</span>
+              </small>
             </>
           )}
         </div>
-        <div className="grp-avatars" title={(g.members ?? []).map((m) => m.name).join('、')}>
-          {(g.members ?? []).slice(0, 6).map((m) => <span key={m.user_id} className="ed-av">{m.name.slice(0, 1)}</span>)}
-          {(g.members?.length ?? 0) > 6 && <span className="ed-more">+{(g.members?.length ?? 0) - 6}</span>}
-        </div>
+        {!dm && (
+          <div className="grp-avatars" title={(g.members ?? []).map((m) => m.name).join('、')}>
+            {(g.members ?? []).slice(0, 6).map((m) => {
+              const info = memberInfo.get(m.user_id)
+              if (m.user_id === me.user.id) return <span key={m.user_id} className="grp-member-self" title={`${m.name}（我）`}><UserAvatar color={info?.avatar_color || m.avatar_color} size={28} title={m.name} /></span>
+              return (
+                <button key={m.user_id} type="button" className={`grp-member-av${info?.online ? ' online' : ''}`}
+                  title={`与 ${m.name} 私聊`} aria-label={`与 ${m.name} 私聊`} onClick={() => onStartDm(m.user_id)}>
+                  <UserAvatar color={info?.avatar_color || m.avatar_color} size={28} title={m.name} />
+                </button>
+              )
+            })}
+            {(g.members?.length ?? 0) > 6 && <span className="ed-more">+{(g.members?.length ?? 0) - 6}</span>}
+          </div>
+        )}
         {!isMember && g.visibility === 'open' && (
           <button type="button" className="button primary small" onClick={async () => {
             try { await collab.join(g.id); notify('已加入'); reload(); onChanged() } catch (e) { notify((e as Error).message, true) }
           }}>加入群组</button>
         )}
-        <MuteGroupButton g={g} notify={notify} />
+        {dm
+          ? peer && <MemberMuteButton member={peer} notify={notify} onChanged={onMembersChanged} />
+          : <div className="grp-head-actions">
+              {tab !== 'settings' && <MuteGroupButton g={g} notify={notify} />}
+              <SharePublicButton type="group" id={g.id} title={g.name} notify={notify} compact />
+            </div>}
       </header>
       <nav className="grp-tabs tabs flat" aria-label="群组">
         {tabs.map((t) => <button key={t.key} type="button" aria-pressed={tab === t.key} onClick={() => go(t.key)}>{t.label}{t.key === 'tasks' && g.open_tasks > 0 && <small> {g.open_tasks}</small>}</button>)}
       </nav>
       <div className="grp-body page-enter" key={tab}>
-        {tab === 'chat' && <Chat g={g} me={me} isMember={isMember} isMod={isMod} notify={notify} onChanged={onChanged} />}
+        {tab === 'chat' && <Chat g={g} me={me} members={members} isMember={isMember} isMod={isMod} notify={notify} onChanged={() => { reload(); onChanged() }} onStartDm={onStartDm} />}
         {tab === 'tasks' && <TaskBoard g={g} me={me} isMember={isMember} isMod={isMod} notify={notify} />}
         {tab === 'shared' && <Shared g={g} onNavigate={onNavigate} />}
         {tab === 'models' && <GroupModels g={g} isWsAdmin={me.workspace?.role === 'admin'} notify={notify} onSaved={reload} />}
-        {tab === 'settings' && <GroupSettings g={g} me={me} isMod={isMod} members={members} notify={notify}
-          onSaved={() => { reload(); onChanged() }} onLeft={() => { onChanged(); onNavigate('groups') }} />}
+        {tab === 'settings' && <GroupSettings g={g} me={me} isMod={isMod} members={members} notify={notify} onStartDm={onStartDm}
+          onMembersChanged={onMembersChanged} onSaved={() => { reload(); onChanged() }} onLeft={() => { onChanged(); onNavigate('groups') }} />}
       </div>
     </div>
   )
 }
 
-function MuteGroupButton({ g, notify }: { g: Group; notify: PageProps['notify'] }) {
+function MuteGroupButton({ g, notify, wide = false }: { g: Group; notify: PageProps['notify']; wide?: boolean }) {
   const [muted, setMuted] = useState<boolean | null>(null)
   useEffect(() => { inbox.mutes().then((r) => setMuted(r.mutes.some((m) => m.target_type === 'group' && m.target_id === g.id))).catch(() => undefined) }, [g.id])
   if (!g.my_role || muted === null) return null
   return (
-    <button type="button" className={`button small${muted ? ' on' : ''}`} title="屏蔽后不再收到这个群的 @ 与群通知（任务指派照常通知）"
+    <button type="button" className={`button small grp-notify-btn${muted ? ' on' : ''}${wide ? ' wide' : ''}`}
+      aria-pressed={muted} title="屏蔽后不再收到这个群的 @ 与群通知（任务指派照常通知）"
       onClick={async () => {
         try {
           if (muted) await inbox.unmute('group', g.id); else await inbox.mute('group', g.id, g.name)
           setMuted(!muted)
           notify(muted ? '已恢复群通知' : '已屏蔽群通知')
+          pingInbox()
         } catch (e) { notify((e as Error).message, true) }
-      }}>{muted ? '🔕 已屏蔽通知' : '🔔 群通知'}</button>
+      }}>
+      <Icon name={muted ? 'bell-off' : 'bell'} size={14} />
+      <span>{muted ? '已屏蔽通知' : '群通知'}</span>
+    </button>
+  )
+}
+
+function MemberMuteButton({ member, notify, onChanged, compact = false }: {
+  member: Pick<Member, 'user_id' | 'name' | 'muted'>; notify: PageProps['notify']; onChanged: () => void; compact?: boolean
+}) {
+  const [muted, setMuted] = useState<boolean>(!!member.muted)
+  useEffect(() => { setMuted(!!member.muted) }, [member.user_id, member.muted])
+  return (
+    <button type="button" className={`button small grp-user-mute${muted ? ' on' : ''}${compact ? ' compact' : ''}`}
+      aria-pressed={muted} title={muted ? `取消屏蔽 ${member.name}` : `屏蔽 ${member.name} 的 @ 与私聊提醒`}
+      onClick={async () => {
+        try {
+          if (muted) await inbox.unmute('user', member.user_id)
+          else await inbox.mute('user', member.user_id, member.name)
+          setMuted(!muted)
+          notify(muted ? `已取消屏蔽 ${member.name}` : `已屏蔽 ${member.name}`)
+          pingInbox()
+          onChanged()
+        } catch (e) { notify((e as Error).message, true) }
+      }}>
+      <Icon name={muted ? 'bell-off' : 'bell'} size={14} />
+      <span>{muted ? (compact ? '已屏蔽' : '取消屏蔽') : (compact ? '屏蔽' : '屏蔽提醒')}</span>
+    </button>
   )
 }
 
 /* ------------------------------------------------------------------ 讨论 */
-function Chat({ g, me, isMember, isMod, notify, onChanged }: {
-  g: Group; me: Me; isMember: boolean; isMod: boolean; notify: PageProps['notify']; onChanged: () => void
+function Chat({ g, me, members, isMember, isMod, notify, onChanged, onStartDm }: {
+  g: Group; me: Me; members: Member[]; isMember: boolean; isMod: boolean; notify: PageProps['notify']; onChanged: () => void; onStartDm: (uid: string) => void
 }) {
+  const adminIds = useMemo(() => new Set(members.filter((m) => m.role === 'admin').map((m) => m.user_id)), [members])
   const [msgs, setMsgs] = useState<Message[] | null>(null)
   const [pinned, setPinned] = useState<Message[]>([])
   const [text, setText] = useState('')
@@ -299,6 +399,7 @@ function Chat({ g, me, isMember, isMod, notify, onChanged }: {
       try { localStorage.removeItem(`qa.draft.group.${g.id}`) } catch { /* */ }
       stick.current = true
       scrollEnd()
+      onChanged()
     } catch (e) { notify((e as Error).message, true) } finally { setSending(false) }
   }
   const loadOlder = async () => {
@@ -313,6 +414,12 @@ function Chat({ g, me, isMember, isMod, notify, onChanged }: {
   }
   const act = async (fn: () => Promise<unknown>, ok?: string) => {
     try { await fn(); if (ok) notify(ok); const r = await collab.messages(g.id); setMsgs(r.messages); setPinned(r.pinned ?? []) } catch (e) { notify((e as Error).message, true) }
+  }
+  const reactQmoji = async (mid: number, emoji: string) => {
+    try {
+      const r = await collab.qmojiMessage(mid, emoji)
+      setMsgs((prev) => (prev ?? []).map((x) => (x.id === mid ? { ...x, reactions: r.reactions } : x)))
+    } catch (e) { notify((e as Error).message, true) }
   }
   const byId = useMemo(() => new Map((msgs ?? []).map((m) => [m.id, m])), [msgs])
 
@@ -355,7 +462,9 @@ function Chat({ g, me, isMember, isMod, notify, onChanged }: {
             <div key={m.id}>
               {sep && <div className="chat-day"><span>{day}</span></div>}
               <div className={`chat-msg${cont ? ' cont' : ''}${m.author_kind === 'agent' ? ' agent' : ''}${m.pinned ? ' pinned' : ''} anim-in`}>
-                <span className="chat-av" aria-hidden>{cont ? '' : m.author_kind === 'agent' ? <QuantBot size={26} state="idle" motion="low" /> : <span className="ed-av lg">{m.author_name.slice(0, 1)}</span>}</span>
+                <span className="chat-av">{cont ? '' : m.author_kind === 'agent' ? <QuantBot size={26} state="idle" motion="low" /> : mineMsg
+                  ? <UserAvatar color={g.members?.find((x) => x.user_id === m.author_id)?.avatar_color} size={30} title={m.author_name} />
+                  : <button type="button" className="chat-av-btn" title={`与 ${m.author_name} 私聊`} aria-label={`与 ${m.author_name} 私聊`} onClick={() => onStartDm(m.author_id)}><UserAvatar color={g.members?.find((x) => x.user_id === m.author_id)?.avatar_color} size={30} title={m.author_name} /></button>}</span>
                 <div className="chat-content">
                   {!cont && (
                     <div className="chat-meta">
@@ -368,14 +477,27 @@ function Chat({ g, me, isMember, isMod, notify, onChanged }: {
                   )}
                   {parent && <div className="chat-quote">回复 {parent.author_name}：{parent.deleted ? '（已撤回）' : parent.body.slice(0, 80)}</div>}
                   {m.deleted ? <div className="chat-deleted">消息已撤回</div>
-                    : hidden ? <button type="button" className="chat-muted" onClick={() => setShowMuted(new Set([...showMuted, m.id]))}>已屏蔽 {m.author_name} 的消息 · 点击显示</button>
+                    : hidden ? <button type="button" className="chat-muted" onClick={() => setShowMuted(new Set([...showMuted, m.id]))}><Icon name="bell-off" size={13} />已屏蔽 {m.author_name} 的消息 · 点击显示</button>
                       : <RichBody text={m.body} refs={m.refs} compact />}
                   {!m.deleted && isMember && (
                     <div className="chat-actions">
                       <button type="button" onClick={() => setReply(m)}>回复</button>
                       <button type="button" onClick={() => setTaskFrom(m)}>转为任务</button>
+                      {!mineMsg && m.author_kind === 'user' && !adminIds.has(m.author_id) && (
+                        <button type="button" onClick={() => act(
+                          async () => { if (m.muted) await inbox.unmute('user', m.author_id); else await inbox.mute('user', m.author_id, m.author_name); pingInbox() },
+                          m.muted ? `已取消屏蔽 ${m.author_name}` : `已屏蔽 ${m.author_name}`,
+                        )}>
+                          <Icon name={m.muted ? 'bell' : 'bell-off'} size={13} />{m.muted ? '取消屏蔽' : '屏蔽'}
+                        </button>
+                      )}
                       {isMod && <button type="button" onClick={() => act(() => collab.pinMessage(m.id), m.pinned ? '已取消置顶' : '已置顶')}>{m.pinned ? '取消置顶' : '置顶'}</button>}
                       {(mineMsg || isMod) && <button type="button" className="danger" onClick={async () => { if (await appConfirm('撤回这条消息？')) act(() => collab.deleteMessage(m.id), '已撤回') }}>撤回</button>}
+                    </div>
+                  )}
+                  {!m.deleted && isMember && (
+                    <div className="chat-qmoji-reactions">
+                      <QmojiReactionBar compact reactions={m.reactions ?? []} onToggle={(emoji) => reactQmoji(m.id, emoji)} />
                     </div>
                   )}
                 </div>
@@ -384,14 +506,16 @@ function Chat({ g, me, isMember, isMod, notify, onChanged }: {
           )
         })}
       </div>
-      {isMember ? (
+      {isMember ? (g.kind === 'dm' && g.dm_can_send === false ? (
+        <Callout tone="warn" title="暂时不能继续发送">{g.dm_reason || '对方尚未回复，或已关闭私信。等待对方回复后再继续。'}</Callout>
+      ) : (
         <div className="chat-composer">
           {reply && <div className="chat-replybar anim-in">回复 <b>{reply.author_name}</b>：{reply.body.slice(0, 60)} <button type="button" className="link-btn" onClick={() => setReply(null)}>取消</button></div>}
           <RichEditor compact rows={3} value={text} onChange={setText} refs={refs} onRefs={setRefs} onSubmit={send} mentions={mentions}
             draftKey={`group.${g.id}`} placeholder={`发消息到「${g.name}」… 输入 @ 提及成员`} notify={notify}
             footer={<button type="button" className="button small primary" disabled={sending || (!text.trim() && !refs.length)} onClick={send}>{sending ? '发送中…' : '发送'}</button>} />
         </div>
-      ) : <Callout>加入群组后可以发消息。</Callout>}
+      )) : <Callout>加入群组后可以发消息。</Callout>}
       {taskFrom && <TaskModal g={g} me={me} isMod={isMod} preset={{ title: taskFrom.body.split('\n')[0].slice(0, 60), description: `来自 ${taskFrom.author_name} 的消息：\n\n${taskFrom.body}`, refs: taskFrom.refs }}
         onClose={() => setTaskFrom(null)} notify={notify} onSaved={() => { setTaskFrom(null); notify('已创建任务') }} />}
     </div>
@@ -526,7 +650,7 @@ function TaskModal({ g, me, isMod, task, preset, onClose, onSaved, notify }: {
   )
 }
 
-function MyTasks({ onNavigate, notify, onChanged }: { onNavigate: (k: string) => void; notify: PageProps['notify']; onChanged: () => void }) {
+function MyTasks({ onNavigate, notify, onChanged, onOpenGroups }: { onNavigate: (k: string) => void; notify: PageProps['notify']; onChanged: () => void; onOpenGroups: () => void }) {
   const [tasks, setTasks] = useState<Task[] | null>(null)
   const [closed, setClosed] = useState(false)
   const load = useCallback(() => { collab.myTasks(closed).then((r) => setTasks(r.tasks)).catch((e) => notify(e.message, true)) }, [closed, notify])
@@ -534,6 +658,9 @@ function MyTasks({ onNavigate, notify, onChanged }: { onNavigate: (k: string) =>
   return (
     <div className="grp-view">
       <header className="grp-head">
+        <button type="button" className="grp-mobile-list" onClick={onOpenGroups} aria-label="打开群组列表">
+          <Icon name="teams" size={16} /><span>群组</span>
+        </button>
         <span className="grp-av big tasks" aria-hidden>☐</span>
         <div className="grp-title"><h2>我的任务</h2><small>所有群组里指派给我的任务，按优先级和截止时间排序</small></div>
         <label className="check"><input type="checkbox" checked={closed} onChange={(e) => setClosed(e.target.checked)} />显示已完成</label>
@@ -692,65 +819,181 @@ function GroupProviderForm({ groupId, notify, onDone, onCancel }: { groupId: str
 }
 
 /* ------------------------------------------------------------------ 设置 */
-function GroupSettings({ g, me, isMod, members, notify, onSaved, onLeft }: {
+function GroupSettings({ g, me, isMod, members, notify, onSaved, onLeft, onStartDm, onMembersChanged }: {
   g: Group; me: Me; isMod: boolean; members: Member[]; notify: PageProps['notify']; onSaved: () => void; onLeft: () => void
+  onStartDm: (uid: string) => void; onMembersChanged: () => void
 }) {
   const [name, setName] = useState(g.name)
   const [desc, setDesc] = useState(g.description)
   const [vis, setVis] = useState(g.visibility)
   const [adding, setAdding] = useState<string[]>([])
+  const [memberQ, setMemberQ] = useState('')
+  const [saving, setSaving] = useState(false)
+  const directory = useMemo(() => new Map(members.map((m) => [m.user_id, m])), [members])
   const inGroup = new Set((g.members ?? []).map((m) => m.user_id))
+  const showMembers = (g.members ?? []).filter((m) => {
+    const q = memberQ.trim().toLowerCase()
+    if (!q) return true
+    const info = directory.get(m.user_id)
+    return [m.name, info?.username, info?.role].some((v) => String(v ?? '').toLowerCase().includes(q))
+  })
+  const onlineCount = (g.members ?? []).filter((m) => directory.get(m.user_id)?.online).length
+  const dirty = name !== g.name || desc !== g.description || vis !== g.visibility
+  const canInvite = !!g.my_role && (isMod || g.visibility === 'open')
   const act = async (fn: () => Promise<unknown>, ok: string) => { try { await fn(); notify(ok); onSaved() } catch (e) { notify((e as Error).message, true) } }
-  const canInvite = g.my_role && (isMod || g.visibility === 'open')
+  const reset = () => { setName(g.name); setDesc(g.description); setVis(g.visibility) }
+  const save = async () => {
+    if (!isMod || !dirty || saving) return
+    setSaving(true)
+    try {
+      await collab.updateGroup(g.id, { name: name.trim(), description: desc.trim(), visibility: vis })
+      notify('群组资料已保存')
+      onSaved()
+    } catch (e) { notify((e as Error).message, true) } finally { setSaving(false) }
+  }
   return (
     <div className="grp-settings">
-      <section className="set-section">
-        <h3 className="section-title">基本信息</h3>
+      <div className="grp-settings-intro">
+        <div>
+          <h3>群组设置</h3>
+          <p>管理群组资料、通知偏好和成员权限。头像可发起私聊，铃铛按钮可屏蔽成员或群通知。</p>
+        </div>
+        <div className="grp-settings-stats" aria-label="群组概况">
+          <span><b>{g.member_count}</b><small>成员</small></span>
+          <span><b>{onlineCount}</b><small>在线</small></span>
+          <span><b>{g.open_tasks}</b><small>进行中任务</small></span>
+        </div>
+      </div>
+
+      <section className="set-section grp-set-card grp-identity-card">
+        <div className="grp-set-head">
+          <span className="grp-set-icon"><Icon name="teams" size={16} /></span>
+          <div><h3 className="section-title">QuantLab 群号</h3><p>群号可在公开目录中按名称或号码搜索；重新生成后旧群号立即失效。</p></div>
+        </div>
+        <div className="grp-number-row">
+          <code>{g.quantlab_no || 'QLG-—'}</code>
+          <button type="button" className="button small" onClick={() => { copyText(g.quantlab_no).then(() => notify('群号已复制')).catch(() => undefined) }}>复制群号</button>
+          {isMod && <button type="button" className="button small danger" onClick={async () => {
+            if (!await appConfirm(`重新生成「${g.name}」的 QuantLab 群号？旧号码会立即失效，群组与消息不受影响。`, { danger: true })) return
+            try { const r = await collab.rotateGroupNumber(g.id); notify(`新群号：${r.quantlab_no}`); onSaved() } catch (e) { notify((e as Error).message, true) }
+          }}>销毁并重新生成</button>}
+        </div>
+      </section>
+
+      <section className="set-section grp-set-card">
+        <div className="grp-set-head">
+          <span className="grp-set-icon"><Icon name="settings" size={16} /></span>
+          <div><h3 className="section-title">群组资料</h3><p>名称和可见性决定成员如何发现、加入这个群组。</p></div>
+        </div>
         <div className="form-grid">
           <label>名称<input value={name} disabled={!isMod} maxLength={40} onChange={(e) => setName(e.target.value)} /></label>
           <label>可见性<select value={vis} disabled={!isMod} onChange={(e) => setVis(e.target.value as 'open' | 'private')}>
             <option value="open">公开：工作区成员可发现、可加入</option><option value="private">私密：只能邀请加入</option>
           </select></label>
         </div>
-        <label style={{ marginTop: 10 }}>简介<input value={desc} disabled={!isMod} maxLength={500} onChange={(e) => setDesc(e.target.value)} /></label>
-        {isMod && <button type="button" className="button small primary" style={{ marginTop: 10 }} onClick={() => act(() => collab.updateGroup(g.id, { name, description: desc, visibility: vis }), '已保存')}>保存</button>}
-      </section>
-      <section className="set-section">
-        <h3 className="section-title">成员 · {g.members?.length ?? 0}</h3>
-        <div className="table-wrap">
-          <table>
-            <thead><tr><th>成员</th><th>群角色</th><th>加入时间</th><th /></tr></thead>
-            <tbody className="stagger">
-              {(g.members ?? []).map((m) => (
-                <tr key={m.user_id}>
-                  <td><span className="ed-av">{m.name.slice(0, 1)}</span> {m.name}{m.user_id === me.user.id && <small>（我）</small>}</td>
-                  <td>{isMod && m.role !== 'owner' ? (
-                    <select value={m.role} onChange={(e) => act(() => collab.setMemberRole(g.id, m.user_id, e.target.value as GroupRole), '已更新')}>
-                      <option value="admin">群管理员</option><option value="member">成员</option>
-                    </select>
-                  ) : ROLE_LABEL[m.role]}</td>
-                  <td>{since(m.joined_at)}</td>
-                  <td className="right">
-                    {g.my_role === 'owner' && m.role !== 'owner' && <button type="button" className="button small" onClick={async () => { if (await appConfirm(`把群主转让给 ${m.name}？你会变成群管理员。`)) act(() => collab.setMemberRole(g.id, m.user_id, 'owner'), '已转让') }}>转让群主</button>}
-                    {isMod && m.role !== 'owner' && m.user_id !== me.user.id && <button type="button" className="button small danger" onClick={async () => { if (await appConfirm(`把 ${m.name} 移出群组？`)) act(() => collab.removeMember(g.id, m.user_id), '已移出') }}>移出</button>}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        {canInvite && (
-          <div style={{ marginTop: 12 }}>
-            <div className="hint">邀请工作区成员加入</div>
-            {members.every((m) => inGroup.has(m.user_id))
-              ? <span className="hint">工作区成员都已在群里</span>
-              : <MemberPicker members={members} picked={adding} onChange={setAdding} exclude={[...inGroup]} />}
-            {adding.length > 0 && <button type="button" className="button small primary" style={{ marginTop: 8 }} onClick={() => act(async () => { await collab.addMembers(g.id, adding); setAdding([]) }, '已邀请')}>邀请 {adding.length} 人</button>}
+        <label className="grp-desc-field">简介<textarea rows={3} value={desc} disabled={!isMod} maxLength={500} onChange={(e) => setDesc(e.target.value)} placeholder="这个群讨论什么、如何协作" />
+          <small className="grp-char-count">{desc.length} / 500</small>
+        </label>
+        <div className="grp-set-meta">内部 ID <code>{g.id}</code> · {g.quantlab_no} · 创建于 {since(g.created_at)}</div>
+        {isMod && (
+          <div className="grp-savebar">
+            <span className={dirty ? 'dirty' : ''}>{dirty ? '有未保存的修改' : '群组资料已是最新'}</span>
+            <div className="button-row">
+              <button type="button" className="button small" disabled={!dirty || saving} onClick={reset}>恢复</button>
+              <button type="button" className="button small primary" disabled={!dirty || saving || !name.trim()} onClick={save}>{saving ? '保存中…' : '保存修改'}</button>
+            </div>
           </div>
         )}
       </section>
-      <section className="set-section danger-zone">
-        <h3 className="section-title">离开与解散</h3>
+
+      <section className="set-section grp-set-card">
+        <div className="grp-set-head">
+          <span className="grp-set-icon"><Icon name="bell" size={16} /></span>
+          <div><h3 className="section-title">通知偏好</h3><p>只影响你自己的通知中心，不改变其他成员设置。</p></div>
+        </div>
+        <div className="grp-pref-row">
+          <div className="grp-pref-copy">
+            <span className="grp-pref-avatar"><Icon name="bell-off" size={15} /></span>
+            <div><b>群通知</b><small>屏蔽后不再收到本群的 @ 与群通知；任务指派仍会通知。</small></div>
+          </div>
+          <MuteGroupButton g={g} notify={notify} wide />
+        </div>
+        <p className="hint grp-pref-hint">需要只屏蔽某个人时，在下方成员列表点铃铛，或在聊天消息的更多操作里屏蔽。</p>
+      </section>
+
+      <section className="set-section grp-set-card">
+        <div className="grp-set-head">
+          <span className="grp-set-icon"><Icon name="teams" size={16} /></span>
+          <div><h3 className="section-title">成员管理 · {g.members?.length ?? 0}</h3><p>{onlineCount} 人在线。点击头像或“私聊”即可发起一对一聊天。</p></div>
+        </div>
+        <div className="grp-member-tools">
+          <input className="search" value={memberQ} onChange={(e) => setMemberQ(e.target.value)} placeholder="搜索成员、用户名或角色" aria-label="搜索群组成员" />
+          <span className="hint">共 {showMembers.length} 人</span>
+        </div>
+        <div className="table-wrap grp-members-table">
+          <table>
+            <thead><tr><th>成员</th><th>状态</th><th>群角色</th><th>加入时间</th><th className="right">操作</th></tr></thead>
+            <tbody className="stagger">
+              {showMembers.map((m) => {
+                const info = directory.get(m.user_id)
+                const self = m.user_id === me.user.id
+                return (
+                  <tr key={m.user_id}>
+                    <td>
+                      <div className="grp-member-cell">
+                        {self
+                          ? <UserAvatar color={info?.avatar_color} size={28} title={`${m.name}（我）`} />
+                          : <button type="button" className={`grp-member-av${info?.online ? ' online' : ''}`} title={`与 ${m.name} 私聊`} aria-label={`与 ${m.name} 私聊`} onClick={() => onStartDm(m.user_id)}><UserAvatar color={info?.avatar_color || m.avatar_color} size={28} title={m.name} /></button>}
+                        <div className="grp-member-copy"><b>{m.name}{self && <small>（我）</small>}</b><small>{info?.username ? `@${info.username}` : ROLE_LABEL[m.role]}</small></div>
+                      </div>
+                    </td>
+                    <td>
+                      <span className={`grp-member-status${info?.online ? ' online' : ''}`}>
+                        <i aria-hidden />{info?.online ? '在线' : '离线'}
+                        {info?.muted && <em><Icon name="bell-off" size={11} />已屏蔽</em>}
+                      </span>
+                    </td>
+                    <td>{isMod && m.role !== 'owner' ? (
+                      <select value={m.role} aria-label={`设置 ${m.name} 的群角色`} onChange={(e) => act(() => collab.setMemberRole(g.id, m.user_id, e.target.value as GroupRole), '已更新群角色')}>
+                        <option value="admin">群管理员</option><option value="member">成员</option>
+                      </select>
+                    ) : <Tag tone={m.role === 'owner' ? 'ok' : undefined}>{ROLE_LABEL[m.role]}</Tag>}</td>
+                    <td><span className="grp-member-joined">{since(m.joined_at)}</span></td>
+                    <td className="right">
+                      <div className="grp-member-actions">
+                        {!self && <button type="button" className="button small grp-action-dm" onClick={() => onStartDm(m.user_id)}><Icon name="message" size={14} />私聊</button>}
+                        {!self && info && info.role !== 'admin' && <MemberMuteButton member={info} notify={notify} onChanged={onMembersChanged} compact />}
+                        {g.my_role === 'owner' && m.role !== 'owner' && <button type="button" className="button small" onClick={async () => { if (await appConfirm(`把群主转让给 ${m.name}？你会变成群管理员。`)) act(() => collab.setMemberRole(g.id, m.user_id, 'owner'), '已转让') }}>转让群主</button>}
+                        {isMod && m.role !== 'owner' && !self && <button type="button" className="button small danger" onClick={async () => { if (await appConfirm(`把 ${m.name} 移出群组？`)) act(() => collab.removeMember(g.id, m.user_id), '已移出') }}>移出</button>}
+                      </div>
+                    </td>
+                  </tr>
+                )
+              })}
+              {!showMembers.length && <tr><td colSpan={5}><div className="grp-members-empty">没有匹配的成员</div></td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      {canInvite && (
+        <section className="set-section grp-set-card">
+          <div className="grp-set-head">
+            <span className="grp-set-icon"><Icon name="teams" size={16} /></span>
+            <div><h3 className="section-title">邀请成员</h3><p>公开群所有成员都可邀请，私密群仅群主和群管理员可邀请。</p></div>
+          </div>
+          {members.every((m) => inGroup.has(m.user_id))
+            ? <span className="hint">工作区成员都已在群里</span>
+            : <MemberPicker members={members} picked={adding} onChange={setAdding} exclude={[...inGroup]} />}
+          {adding.length > 0 && <div className="grp-invitebar"><span>已选择 {adding.length} 人</span><div className="button-row"><button type="button" className="button small" onClick={() => setAdding([])}>清空</button><button type="button" className="button small primary" onClick={() => act(async () => { await collab.addMembers(g.id, adding); setAdding([]) }, '已邀请')}>邀请加入</button></div></div>}
+        </section>
+      )}
+
+      <section className="set-section grp-set-card danger-zone">
+        <div className="grp-set-head">
+          <span className="grp-set-icon danger"><Icon name="issues" size={16} /></span>
+          <div><h3 className="section-title">离开与解散</h3><p>退出后需要重新加入；解散会关闭群组但保留数据库中的消息与任务。</p></div>
+        </div>
         <div className="button-row">
           {g.my_role && g.my_role !== 'owner' && <button type="button" className="button danger" onClick={async () => {
             if (await appConfirm(`退出「${g.name}」？`)) { try { await collab.removeMember(g.id, me.user.id); onLeft() } catch (e) { notify((e as Error).message, true) } }

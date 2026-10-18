@@ -32,7 +32,7 @@ class MissionIn(BaseModel):
     preset: str | None = None
     stages: list[StageIn] | None = None
     synthesizer_id: str | None = None
-    symbol: str = "BTC/USDT"
+    symbol: str = ""
     timeframe: str = "1h"
     include_market_data: bool = True
     strategy: str | None = Field(None, description="附带一个模板策略的回测数据")
@@ -129,14 +129,14 @@ def _materials(payload: MissionIn) -> dict[str, Any]:
     s = get_services()
     out: dict[str, Any] = {}
     lab_p = _lab_project(payload)
-    if payload.include_market_data:
+    if payload.include_market_data and payload.symbol:
         try:
             # 讨论研究项目时用项目自己的数据窗口（与回测相同），而不是另取一段更短的
             bars = int((lab_p or {}).get("bars_limit") or 1500)
             out["market"] = s.market_summary(payload.symbol, payload.timeframe, bars)
         except Exception as exc:  # 行情失败不阻塞讨论
             out["market_error"] = str(exc)[:200]
-    if payload.strategy:
+    if payload.strategy and payload.symbol:
         try:
             res = s.run_backtest(
                 strategy_name=payload.strategy, symbol=payload.symbol, timeframe=payload.timeframe, persist=False

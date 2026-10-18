@@ -184,7 +184,7 @@ class FundingCache:
     def _path(self, exchange: str, symbol: str) -> Path:
         return self.root / f"{_key(exchange, symbol, 'funding')}.json"
 
-    def load(self, exchange: str, symbol: str) -> tuple[list[tuple[int, str]], int, int]:
+    def load(self, exchange: str, symbol: str) -> tuple[list[tuple[int, str, str]], int, int]:
         path = self._path(exchange, symbol)
         with self._lock:
             if not path.exists():
@@ -193,13 +193,21 @@ class FundingCache:
                 d = json.loads(path.read_text(encoding="utf-8"))
             except (json.JSONDecodeError, OSError):
                 return [], 0, 0
-        return [(int(t), str(r)) for t, r in d.get("rows", [])], int(d.get("start", 0)), int(d.get("end", 0))
+        return (
+            [(int(row[0]), str(row[1]), str(row[2]) if len(row) > 2 else "") for row in d.get("rows", []) if row],
+            int(d.get("start", 0)),
+            int(d.get("end", 0)),
+        )
 
-    def merge(self, exchange: str, symbol: str, rows: list[tuple[int, str]], start: int, end: int) -> None:
+    def merge(self, exchange: str, symbol: str, rows: list[tuple], start: int, end: int) -> None:
         old, lo, hi = self.load(exchange, symbol)
-        merged = {t: r for t, r in old}
-        for t, r in rows:
-            merged.setdefault(int(t), str(r))
+        merged = {t: (r, mark) for t, r, mark in old}
+        for row in rows:
+            if not row:
+                continue
+            t, r = int(row[0]), str(row[1])
+            mark = str(row[2]) if len(row) > 2 else ""
+            merged.setdefault(t, (r, mark))
         if old and lo <= end and start <= hi:  # 区间相连才合并覆盖范围，否则以新区间为准
             start, end = min(start, lo), max(end, hi)
         with self._lock:
@@ -213,7 +221,7 @@ class FundingCache:
                         "symbol": symbol,
                         "start": start,
                         "end": end,
-                        "rows": [[t, merged[t]] for t in sorted(merged)],
+                        "rows": [[t, merged[t][0], merged[t][1]] for t in sorted(merged)],
                     },
                     separators=(",", ":"),
                 ),

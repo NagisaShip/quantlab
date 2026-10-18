@@ -2,7 +2,7 @@
  * 工作区协作（群组 / 任务 / 可见性 / 编辑标记与血缘）、通知中心与屏蔽、问题报告与上传、部署运维控制台。
  */
 import { ApiError, currentWorkspace, del, get, post, put } from './http'
-import type { LimitRule, LimitStatus } from './api2'
+import type { LimitRule, LimitStatus } from './api/research'
 
 /** report：AI 研究室调研报告（id = 对话/报告）；link：站内任意页面（id 是不带 #/ 的路由） */
 export type RefType = 'backtest' | 'strategy' | 'code' | 'file' | 'post' | 'task' | 'project' | 'message' | 'report' | 'link'
@@ -17,7 +17,7 @@ export interface Ref {
   size?: number
 }
 
-export interface Member { user_id: string; name: string; username?: string; role: string; muted?: boolean; online?: boolean }
+export interface Member { user_id: string; name: string; username?: string; role: string; muted?: boolean; online?: boolean; avatar_color?: string }
 export type GroupRole = 'owner' | 'admin' | 'member'
 export interface Group {
   id: string
@@ -25,8 +25,12 @@ export interface Group {
   /** dm：两人私聊 */
   kind?: 'group' | 'dm'
   peer?: { user_id: string; name: string } | null
+  dm_can_send?: boolean
+  dm_reason?: string
+  dm_policy?: 'reply_only' | 'open' | 'none'
   description: string
   visibility: 'open' | 'private'
+  quantlab_no: string
   owner_id: string
   created_at: number
   archived: boolean
@@ -37,8 +41,10 @@ export interface Group {
   last_message: { body: string; author: string; at: number } | null
   ws_limits: LimitRule[]
   member_limits: LimitRule[]
-  members?: { user_id: string; name: string; role: GroupRole; joined_at: number }[]
+  members?: { user_id: string; name: string; role: GroupRole; joined_at: number; avatar_color?: string }[]
 }
+export interface QmojiReaction { emoji: string; count: number; mine: boolean }
+
 export interface Message {
   id: number
   group_id: string
@@ -53,6 +59,7 @@ export interface Message {
   edited_at: number | null
   deleted: boolean
   muted?: boolean
+  reactions: QmojiReaction[]
 }
 export type TaskStatus = 'todo' | 'doing' | 'review' | 'done' | 'cancelled'
 export type TaskPriority = 'low' | 'normal' | 'high' | 'urgent'
@@ -129,7 +136,7 @@ export interface InboxSummary {
   open_issues?: number
 }
 
-export interface Upload { id: string; filename: string; mime: string; size: number; url?: string }
+export interface Upload { id: string; filename: string; mime: string; size: number; url?: string; thumb_url?: string | null }
 export interface Issue {
   id: string
   workspace_id: string | null
@@ -151,7 +158,7 @@ export interface Issue {
 }
 
 export const NOTIFY_KIND_LABEL: Record<string, string> = {
-  mention: '@我的', task: '任务', group: '群组', comment: '评论与回复', like: '点赞与克隆', share: '共享',
+  mention: '@我的', dm: '私聊', task: '任务', group: '群组', comment: '评论与回复', like: '点赞与克隆', follow: '关注', share: '共享',
   issue: '问题报告', announce: '公告', system: '系统',
 }
 export const TASK_COLUMNS: { key: TaskStatus; label: string }[] = [
@@ -166,6 +173,19 @@ const q = (o: Record<string, unknown>) => {
   return s ? `?${s}` : ''
 }
 
+export type PublicShareType = 'group' | 'user' | 'post' | 'strategy'
+export interface PublicShareCreated { token: string; title: string; route: string; type: PublicShareType }
+export interface DirectoryUser {
+  id: string
+  name: string
+  username: string
+  quantlab_uid: string
+  bio: string
+  avatar_color: string
+  role: string
+}
+export interface DiscoverResult { query: string; groups: Group[]; users: DirectoryUser[] }
+
 export const collab = {
   members: (query = '') => get<{ members: Member[] }>(`/api/collab/members${q({ q: query || undefined })}`),
   /** 打开（没有就新建）与某位成员的私聊 */
@@ -177,6 +197,7 @@ export const collab = {
   presence: (p: { object_type: string; object_id: string; editing?: boolean; leave?: boolean }) =>
     post<{ others: { user_id: string; name: string; editing: boolean }[] }>('/api/collab/presence', p),
   groups: () => get<{ groups: Group[] }>('/api/collab/groups'),
+  discover: (query = '') => get<DiscoverResult>(`/api/collab/discover${q({ q: query || undefined })}`),
   group: (id: string) => get<{ group: Group }>(`/api/collab/groups/${id}`),
   createGroup: (p: { name: string; description?: string; visibility: 'open' | 'private'; members?: string[] }) =>
     post<{ group: Group }>('/api/collab/groups', p),
@@ -184,6 +205,9 @@ export const collab = {
     put<{ group: Group }>(`/api/collab/groups/${id}`, p),
   setGroupQuota: (id: string, ws_limits: LimitRule[]) => put<{ group: Group }>(`/api/collab/groups/${id}/quota`, { ws_limits }),
   archiveGroup: (id: string) => del<{ ok: boolean }>(`/api/collab/groups/${id}`),
+  rotateGroupNumber: (id: string) => post<{ quantlab_no: string }>(`/api/collab/groups/${id}/number/rotate`, {}),
+  createPublicShare: (object_type: PublicShareType, object_id: string) => post<{ share: PublicShareCreated }>('/api/collab/public-shares', { object_type, object_id }),
+  revokePublicShare: (token: string) => del<{ ok: boolean }>(`/api/collab/public-shares/${encodeURIComponent(token)}`),
   join: (id: string) => post<{ group: Group }>(`/api/collab/groups/${id}/join`),
   addMembers: (id: string, user_ids: string[]) => post<{ added: string[]; group: Group }>(`/api/collab/groups/${id}/members`, { user_ids }),
   removeMember: (id: string, uid: string) => del<{ ok: boolean }>(`/api/collab/groups/${id}/members/${uid}`),
@@ -195,6 +219,7 @@ export const collab = {
   editMessage: (mid: number, body: string) => put<{ message: Message }>(`/api/collab/messages/${mid}`, { body }),
   deleteMessage: (mid: number) => del<{ ok: boolean }>(`/api/collab/messages/${mid}`),
   pinMessage: (mid: number) => post<{ pinned: boolean }>(`/api/collab/messages/${mid}/pin`),
+  qmojiMessage: (mid: number, emoji: string) => post<{ emoji: string; on: boolean; count: number; reactions: QmojiReaction[] }>(`/api/collab/messages/${mid}/qmoji`, { emoji }),
   markRead: (id: string, last_id: number) => post<{ ok: boolean }>(`/api/collab/groups/${id}/read`, { last_id }),
   tasks: (id: string) => get<{ tasks: Task[] }>(`/api/collab/groups/${id}/tasks`),
   myTasks: (include_closed = false) => get<{ tasks: Task[] }>(`/api/collab/tasks/mine${q({ include_closed })}`),
@@ -273,6 +298,7 @@ export async function uploadFile(file: File): Promise<Upload> {
   return (await res.json()).file as Upload
 }
 export const uploadUrl = (id: string) => `/api/uploads/${id}`
+export const uploadThumbUrl = (id: string) => `/api/uploads/${id}/thumb`
 export const fmtSize = (n: number) => (n >= 1 << 20 ? `${(n / (1 << 20)).toFixed(1)} MB` : n >= 1024 ? `${Math.round(n / 1024)} KB` : `${n} B`)
 
 /* ------------------------------------------------------------------ 运维控制台 */

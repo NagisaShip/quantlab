@@ -95,10 +95,27 @@ def _backtest_checks(store: Any, slug: str, cfg: dict[str, Any]) -> tuple[list[d
             f"≤ {cfg['max_drawdown_backtest']:.0%}",
         ),
     ]
+    rv = last.get("review") or {}
+    if rv:
+        ok = rv.get("verdict") in ("pass", "conditional") and not rv.get("blocks_promotion")
+        checks.append(
+            _check(
+                "研究审查",
+                ok,
+                f"{rv.get('verdict')}（阻断 {int((rv.get('summary') or {}).get('block') or 0)} 项）"
+                if not ok
+                else str(rv.get("verdict")),
+                "无阻断项",
+            )
+        )
+    else:
+        # 旧记录没有审查卡：不阻断历史策略，但新回测都会生成审查卡。
+        checks.append(_check("研究审查", True, "没有审查卡（旧记录兼容）", "新回测自动生成"))
     ck, ck_ev = _checkup_check(store, slug)
     checks.append(ck)
     return checks, {
         "backtest_id": last.get("id"),
+        "review": rv or None,
         "sharpe": m.get("sharpe"),
         "dsr": dsr,
         # 关卡只看「最近一次成功回测」这一段样本；体检跑的是自己的样本，两者成绩不能直接对比

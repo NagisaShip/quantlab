@@ -25,8 +25,24 @@ YEAR_MS = 365 * 86_400_000
 
 #: 界面与模型工具里给出的常用周期（不限于这些：任何合法写法都能用）
 TIMEFRAME_CHOICES = (
-    "100ms", "250ms", "500ms", "1s", "5s", "15s", "30s",
-    "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d",
+    "100ms",
+    "250ms",
+    "500ms",
+    "1s",
+    "5s",
+    "15s",
+    "30s",
+    "1m",
+    "3m",
+    "5m",
+    "15m",
+    "30m",
+    "1h",
+    "2h",
+    "4h",
+    "6h",
+    "12h",
+    "1d",
 )
 #: 秒级以下（含 1 分钟以下）——回测按逐笔或秒线聚合，提示词与界面要提醒数据量与成本
 SUB_MINUTE_HINT = "秒级 / 毫秒级周期由 1 秒 K 线或逐笔成交聚合而成，单次最多 5000 根；只有 Binance 提供这类数据"
@@ -48,7 +64,9 @@ def is_timeframe(tf: str) -> bool:
 def check_timeframe(tf: str) -> str:
     """pydantic 校验器：不合法时给出可读的报错。"""
     if not is_timeframe(tf):
-        raise ValueError(f"不支持的周期 {tf!r}：写成 数字+单位（ms / s / m / h / d），例如 100ms、1s、5m、4h；最细 {MIN_TIMEFRAME_MS}ms")
+        raise ValueError(
+            f"不支持的周期 {tf!r}：写成 数字+单位（ms / s / m / h / d），例如 100ms、1s、5m、4h；最细 {MIN_TIMEFRAME_MS}ms"
+        )
     return tf
 
 

@@ -1,6 +1,6 @@
 /** 历史实验（只读）：原「统一赛道」留下的单次实验与批次成绩，保留查看，不再新增。 */
 import { Fragment, useEffect, useState } from 'react'
-import { api, pct, ratio, shortTime, type Leaderboard } from '../../api'
+import { api, pct, ratio, shortTime, type Leaderboard } from '../../api/core'
 import { EmptyState, Loading, Panel } from '../../components/ui'
 
 type RunRow = Awaited<ReturnType<typeof api.runs>>['runs'][number]

@@ -1,0 +1,106 @@
+/* Mobile wide tables become stacked cards. No horizontal scroll is introduced. */
+@media (max-width: 900px) {
+  .table-wrap:has(> table[data-mobile-cards="true"]) { overflow: visible; }
+
+  table[data-mobile-cards="true"] {
+    display: block;
+    width: 100%;
+    min-width: 0;
+    table-layout: auto;
+    border-collapse: separate;
+    border-spacing: 0;
+  }
+  table[data-mobile-cards="true"] thead { display: none; }
+  table[data-mobile-cards="true"] tbody { display: grid; gap: 10px; }
+  table[data-mobile-cards="true"] tbody > tr {
+    position: relative;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0 12px;
+    padding: 12px;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: var(--sheet);
+    overflow: hidden;
+  }
+  table[data-mobile-cards="true"] tbody > tr:hover td { background: transparent; }
+  table[data-mobile-cards="true"] td {
+    display: grid;
+    align-content: start;
+    gap: 2px;
+    min-width: 0;
+    margin: 0;
+    padding: 7px 0;
+    border-bottom: 1px solid var(--line-2);
+    text-align: left !important;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    vertical-align: top;
+  }
+  table[data-mobile-cards="true"] td::before {
+    content: attr(data-label);
+    display: block;
+    color: var(--faint);
+    font-size: 10px;
+    font-weight: 500;
+    line-height: 1.3;
+    letter-spacing: .04em;
+  }
+  table[data-mobile-cards="true"] td:empty { display: none; }
+
+  table[data-mobile-cards="true"] td.mobile-card-title,
+  table[data-mobile-cards="true"] td.mobile-card-wide,
+  table[data-mobile-cards="true"] td.mobile-card-actions {
+    grid-column: 1 / -1;
+  }
+  table[data-mobile-cards="true"] td.mobile-card-title {
+    padding: 0 42px 9px 0;
+    border-bottom: 1px solid var(--line);
+    color: var(--ink);
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 1.45;
+  }
+  table[data-mobile-cards="true"] td.mobile-card-title::before { display: none; }
+  table[data-mobile-cards="true"] td.mobile-card-title a { font-size: 14px; }
+  table[data-mobile-cards="true"] td.mobile-card-title small {
+    margin-top: 4px;
+    font-weight: 400;
+    line-height: 1.55;
+  }
+  table[data-mobile-cards="true"] td.mobile-card-leading {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    z-index: 1;
+    display: block;
+    width: auto;
+    padding: 0;
+    border: 0;
+  }
+  table[data-mobile-cards="true"] td.mobile-card-leading::before { display: none; }
+  table[data-mobile-cards="true"] td.mobile-card-actions {
+    display: flex;
+    justify-content: flex-end;
+    padding: 9px 0 0;
+    border-bottom: 0;
+  }
+  table[data-mobile-cards="true"] td.mobile-card-actions::before { display: none; }
+  table[data-mobile-cards="true"] .row-actions,
+  table[data-mobile-cards="true"] .button-row { flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+  table[data-mobile-cards="true"] .row-actions .button,
+  table[data-mobile-cards="true"] .button-row .button { flex: 0 1 auto; }
+
+  table[data-mobile-cards="true"] tr.sub-row,
+  table[data-mobile-cards="true"] tr.sub-row td { display: block; }
+  table[data-mobile-cards="true"] tr.sub-row { padding: 0; border: 0; background: transparent; }
+  table[data-mobile-cards="true"] tr.sub-row td { grid-column: 1 / -1; }
+}
+
+@media (max-width: 380px) {
+  table[data-mobile-cards="true"] tbody > tr { grid-template-columns: minmax(0, 1fr); }
+  table[data-mobile-cards="true"] td.mobile-card-title,
+  table[data-mobile-cards="true"] td.mobile-card-wide,
+  table[data-mobile-cards="true"] td.mobile-card-actions { grid-column: 1; }
+}
