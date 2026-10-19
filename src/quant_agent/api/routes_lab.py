@@ -508,7 +508,9 @@ def _lab() -> StrategyLab:
         platform_tools=True,
         load_result=lambda bt_id: s.store.get_blob("backtests", bt_id),
     )
-    return StrategyLab(s.router, LabStore(s.store), tools)
+    from .routes_collab import claim_new
+
+    return StrategyLab(s.router, LabStore(s.store, on_create=lambda pid: claim_new("project", pid)), tools)
 
 
 def _stage_project(kind: str, payload: dict) -> tuple[StrategyLab, dict]:

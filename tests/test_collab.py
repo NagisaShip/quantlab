@@ -171,7 +171,7 @@ def test_strategy_and_project_visibility(app):
 
     # 研究项目同样可以设为仅自己
     pid = a.post("/api/lab/projects", json={"title": "私人研究"}).json()["project"]["id"]
-    assert any(p["id"] == pid for p in b.get("/api/lab/projects").json()["projects"])
+    assert all(p["id"] != pid for p in b.get("/api/lab/projects").json()["projects"])
     a.put(f"/api/collab/shares/project/{pid}", json={"visibility": "private"})
     assert all(p["id"] != pid for p in b.get("/api/lab/projects").json()["projects"])
     assert b.get(f"/api/lab/projects/{pid}").status_code == 403

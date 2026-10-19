@@ -11,6 +11,7 @@ import re
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from typing import Any
 
 COLLECTION = "lab_projects"
@@ -51,7 +52,8 @@ def _now() -> float:
 
 
 class LabStore:
-    def __init__(self, store: Any) -> None:
+    def __init__(self, store: Any, *, on_create: Callable[[str], None] | None = None) -> None:
+        self.on_create = on_create
         self.store = store  # JsonStore 或 WorkspaceStore（按请求上下文解析工作区）
 
     # ---- 项目 ----
@@ -63,6 +65,8 @@ class LabStore:
         return self.store.get(COLLECTION, pid)
 
     def save(self, project: dict[str, Any]) -> dict[str, Any]:
+        if self.on_create is not None and self.get(project["id"]) is None:
+            self.on_create(project["id"])
         project["updated_at"] = _now()
         self.store.upsert(COLLECTION, project)
         return project

@@ -581,6 +581,7 @@ class ShowcaseIn(BaseModel):
 
 
 class ProfileIn(BaseModel):
+    conversation_visibility: Literal["private", "workspace"] | None = None
     avatar_url: str | None = Field(None, max_length=200)
     name: str = Field(..., min_length=1, max_length=30)
     bio: str = Field("", max_length=200)

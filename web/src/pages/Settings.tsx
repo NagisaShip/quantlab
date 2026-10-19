@@ -1519,6 +1519,8 @@ function PublicProfileSection({ me, notify, onSaved }: { me: Me; notify: PagePro
   const [catalogSearch, setCatalogSearch] = useState('')
   const [catalogError, setCatalogError] = useState('')
   const catalogQuery = useDebouncedValue(catalogSearch)
+  const avatarInput = useRef<HTMLInputElement>(null)
+  const [conversationVisibility, setConversationVisibility] = useState<'private' | 'workspace'>('private')
   const [avatar, setAvatar] = useState('')
   const [uploadingAvatar, setUploadingAvatar] = useState(false)
   const [color, setColor] = useState(me.user.avatar_color || '#2E5C9A')
@@ -1536,6 +1538,7 @@ function PublicProfileSection({ me, notify, onSaved }: { me: Me; notify: PagePro
       setBio(r.profile.bio || '')
       setPolicy(r.profile.dm_policy)
       setAvatar(r.profile.avatar_url || '')
+      setConversationVisibility(r.profile.conversation_visibility || 'private')
       setColor(r.profile.avatar_color || '#2E5C9A')
       setPublicProfile(!!r.profile.public_profile)
       setUid(r.profile.quantlab_uid || '')
@@ -1560,7 +1563,7 @@ function PublicProfileSection({ me, notify, onSaved }: { me: Me; notify: PagePro
   const save = async () => {
     setBusy(true)
     try {
-      await v3.saveProfile({ name: name.trim(), bio, dm_policy: policy, avatar_url: avatar, avatar_color: color, public_profile: publicProfile, showcase })
+      await v3.saveProfile({ name: name.trim(), bio, dm_policy: policy, conversation_visibility: conversationVisibility, avatar_url: avatar, avatar_color: color, public_profile: publicProfile, showcase })
       notify('个人资料已保存')
       onSaved()
     } catch (e) { notify((e as Error).message, true) } finally { setBusy(false) }
@@ -1573,14 +1576,17 @@ function PublicProfileSection({ me, notify, onSaved }: { me: Me; notify: PagePro
       <div className="profile-avatar-editor">
         <UserAvatar src={avatar} color={color} size={72} title={name} />
         <div><b>个人头像</b><p className="hint">PNG、JPEG、WebP 或 GIF，最大 2 MB</p>
-          <label className="button small">{uploadingAvatar ? '上传中…' : '上传头像'}<input hidden type="file" accept="image/png,image/jpeg,image/webp,image/gif" disabled={uploadingAvatar} onChange={async (e) => {
+          <div className="profile-avatar-actions">
+          <button type="button" className="button small primary" disabled={uploadingAvatar || busy} onClick={() => avatarInput.current?.click()}>{uploadingAvatar ? '上传中…' : (avatar ? '更换头像' : '上传头像')}</button>
+          <input ref={avatarInput} hidden aria-label="选择个人头像图片" type="file" accept="image/png,image/jpeg,image/webp,image/gif" disabled={uploadingAvatar} onChange={async (e) => {
             const file = e.target.files?.[0]; e.target.value = ''
             if (!file) return
             if (!['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(file.type) || file.size > 2 * 1024 * 1024) { notify('请选择 2 MB 以内的图片', true); return }
             setUploadingAvatar(true)
             try { const result = await uploadFile(file); setAvatar(result.url || `/api/uploads/${result.id}`) } catch (error) { notify((error as Error).message, true) } finally { setUploadingAvatar(false) }
-          }} /></label>
-          {avatar && <button type="button" className="link" onClick={() => setAvatar('')}>恢复默认头像</button>}
+          }} />
+          {avatar && <button type="button" className="button small" disabled={uploadingAvatar || busy} onClick={() => setAvatar('')}>恢复默认头像</button>}
+          </div>
         </div>
       </div>
       <Field label="显示名"><input value={name} maxLength={30} onChange={(e) => setName(e.target.value)} /></Field>
@@ -1590,6 +1596,12 @@ function PublicProfileSection({ me, notify, onSaved }: { me: Me; notify: PagePro
         <div className="hint" style={{ marginBottom: 4 }}>头像颜色</div>
         <AvatarColorPicker value={color} onChange={setColor} />
       </div>
+      <div style={{ height: 12 }} />
+      <Field label="新对话默认可见性" hint="仅影响之后新建和分叉的对话；现有对话保持原设置，可在各对话的共享设置中调整。">
+        <select aria-label="新对话默认可见性" value={conversationVisibility} onChange={e => setConversationVisibility(e.target.value as 'private' | 'workspace')}>
+          <option value="private">私密（仅自己）</option><option value="workspace">工作区成员可见</option>
+        </select>
+      </Field>
       <div style={{ height: 12 }} />
       <Field label="谁能私信我">
         <select value={policy} onChange={(e) => setPolicy(e.target.value as typeof policy)}>

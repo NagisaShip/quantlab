@@ -6049,5 +6049,11 @@
  "研究成果板块": "Research sections",
  "查看详情": "View details",
  "交流与协作": "Discussion and collaboration",
- "关注研究进展，讨论思路与验证结果": "Follow research progress and discuss validation results"
+ "关注研究进展，讨论思路与验证结果": "Follow research progress and discuss validation results",
+ "更换头像": "Change photo",
+ "选择个人头像图片": "Select a profile photo",
+ "新对话默认可见性": "Default conversation visibility",
+ "私密（仅自己）": "Private (only me)",
+ "工作区成员可见": "Visible to workspace members",
+ "仅影响之后新建和分叉的对话；现有对话保持原设置，可在各对话的共享设置中调整。": "Applies to new conversations and forks. Existing conversations keep their settings, which can be changed individually."
 }

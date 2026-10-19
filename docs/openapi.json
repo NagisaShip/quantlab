@@ -31788,6 +31788,21 @@
    },
    "ProfileIn": {
     "properties": {
+     "conversation_visibility": {
+      "anyOf": [
+       {
+        "type": "string",
+        "enum": [
+         "private",
+         "workspace"
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Conversation Visibility"
+     },
      "avatar_url": {
       "anyOf": [
        {

@@ -4,7 +4,7 @@
 - 群组：工作区内自由组建；公开群可被发现、直接加入，私密群只能由群主 / 群管理员拉人；
   群聊支持 Markdown 与引用（回测、策略、代码、文件、帖子、任务），@某人 / @所有人 会进通知中心；
 - 任务摊派：群组内的任务看板（待办 → 进行中 → 待验收 → 完成），指派、改状态都会通知相关人；
-- 可见性：策略 / 研究项目默认在工作区内公开（与旧版本行为一致），作者可以改为仅自己或指定群组；
+- 可见性：策略默认工作区可见，研究对话默认私密（可在个人设置中调整），作者可以改为仅自己或指定群组；
 - 编辑人员标记：每次保存记一笔「谁（人还是 Agent）在什么时候改出了哪个版本、派生自哪里」，
   策略血缘图与文件上的编辑者头像都来自这里；
 - 通知中心：站内信箱，支持按人 / 群组 / 类型 / 帖子屏蔽；
@@ -1202,20 +1202,22 @@ class CollabService:
         )
         return row["user_id"] if row else None
 
-    def claim(self, ws: str, object_type: str, object_id: str, owner_id: str) -> None:
-        """新建对象时登记所有者（默认在工作区内公开，与旧版本行为一致）。已有记录不覆盖。"""
+    def claim(self, ws: str, object_type: str, object_id: str, owner_id: str, *, visibility: str | None = None) -> None:
+        """新建对象时登记所有者：对话默认私密，策略默认工作区可见。已有记录不覆盖。"""
         if object_type not in SHARE_TYPES or not owner_id or owner_id == "system":
             return
         if self.share(ws, object_type, object_id):
             return
-        try:
-            self.db.execute(
-                "INSERT INTO collab_shares (workspace_id, object_type, object_id, owner_id, visibility, group_ids, "
-                "updated_at) VALUES (?,?,?,?,?,?,?)",
-                (ws, object_type, object_id, owner_id, "workspace", "[]", now_ms()),
-            )
-        except Exception:  # 并发首存：另一请求已登记
-            pass
+        visibility = (
+            visibility
+            if visibility in ("private", "workspace")
+            else ("private" if object_type == "project" else "workspace")
+        )
+        self.db.execute(
+            "INSERT INTO collab_shares (workspace_id, object_type, object_id, owner_id, visibility, group_ids, "
+            "updated_at) VALUES (?,?,?,?,?,?,?) ON CONFLICT (workspace_id, object_type, object_id) DO NOTHING",
+            (ws, object_type, object_id, owner_id, visibility, "[]", now_ms()),
+        )
 
     def set_share(
         self,

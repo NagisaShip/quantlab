@@ -335,6 +335,8 @@ def put_profile(payload: ProfileIn) -> dict:
     legacy = _store().get(Collections.PROFILE, ctx.user_id) or {}
     if payload.avatar_url is not None:
         legacy["avatar_url"] = payload.avatar_url
+    if payload.conversation_visibility is not None:
+        legacy["conversation_visibility"] = payload.conversation_visibility
     _store().upsert(Collections.PROFILE, {**legacy, "id": ctx.user_id, "bio": payload.bio.strip()})
     return {"profile": me()}
 

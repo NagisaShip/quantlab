@@ -92,12 +92,16 @@ class SocialService:
         row = self._ensure_profile(ws, user_id)
         policy = row.get("dm_policy") if row.get("dm_policy") in DM_POLICIES else "reply_only"
         color = row.get("avatar_color") if str(row.get("avatar_color") or "").startswith("#") else "#2E5C9A"
+        legacy = self.store.for_workspace(ws).get(Collections.PROFILE, user_id) or {}
         return {
+            "conversation_visibility": "workspace"
+            if legacy.get("conversation_visibility") == "workspace"
+            else "private",
             "bio": row.get("bio") or "",
             "dm_policy": policy,
             "dm_policy_label": DM_POLICIES[policy],
             "avatar_color": color,
-            "avatar_url": (self.store.for_workspace(ws).get(Collections.PROFILE, user_id) or {}).get("avatar_url", ""),
+            "avatar_url": legacy.get("avatar_url", ""),
             "public_profile": bool(row.get("public_profile")),
             "showcase": normalize_showcase(jload(row.get("showcase"), None)),
         }

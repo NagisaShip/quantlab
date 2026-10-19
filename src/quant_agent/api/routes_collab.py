@@ -795,7 +795,12 @@ def filter_visible(object_type: str, items: list[dict[str, Any]], key: str) -> l
 def claim_new(object_type: str, object_id: str) -> None:
     ctx = context.current()
     if ctx.workspace_id and ctx.user_id:
-        _c().claim(ctx.workspace_id, object_type, object_id, ctx.user_id)
+        visibility = None
+        if object_type == "project":
+            visibility = (
+                get_services().social.profile(ctx.workspace_id, ctx.user_id).get("conversation_visibility", "private")
+            )
+        _c().claim(ctx.workspace_id, object_type, object_id, ctx.user_id, visibility=visibility)
 
 
 # ---------------------------------------------------------------------------
