@@ -5,16 +5,17 @@ import {
   type Account, type AuditItem, type Invite, type Me, type Member, type NetworkStatus, type Role, type Run, type RunEvent,
   type TotpStatus, type UsageItem, type UsagePanel as UsagePanelData,
 } from '../api/platform'
-import { LimitBars, LimitEditor, MEMBER_METRICS, METRIC_LABEL, UsageSummary, WINDOWS, fmtCost, fmtTokens, fmtLimitValue, metricUnit, fmtStorageBytes, editorUnit, storageBytesFromInput, storageInputValue } from '../components/modelUsage'
+import { LimitBars, LimitEditor, MEMBER_METRICS, METRIC_LABEL, RecordComposition, UsageComposition, UsageSummary, WINDOWS, fmtCost, fmtTokens, fmtLimitValue, metricUnit, fmtStorageBytes, editorUnit, storageBytesFromInput, storageInputValue } from '../components/modelUsage'
 import { Callout, EmptyState, Field, Heading, Loading, Modal, Panel, Tag } from '../components/ui'
 import { SETTINGS_GROUPS } from '../components/SettingsShell'
 import NodeTab from './NodeTab'
+import QRCode from '../components/QRCode'
 import LabPrefsTab from './settings/LabPrefs'
 import PrivacyTab from './settings/Privacy'
 import type { PageProps } from './types'
-import { appConfirm } from '../components/dialog'
+import { appConfirm, appPrompt } from '../components/dialog'
 import { tData } from '../i18n'
-import { memberDefaults } from '../apiCollab'
+import { admin, memberDefaults } from '../apiCollab'
 import { useDebouncedValue } from '../useDebouncedValue'
 
 type Tab = 'workspace' | 'quota' | 'retention' | 'members' | 'runs' | 'node' | 'audit' | 'system' | 'account' | 'lab' | 'privacy'
@@ -24,7 +25,7 @@ const TABS: { key: Tab; label: string }[] = SETTINGS_GROUPS
   .filter((item) => item.key.startsWith('settings/'))
   .map((item) => ({ key: item.key.slice('settings/'.length) as Tab, label: item.label }))
 const ROLE_LABEL: Record<Role, string> = { admin: '管理员', member: '成员', reviewer: '审阅者（只读）' }
-const INVITE_STATUS_LABEL: Record<Invite['status'], string> = { active: '可使用', used: '已使用', expired: '已过期', revoked: '已撤销' }
+const INVITE_STATUS_LABEL: Record<Invite['status'], string> = { active: '可使用', used: '已用尽', expired: '已过期', revoked: '已撤销' }
 const INVITE_STATUS_TONE: Record<Invite['status'], string> = { active: 'ok', used: '', expired: 'warn', revoked: 'fail' }
 const INVITE_EXPIRY_OPTIONS = [
   { hours: 1, label: '1 小时' },
@@ -41,6 +42,11 @@ function inviteRemainingText(i: Invite) {
   return hours >= 48 ? `剩余约 ${Math.ceil(hours / 24)} 天` : `剩余约 ${hours} 小时`
 }
 
+function inviteRemainingUses(i: Invite): string {
+  if (i.max_uses === 0) return '不限'
+  return `${Math.max(0, i.remaining_uses ?? i.max_uses - i.invited_count)} 人`
+}
+
 export default function SettingsPage({ tab, me, onNavigate, notify, onMeChanged }: PageProps & { tab?: string; me: Me; onMeChanged: () => void }) {
   const current = (TABS.find((t) => t.key === tab)?.key ?? 'workspace') as Tab
   const isAdmin = me.workspace?.role === 'admin'
@@ -48,7 +54,7 @@ export default function SettingsPage({ tab, me, onNavigate, notify, onMeChanged 
     <div className="settings-page">
       <Heading
         title={TABS.find((t) => t.key === current)!.label}
-        description={current === 'account' ? undefined : current === 'lab' ? '只保存在这台设备的浏览器里，和对话框底栏里的开关同步' : <>工作区「{me.workspace?.name}」· 你的角色：{ROLE_LABEL[me.workspace?.role ?? 'member']}。</>}
+        description={current === 'account' ? undefined : current === 'lab' ? '只保存在这台设备的浏览器里，和对话框底栏里的开关同步' : <>工作区「{me.workspace?.name}」· 你的角色：{me.workspace?.is_primary_admin ? '主管理员' : ROLE_LABEL[me.workspace?.role ?? 'member']}。</>}
       />
       {current === 'workspace' && <WorkspaceTab me={me} isAdmin={isAdmin} notify={notify} onSaved={onMeChanged} />}
       {current === 'quota' && <QuotaTab me={me} isAdmin={isAdmin} notify={notify} onSaved={onMeChanged} onNavigate={onNavigate} />}
@@ -293,8 +299,14 @@ function QuotaTab({ me, isAdmin, notify, onSaved, onNavigate }: {
     } catch (e) { notify((e as Error).message, true) }
   }
   const decide = async (r: QuotaRequest, approve: boolean) => {
+    const note = await appPrompt(
+      approve ? '批准这条额度申请？可以附一句给申请人的说明（可选）。' : '拒绝这条额度申请？可以说明原因（可选）。',
+      '',
+      { title: '处理额度申请', okLabel: approve ? '批准' : '拒绝', placeholder: '给申请人的回复（可选）' },
+    )
+    if (note === null) return
     try {
-      await v3.decideQuota(r.id, approve)
+      await v3.decideQuota(r.id, approve, note)
       notify(approve ? `已批准，${r.user_name || '该成员'}的限额已更新` : '已拒绝')
       load()
     } catch (e) { notify((e as Error).message, true) }
@@ -351,7 +363,7 @@ function QuotaTab({ me, isAdmin, notify, onSaved, onNavigate }: {
                   <tr key={r.id} className="anim-in">
                     {isAdmin && <td>{r.user_name || r.user_id}</td>}
                     <td className="mono">{ruleText(r)}</td>
-                    <td className="muted">{r.reason || '—'}</td>
+                    <td className="muted">{r.reason || '—'}{r.note && <small className="invite-sub">回复：{r.note}</small>}</td>
                     <td>{fmtTime(r.created_ms)}</td>
                     <td><Tag tone={STATUS_LABEL[r.status][1]}>{STATUS_LABEL[r.status][0]}</Tag></td>
                     {isAdmin && (
@@ -532,8 +544,12 @@ function MembersTab({ me, isAdmin, notify, onNavigate }: {
   const [role, setRole] = useState<Role>('member')
   const [email, setEmail] = useState('')
   const [expiryHours, setExpiryHours] = useState(168)
+  const [maxUses, setMaxUses] = useState(10)
+  const [unlimitedUses, setUnlimitedUses] = useState(false)
   const [inviteFilter, setInviteFilter] = useState<'all' | Invite['status']>('all')
   const [created, setCreated] = useState<Invite | null>(null)
+  const [inviteDetail, setInviteDetail] = useState<Invite | null>(null)
+  const [registration, setRegistration] = useState<Awaited<ReturnType<typeof admin.settings>> | null>(null)
   const [policies, setPolicies] = useState<Record<string, MemberModelPolicy>>({})
   const [editing, setEditing] = useState<{ m: MemberModelPolicy; limits: LimitRule[] } | null>(null)
   const load = useCallback(() => {
@@ -542,8 +558,12 @@ function MembersTab({ me, isAdmin, notify, onNavigate }: {
     if (isAdmin) v3.memberPolicies().then((r) => setPolicies(Object.fromEntries(r.members.map((m) => [m.user_id, m])))).catch(() => undefined)
   }, [notify, isAdmin])
   useEffect(load, [load])
+  useEffect(() => {
+    if (me.user.is_admin) admin.settings().then(setRegistration).catch(() => undefined)
+  }, [me.user.is_admin])
   if (!data) return <Loading />
   const inviteCounts = data.invites.reduce<Record<Invite['status'], number>>((acc, i) => ({ ...acc, [i.status]: acc[i.status] + 1 }), { active: 0, used: 0, expired: 0, revoked: 0 })
+  const totalInvited = data.invites.reduce((n, i) => n + i.invited_count, 0)
   const visibleInvites = inviteFilter === 'all' ? data.invites : data.invites.filter((i) => i.status === inviteFilter)
   const act = async (fn: () => Promise<unknown>, ok: string) => {
     try { await fn(); notify(ok); load() } catch (e) { notify((e as Error).message, true) }
@@ -560,7 +580,7 @@ function MembersTab({ me, isAdmin, notify, onNavigate }: {
     <div className="anim-fade members-page">
       <p className="hint" style={{ marginTop: 0 }}>
         成员配额按“所有规则同时生效”计算：可以组合 token、费用、CPU 秒、回测次数、优化组合数与上传存储空间。
-        {isAdmin ? ' 单独设置的成员使用自己的规则；没有单独设置的成员继承“新成员默认限额”。' : ' 你可以在下方查看自己的真实占用；完整模型用量在「额度与用量」中。'}
+        {isAdmin ? ' 单独设置的成员使用自己的规则；没有单独设置的成员继承“新成员默认限额”。首个成员是主管理员，不可降级或移出。' : ' 你可以在下方查看自己的真实占用；完整模型用量在「额度与用量」中。'}
       </p>
 
       {mine && <MemberUsagePanel data={mine} isAdmin={isAdmin} onNavigate={onNavigate} />}
@@ -581,10 +601,11 @@ function MembersTab({ me, isAdmin, notify, onNavigate }: {
               <tr key={m.user_id}>
                 <td className="member-cell" title={`加入于 ${fmtTime(m.created_at)}`}>
                   <b>{m.name || '—'}{m.user_id === me.user.id && <small> （我）</small>}</b>
+                  {m.is_primary_admin && <Tag tone="ok">主管理员</Tag>}
                   <small className="mono">{m.email}</small>
                 </td>
                 <td>
-                  {isAdmin ? (
+                  {m.is_primary_admin ? <span className="role-chip admin">主管理员</span> : isAdmin ? (
                     <select value={m.role} onChange={(e) => act(() => v4.setRole(m.user_id, e.target.value as Role), '角色已更新')}>
                       {(['admin', 'member', 'reviewer'] as Role[]).map((r) => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
                     </select>
@@ -620,7 +641,7 @@ function MembersTab({ me, isAdmin, notify, onNavigate }: {
                   </>
                 ) : <><td /><td /><td /><td /><td /></>)}
                 <td>{m.last_login_at ? fmtTime(m.last_login_at) : '—'}</td>
-                {isAdmin && <td className="right">{m.user_id !== me.user.id && (
+                {isAdmin && <td className="right">{m.user_id !== me.user.id && !m.is_primary_admin && (
                   <button className="button small danger" onClick={async () => await appConfirm(`移出 ${m.email}？`) && act(() => v4.removeMember(m.user_id), '已移出')}>移出</button>
                 )}</td>}
               </tr>
@@ -633,14 +654,32 @@ function MembersTab({ me, isAdmin, notify, onNavigate }: {
       {isAdmin && (
         <>
           <h3 className="section-title" style={{ marginTop: 22 }}>邀请码管理</h3>
-          <p className="hint" style={{ marginTop: 0 }}>
-            每个邀请码只能成功注册 1 人。邀请码明文只在创建时显示一次，平台只保存哈希；管理员可随时撤销未使用的码。
-          </p>
+          <p className="hint" style={{ marginTop: 0 }}>多用途邀请码；明文仅显示一次，可随时撤销。</p>
+          {me.user.is_admin && registration && (
+            <div className="registration-mode">
+              <div>
+                <b>注册方式</b>
+                <small>开放注册时无需邀请码；邀请码仍可继续使用。</small>
+              </div>
+              <select value={registration.open_registration ? 'open' : 'invite'} onChange={async (e) => {
+                const open = e.target.value === 'open'
+                try {
+                  setRegistration(await admin.saveSettings({ open_registration: open }))
+                  notify(open ? '已开启开放注册' : '已改为凭邀请码注册')
+                } catch (err) {
+                  notify((err as Error).message, true)
+                }
+              }}>
+                <option value="invite">凭邀请码注册</option>
+                <option value="open">开放注册（无需邀请码）</option>
+              </select>
+            </div>
+          )}
           <div className="invite-stats" aria-label="邀请码统计">
-            <span><b>{inviteCounts.active}</b><small>正在使用</small></span>
-            <span><b>{inviteCounts.used}</b><small>已邀请</small></span>
-            <span><b>{inviteCounts.expired}</b><small>已过期</small></span>
-            <span><b>{inviteCounts.revoked}</b><small>已撤销</small></span>
+            <span><b>{inviteCounts.active}</b><small>可用邀请码</small></span>
+            <span><b>{totalInvited}</b><small>已邀请人数</small></span>
+            <span><b>{inviteCounts.used}</b><small>已用尽</small></span>
+            <span><b>{inviteCounts.expired + inviteCounts.revoked}</b><small>失效或撤销</small></span>
           </div>
           <div className="field-row invite-create-row">
             <Field label="角色"><select value={role} onChange={(e) => setRole(e.target.value as Role)}>
@@ -650,11 +689,18 @@ function MembersTab({ me, isAdmin, notify, onNavigate }: {
             <Field label="有效期"><select value={expiryHours} onChange={(e) => setExpiryHours(Number(e.target.value))}>
               {INVITE_EXPIRY_OPTIONS.map((o) => <option key={o.hours} value={o.hours}>{o.label}</option>)}
             </select></Field>
+            <Field label="最多邀请人数">
+              <div className="invite-limit-control">
+                <input type="number" min={1} max={1000} step={1} value={maxUses} disabled={unlimitedUses}
+                  onChange={(e) => setMaxUses(Math.max(1, Math.min(1000, Math.floor(Number(e.target.value) || 1))))} />
+                <label className="check"><input type="checkbox" checked={unlimitedUses} onChange={(e) => setUnlimitedUses(e.target.checked)} />不限</label>
+              </div>
+            </Field>
           </div>
           <div className="button-row" style={{ marginTop: 10 }}>
             <button className="button primary small" onClick={async () => {
-              try { const r = await v4.invite(role, email, expiryHours); setCreated(r.invite); setEmail(''); load() } catch (e) { notify((e as Error).message, true) }
-            }}>生成一次性邀请码</button>
+              try { const r = await v4.invite(role, email, expiryHours, unlimitedUses ? 0 : maxUses); setCreated(r.invite); setEmail(''); load() } catch (e) { notify((e as Error).message, true) }
+            }}>生成邀请码</button>
           </div>
           {data.invites.length > 0 && (
             <>
@@ -668,22 +714,32 @@ function MembersTab({ me, isAdmin, notify, onNavigate }: {
               </div>
               <div className="table-wrap invite-table-wrap">
                 <table className="invite-table" data-mobile-cards="true">
-                  <thead><tr><th>邀请码</th><th>角色</th><th>限定邮箱</th><th>有效期</th><th>已邀请</th><th>状态</th><th /></tr></thead>
+                  <thead><tr><th>邀请码</th><th>角色</th><th>限定邮箱</th><th>有效期</th><th>已邀请人数</th><th>剩余名额</th><th>状态</th><th /></tr></thead>
                   <tbody>
-                    {visibleInvites.map((i) => (
-                      <tr key={i.id}>
-                        <td className="mono mobile-card-title" data-label="邀请码" title={i.id}>{i.id.slice(0, 8)}<small className="invite-sub">{i.created_by_name ? `由 ${i.created_by_name} 创建` : ''}</small></td>
-                        <td data-label="角色">{ROLE_LABEL[i.role]}</td>
-                        <td data-label="限定邮箱">{i.email ?? '不限'}</td>
-                        <td data-label="有效期">{fmtTime(i.expires_at)}<small className="invite-sub">{inviteRemainingText(i)}</small></td>
-                        <td data-label="已邀请"><b>{i.invited_count} 人</b><small className="invite-sub">{i.used_by_name || i.used_by_email || '尚未使用'}</small></td>
-                        <td className="mobile-card-leading" data-label="状态"><Tag tone={INVITE_STATUS_TONE[i.status]}>{INVITE_STATUS_LABEL[i.status]}</Tag></td>
-                        <td className="right mobile-card-actions" data-label="操作">{(i.status === 'active' || i.status === 'expired') && (
-                          <button className="button small danger" onClick={() => act(() => v4.revokeInvite(i.id), '邀请码已撤销')}>撤销</button>
-                        )}</td>
-                      </tr>
-                    ))}
-                    {!visibleInvites.length && <tr><td colSpan={7} className="muted">没有符合筛选条件的邀请码。</td></tr>}
+                    {visibleInvites.map((i) => {
+                      const inviteeNames = i.invitees.slice(0, 3).map((u) => u.name || u.email || '成员').join('、')
+                      const extraInvitees = Math.max(0, i.invitees.length - 3)
+                      return (
+                        <tr key={i.id}>
+                          <td className="mono mobile-card-title" data-label="邀请码" title={i.id}>{i.id.slice(0, 8)}<small className="invite-sub">{i.created_by_name ? `由 ${i.created_by_name} 创建` : ''}</small></td>
+                          <td data-label="角色">{ROLE_LABEL[i.role]}</td>
+                          <td data-label="限定邮箱">{i.email ?? '不限'}</td>
+                          <td data-label="有效期">{fmtTime(i.expires_at)}<small className="invite-sub">{inviteRemainingText(i)}</small></td>
+                          <td data-label="已邀请人数"><b>{i.invited_count} 人</b><small className="invite-sub">{inviteeNames || '尚未使用'}{extraInvitees ? ` 等 ${i.invitees.length} 人` : ''}</small></td>
+                          <td data-label="剩余名额"><b>{inviteRemainingUses(i)}</b><small className="invite-sub">{i.max_uses === 0 ? '可继续邀请' : `上限 ${i.max_uses} 人`}</small></td>
+                          <td className="mobile-card-leading" data-label="状态"><Tag tone={INVITE_STATUS_TONE[i.status]}>{INVITE_STATUS_LABEL[i.status]}</Tag></td>
+                          <td className="right mobile-card-actions" data-label="操作">
+                            <div className="invite-actions">
+                              <button className="button small" onClick={() => setInviteDetail(i)}>详情</button>
+                              {(i.status === 'active' || i.status === 'expired') && (
+                                <button className="button small danger" onClick={() => act(() => v4.revokeInvite(i.id), '邀请码已撤销')}>撤销</button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      )
+                    })}
+                    {!visibleInvites.length && <tr><td colSpan={8} className="muted">没有符合筛选条件的邀请码。</td></tr>}
                   </tbody>
                 </table>
               </div>
@@ -693,9 +749,33 @@ function MembersTab({ me, isAdmin, notify, onNavigate }: {
       )}
       {created && (
         <Modal title="邀请码（只显示这一次）" onClose={() => setCreated(null)} width={520}>
-          <p className="hint" style={{ marginTop: 0 }}>请通过安全渠道发给对方；每个邀请码只能注册 1 人。有效期至 {fmtTime(created.expires_at)}，关闭后无法再次查看。</p>
+          <p className="hint" style={{ marginTop: 0 }}>请通过安全渠道发给对方；最多可邀请 {created.max_uses === 0 ? "不限人数" : `${created.max_uses} 人`}。有效期至 {fmtTime(created.expires_at)}，关闭后无法再次查看。</p>
           <div className="secret-once">{created.code}</div>
           <p className="hint">对方在登录页选择“凭邀请码注册”，或已有账号的在“设置 → 工作区”里加入。</p>
+        </Modal>
+      )}
+      {inviteDetail && (
+        <Modal title="邀请码详情" onClose={() => setInviteDetail(null)} width={620}>
+          <div className="invite-detail-grid">
+            <span><small>已邀请人数</small><b>{inviteDetail.invited_count} 人</b></span>
+            <span><small>剩余名额</small><b>{inviteRemainingUses(inviteDetail)}</b></span>
+            <span><small>最多邀请</small><b>{inviteDetail.max_uses === 0 ? '不限' : `${inviteDetail.max_uses} 人`}</b></span>
+            <span><small>状态</small><b>{INVITE_STATUS_LABEL[inviteDetail.status]}</b></span>
+            <span><small>有效期至</small><b>{fmtTime(inviteDetail.expires_at)}</b></span>
+            <span><small>创建者</small><b>{inviteDetail.created_by_name || '—'}</b></span>
+          </div>
+          <p className="hint" style={{ marginTop: 0 }}>邀请码 <code>{inviteDetail.id}</code>。明文只在创建时显示一次，平台保存的是哈希。</p>
+          <h4 className="invite-detail-title">已邀请成员 · {inviteDetail.invitees.length}</h4>
+          {inviteDetail.invitees.length ? (
+            <div className="invite-invitees">
+              {inviteDetail.invitees.map((u) => (
+                <div key={u.user_id} className="invite-invitee">
+                  <span><b>{u.name || u.email || '成员'}</b><small>{u.email || u.user_id}</small></span>
+                  <time>{fmtTime(u.used_at)}</time>
+                </div>
+              ))}
+            </div>
+          ) : <p className="hint">还没有人使用这个邀请码。</p>}
         </Modal>
       )}
       {editing && (
@@ -734,22 +814,34 @@ function MembersTab({ me, isAdmin, notify, onNavigate }: {
 }
 
 function MemberUsagePanel({ data, isAdmin, onNavigate }: { data: ModelUsage; isAdmin: boolean; onNavigate: (k: string) => void }) {
-  const storageRules = data.my_limits.filter((s) => s.metric === 'storage_bytes')
+  const manage = (metric: LimitMetric) => {
+    if (metric === 'storage_bytes') return onNavigate(isAdmin ? 'settings/privacy' : 'settings/quota')
+    if (metric === 'record_units') return onNavigate(isAdmin ? 'settings/retention' : 'settings/quota')
+    return onNavigate('settings/quota')
+  }
   return (
     <section className="set-section member-self-usage">
       <div className="set-section-head">
-        <div><h3>我的用量</h3><p className="set-section-note">服务端按当前登录成员统计，其他人的用量不会在这里暴露。</p></div>
-        <button className="button small ghost" onClick={() => onNavigate('quota')}>额度与用量 →</button>
+        <div><h3>我的用量</h3><p className="set-section-note">服务端按当前登录成员统计，其他人的用量不会在这里暴露。限额条显示已用与剩余比例。</p></div>
+        <button className="button small ghost" onClick={() => onNavigate('settings/quota')}>额度与用量 →</button>
       </div>
       <div className="usage-kpis">
         <div className="usage-kpi anim-rise"><small>上传存储</small><b>{fmtStorageBytes(data.storage?.used_bytes ?? 0)}</b><em>{data.storage?.file_count ?? 0} 个文件（含缩略图）</em></div>
         <div className="usage-kpi anim-rise" style={{ animationDelay: '40ms' }}><small>近 30 天模型调用</small><b>{data.total.calls.toLocaleString()}</b><em>{fmtCost(data.total.cost)}</em></div>
         <div className="usage-kpi anim-rise" style={{ animationDelay: '80ms' }}><small>近 30 天 token</small><b>{fmtTokens(data.total.tokens)}</b><em>输入缓存命中 {data.total.cache_hit_rate == null ? '—' : `${(data.total.cache_hit_rate * 100).toFixed(1)}%`}</em></div>
-        <div className="usage-kpi anim-rise" style={{ animationDelay: '120ms' }}><small>近 30 天计算任务</small><b>{Number(data.tasks?.backtests ?? 0).toLocaleString()} 次回测</b><em>CPU {Number(data.tasks?.cpu_seconds ?? 0).toFixed(1)} 秒 · 优化 {Number(data.tasks?.optimize_combinations ?? 0)} 组</em></div>
+        <div className="usage-kpi anim-rise" style={{ animationDelay: '120ms' }}><small>研究记录占用</small><b>{fmtStorageBytes(data.research_records?.approx_bytes ?? 0)}</b><em>{Number(data.research_records?.total_records ?? 0).toLocaleString()} 条 · {Number(data.research_records?.total_units ?? 0).toLocaleString()} / {Number(data.research_records?.max_units_per_user ?? 0).toLocaleString()} 单位</em></div>
+        <div className="usage-kpi anim-rise" style={{ animationDelay: '160ms' }}><small>近 30 天计算任务</small><b>{Number(data.tasks?.backtests ?? 0).toLocaleString()} 次回测</b><em>CPU {Number(data.tasks?.cpu_seconds ?? 0).toFixed(1)} 秒 · 优化 {Number(data.tasks?.optimize_combinations ?? 0)} 组</em></div>
       </div>
-      {storageRules.length ? <LimitBars items={storageRules} /> : (
-        <p className="hint member-usage-note">{isAdmin ? '管理员上传不受成员存储配额限制。' : '当前没有设置上传存储上限。'}</p>
+      {data.research_records && <RecordComposition usage={data.research_records} />}
+      <UsageComposition data={data} />
+      {data.my_limits.length ? (
+        <LimitBars items={data.my_limits} action={(s) => (
+          <button type="button" className="button small ghost" title={isAdmin ? '打开对应设置' : '向管理员申请更多额度'} onClick={() => manage(s.metric)}>{isAdmin ? '管理' : '申请'}</button>
+        )} />
+      ) : (
+        <p className="hint member-usage-note">{isAdmin ? '主管理员与管理员不受成员限额约束；可在「隐私与存储」设置自动清理。' : '当前没有设置限额；需要更多额度时可在「额度与用量」向管理员申请。'}</p>
       )}
+      {!isAdmin && <div className="member-usage-manage"><button type="button" className="button small" onClick={() => onNavigate('settings/quota')}>申请提升额度</button><button type="button" className="button small ghost" onClick={() => onNavigate('settings/retention')}>清理研究记录</button></div>}
     </section>
   )
 }
@@ -791,7 +883,7 @@ function DefaultLimits({ notify }: { notify: PageProps['notify'] }) {
   return (
     <section className="set-section" style={{ marginTop: 22 }}>
       <h3 className="section-title">新成员默认限额</h3>
-      <p className="hint" style={{ marginTop: 0 }}>没有单独设置过配额的成员继承这里。多条规则会同时生效，例如「每日 ¥5 + 每周 ¥20 + 累计 ¥200 + 上传存储 2 GB + 研究记录 500 单位」。研究记录按回测、因子、模型、组合和执行产物的倍率折算；PIN 只防止自动清理/删除，不会减少已占用单位。单独设置过的成员以成员表格里的配额为准。</p>
+      <p className="hint" style={{ marginTop: 0 }}>没有单独设置过配额的成员继承这里；新成员默认研究记录 200 单位。多条规则会同时生效，例如「每日 ¥5 + 每周 ¥20 + 累计 ¥200 + 上传存储 2 GB + 研究记录 500 单位」。研究记录按回测、因子、模型、组合和执行产物的倍率折算；PIN 只防止自动清理/删除，不会减少已占用单位。单独设置过的成员以成员表格里的配额为准。</p>
       <LimitEditor rules={rules} metrics={MEMBER_METRICS} onChange={setRules} empty="不限额" />
       <button type="button" className="button small primary" style={{ marginTop: 8 }} onClick={async () => {
         try { setRules((await memberDefaults.save(rules.filter((r) => Number(r.limit) > 0))).limits); notify('默认配额已保存') } catch (e) { notify((e as Error).message, true) }
@@ -816,6 +908,7 @@ function RecordRetentionTab({ isAdmin, notify }: { isAdmin: boolean; notify: Pag
   const [adminMax, setAdminMax] = useState(100000)
   const [multipliers, setMultipliers] = useState<Record<string, number>>({})
   const [saving, setSaving] = useState('')
+  const [selected, setSelected] = useState<Set<string>>(new Set())
 
   const apply = (next: RecordRetention) => {
     setData(next)
@@ -867,6 +960,8 @@ function RecordRetentionTab({ isAdmin, notify }: { isAdmin: boolean; notify: Pag
   const fmtUnits = (value: number) => value.toLocaleString(undefined, { maximumFractionDigits: 2 })
   const fmtApprox = (bytes?: number) => bytes ? `约 ${(bytes / 1024).toFixed(0)} KB` : '—'
   const over = u.total_units > u.max_units_per_user
+  const hardMax = data.workspace.hard_max_units ?? data.workspace.default_max_units ?? 100_000
+  const reservedBytes = data.workspace.reserved_bytes ?? 0
 
   const saveUser = async () => {
     setSaving('user')
@@ -883,7 +978,7 @@ function RecordRetentionTab({ isAdmin, notify }: { isAdmin: boolean; notify: Pag
   const saveWorkspace = async () => {
     setSaving('workspace')
     try {
-      apply(await v3.saveRecordWorkspaceRetention(Math.max(1, Math.min(1000000, Math.round(adminMax || 100000)))))
+      apply(await v3.saveRecordWorkspaceRetention(Math.max(1, Math.min(hardMax, Math.round(adminMax || 100000)))))
       notify('每名成员的研究记录单位上限已保存')
     } catch (e) { notify((e as Error).message, true) } finally { setSaving('') }
   }
@@ -921,6 +1016,37 @@ function RecordRetentionTab({ isAdmin, notify }: { isAdmin: boolean; notify: Pag
     } catch (e) { notify((e as Error).message, true) }
   }
 
+  const recordKey = (row: ResearchRecordRow) => `${row.record_type}:${row.id}`
+  const selectedRows = records.filter((row) => selected.has(recordKey(row)))
+  const allSelected = records.length > 0 && selectedRows.length === records.length
+  const toggleSelect = (row: ResearchRecordRow) => setSelected((prev) => {
+    const next = new Set(prev)
+    const key = recordKey(row)
+    if (next.has(key)) next.delete(key)
+    else next.add(key)
+    return next
+  })
+  const toggleAll = () => setSelected(allSelected ? new Set() : new Set(records.map(recordKey)))
+  const batchPin = async (pinned: boolean) => {
+    if (!selectedRows.length) return
+    try {
+      const r = await v3.batchPinRetentionRecords(selectedRows.map((row) => ({ type: row.record_type, id: row.id })), pinned)
+      setSelected(new Set())
+      await Promise.all([loadData(), loadRecords()])
+      notify(r.failed.length ? `已更新 ${r.updated.length} 条，${r.failed.length} 条失败` : `已${pinned ? 'PIN' : '取消 PIN'} ${r.updated.length} 条记录`)
+    } catch (e) { notify((e as Error).message, true) }
+  }
+  const batchRemove = async () => {
+    if (!selectedRows.length) return
+    if (!await appConfirm(`批量删除 ${selectedRows.length} 条研究记录？报告、状态与结果文件会真实删除，不能恢复。`, { danger: true })) return
+    try {
+      const r = await v3.batchDeleteRetentionRecords(selectedRows.map((row) => ({ type: row.record_type, id: row.id })))
+      setSelected(new Set())
+      await Promise.all([loadData(), loadRecords()])
+      notify(r.failed.length ? `已删除 ${r.deleted.length} 条，${r.failed.length} 条失败` : `已删除 ${r.deleted.length} 条记录`)
+    } catch (e) { notify((e as Error).message, true) }
+  }
+
   const remove = async (row: ResearchRecordRow) => {
     if (!await appConfirm(`删除「${row.record_title || row.id}」？报告与结果文件会一并清理，不能恢复。`, { danger: true })) return
     try {
@@ -941,6 +1067,7 @@ function RecordRetentionTab({ isAdmin, notify }: { isAdmin: boolean; notify: Pag
           <div className="usage-kpi anim-rise" style={{ animationDelay: '80ms' }}><small>记录总数</small><b>{u.total_records.toLocaleString()}</b><em>跨 {u.types.filter((t) => t.count > 0).length} 种记录类型</em></div>
           <div className="usage-kpi anim-rise" style={{ animationDelay: '120ms' }}><small>PIN 保护</small><b>{u.pinned_records.toLocaleString()}</b><em>不参与自动清理</em></div>
         </div>
+        <RecordComposition usage={u} />
         {over && <Callout tone="warn">当前已超过工作区单位上限。自动清理关闭时，新研究记录会在创建前被拒绝，直到删除足够的历史记录。</Callout>}
       </section>
 
@@ -1006,8 +1133,8 @@ function RecordRetentionTab({ isAdmin, notify }: { isAdmin: boolean; notify: Pag
       {isAdmin && (
         <section className="set-section">
           <div className="set-section-head"><h3>工作区记录单位上限</h3><button className="button small primary" disabled={saving === 'workspace'} onClick={saveWorkspace}>{saving === 'workspace' ? '保存中…' : '保存上限'}</button></div>
-          <p className="set-section-note">每名成员独立计算。默认 100,000 单位（约 35 GB 的回测等效体积），可按工作区存储策略调整。倍率变化会立即影响所有人的用量统计。</p>
-          <Field label="每名成员记录单位上限" hint="1–1,000,000 单位，默认 100,000"><input type="number" min={1} max={1000000} value={adminMax} onChange={(e) => setAdminMax(Number(e.target.value))} /></Field>
+          <p className="set-section-note">每名成员独立计算。默认 100,000 单位；硬上限取 100,000 与服务器空间 20% 的较小值（当前约 {fmtUnits(hardMax)} 单位 / {fmtStorageBytes(reservedBytes)} 预留空间）。新成员默认 200 单位，可在「新成员默认限额」中调整。</p>
+          <Field label="每名成员记录单位上限" hint={`1–${fmtUnits(hardMax)} 单位；默认 100,000，受服务器空间 20% 限制`}><input type="number" min={1} max={hardMax} value={adminMax} onChange={(e) => setAdminMax(Number(e.target.value))} /></Field>
         </section>
       )}
 
@@ -1045,12 +1172,19 @@ function RecordRetentionTab({ isAdmin, notify }: { isAdmin: boolean; notify: Pag
           <EmptyState title={debouncedQuery || recordType ? '没有匹配的研究记录' : '还没有研究记录'}>回测、因子、模型、组合和执行产物会在这里统一显示。</EmptyState>
         ) : (
           <>
+            <div className="retention-batch-bar">
+              <span>已选 {selectedRows.length} 条</span>
+              <button type="button" className="button small ghost" disabled={!selectedRows.length} onClick={() => void batchPin(true)}>批量 PIN</button>
+              <button type="button" className="button small ghost" disabled={!selectedRows.length} onClick={() => void batchPin(false)}>取消 PIN</button>
+              <button type="button" className="button small danger" disabled={!selectedRows.length} onClick={() => void batchRemove()}>批量删除</button>
+            </div>
             <div className="table-wrap" aria-busy={recordsLoading}>
               <table className="settings-table records-table">
-                <thead><tr><th>记录</th><th>类型</th><th>创建时间</th><th className="right">单位</th><th>保护</th><th /></tr></thead>
+                <thead><tr><th className="retention-check"><input type="checkbox" checked={allSelected} onChange={toggleAll} aria-label="全选当前记录" /></th><th>记录</th><th>类型</th><th>创建时间</th><th className="right">单位</th><th>保护</th><th /></tr></thead>
                 <tbody>
                   {records.map((row) => (
                     <tr key={`${row.record_type}:${row.id}`} className="anim-in">
+                      <td className="retention-check"><input type="checkbox" checked={selected.has(recordKey(row))} onChange={() => toggleSelect(row)} aria-label={`选择 ${row.record_title || row.id}`} /></td>
                       <td><b>{row.record_title || row.id}</b><div className="hint mono" style={{ margin: '2px 0 0' }}>{row.id}</div></td>
                       <td><Tag>{row.record_type_label}</Tag></td>
                       <td className="muted">{fmtTime(((row.created_at ?? row.updated_at ?? 0) * 1000))}</td>
@@ -1146,7 +1280,7 @@ function RunsTab({ notify, onNavigate, readonly }: { notify: PageProps['notify']
                       <td><button className="button ghost small" onClick={() => setOpen(r)}>{r.title || r.id}</button></td>
                       <td>{KIND_LABEL[r.kind] ?? r.kind}</td>
                       <td><Tag tone={r.mode === 'testnet' ? 'warn' : undefined}>{MODE_LABEL[r.mode] ?? r.mode}</Tag></td>
-                      <td><span className={`table-pill ${cls}`}>{label}</span>{r.error && <small title={r.error}> {r.error_code}</small>}</td>
+                      <td><span className={`table-pill ${cls}`}>{label}</span>{r.state === 'QUEUED' && r.queue_position ? <small> · 第 {r.queue_position} 位</small> : null}{r.error && <small title={r.error}> {r.error_code}</small>}</td>
                       <td>{r.progress.total ? `${r.progress.done}/${r.progress.total}` : '—'}</td>
                       <td>{r.attempts}</td>
                       <td>{fmtTime(r.created_at)}</td>
@@ -1515,9 +1649,18 @@ function TotpSection({ notify }: { notify: PageProps['notify'] }) {
 
       {!st.enabled && setup && (
         <div>
-          <p className="hint">用验证器扫描下面的链接，或手工录入密钥（密钥只显示这一次）：</p>
-          <div className="mono" style={{ wordBreak: 'break-all', fontSize: 12, margin: '8px 0' }}>{setup.otpauth_uri}</div>
-          <Field label="密钥"><input className="mono" readOnly value={setup.secret} /></Field>
+          <div className="totp-qr-setup">
+            <QRCode value={setup.otpauth_uri} size={188} label="扫描绑定 QuantLab 双因素认证" />
+            <div className="totp-qr-copy">
+              <b>用验证器扫码绑定</b>
+              <p className="hint">支持 Google Authenticator、1Password、Microsoft Authenticator 等。密钥只显示这一次，确认前不会启用。</p>
+              <details className="totp-manual">
+                <summary>无法扫码？手动录入</summary>
+                <Field label="密钥"><input className="mono" readOnly value={setup.secret} /></Field>
+                <div className="mono totp-uri">{setup.otpauth_uri}</div>
+              </details>
+            </div>
+          </div>
           <Field label="验证器显示的 6 位验证码" hint="确认成功前不会启用，扫错码不会把你锁在门外">
             <input inputMode="numeric" autoComplete="one-time-code" value={code} onChange={(e) => setCode(e.target.value.trim())} />
           </Field>

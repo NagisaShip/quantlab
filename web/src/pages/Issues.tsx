@@ -32,7 +32,7 @@ function IssueList({ me, onNavigate, notify, startNew }: { me: Me; onNavigate: (
   const [creating, setCreating] = useState(startNew)
   const load = useCallback(() => { issues.list(scope, status || undefined).then(setData).catch((e) => notify(e.message, true)) }, [scope, status, notify])
   useEffect(load, [load])
-  useEffect(() => { if (data?.is_staff && scope === 'mine' && me.user.is_admin && !startNew) setScope('all') }, [data?.is_staff]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (data?.is_staff && scope === 'mine' && !startNew) setScope('all') }, [data?.is_staff]) // eslint-disable-line react-hooks/exhaustive-deps
   return (
     <div className="issues-page">
       <div className="community-bar">

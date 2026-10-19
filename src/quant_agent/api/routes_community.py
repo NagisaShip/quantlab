@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import math
 import re
 import threading
@@ -21,6 +22,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from ..agents.copilot import StrategyCopilot
 from ..platform import context
+from ..platform.collab_bot import BOT_AUTHOR_ID, BOT_NAME, mentions_bot
 from ..sdk import declared_params
 from ..store import Collections
 from ..strategies.repo import StrategyRepository
@@ -28,6 +30,7 @@ from .deps import get_services
 from .schemas import CommentIn, FavoriteIn, PostIn, PostReportDecisionIn, PostReportIn, PostUpdateIn, ProfileIn, QmojiIn
 
 router = APIRouter(prefix="/api/community", tags=["策略广场"])
+log = logging.getLogger(__name__)
 
 TYPE_LABELS = {"article": "文章", "question": "问答", "strategy": "策略分享", "notice": "公告"}
 REPORT_REASONS = {
@@ -58,6 +61,7 @@ SUGGESTED_TAGS = [
 ]
 SYSTEM_AUTHOR = "平台小助手"
 AI_AUTHOR = "AI 审稿人"
+BOT_AUTHOR = BOT_NAME
 
 
 # ---------------------------------------------------------------------------
@@ -85,7 +89,8 @@ def me() -> dict[str, Any]:
 
 
 def _is_moderator() -> bool:
-    return context.current().role == "admin"
+    ctx = context.current()
+    return ctx.role == "admin" or bool(ctx.is_admin)
 
 
 def _owns(obj: dict[str, Any]) -> bool:
@@ -297,7 +302,7 @@ def get_profile() -> dict:
 @router.put("/profile")
 def put_profile(payload: ProfileIn) -> dict:
     name = payload.name.strip()
-    if name in (SYSTEM_AUTHOR, AI_AUTHOR):
+    if name in (SYSTEM_AUTHOR, AI_AUTHOR, BOT_AUTHOR):
         raise HTTPException(400, "这个名字保留给平台使用")
     ctx = context.current()
     get_services().db.execute("UPDATE users SET name=? WHERE id=?", (name, ctx.user_id))
@@ -715,6 +720,7 @@ def publish(payload: PostIn, source: dict[str, Any]) -> dict[str, Any]:
 
 @router.get("/posts/{post_id}")
 def read_post(post_id: str) -> dict:
+    seed_if_empty()
     post = _get_post(post_id)
     store = _store()
     viewer = me()["id"]
@@ -1244,7 +1250,57 @@ def add_comment(post_id: str, payload: CommentIn) -> dict:
                 body=body,
                 to=parent["author_id"],
             )
-    return {"comment": comment}
+    bot_comment = None
+    if mentions_bot(body):
+        try:
+            bot_comment = _square_bot_reply(
+                post,
+                trigger=comment,
+                trigger_body=body,
+                parent=parent,
+                trigger_id=me()["id"],
+            )
+        except Exception:
+            log.exception("community QuantLab Bot reply failed: post=%s", post["id"])
+    return {"comment": comment, "bot_comment": bot_comment}
+
+
+def _square_bot_reply(
+    post: dict[str, Any],
+    *,
+    trigger: dict[str, Any],
+    trigger_body: str,
+    parent: dict[str, Any] | None,
+    trigger_id: str,
+) -> dict[str, Any]:
+    """广场 Bot 回复：模型调用按触发 @ 的读者计费，回复挂在触发评论下。"""
+    store = _store()
+    recent = [
+        c
+        for c in store.list(Collections.COMMENTS)
+        if c.get("post_id") == post["id"] and c.get("id") != trigger.get("id") and c.get("author") != BOT_AUTHOR
+    ]
+    recent.sort(key=lambda c: c.get("created_at") or 0)
+    role = context.current().role or "member"
+    reply = get_services().collab_bot.reply_square(
+        get_services().router,
+        workspace_id=context.current_workspace(),
+        trigger_user_id=trigger_id,
+        role=role,
+        post=post,
+        trigger_body=trigger_body,
+        parent_author=str((parent or {}).get("author") or ""),
+        recent=recent[-8:],
+    )
+    return _add_comment(
+        post,
+        reply["body"],
+        author=BOT_AUTHOR,
+        author_id=BOT_AUTHOR_ID,
+        parent_id=trigger.get("id"),
+        is_ai=True,
+        meta={"mode": reply.get("mode") or "fallback", "model": reply.get("model") or "", "bot": True},
+    )
 
 
 @router.delete("/comments/{comment_id}")
@@ -1253,7 +1309,9 @@ def delete_comment(comment_id: str) -> dict:
     c = store.get(Collections.COMMENTS, comment_id)
     if c is None:
         raise HTTPException(404, "评论不存在")
-    if not (_owns(c) or (c.get("author") == AI_AUTHOR and _owns(_get_post(c["post_id"]))) or _is_moderator()):
+    if not (
+        _owns(c) or (c.get("author") in (AI_AUTHOR, BOT_AUTHOR) and _owns(_get_post(c["post_id"]))) or _is_moderator()
+    ):
         raise HTTPException(403, "只能删除自己的评论")
     store.delete(Collections.COMMENTS, comment_id)
     post = store.get(Collections.POSTS, c["post_id"])
@@ -1353,7 +1411,7 @@ def stats() -> dict:
     ranking = [
         {"author": a, **v, "score": v["posts"] * 5 + v["likes"] * 2 + v["clones"] * 3 + v["comments"]}
         for a, v in board.items()
-        if a not in (SYSTEM_AUTHOR, AI_AUTHOR)
+        if a not in (SYSTEM_AUTHOR, AI_AUTHOR, BOT_AUTHOR)
     ]
     ranking.sort(key=lambda r: r["score"], reverse=True)
     return {
@@ -1417,18 +1475,61 @@ OVERFIT = """参数优化最容易骗到的人是自己。平台的「参数优�
 _SEED_LOCK = threading.Lock()
 
 
+_STABLE_SEED_IDS = {
+    "策略广场新手指南": "seed-guide",
+    "回测与实时模拟的统一口径（必读）": "seed-conventions",
+    "参数优化如何不骗自己：样本内 / 样本外与秩相关": "seed-overfit",
+    "模板分享：多币种动量轮动（趋势质量打分）": "seed-momentum-rotation",
+}
+
+
 def seed_if_empty() -> None:
     """首次访问时写入几篇置顶 / 精华帖。帖子用固定 id：并发的首个请求同时进来也只会写同一份，不会出现重复帖。"""
     store = get_services().store
     if store.get(Collections.SETTINGS, "community_seeded"):
-        if not store.get(Collections.SETTINGS, "community_dedup_v1"):
-            with _SEED_LOCK:
+        with _SEED_LOCK:
+            # 旧版本的种子帖使用随机 id。新手引导会直接打开稳定 id
+            # （例如 seed-momentum-rotation），所以这里做一次原地迁移。
+            _migrate_seed_ids(store)
+            if not store.get(Collections.SETTINGS, "community_dedup_v1"):
                 _dedup_seed_posts(store)
         return
     with _SEED_LOCK:
         if store.get(Collections.SETTINGS, "community_seeded"):
             return
         _seed(store)
+        _migrate_seed_ids(store)
+
+
+def _migrate_seed_ids(store: Any) -> None:
+    """把旧版随机 id 的系统帖改写成稳定 id，并同步评论引用。"""
+    if store.get(Collections.SETTINGS, "community_stable_ids_v1"):
+        return
+    posts = store.list(Collections.POSTS)
+    existing = {str(p.get("id") or "") for p in posts}
+    for p in posts:
+        if p.get("author_id") != "system":
+            continue
+        old_id = str(p.get("id") or "")
+        stable_id = _STABLE_SEED_IDS.get(str(p.get("title") or ""))
+        if not old_id or not stable_id or old_id == stable_id:
+            continue
+        if stable_id not in existing:
+            # 先写稳定 id，再改评论引用，最后删旧帖，避免读者在迁移窗口内 404。
+            store.upsert(Collections.POSTS, {**p, "id": stable_id})
+            existing.add(stable_id)
+            for comment in store.list(Collections.COMMENTS):
+                if comment.get("post_id") == old_id:
+                    store.upsert(Collections.COMMENTS, {**comment, "post_id": stable_id})
+            store.delete(Collections.POSTS, old_id)
+            existing.discard(old_id)
+            continue
+        # 稳定 id 已存在：旧帖如果没人互动就删掉；有互动则保留，交给人工处理。
+        untouched = not (p.get("likes") or p.get("favorites") or p.get("comment_count") or p.get("clones"))
+        if untouched:
+            store.delete(Collections.POSTS, old_id)
+            existing.discard(old_id)
+    store.upsert(Collections.SETTINGS, {"id": "community_stable_ids_v1", "at": time.time()})
 
 
 def _dedup_seed_posts(store: Any) -> None:

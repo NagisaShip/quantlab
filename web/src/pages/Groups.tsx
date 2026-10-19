@@ -9,7 +9,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { LimitRule } from '../api/research'
 import {
   collab, groupProviders, inbox, PRIORITY_LABEL, since, TASK_COLUMNS,
-  type DiscoverResult, type Group, type GroupRole, type GroupUsage, type Member, type Message, type Ref, type SharedItem, type Task, type TaskPriority, type TaskStatus,
+  type BotModelOption, type DiscoverResult, type Group, type GroupBotConfig, type GroupRole, type GroupUsage, type Member, type Message, type Ref, type SharedItem, type Task, type TaskPriority, type TaskStatus,
 } from '../apiCollab'
 import { Callout, EmptyState, Loading, Modal, Tag } from '../components/ui'
 import { RichBody, RichEditor } from '../components/RichText'
@@ -134,7 +134,7 @@ export default function GroupsPage({ arg, me, onNavigate, notify }: PageProps & 
           </>
         )}
       </aside>
-      <section className="grp-main-pane">
+      <section className="grp-main-pane" data-tour="page-groups">
         {showTasks ? <MyTasks onNavigate={onNavigate} notify={notify} onChanged={load} onOpenGroups={() => setSideOpen(true)} />
           : current ? <GroupView key={current.id} group={current} tab={(TABS.find((t) => t.key === sub)?.key ?? 'chat')} me={me} members={members}
             onNavigate={onNavigate} notify={notify} onChanged={load} onStartDm={startDm} onMembersChanged={loadMembers} onOpenGroups={() => setSideOpen(true)} />
@@ -248,6 +248,7 @@ function GroupView({ group: g0, tab, me, members, onNavigate, notify, onChanged,
           <div className="grp-avatars" title={(g.members ?? []).map((m) => m.name).join('、')}>
             {(g.members ?? []).slice(0, 6).map((m) => {
               const info = memberInfo.get(m.user_id)
+              if (m.kind === 'bot') return <span key={m.user_id} className="grp-member-self grp-member-bot" title="QuantLab Bot · 在群里 @ 它即可回复"><QuantBot size={28} state="idle" motion="low" /></span>
               if (m.user_id === me.user.id) return <span key={m.user_id} className="grp-member-self" title={`${m.name}（我）`}><UserAvatar color={info?.avatar_color || m.avatar_color} size={28} title={m.name} /></span>
               return (
                 <button key={m.user_id} type="button" className={`grp-member-av${info?.online ? ' online' : ''}`}
@@ -383,6 +384,7 @@ function Chat({ g, me, members, isMember, isMod, notify, onChanged, onStartDm }:
     return () => { alive = false; window.clearInterval(t) }
   }, [g.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  const asksBot = /@\s*quantlab[\s_-]*bot/i.test(text)
   const mentions = useMemo(() => [
     { id: 'all', name: '所有人', hint: '通知全部群成员' },
     ...(g.members ?? []).filter((m) => m.user_id !== me.user.id).map((m) => ({ id: m.user_id, name: m.name, hint: ROLE_LABEL[m.role] })),
@@ -393,8 +395,13 @@ function Chat({ g, me, members, isMember, isMod, notify, onChanged, onStartDm }:
     setSending(true)
     try {
       const r = await collab.send(g.id, text, refs, reply?.id)
-      setMsgs((prev) => [...(prev ?? []).filter((m) => m.id !== r.message.id), r.message])
-      lastId.current = Math.max(lastId.current, r.message.id)
+      const incoming = [r.message, ...(r.bot_message ? [r.bot_message] : [])]
+      setMsgs((prev) => {
+        const map = new Map((prev ?? []).map((m) => [m.id, m]))
+        for (const m of incoming) map.set(m.id, m)
+        return [...map.values()].sort((a, b) => a.id - b.id)
+      })
+      lastId.current = Math.max(lastId.current, ...incoming.map((m) => m.id))
       setText(''); setRefs([]); setReply(null)
       try { localStorage.removeItem(`qa.draft.group.${g.id}`) } catch { /* */ }
       stick.current = true
@@ -513,7 +520,7 @@ function Chat({ g, me, members, isMember, isMod, notify, onChanged, onStartDm }:
           {reply && <div className="chat-replybar anim-in">回复 <b>{reply.author_name}</b>：{reply.body.slice(0, 60)} <button type="button" className="link-btn" onClick={() => setReply(null)}>取消</button></div>}
           <RichEditor compact rows={3} value={text} onChange={setText} refs={refs} onRefs={setRefs} onSubmit={send} mentions={mentions}
             draftKey={`group.${g.id}`} placeholder={`发消息到「${g.name}」… 输入 @ 提及成员`} notify={notify}
-            footer={<button type="button" className="button small primary" disabled={sending || (!text.trim() && !refs.length)} onClick={send}>{sending ? '发送中…' : '发送'}</button>} />
+            footer={<button type="button" className="button small primary" disabled={sending || (!text.trim() && !refs.length)} onClick={send}>{sending ? (asksBot ? 'Bot 正在回复…' : '发送中…') : '发送'}</button>} />
         </div>
       )) : <Callout>加入群组后可以发消息。</Callout>}
       {taskFrom && <TaskModal g={g} me={me} isMod={isMod} preset={{ title: taskFrom.body.split('\n')[0].slice(0, 60), description: `来自 ${taskFrom.author_name} 的消息：\n\n${taskFrom.body}`, refs: taskFrom.refs }}
@@ -818,6 +825,126 @@ function GroupProviderForm({ groupId, notify, onDone, onCancel }: { groupId: str
   )
 }
 
+/* ------------------------------------------------------------------ QuantLab Bot */
+type BotData = {
+  bot: GroupBotConfig | null
+  models: BotModelOption[]
+  can_manage: boolean
+  defaults: { personality: string; qmoji_enabled: boolean; member_id: string; name: string }
+}
+const BOT_PERSONALITIES: [string, string][] = [
+  ['friendly', '友好、轻松'],
+  ['professional', '专业、克制'],
+  ['witty', '幽默、有分寸'],
+  ['direct', '直接、坦率'],
+]
+
+function GroupBotSettings({ g, isMod, members, notify, onSaved }: {
+  g: Group; isMod: boolean; members: Member[]; notify: PageProps['notify']; onSaved: () => void
+}) {
+  const empty = { enabled: true, model_target: '', system_prompt: '', personality: 'friendly', qmoji_enabled: true }
+  const [data, setData] = useState<BotData | null>(null)
+  const [form, setForm] = useState(empty)
+  const [editing, setEditing] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const load = useCallback(() => {
+    collab.bot(g.id).then((r) => {
+      setData(r)
+      if (r.bot) {
+        setForm({
+          enabled: r.bot.enabled,
+          model_target: r.bot.model_target,
+          system_prompt: r.bot.system_prompt,
+          personality: r.bot.personality || r.defaults.personality,
+          qmoji_enabled: r.bot.qmoji_enabled,
+        })
+      }
+    }).catch((e) => notify((e as Error).message, true))
+  }, [g.id, notify])
+  useEffect(load, [load])
+  if (!isMod) return null
+  if (!data) return <section className="set-section grp-set-card"><Loading /></section>
+  const creator = members.find((m) => m.user_id === data.bot?.created_by)
+  const save = async () => {
+    if (busy) return
+    setBusy(true)
+    try {
+      await collab.saveBot(g.id, { ...form, personality: form.personality.trim() || 'friendly' })
+      notify('QuantLab Bot 配置已保存')
+      setEditing(true)
+      load()
+      onSaved()
+    } catch (e) { notify((e as Error).message, true) } finally { setBusy(false) }
+  }
+  const remove = async () => {
+    if (!await appConfirm('移除群组里的 QuantLab Bot？它发过的消息会保留。')) return
+    try {
+      await collab.removeBot(g.id)
+      notify('已移除 QuantLab Bot')
+      setEditing(false)
+      setForm(empty)
+      load()
+      onSaved()
+    } catch (e) { notify((e as Error).message, true) }
+  }
+  return (
+    <section className="set-section grp-set-card grp-bot-card">
+      <div className="grp-set-head">
+        <span className="grp-set-icon bot"><QuantBot size={20} state="idle" motion="low" /></span>
+        <div>
+          <h3 className="section-title">QuantLab Bot</h3>
+          <p>把它当作群成员：输入 @QuantLab Bot 就会得到一段简短、像同事一样的回复。模型调用默认记到添加它的管理员名下。</p>
+        </div>
+        {data.bot ? <Tag tone={data.bot.enabled ? 'ok' : 'warn'}>{data.bot.enabled ? '已启用' : '已停用'}</Tag> : <Tag>未添加</Tag>}
+      </div>
+      {!editing && !data.bot ? (
+        <div className="grp-bot-empty">
+          <div><b>还没有添加 Bot</b><small>添加后可在群成员列表和 @ 菜单里看到它。</small></div>
+          <button type="button" className="button small primary" onClick={() => setEditing(true)}>＋ 添加 QuantLab Bot</button>
+        </div>
+      ) : (
+        <div className="grp-bot-form">
+          <div className="form-grid">
+            <label>模型
+              <select value={form.model_target} onChange={(e) => setForm({ ...form, model_target: e.target.value })}>
+                <option value="">工作区默认路由</option>
+                {(data.models ?? []).map((m) => <option key={m.target} value={m.target}>{m.label || m.target}{m.ready ? '' : '（未配置密钥）'}</option>)}
+                {form.model_target && !(data.models ?? []).some((m) => m.target === form.model_target) && (
+                  <option value={form.model_target}>{form.model_target}（已不可用）</option>
+                )}
+              </select>
+            </label>
+            <label>性格
+              <select value={form.personality} onChange={(e) => setForm({ ...form, personality: e.target.value })}>
+                {BOT_PERSONALITIES.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+                {!BOT_PERSONALITIES.some(([id]) => id === form.personality) && <option value={form.personality}>{form.personality}</option>}
+              </select>
+            </label>
+          </div>
+          <label className="grp-bot-prompt">提示词补充
+            <textarea rows={4} value={form.system_prompt} maxLength={4000} onChange={(e) => setForm({ ...form, system_prompt: e.target.value })}
+              placeholder="例如：更关注样本外表现；回答里不要给买卖建议。内置提示词已经要求简短、自然，不要写成长报告。" />
+          </label>
+          <div className="grp-bot-toggles">
+            <label className="check"><input type="checkbox" checked={form.enabled} onChange={(e) => setForm({ ...form, enabled: e.target.checked })} />启用 Bot</label>
+            <label className="check"><input type="checkbox" checked={form.qmoji_enabled} onChange={(e) => setForm({ ...form, qmoji_enabled: e.target.checked })} />允许使用 Qmoji</label>
+            <span className="hint">Qmoji 会由提示词引导，最多一个，例如 <code>:qbot-hi:</code>、<code>:qbot-think:</code>。</span>
+          </div>
+          <div className="grp-bot-billing">
+            <Icon name="accounts" size={14} />
+            <span>{data.bot?.created_by ? `调用与额度记在 ${creator?.name || '添加它的管理员'} 名下` : '保存后，调用与额度记在当前管理员名下'}</span>
+          </div>
+          <div className="button-row">
+            <button type="button" className="button small primary" disabled={busy} onClick={save}>{busy ? '保存中…' : '保存 Bot 配置'}</button>
+            {data.bot && <button type="button" className="button small danger" disabled={busy} onClick={remove}>移除 Bot</button>}
+            {!data.bot && <button type="button" className="button small" onClick={() => { setEditing(false); setForm(empty) }}>取消</button>}
+          </div>
+        </div>
+      )}
+    </section>
+  )
+}
+
 /* ------------------------------------------------------------------ 设置 */
 function GroupSettings({ g, me, isMod, members, notify, onSaved, onLeft, onStartDm, onMembersChanged }: {
   g: Group; me: Me; isMod: boolean; members: Member[]; notify: PageProps['notify']; onSaved: () => void; onLeft: () => void
@@ -831,7 +958,8 @@ function GroupSettings({ g, me, isMod, members, notify, onSaved, onLeft, onStart
   const [saving, setSaving] = useState(false)
   const directory = useMemo(() => new Map(members.map((m) => [m.user_id, m])), [members])
   const inGroup = new Set((g.members ?? []).map((m) => m.user_id))
-  const showMembers = (g.members ?? []).filter((m) => {
+  const humanMembers = (g.members ?? []).filter((m) => m.kind !== 'bot')
+  const showMembers = humanMembers.filter((m) => {
     const q = memberQ.trim().toLowerCase()
     if (!q) return true
     const info = directory.get(m.user_id)
@@ -906,6 +1034,8 @@ function GroupSettings({ g, me, isMod, members, notify, onSaved, onLeft, onStart
         )}
       </section>
 
+      <GroupBotSettings g={g} isMod={isMod} members={members} notify={notify} onSaved={onSaved} />
+
       <section className="set-section grp-set-card">
         <div className="grp-set-head">
           <span className="grp-set-icon"><Icon name="bell" size={16} /></span>
@@ -924,7 +1054,7 @@ function GroupSettings({ g, me, isMod, members, notify, onSaved, onLeft, onStart
       <section className="set-section grp-set-card">
         <div className="grp-set-head">
           <span className="grp-set-icon"><Icon name="teams" size={16} /></span>
-          <div><h3 className="section-title">成员管理 · {g.members?.length ?? 0}</h3><p>{onlineCount} 人在线。点击头像或“私聊”即可发起一对一聊天。</p></div>
+          <div><h3 className="section-title">成员管理 · {humanMembers.length}</h3><p>{onlineCount} 人在线。点击头像或“私聊”即可发起一对一聊天；QuantLab Bot 在上一节单独配置。</p></div>
         </div>
         <div className="grp-member-tools">
           <input className="search" value={memberQ} onChange={(e) => setMemberQ(e.target.value)} placeholder="搜索成员、用户名或角色" aria-label="搜索群组成员" />

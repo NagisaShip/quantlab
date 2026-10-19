@@ -25,8 +25,8 @@ export default function AdminPage({ tab, me, onNavigate, notify }: PageProps & {
   if (!me.user.is_admin) return <Callout tone="warn">只有部署管理员（平台服务的部署方）可以使用运维控制台。</Callout>
   return (
     <>
-      <Heading title={ADMIN_TABS.find((t) => t.key === cur)!.label} description="部署管理员 · 管理整台服务器：所有账号、所有工作区、全站用量。所有操作都写入审计日志。" />
-      {cur === 'overview' && <Overview onNavigate={onNavigate} />}
+      <Heading title={ADMIN_TABS.find((t) => t.key === cur)!.label} description="部署管理员 · 共同管理整台服务器：账号、用户、工作区、全站用量与帖子审核。第一个注册账号是主管理员，权限最高且不可撤销。所有操作都写入审计日志。" />
+      {cur === 'overview' && <Overview onNavigate={onNavigate} notify={notify} />}
       {cur === 'users' && <Users me={me} notify={notify} />}
       {cur === 'workspaces' && <Workspaces me={me} notify={notify} />}
       {cur === 'usage' && <Usage />}
@@ -42,15 +42,35 @@ function Kpi({ label, value, hint, tone }: { label: string; value: React.ReactNo
   return <div className={`adm-kpi ${tone ?? ''}`}><small>{label}</small><b>{value}</b>{hint && <span>{hint}</span>}</div>
 }
 
-function Overview({ onNavigate }: { onNavigate: (k: string) => void }) {
+function Overview({ onNavigate, notify }: { onNavigate: (k: string) => void; notify: PageProps['notify'] }) {
   const [d, setD] = useState<AdminOverview | null>(null)
   const [err, setErr] = useState('')
   const load = useCallback(() => { admin.overview().then(setD).catch((e) => setErr(e.message)) }, [])
   useEffect(() => { load(); const t = window.setInterval(load, 20000); return () => window.clearInterval(t) }, [load])
+  const [slotsDraft, setSlotsDraft] = useState<number | null>(null)
+  const [savingSlots, setSavingSlots] = useState(false)
+  useEffect(() => {
+    if (d?.worker_config) setSlotsDraft(d.worker_config.slots)
+  }, [d?.worker_config?.slots, d?.worker_config?.updated_at])
+  const saveSlots = async () => {
+    if (!slotsDraft) return
+    setSavingSlots(true)
+    try {
+      await admin.saveWorkerConfig(slotsDraft)
+      notify('worker 槽位已保存，运行中的任务不受影响')
+      load()
+    } catch (e) {
+      notify((e as Error).message, true)
+    } finally {
+      setSavingSlots(false)
+    }
+  }
   if (err) return <Callout tone="fail">{err}</Callout>
   if (!d) return <Loading />
   const disk = d.server.disk
   const diskPct = Math.round((disk.used / Math.max(1, disk.total)) * 100)
+  const mem = d.server.memory
+  const memPct = mem.percent
   const running = (d.runs.running ?? 0) + (d.runs.queued ?? 0) + (d.runs.pending ?? 0)
   return (
     <div className="adm">
@@ -63,6 +83,7 @@ function Overview({ onNavigate }: { onNavigate: (k: string) => void }) {
         <Kpi label="模型费用 · 30 天" value={fmtCost(d.llm['30d'].cost)} hint={`7 天 ${fmtCost(d.llm['7d'].cost)}`} />
         <Kpi label="待处理问题" value={d.issues.open ?? 0} tone={(d.issues.open ?? 0) > 0 ? 'warn' : ''} hint={<button type="button" className="link-btn" onClick={() => onNavigate('issues')}>去处理 →</button>} />
         <Kpi label="磁盘" value={`${diskPct}%`} tone={diskPct > 85 ? 'fail' : diskPct > 70 ? 'warn' : ''} hint={`剩余 ${fmtBytes(disk.free)} / ${fmtBytes(disk.total)}`} />
+        <Kpi label="内存" value={`${memPct}%`} tone={memPct > 90 ? 'fail' : memPct > 75 ? 'warn' : ''} hint={`已用 ${fmtBytes(mem.used)} / ${fmtBytes(mem.total)}`} />
       </div>
       <div className="adm-grid">
         <Panel title="服务器">
@@ -74,6 +95,9 @@ function Overview({ onNavigate }: { onNavigate: (k: string) => void }) {
             <dt>数据库</dt><dd>{d.server.db === 'sqlite' ? `SQLite · ${fmtBytes(d.server.db_bytes)}` : 'PostgreSQL'}</dd>
             <dt>数据目录</dt><dd className="mono small">{d.server.data_dir}</dd>
             <dt>worker 模式</dt><dd>{d.server.worker_mode}</dd>
+            <dt>内存</dt><dd>已用 {fmtBytes(mem.used)} / {fmtBytes(mem.total)}（{memPct}%）</dd>
+            <dt>API 进程</dt><dd>RSS {fmtBytes(d.server.process.rss_bytes)} · {d.server.process.threads} 线程 · CPU {d.server.process.cpu_seconds.toFixed(1)} 秒</dd>
+            <dt>worker 槽位</dt><dd>{d.worker_config.slots} 个 · {d.worker_config.configured ? '管理员已设置' : '默认值'} · 在线 {d.workers.alive}</dd>
             <dt>注册方式</dt><dd>{d.server.open_registration ? <Tag tone="warn">开放注册</Tag> : <Tag tone="ok">凭邀请码</Tag>}</dd>
           </dl>
           <div className="adm-disk"><div className="lim-track"><i style={{ width: `${diskPct}%` }} /></div><small>磁盘已用 {fmtBytes(disk.used)}</small></div>
@@ -92,10 +116,45 @@ function Overview({ onNavigate }: { onNavigate: (k: string) => void }) {
             return <li key={k}><span>{k}</span><i style={{ width: `${(v / max) * 100}%` }} /><b>{v}</b></li>
           })}</ul> : <div className="hint">还没有运行记录</div>}
         </Panel>
-        <Panel title="worker 心跳">
+        <Panel title="worker 调度与内存">
           {d.workers.error && <Callout tone="warn">{d.workers.error}</Callout>}
+          <div className="worker-config-row">
+            <label>
+              <span>并发槽位</span>
+              <input type="number" min={d.worker_config.min} max={d.worker_config.max}
+                value={slotsDraft ?? d.worker_config.slots}
+                onChange={(e) => setSlotsDraft(Math.max(d.worker_config.min, Math.min(d.worker_config.max, Number(e.target.value) || d.worker_config.default)))} />
+            </label>
+            <button type="button" className="button small primary" disabled={savingSlots || slotsDraft === d.worker_config.slots} onClick={saveSlots}>
+              {savingSlots ? '保存中…' : '保存槽位'}
+            </button>
+          </div>
+          <p className="hint worker-note">默认 {d.worker_config.default} 个槽位。槽位满时新任务进入 QUEUED 队列自动等待，不会失败；保存后约 5 秒同步到在线 worker，运行中的任务不受影响。</p>
+          <div className="worker-summary">
+            <span>在线 <b>{d.workers.alive}</b></span>
+            <span>槽位 <b>{d.workers.slots_total ?? d.worker_config.slots}</b></span>
+            <span>忙碌 <b>{d.workers.busy_total ?? 0}</b></span>
+            <span>排队 <b>{d.workers.queued ?? d.runs.QUEUED ?? 0}</b></span>
+          </div>
           {d.workers.list.length ? (
-            <ul className="plain-list">{d.workers.list.map((w) => <li key={w.id}><span><span className={`dot ${w.alive ? 'ok' : 'bad'}`} /> {w.host}</span><small>{since(w.last_seen)}</small></li>)}</ul>
+            <ul className="worker-list">
+              {d.workers.list.map((w) => (
+                <li key={w.id}>
+                  <div className="worker-head">
+                    <span><span className={`dot ${w.alive ? 'ok' : 'bad'}`} /> {w.host} <small>PID {w.pid ?? '—'}</small></span>
+                    <small>{since(w.last_seen)}</small>
+                  </div>
+                  <div className="worker-metrics">
+                    <span><b>{w.busy}</b> / {w.slots || '—'} 槽位</span>
+                    <span>RSS <b>{fmtBytes(w.rss_bytes)}</b></span>
+                    <span>私有 <b>{fmtBytes(w.private_bytes)}</b></span>
+                    <span>CPU <b>{w.cpu_seconds.toFixed(1)}s</b></span>
+                    <span>{w.threads} 线程</span>
+                  </div>
+                  {!!w.kinds?.length && <small className="worker-kinds">{w.kinds.join(' · ')}</small>}
+                </li>
+              ))}
+            </ul>
           ) : <div className="hint">没有独立 worker（inline 模式下运行在 API 进程里）</div>}
         </Panel>
       </div>
@@ -138,6 +197,7 @@ function Users({ me, notify }: { me: Me; notify: PageProps['notify'] }) {
                   <td>
                     {u.banned_at ? <Tag tone="fail">已封禁</Tag> : <Tag tone="ok">正常</Tag>}
                     {u.is_admin && <> <Tag tone="agent">部署管理员</Tag></>}
+                    {u.is_primary_admin && <> <Tag tone="ok">主管理员</Tag></>}
                     {u.totp && <> <Tag>2FA</Tag></>}
                     {u.banned_reason && <small className="muted" style={{ display: 'block' }}>{u.banned_reason}</small>}
                   </td>
@@ -146,15 +206,17 @@ function Users({ me, notify }: { me: Me; notify: PageProps['notify'] }) {
                   <td>{since(u.last_login_at)}</td>
                   <td>{since(u.created_at)}</td>
                   <td className="right">
-                    {u.id !== me.user.id && <div className="row-actions">
-                      {u.banned_at
-                        ? <button className="button small" onClick={() => act(() => admin.unban(u.id), '已解封')}>解封</button>
-                        : <button className="button small danger" onClick={async () => {
-                          const reason = await appPrompt(`封禁 ${u.email}？对方会立即下线、无法登录。原因（登录时会提示）：`, '', { title: '封禁账号', okLabel: '封禁', placeholder: '例如：违反使用规范' })
-                          if (reason !== null) act(() => admin.ban(u.id, reason), '已封禁')
-                        }}>封禁</button>}
-                      <button className="button small" onClick={() => setOpen(u.id)}>详情</button>
-                    </div>}
+                    {u.is_primary_admin
+                      ? <button className="button small" onClick={() => setOpen(u.id)}>详情</button>
+                      : u.id !== me.user.id && <div className="row-actions">
+                        {u.banned_at
+                          ? <button className="button small" onClick={() => act(() => admin.unban(u.id), '已解封')}>解封</button>
+                          : <button className="button small danger" onClick={async () => {
+                            const reason = await appPrompt(`封禁 ${u.email}？对方会立即下线、无法登录。原因（登录时会提示）：`, '', { title: '封禁账号', okLabel: '封禁', placeholder: '例如：违反使用规范' })
+                            if (reason !== null) act(() => admin.ban(u.id, reason), '已封禁')
+                          }}>封禁</button>}
+                        <button className="button small" onClick={() => setOpen(u.id)}>详情</button>
+                      </div>}
                   </td>
                 </tr>
               ))}
@@ -186,16 +248,17 @@ function UserDetail({ id, me, onClose, notify, onChanged, onSecret }: {
     <Modal title={d ? `${d.user.name} · ${d.user.email}` : '账号详情'} onClose={onClose} width={860}>
       {!d ? <Loading /> : (
         <div className="adm-user">
+          {d.user.is_primary_admin && <Callout tone="warn" title="主管理员账号受保护">第一个注册账号是部署主管理员，不能被封禁、撤销、强制下线或由其他管理员重置密码。如需修改安全设置，请由本人操作。</Callout>}
           <div className="button-row">
-            {!self && (d.user.banned_at
+            {!self && !d.user.is_primary_admin && (d.user.banned_at
               ? <button className="button small" onClick={() => act(() => admin.unban(id), '已解封')}>解封</button>
               : <button className="button small danger" onClick={async () => { const r = await appPrompt('封禁原因（登录时会提示对方）：', '', { title: '封禁账号', okLabel: '封禁' }); if (r !== null) act(() => admin.ban(id, r), '已封禁') }}>封禁</button>)}
-            {!self && <button className="button small" onClick={async () => { if (await appConfirm('作废该账号的全部会话，对方需要重新登录？')) act(() => admin.revoke(id), '已强制下线') }}>强制下线</button>}
-            <button className="button small" onClick={async () => {
+            {!self && !d.user.is_primary_admin && <button className="button small" onClick={async () => { if (await appConfirm('作废该账号的全部会话，对方需要重新登录？')) act(() => admin.revoke(id), '已强制下线') }}>强制下线</button>}
+            {!d.user.is_primary_admin && <button className="button small" onClick={async () => {
               if (!(await appConfirm('重置密码？会生成一个临时密码并作废该账号的全部会话。'))) return
               try { const r = await admin.resetPassword(id); onSecret({ title: `${d.user.email} 的临时密码`, value: r.temp_password }); load() } catch (e) { notify((e as Error).message, true) }
-            }}>重置密码</button>
-            {!self && <button className="button small" onClick={async () => {
+            }}>重置密码</button>}
+            {!self && me.user.is_primary_admin && !d.user.is_primary_admin && <button className="button small" onClick={async () => {
               const to = !d.user.is_admin
               if (await appConfirm(to ? `授予 ${d.user.email} 部署管理员？对方将能管理整台服务器。` : `撤销 ${d.user.email} 的部署管理员？`)) act(() => admin.setAdmin(id, to), '已更新')
             }}>{d.user.is_admin ? '撤销部署管理员' : '设为部署管理员'}</button>}

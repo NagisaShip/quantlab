@@ -13,6 +13,7 @@ import { usePlatformCommands } from '../../components/chat/platformCommands'
 import { Sparkline } from '../../components/charts2'
 import { QuantBot, QuantEyes, useBotFlash, viewFromSignal, type BotView } from '../../components/QuantBot'
 import { store } from '../../components/prefs'
+import { t } from '../../i18n'
 import { pickExamples, RESEARCH_TYPES, type ResearchType } from '../lab/domains'
 import { MarketSwitcher, syncData } from '../lab/research'
 import { labChanged } from '../lab/bus'
@@ -180,7 +181,7 @@ export function HomeAsk({ onNavigate, notify, brief }: { onNavigate: (k: string)
             return (
               <button key={x.text} type="button" className={`home-idea-card${i === activeIdea ? ' on' : ''}`}
                 style={{ animationDelay: `${i * 55}ms` }}
-                onClick={() => setText(x.type === 'strategy' ? x.text : `${cmd.cmd} ${x.text}`)}>
+                onClick={() => setText(x.type === 'strategy' ? t(x.text) : `${cmd.cmd} ${t(x.text)}`)}>
                 <em>{RESEARCH_TYPES.find((r) => r.id === x.type)?.label}</em>
                 <span>{x.text}</span>
                 <i aria-hidden="true">↗</i>

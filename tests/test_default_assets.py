@@ -65,7 +65,14 @@ def test_builtin_assets_are_seeded_once_and_pass_admission(seeded_client):
         assert rows[0]["status"] == "done"
         assert (rows[0].get("review") or {}).get("blocks_promotion") is False
 
-    # 再访问各列表不会重复创建资产或回测。
+    # 群组与任务页的引导需要一个平台内置示例；它必须幂等且能被成员打开。
+    groups = client.get("/api/collab/groups").json()["groups"]
+    builtin_groups = [g for g in groups if g["name"] == "平台内置 · 研究协作示例"]
+    assert len(builtin_groups) == 1
+    gid = builtin_groups[0]["id"]
+    tasks = client.get(f"/api/collab/groups/{gid}/tasks").json()["tasks"]
+    assert any(t["title"] == "复核内置双均线策略的回测与审查" for t in tasks)
+
     assert len([f for f in client.get("/api/factors").json()["factors"] if f.get("created_by") == "builtin"]) == 3
     assert len([m for m in client.get("/api/models").json()["models"] if m.get("created_by") == "builtin"]) == 2
     assert len([p for p in client.get("/api/portfolio").json()["schemes"] if p.get("created_by") == "builtin"]) == 2

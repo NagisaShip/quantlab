@@ -41,7 +41,28 @@ export interface Group {
   last_message: { body: string; author: string; at: number } | null
   ws_limits: LimitRule[]
   member_limits: LimitRule[]
-  members?: { user_id: string; name: string; role: GroupRole; joined_at: number; avatar_color?: string }[]
+  members?: { user_id: string; name: string; role: GroupRole; joined_at: number; avatar_color?: string; kind?: 'user' | 'bot'; is_bot?: boolean }[]
+}
+export interface BotModelOption {
+  target: string
+  provider: string
+  model: string
+  label: string
+  scope: string
+  ready: boolean
+}
+export interface GroupBotConfig {
+  enabled: boolean
+  name: string
+  member_id: string
+  model_target: string
+  system_prompt: string
+  personality: string
+  qmoji_enabled: boolean
+  created_by: string
+  created_at: number
+  updated_at: number
+  updated_by: string
 }
 export interface QmojiReaction { emoji: string; count: number; mine: boolean }
 
@@ -215,7 +236,7 @@ export const collab = {
   messages: (id: string, o: { after?: number; before?: number } = {}) =>
     get<{ messages: Message[]; pinned: Message[] | null }>(`/api/collab/groups/${id}/messages${q(o)}`),
   send: (id: string, body: string, refs: Ref[], reply_to?: number | null) =>
-    post<{ message: Message }>(`/api/collab/groups/${id}/messages`, { body, refs, reply_to: reply_to ?? null }),
+    post<{ message: Message; bot_message?: Message | null }>(`/api/collab/groups/${id}/messages`, { body, refs, reply_to: reply_to ?? null }),
   editMessage: (mid: number, body: string) => put<{ message: Message }>(`/api/collab/messages/${mid}`, { body }),
   deleteMessage: (mid: number) => del<{ ok: boolean }>(`/api/collab/messages/${mid}`),
   pinMessage: (mid: number) => post<{ pinned: boolean }>(`/api/collab/messages/${mid}/pin`),
@@ -229,6 +250,10 @@ export const collab = {
     put<{ task: Task }>(`/api/collab/tasks/${tid}`, p),
   deleteTask: (tid: string) => del<{ ok: boolean }>(`/api/collab/tasks/${tid}`),
   usage: (id: string) => get<GroupUsage>(`/api/collab/groups/${id}/usage`),
+  bot: (id: string) => get<{ bot: GroupBotConfig | null; models: BotModelOption[]; can_manage: boolean; defaults: { personality: string; qmoji_enabled: boolean; member_id: string; name: string } }>(`/api/collab/groups/${id}/bot`),
+  saveBot: (id: string, p: { enabled: boolean; model_target: string; system_prompt: string; personality: string; qmoji_enabled: boolean }) =>
+    put<{ bot: GroupBotConfig; models: BotModelOption[]; group: Group }>(`/api/collab/groups/${id}/bot`, p),
+  removeBot: (id: string) => del<{ ok: boolean; group: Group }>(`/api/collab/groups/${id}/bot`),
   shared: (id: string) => get<{ strategies: SharedItem[]; projects: SharedItem[] }>(`/api/collab/groups/${id}/shared`),
   share: (type: 'strategy' | 'project', id: string) => get<ShareInfo>(`/api/collab/shares/${type}/${encodeURIComponent(id)}`),
   setShare: (type: 'strategy' | 'project', id: string, visibility: Visibility, group_ids: string[] = []) =>
@@ -302,24 +327,39 @@ export const uploadThumbUrl = (id: string) => `/api/uploads/${id}/thumb`
 export const fmtSize = (n: number) => (n >= 1 << 20 ? `${(n / (1 << 20)).toFixed(1)} MB` : n >= 1024 ? `${Math.round(n / 1024)} KB` : `${n} B`)
 
 /* ------------------------------------------------------------------ 运维控制台 */
+export interface WorkerInfo {
+  id: string; host: string; pid?: number | null; started_at?: number | null; last_seen: number; alive: boolean
+  slots: number; busy: number; resident: number
+  rss_bytes: number; private_bytes: number; peak_rss_bytes?: number; cpu_seconds: number; threads: number
+  kinds?: string[]
+}
+export interface WorkerConfig {
+  slots: number; min: number; max: number; default: number; configured: boolean
+  updated_at?: number | null; updated_by?: string
+}
 export interface AdminOverview {
   server: {
     python: string; platform: string; host: string; pid: number; uptime_s: number; data_dir: string; db: string
     db_bytes: number | null; disk: { total: number; used: number; free: number }; folders: Record<string, number>
     worker_mode: string; open_registration: boolean
+    memory: { total: number; available: number; used: number; percent: number }
+    process: { rss_bytes: number; private_bytes: number; peak_rss_bytes?: number; cpu_seconds: number; threads: number }
   }
   users: { total: number; active: number; banned: number; admins: number; active_7d: number; sessions: number }
   workspaces: { total: number; active: number }
   groups: number
   runs: Record<string, number>
-  workers: { alive: number; list: { id: string; host: string; last_seen: number; alive: boolean }[]; stale_runs?: number; error?: string }
+  workers: { alive: number; list: WorkerInfo[]; stale_runs?: number; error?: string; queued?: number; slots_total?: number; busy_total?: number }
+  worker_config: WorkerConfig
   llm: Record<'24h' | '7d' | '30d', { calls: number; tokens: number; cost: string }>
   issues: Record<string, number>
   uploads_bytes: number
 }
+
 export interface AdminUser {
   id: string; email: string; name: string; is_admin: boolean; is_active: boolean; created_at: number
   last_login_at: number | null; banned_at: number | null; banned_reason: string; workspaces?: number; totp?: boolean
+  is_primary_admin?: boolean
   usage_30d?: { calls: number; tokens: number; cost: string }
 }
 export interface AdminWorkspace {
@@ -354,6 +394,8 @@ export const admin = {
   settings: () => get<{ open_registration: boolean; open_registration_override: boolean | null; env_open_registration: boolean; banner: InboxSummary['banner'] }>('/api/admin/settings'),
   saveSettings: (p: { open_registration?: boolean | null; banner_text?: string }) =>
     put<{ open_registration: boolean; open_registration_override: boolean | null; env_open_registration: boolean; banner: InboxSummary['banner'] }>('/api/admin/settings', p),
+  workerConfig: () => get<{ config: WorkerConfig }>('/api/admin/worker-config'),
+  saveWorkerConfig: (slots: number) => put<{ config: WorkerConfig }>('/api/admin/worker-config', { slots }),
   audit: (o: { action?: string; user_id?: string; workspace_id?: string; before_id?: number } = {}) =>
     get<{ items: { id: number; ts: number; workspace_id: string; user_id: string; user_name: string; action: string; object_type: string; object_id: string; ip: string; details: Record<string, unknown> }[] }>(`/api/admin/audit${q(o)}`),
 }

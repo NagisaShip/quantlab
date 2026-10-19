@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from ..llm.base import LLMError, Message
 from ..llm.providers import openai_headers
 from ..llm.router import default_config_dict
+from ..platform import backtest_retention as BR
 from ..platform import context
 from ..platform.errors import AppError, ErrorCode
 from ..platform.storage_usage import upload_storage_by_user
@@ -519,7 +520,19 @@ def usage(
         for row in stats["by_user"]:
             row["name"] = names.get(row["user_id"], row["user_id"])
     pol = s.model_hub.policy(ws, ctx.user_id or "", ctx.role)
-    stats["my_limits"] = s.model_hub.rule_status(ws, pol["limits"], scope="workspace", user_id=ctx.user_id)
+    limits = list(pol["limits"])
+    if ctx.role != "admin" and not any(rule.get("metric") == "record_units" for rule in limits):
+        limits.append({"metric": "record_units", "window": "total", "limit": str(BR.DEFAULT_MEMBER_RECORD_UNITS)})
+    stats["my_limits"] = s.model_hub.rule_status(ws, limits, scope="workspace", user_id=ctx.user_id)
+    # 研究记录也是成员存储占用的一部分：与上传文件一起展示，避免“我的用量”
+    # 只看到附件、看不到回测 / 因子 / 模型等记录的情况。
+    records = BR.record_usage(s.store, ctx.user_id or "", include_legacy=ctx.role == "admin")
+    max_units = BR.effective_limit(s.auth, s.model_hub, ws, ctx.user_id or "", ctx.role)
+    records.update(
+        max_units_per_user=max_units,
+        remaining_units=round(max(0.0, max_units - float(records["total_units"])), 3),
+    )
+    stats["research_records"] = records
     stats["view"] = view
     return stats
 
@@ -542,6 +555,13 @@ def member_policies() -> dict:
     out = []
     for m in s.auth.members(ws):
         pol = s.model_hub.policy(ws, m["user_id"], m["role"])
+        limit_status = s.model_hub.rule_status(ws, pol["limits"], scope="workspace", user_id=m["user_id"])
+        # 默认研究记录额度是兜底规则：所有普通成员都展示它，但状态先算已有规则，
+        # 保持 token / 费用的原有排序，再把研究记录状态追加到最后。
+        if m["role"] != "admin" and not any(rule.get("metric") == "record_units" for rule in pol["limits"]):
+            fallback = {"metric": "record_units", "window": "total", "limit": str(BR.DEFAULT_MEMBER_RECORD_UNITS)}
+            pol["limits"].append(fallback)
+            limit_status.extend(s.model_hub.rule_status(ws, [fallback], scope="workspace", user_id=m["user_id"]))
         u = stats.get(m["user_id"], {})
         out.append(
             {
@@ -550,7 +570,7 @@ def member_policies() -> dict:
                 "email": m.get("email") or "",
                 "role": m["role"],
                 **pol,
-                "limit_status": s.model_hub.rule_status(ws, pol["limits"], scope="workspace", user_id=m["user_id"]),
+                "limit_status": limit_status,
                 "storage": storage.get(
                     m["user_id"],
                     {
@@ -623,7 +643,7 @@ def put_member_defaults(payload: DefaultLimitsIn) -> dict:
 def list_quota_requests() -> dict:
     s = get_services()
     ctx, ws = _ctx()
-    return {"requests": s.model_hub.requests(ws, None if ctx.role == "admin" else ctx.user_id)}
+    return {"requests": s.model_hub.requests(ws, None if (ctx.role == "admin" or ctx.is_admin) else ctx.user_id)}
 
 
 @router.post("/quota-requests", summary="申请提升使用工作区模型的额度")

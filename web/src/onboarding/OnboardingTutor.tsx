@@ -61,7 +61,7 @@ export default function OnboardingTutor({
           <p>{step.body}</p>
           {tipText && <div className="onboarding-tip">{tipText}</div>}
           <div className="onboarding-progress" aria-hidden="true">
-            {Array.from({ length: total }, (_, i) => <i key={i} className={i <= index ? 'on' : ''} />)}
+            <i style={{ width: `${((index + 1) / total) * 100}%` }} />
           </div>
           <div className="onboarding-actions">
             <button type="button" className="button small ghost" onClick={onSkip} disabled={busy}>跳过引导</button>

@@ -118,21 +118,41 @@ def health(services: Any) -> dict[str, Any]:
     from ..live import nodeguard
 
     at = now_ms()
-    workers = services.db.fetchall("SELECT id, host, last_seen, info FROM workers ORDER BY last_seen DESC")
+    workers = services.db.fetchall(
+        "SELECT id, host, pid, started_at, last_seen, info FROM workers ORDER BY last_seen DESC"
+    )
     alive = [w for w in workers if at - int(w["last_seen"] or 0) < STALE_MS]
     gone = stale_runs(services.db, now=at)
-    return {
-        "now": at,
-        "workers_alive": len(alive),
-        "workers": [
+    items = []
+    for w in workers[:10]:
+        info = jload(w.get("info"), {}) or {}
+        items.append(
             {
                 "id": w["id"],
                 "host": w["host"],
+                "pid": w.get("pid"),
+                "started_at": w.get("started_at"),
                 "last_seen": w["last_seen"],
                 "alive": at - int(w["last_seen"] or 0) < STALE_MS,
+                "slots": int(info.get("slots") or 0),
+                "busy": int(info.get("busy_count") or len(info.get("busy") or [])),
+                "resident": int(info.get("resident_count") or len(info.get("resident") or [])),
+                "rss_bytes": int(info.get("rss_bytes") or 0),
+                "private_bytes": int(info.get("private_bytes") or 0),
+                "peak_rss_bytes": int(info.get("peak_rss_bytes") or 0),
+                "cpu_seconds": float(info.get("cpu_seconds") or 0),
+                "threads": int(info.get("threads") or 0),
+                "kinds": info.get("kinds") or [],
             }
-            for w in workers[:10]
-        ],
+        )
+    queued = int(services.db.scalar("SELECT COUNT(*) AS n FROM runs WHERE state='QUEUED'") or 0)
+    return {
+        "now": at,
+        "workers_alive": len(alive),
+        "workers": items,
+        "queued": queued,
+        "slots_total": sum(int(w["slots"]) for w in items if w["alive"]),
+        "busy_total": sum(int(w["busy"]) for w in items if w["alive"]),
         "stale_runs": [
             {"id": r["id"], "title": r.get("title"), "silent_seconds": int(r["silent_ms"] / 1000)} for r in gone
         ],

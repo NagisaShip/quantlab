@@ -40,6 +40,11 @@ def test_new_user_starts_not_started_and_progresses(app):
         state = r.json()["onboarding"]
         assert state["current_step"] == "goal" and state["completed_steps"] == ["flow"]
 
+        # 完整链路新增的群组与任务步骤必须被状态机接受。
+        r = c.put("/api/onboarding", json={"completed_step": "square", "current_step": "groups"})
+        assert r.status_code == 200, r.text
+        assert r.json()["onboarding"]["current_step"] == "groups"
+
         r = c.put(
             "/api/onboarding",
             json={"completed_step": "finish", "current_step": "finish", "status": "completed"},

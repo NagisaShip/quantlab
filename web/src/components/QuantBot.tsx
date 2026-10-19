@@ -232,8 +232,8 @@ export function QuantBot({ size = 24, state = 'idle', view = 'neutral', title, c
       </g>
       {!simple && hands && (
         <g className="qbot-hands" aria-hidden="true">
-          <line className="qbot-hand qbot-hand--l" x1="3.4" y1="15.1" x2="1.0" y2="16.8" />
-          <line className="qbot-hand qbot-hand--r" x1="20.6" y1="15.1" x2="23.0" y2="16.8" />
+          <line className="qbot-hand-outline qbot-hand--r" x1="20.2" y1="14.9" x2="24.2" y2="16.4" />
+          <line className="qbot-hand qbot-hand--r" x1="20.2" y1="14.9" x2="24.2" y2="16.4" />
         </g>
       )}
       <Eyes />

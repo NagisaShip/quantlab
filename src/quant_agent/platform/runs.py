@@ -331,7 +331,7 @@ class RunService:
         lock = " FOR UPDATE SKIP LOCKED" if self.db.dialect == "postgres" else ""
         with self.db.tx() as t:
             row = t.fetchone(
-                f"SELECT id, state, workspace_id FROM runs WHERE state IN (?,?){kind_sql} ORDER BY created_at LIMIT "
+                f"SELECT id, state, workspace_id FROM runs WHERE state IN (?,?){kind_sql} ORDER BY created_at, id LIMIT "
                 f"1{lock}",
                 [QUEUED, RECOVERING, *(kinds or [])],
             )

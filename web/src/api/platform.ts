@@ -5,7 +5,7 @@ import { del, get, idemKey, post, put, withWs } from '../http'
 export type Dec = string
 export type Role = 'admin' | 'member' | 'reviewer'
 export type OnboardingStatus = 'not_started' | 'in_progress' | 'completed' | 'skipped'
-export type OnboardingStep = 'welcome' | 'flow' | 'goal' | 'agents' | 'backtest' | 'finish'
+export type OnboardingStep = 'welcome' | 'flow' | 'goal' | 'agents' | 'backtest' | 'data' | 'factors' | 'modellib' | 'portfolio' | 'validation' | 'paper' | 'square' | 'groups' | 'finish'
 export interface OnboardingState {
   version: number
   status: OnboardingStatus
@@ -20,9 +20,9 @@ export interface OnboardingState {
 export interface Account { id: string; username: string; name: string; email: string; email_verified: boolean; quantlab_uid: string }
 export interface Me {
   /** email 为空表示还没绑定邮箱 */
-  user: { id: string; email: string; username?: string; email_verified?: boolean; quantlab_uid?: string; name: string; is_admin: boolean; avatar_color?: string }
-  workspaces: { id: string; name: string; role: Role; is_demo?: boolean }[]
-  workspace: { id: string; name: string; role: Role; is_demo: boolean; settings: WorkspaceSettings } | null
+  user: { id: string; email: string; username?: string; email_verified?: boolean; quantlab_uid?: string; name: string; is_admin: boolean; is_primary_admin?: boolean; avatar_color?: string }
+  workspaces: { id: string; name: string; role: Role; is_demo?: boolean; owner_id?: string; is_primary_admin?: boolean }[]
+  workspace: { id: string; name: string; role: Role; is_demo: boolean; owner_id?: string; is_primary_admin?: boolean; settings: WorkspaceSettings } | null
   onboarding: OnboardingState
   live_enabled: boolean
 }
@@ -41,7 +41,7 @@ export interface WorkspaceSettings {
     allow_python_strategies: boolean
   }
 }
-export interface Member { user_id: string; name: string; email: string; role: Role; status: string; created_at: number; last_login_at: number | null }
+export interface Member { user_id: string; name: string; email: string; role: Role; status: string; created_at: number; last_login_at: number | null; is_primary_admin?: boolean }
 export type InviteStatus = 'active' | 'used' | 'expired' | 'revoked'
 export interface Invite {
   id: string
@@ -58,8 +58,11 @@ export interface Invite {
   created_by?: string
   created_by_name?: string | null
   expires_in_hours?: number
+  max_uses: number
+  remaining_uses?: number | null
   status: InviteStatus
   invited_count: number
+  invitees: { user_id: string; name?: string | null; email?: string | null; used_at: number }[]
   remaining_ms?: number
 }
 export interface AuditItem { id: number; ts: number; action: string; object_type: string; object_id: string; user_name: string | null; ip: string; trace_id: string; details: Record<string, unknown> }
@@ -84,6 +87,7 @@ export interface Run {
   ended_at: number | null
   manifest: Record<string, unknown>
   terminal: boolean
+  queue_position?: number
 }
 export interface RunEvent { id: number; ts: number; type: string; data: Record<string, unknown> }
 
@@ -249,7 +253,7 @@ export const v4 = {
   createWorkspace: (name: string) => post<{ id: string }>('/api/workspaces', { name }),
   joinWorkspace: (code: string) => post<{ id: string }>('/api/workspaces/join', { code }),
   members: () => get<{ members: Member[]; invites: Invite[] }>('/api/workspace/members'),
-  invite: (role: Role, email?: string, expiresInHours = 168) => post<{ invite: Invite; note: string }>('/api/workspace/invites', { role, email: email || undefined, expires_in_hours: expiresInHours }),
+  invite: (role: Role, email?: string, expiresInHours = 168, maxUses = 10) => post<{ invite: Invite; note: string }>('/api/workspace/invites', { role, email: email || undefined, expires_in_hours: expiresInHours, max_uses: maxUses }),
   revokeInvite: (id: string) => del<{ ok: boolean }>(`/api/workspace/invites/${id}`),
   setRole: (userId: string, role: Role) => put<{ ok: boolean }>(`/api/workspace/members/${userId}`, { role }),
   removeMember: (userId: string) => del<{ ok: boolean }>(`/api/workspace/members/${userId}`),

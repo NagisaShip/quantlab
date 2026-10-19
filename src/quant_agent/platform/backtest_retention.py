@@ -9,16 +9,22 @@ PIN 只保护记录不被自动清理或普通删除，用户可以主动取消 
 
 from __future__ import annotations
 
+import os
+import shutil
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from ..store import Collections
 from .errors import AppError, ErrorCode
 
+DEFAULT_MEMBER_RECORD_UNITS = 200
 DEFAULT_MAX_RECORDS = 100_000  # 兼容旧名称；实际表示每用户记录单位上限
 DEFAULT_PER_STRATEGY_LIMIT = 5
 RETENTION_SETTING_PREFIX = "backtest_retention:"
+RECORD_UNIT_BYTES = 350 * 1024
+RESERVED_SPACE_RATIO = 0.2
 
 
 def _created_by(row: dict[str, Any]) -> str:
@@ -76,15 +82,43 @@ def save_user_prefs(store: Any, user_id: str, payload: dict[str, Any]) -> dict[s
     return prefs
 
 
+def data_home() -> Path:
+    env = os.environ.get("QAGENT_HOME", "").strip()
+    return Path(env) if env else Path.home() / ".quant_agent"
+
+
+def workspace_hard_max(home: str | Path | None = None) -> dict[str, Any]:
+    """每成员记录单位的硬上限：服务器空间 20% 折算成单位，再与 100k 取小。"""
+    path = Path(home) if home else data_home()
+    try:
+        disk_total = int(shutil.disk_usage(path).total)
+    except OSError:
+        try:
+            disk_total = int(shutil.disk_usage(path.anchor or ".").total)
+        except OSError:
+            disk_total = 0
+    reserved = int(disk_total * RESERVED_SPACE_RATIO) if disk_total else 0
+    by_disk = reserved // RECORD_UNIT_BYTES if reserved else DEFAULT_MAX_RECORDS
+    hard = max(1, min(DEFAULT_MAX_RECORDS, int(by_disk)))
+    return {
+        "hard_max_units": hard,
+        "default_max_units": DEFAULT_MAX_RECORDS,
+        "disk_total_bytes": disk_total,
+        "reserved_bytes": reserved,
+        "reserved_ratio": RESERVED_SPACE_RATIO,
+        "record_unit_bytes": RECORD_UNIT_BYTES,
+    }
+
+
 def workspace_limit(auth: Any, workspace_id: str) -> int:
-    # `backtest_max_records_per_user` 是历史配置键；保留它可以无损兼容已有工作区。
-    # 新界面把它解释为“每人记录单位上限”，回测倍率默认为 1.0。
+    # backtest_max_records_per_user 是历史配置键；保留它兼容已有工作区。
     settings = (auth.workspace(workspace_id).get("settings") or {}) if auth is not None else {}
     quotas = settings.get("quotas") or {}
     try:
-        return max(1, int(quotas.get("backtest_max_records_per_user", DEFAULT_MAX_RECORDS)))
+        configured = int(quotas.get("backtest_max_records_per_user", DEFAULT_MAX_RECORDS))
     except (TypeError, ValueError):
-        return DEFAULT_MAX_RECORDS
+        configured = DEFAULT_MAX_RECORDS
+    return max(1, min(configured, int(workspace_hard_max()["hard_max_units"])))
 
 
 def usage(store: Any, user_id: str, *, max_records: int, prefs: dict[str, Any]) -> dict[str, Any]:
@@ -381,6 +415,7 @@ def record_usage(
         "total_records": len(all_rows),
         "pinned_records": sum(1 for _, row in all_rows if row.get("pinned")),
         "total_units": round(sum(float(entry["units"]) for entry in types), 3),
+        "approx_bytes": sum(int(entry["count"]) * int(entry["approx_bytes"]) for entry in types),
         "types": types,
     }
     if prefs is not None:
@@ -541,7 +576,7 @@ def effective_limit(
     try:
         limits = model_hub.policy(workspace_id, user_id, role).get("limits") or []
     except Exception:
-        return cap
+        return min(float(cap), float(DEFAULT_MEMBER_RECORD_UNITS))
     for rule in limits:
         if rule.get("metric") != "record_units":
             continue
@@ -551,7 +586,8 @@ def effective_limit(
             continue
         if value > 0:
             return min(cap, value)
-    return cap
+    # 没有单独的 record_units 规则时使用成员默认 200 单位。
+    return min(float(cap), float(DEFAULT_MEMBER_RECORD_UNITS))
 
 
 def cleanup_total(

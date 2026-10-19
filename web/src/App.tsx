@@ -564,7 +564,7 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
         {busy && <BusyOverlay title={busy.title} note={busy.note} />}
         <RoleDrawer notify={notify} />
         <DialogHost />
-        <OnboardingHost me={me} page={page} go={go} notify={notify} />
+        <OnboardingHost me={me} page={page} go={go} notify={notify} onMeChanged={onMeChanged} />
         <MessageToasts meName={me.user.name || me.user.username || ''} onNavigate={go} />
         {toast && <Toast message={toast.message} error={toast.error} onDone={() => setToast(null)} />}
       </>
@@ -588,7 +588,7 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
           {NAV.filter((g) => !g.step).slice(0, 1).map((group) => (
             <div key="top">
               {navItems(group.items).map((item) => (
-                <button key={item.key} className="nav-item" aria-current={nav === item.key ? 'page' : undefined} onClick={() => go(item.key)}>
+                <button key={item.key} className="nav-item" data-tour={`nav-${item.key}`} aria-current={nav === item.key ? 'page' : undefined} onClick={() => go(item.key)}>
                   <Icon name={item.key} />
                   {item.label}
                 </button>
@@ -608,7 +608,7 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
                 <div key={group.group} className="nav-flow-stage">
                   {flowOpen && <div className="nav-flow-label"><i>{group.step}</i>{group.group}</div>}
                   {items.map((item) => (
-                    <button key={item.key} className="nav-item" aria-current={nav === item.key ? 'page' : undefined} onClick={() => go(item.key)}>
+                    <button key={item.key} className="nav-item" data-tour={`nav-${item.key}`} aria-current={nav === item.key ? 'page' : undefined} onClick={() => go(item.key)}>
                       <Icon name={item.key} />
                       {item.label}
                     </button>
@@ -621,7 +621,7 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
             <div key={group.group || 'more'}>
               {group.group && <div className="nav-label">{group.group}</div>}
               {navItems(group.items).map((item) => (
-                <button key={item.key} className="nav-item" aria-current={nav === item.key ? 'page' : undefined} onClick={() => go(item.key)}>
+                <button key={item.key} className="nav-item" data-tour={`nav-${item.key}`} aria-current={nav === item.key ? 'page' : undefined} onClick={() => go(item.key)}>
                   <Icon name={item.key} />
                   {item.label}
                 </button>
@@ -685,7 +685,7 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
       <RoleDrawer notify={notify} />
       <DialogHost />
       <AskAIPanel />
-      <OnboardingHost me={me} page={page} go={go} notify={notify} />
+      <OnboardingHost me={me} page={page} go={go} notify={notify} onMeChanged={onMeChanged} />
       <MessageToasts meName={me.user.name || me.user.username || ''} onNavigate={go} />
       {toast && <Toast message={toast.message} error={toast.error} onDone={() => setToast(null)} />}
     </>
@@ -718,7 +718,7 @@ function AccountMenu({ me, reachable, llmReady, onNavigate, notify }: { me: Me; 
         <span className="avatar"><UserAvatar color={me.user.avatar_color} size={30} title={name} /><UnreadDot /></span>
         <div className="acct-text">
           <div>{name}</div>
-          <small>{me.user.quantlab_uid ? `${me.user.quantlab_uid} · ` : ''}{ws?.name ?? '未选择工作区'} · {ROLE_NAME[ws?.role ?? 'member']}</small>
+          <small>{me.user.quantlab_uid ? `${me.user.quantlab_uid} · ` : ''}{ws?.name ?? '未选择工作区'} · {ws?.is_primary_admin ? '主管理员' : ROLE_NAME[ws?.role ?? 'member']}</small>
         </div>
         <span className="acct-caret" aria-hidden="true">⌃</span>
       </button>
@@ -736,7 +736,7 @@ function AccountMenu({ me, reachable, llmReady, onNavigate, notify }: { me: Me; 
               window.location.hash = '/home'
               window.location.reload()
             }}>
-              <span>{w.name}</span><span className={`role-chip ${w.role}`}>{ROLE_NAME[w.role]}</span>
+              <span>{w.name}</span><span className={`role-chip ${w.role}`}>{w.is_primary_admin ? '主管理员' : ROLE_NAME[w.role]}</span>
             </button>
           ))}
           <button role="menuitem" title="新建 / 加入工作区…" onClick={() => pick('settings/workspace')}>新建 / 加入工作区…</button>

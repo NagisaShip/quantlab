@@ -64,6 +64,8 @@ def test_member_storage_quota_self_usage_and_upload_rejection(app):
         assert usage["storage"]["file_count"] == 1
         storage_limit = next(x for x in usage["my_limits"] if x["metric"] == "storage_bytes")
         assert storage_limit["used"] == "100" and storage_limit["limit"] == "180"
+        record_usage = member.get("/api/research/record-retention").json()["usage"]
+        assert record_usage["max_units_per_user"] == 200
 
         second = member.post(
             "/api/uploads?filename=second.txt",
@@ -115,11 +117,15 @@ def test_default_storage_limit_and_individual_override(app):
         login(admin)
         row = next(x for x in admin.get("/api/config/members").json()["members"] if x["user_id"] == uid)
         assert row["custom_limits"] is False
-        assert {x["metric"] for x in row["limits"]} == {"storage_bytes", "tokens"}
+        assert {x["metric"] for x in row["limits"]} == {"storage_bytes", "tokens", "record_units"}
+        assert next(x for x in row["limits"] if x["metric"] == "record_units")["limit"] == "200"
         admin.put(
             f"/api/config/members/{uid}",
             json={"limits": [{"metric": "storage_bytes", "window": "total", "limit": "50"}]},
         )
         row = next(x for x in admin.get("/api/config/members").json()["members"] if x["user_id"] == uid)
         assert row["custom_limits"] is True
-        assert row["limits"] == [{"metric": "storage_bytes", "window": "total", "limit": "50"}]
+        assert row["limits"] == [
+            {"metric": "storage_bytes", "window": "total", "limit": "50"},
+            {"metric": "record_units", "window": "total", "limit": "200"},
+        ]

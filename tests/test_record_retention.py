@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from quant_agent.api.app import create_app
 from quant_agent.api.deps import AppServices, get_services, reset_services, set_services
+from quant_agent.platform import backtest_retention as BR
 
 
 @pytest.fixture()
@@ -50,16 +51,37 @@ def _set_workspace_units(client, value):
     return r.json()
 
 
+def test_workspace_hard_max_is_20_percent_of_disk(monkeypatch, tmp_path):
+    """硬上限 = min(100k, 服务器空间 20% / 350KB)；大磁盘仍封顶 100k。"""
+    tiny = 1_000_000_000
+    monkeypatch.setattr(BR.shutil, "disk_usage", lambda _path: type("D", (), {"total": tiny})())
+    info = BR.workspace_hard_max(tmp_path)
+    assert info["hard_max_units"] == min(100_000, int(tiny * 0.2) // (350 * 1024))
+    assert info["reserved_bytes"] == int(tiny * 0.2)
+
+    huge = 10_000_000_000_000
+    monkeypatch.setattr(BR.shutil, "disk_usage", lambda _path: type("D", (), {"total": huge})())
+    assert BR.workspace_hard_max(tmp_path)["hard_max_units"] == 100_000
+
+
 def test_record_catalog_is_serializable_and_has_defaults(client):
     c, me = client
     store = _store(me)
     _seed(store, "factors", "factor-1", uid=me["user"]["id"], name="价值因子", expression="close")
 
     body = c.get("/api/research/record-retention").json()
-    assert body["workspace"]["max_units_per_user"] == 100_000
-    assert body["workspace"]["max_records_per_user"] == 100_000
+    assert body["workspace"]["max_units_per_user"] <= 100_000
+    assert body["workspace"]["max_records_per_user"] <= 100_000
+    assert body["workspace"]["default_max_units"] == 100_000
+    defaults = c.get("/api/config/member-defaults").json()["limits"]
+    assert any(x["metric"] == "record_units" and x["limit"] == "200" for x in defaults)
     assert body["usage"]["total_records"] == 1
     assert body["usage"]["total_units"] == pytest.approx(0.18)
+    assert body["usage"]["approx_bytes"] == 63 * 1024
+    config_usage = c.get("/api/config/usage?view=me").json()
+    assert config_usage["research_records"]["total_records"] == 1
+    assert config_usage["research_records"]["approx_bytes"] == 63 * 1024
+    assert config_usage["research_records"]["max_units_per_user"] == body["workspace"]["max_units_per_user"]
     assert {item["key"] for item in body["usage"]["types"]} == {
         "backtest",
         "optimization",
@@ -84,6 +106,33 @@ def test_record_catalog_is_serializable_and_has_defaults(client):
         "approx_bytes": 350 * 1024,
     }
     assert c.get("/api/research/record-retention/records?type=unknown").status_code == 400
+
+    hard = body["workspace"]["hard_max_units"]
+    rejected = c.put("/api/research/record-retention/workspace", json={"max_records_per_user": hard + 1})
+    assert rejected.status_code == 400
+    assert "20%" in rejected.json()["message"]
+
+
+def test_batch_pin_and_delete_remove_real_files(client):
+    c, me = client
+    store = _store(me)
+    uid = me["user"]["id"]
+    for i in range(2):
+        _seed(store, "factors", f"batch-{i}", uid=uid, name=f"批量因子 {i}", expression="close")
+    store.put_blob("factor_reports", "batch-0", {"report": "ok"})
+    blob = store._blob_path("factor_reports", "batch-0")
+    assert blob.exists()
+
+    items = [{"type": "factor", "id": "batch-0"}, {"type": "factor", "id": "batch-1"}]
+    pinned = c.post("/api/research/record-retention/records/batch-pin", json={"items": items, "pinned": True})
+    assert pinned.status_code == 200, pinned.text
+    assert len(pinned.json()["updated"]) == 2
+
+    deleted = c.post("/api/research/record-retention/records/batch-delete", json={"items": items})
+    assert deleted.status_code == 200, deleted.text
+    assert len(deleted.json()["deleted"]) == 2
+    assert store.get("factors", "batch-0") is None and store.get("factors", "batch-1") is None
+    assert not blob.exists()
 
 
 def test_admin_multipliers_are_weighted_and_member_cannot_edit(client):

@@ -21,7 +21,7 @@ SELECT
   'completed',
   'finish',
   CASE WHEN is_admin = 1 THEN 'owner' ELSE 'member' END,
-  '["welcome","flow","goal","agents","backtest","finish"]',
+  '["welcome","flow","goal","agents","backtest","data","factors","modellib","portfolio","validation","paper","square","groups","finish"]',
   created_at,
   created_at,
   created_at

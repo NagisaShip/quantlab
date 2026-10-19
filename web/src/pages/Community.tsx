@@ -687,7 +687,19 @@ export function PostPage({ id, onNavigate, notify }: PageProps & { id: string })
     return counts
   }, [commentRows])
 
-  if (error) return <Callout tone="fail">{error}</Callout>
+  if (error) return (
+    <EmptyState
+      title="内容暂时无法加载"
+      action={
+        <div className="button-row">
+          <button className="button" onClick={load}>重试</button>
+          <button className="button primary" onClick={() => onNavigate('square')}>返回策略广场</button>
+        </div>
+      }
+    >
+      {error}
+    </EmptyState>
+  )
   if (!data) return <Loading />
   const { post, comments, viewer } = data
   const mine = post.author_id ? post.author_id === data.viewer_id : post.author === viewer
@@ -794,7 +806,7 @@ export function PostPage({ id, onNavigate, notify }: PageProps & { id: string })
       <div className="comment-head">
         <UserAvatar color={c.author_color || '#2E5C9A'} size={26} title={c.author} />
         <b>{c.author}</b>
-        {c.is_ai && <Tag tone={c.meta?.mode === 'llm' ? 'agent' : 'warn'}>{c.meta?.mode === 'llm' ? c.meta.model : '规则审稿'}</Tag>}
+        {c.is_ai && <Tag tone={c.meta?.mode === 'llm' ? 'agent' : 'warn'}>{c.meta?.bot ? (c.meta?.mode === 'llm' ? `Bot · ${c.meta.model}` : 'Bot · 离线') : (c.meta?.mode === 'llm' ? c.meta.model : '规则审稿')}</Tag>}
         {post.accepted_comment === c.id && <Tag tone="ok">已采纳</Tag>}
         <span className="muted">{ago(c.created_at)}</span>
       </div>
@@ -922,9 +934,13 @@ export function PostPage({ id, onNavigate, notify }: PageProps & { id: string })
             <div className="comment-box">
               {replyTo && <div className="hint"><span>{`回复 @${replyTo.author}：`}</span>{replyTo.body.slice(0, 40)}… <button className="link" onClick={() => setReplyTo(null)}>取消</button></div>}
               <div className="comment-input">
-                <textarea ref={commentRef} id="comment-box" rows={3} value={text} onChange={(e) => setText(e.target.value)} placeholder="说点什么（支持 Markdown、Qmoji，Ctrl+Enter 发送）" onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) send() }} />
+                <textarea ref={commentRef} id="comment-box" rows={3} value={text} onChange={(e) => setText(e.target.value)} placeholder="说点什么（支持 Markdown、Qmoji；输入 @QuantLab Bot 召唤机器人）" onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) send() }} />
                 <div className="comment-tools">
                   <QmojiPicker small placement="up" onPick={insertEmoji} />
+                  <button type="button" className="link" onClick={() => {
+                    setText((prev) => `${prev}${prev && !prev.endsWith(' ') ? ' ' : ''}@QuantLab Bot `)
+                    commentRef.current?.focus()
+                  }}>@QuantLab Bot</button>
                   <span className="hint">输入 <code>:qbot-agree:</code> 也会显示 · 支持 Markdown</span>
                 </div>
                 {/:qbot-[a-z0-9-]+:/.test(text) && <div className="comment-preview"><Markdown text={text} compact /></div>}

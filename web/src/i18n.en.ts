@@ -9,6 +9,18 @@ export const EN: Record<string, string> = { ...(dict as Record<string, string>),
 
 /** 带数字等变量的文案：[正则（不含 ^$，用捕获组表示变量）, 译文（$1… 引用变量，变量本身也会再翻译）]。 */
 export const EN_PATTERNS: [string, string][] = [
+  ['(.+)（未配置密钥）', '$1 (no API key)'],
+  ['(.+)（已不可用）', '$1 (unavailable)'],
+  ['回复：(.+)', 'Reply: $1'],
+  ['模型「(.+)」的观点', 'Model “$1” view'],
+  ['已用 (\\d+)%', 'Used $1%'],
+  ['剩余 (\\d+)%', 'Remaining $1%'],
+  ['(.+) token · 输入占 (\\d+)%', '$1 token · $2% input'],
+  ['调用与额度记在 (.+) 名下', 'Usage and quota are charged to $1'],
+  ['成员管理 · (\\d+)', 'Member management · $1'],
+  ['(\\d+) 人在线。点击头像或“私聊”即可发起一对一聊天；QuantLab Bot 在上一节单独配置。', '$1 online. Click an avatar or Direct message to start a one-to-one chat; configure QuantLab Bot in the previous section.'],
+  ['已邀请成员 · (\\d+)', 'Invited members · $1'],
+  ['上限 (\\d+) 人', 'Limit $1 people'],
   ['Review the backtest of "(.+?)" and decide whether to approve', 'Review the backtest of "$1" and decide whether to approve'],
   ['(.+?) awaits your review', '$1 awaits your review'],
   ['Strategy · (.+)', 'Strategy · $1'],
@@ -781,5 +793,5 @@ export const EN_PATTERNS: [string, string][] = [
   ['剩余约 (\d+) 天', 'About $1 days left'],
   ['剩余约 (\d+) 小时', 'About $1 hours left'],
   ['由 (.+?) 创建', 'Created by $1'],
-  ['请通过安全渠道发给对方；每个邀请码只能注册 1 人。有效期至 (.+?)，关闭后无法再次查看。', 'Send it through a secure channel; each invite can register only one person. Valid until $1. It cannot be viewed again after closing.'],
+  ['请通过安全渠道发给对方；最多可邀请 (.+?)。有效期至 (.+?)，关闭后无法再次查看。', 'Send it through a secure channel; it can invite up to $1. Valid until $2. It cannot be viewed again after closing.'],
 ]

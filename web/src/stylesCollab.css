@@ -534,6 +534,26 @@ a.ref-card:hover { border-color: var(--accent-line); box-shadow: 0 6px 18px -12p
 .adm-grid.two h4 { font-size: 12.5px; color: var(--muted); margin: 14px 0 4px; }
 .adm-disk { margin-top: 12px; }
 .adm-disk small { font-size: 11.5px; color: var(--faint); }
+.worker-config-row { display: flex; align-items: flex-end; gap: 10px; }
+.worker-config-row label { display: grid; gap: 4px; min-width: 0; }
+.worker-config-row label span { font-size: 11.5px; color: var(--muted); }
+.worker-config-row input { width: 96px; margin: 0; }
+.worker-note { margin: 8px 0 10px; }
+.worker-summary { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 4px; }
+.worker-summary span { padding: 5px 9px; border: 1px solid var(--line); border-radius: 999px; background: var(--sheet); font-size: 11.5px; color: var(--muted); }
+.worker-summary b { color: var(--ink); font-family: var(--num); }
+.worker-list { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 0; }
+.worker-list li { padding: 9px 0; border-top: 1px solid var(--line-2); min-width: 0; }
+.worker-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; min-width: 0; }
+.worker-head small { color: var(--faint); font-size: 11px; }
+.worker-metrics { display: flex; flex-wrap: wrap; gap: 3px 12px; margin-top: 4px; color: var(--muted); font-size: 11.5px; }
+.worker-metrics b { color: var(--ink); font-family: var(--num); font-weight: 600; }
+.worker-kinds { display: block; margin-top: 4px; color: var(--faint); font-size: 11px; overflow-wrap: anywhere; }
+@media (max-width: 720px) {
+  .worker-config-row { flex-wrap: wrap; }
+  .worker-config-row label { flex: 1 1 120px; }
+  .worker-config-row input { width: 100%; }
+}
 .adm-bars { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
 .adm-bars li { display: grid; grid-template-columns: 90px 1fr auto; gap: 10px; align-items: center; font-size: 12.5px; }
 .adm-bars li i { height: 6px; border-radius: 4px; background: var(--accent); transform-origin: left; animation: m-grow-x var(--dur-4) var(--ease-out) backwards; min-width: 2px; }
@@ -821,4 +841,24 @@ tr.row-muted td { opacity: .62; }
   .grp-settings-stats b { font-size: 14px; }
   .grp-settings-stats small { font-size: 9.5px; }
   .grp-tabs button { font-size: 10.5px; }
+}
+
+/* QuantLab Bot：群组里的虚拟成员与管理卡片 */
+.grp-member-bot { display: inline-grid; place-items: center; }
+.grp-set-icon.bot { padding: 0; overflow: hidden; background: #ece8ff; color: #5943c7; }
+.grp-bot-card .grp-set-head > .tag { margin-left: auto; flex: none; }
+.grp-bot-empty { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 13px 14px; border: 1px dashed var(--line); border-radius: 11px; background: var(--canvas, transparent); }
+.grp-bot-empty > div { display: grid; gap: 2px; min-width: 0; }
+.grp-bot-empty small { color: var(--muted); font-size: 11.5px; }
+.grp-bot-form { display: grid; gap: 10px; }
+.grp-bot-form > .form-grid { margin-top: 0; }
+.grp-bot-prompt { display: grid; gap: 4px; }
+.grp-bot-prompt textarea { resize: vertical; min-height: 86px; }
+.grp-bot-toggles { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; }
+.grp-bot-toggles .check { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-2); white-space: nowrap; }
+.grp-bot-toggles .hint { flex: 1 1 260px; margin: 0; }
+.grp-bot-toggles code { font-size: 11px; }
+.grp-bot-billing { display: flex; align-items: center; gap: 7px; padding: 8px 10px; border-radius: 9px; background: var(--accent-soft); color: var(--muted); font-size: 11.5px; }
+@media (max-width: 720px) {
+  .grp-bot-empty { align-items: stretch; flex-direction: column; }
 }

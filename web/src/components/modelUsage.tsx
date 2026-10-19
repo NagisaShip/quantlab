@@ -2,8 +2,8 @@
  * 模型用量与限额的共用组件：限额规则编辑、限额进度条、用量统计（日趋势 + 按模型 / 成员拆分）。
  * 「设置 · 模型」「设置 · 额度与用量」「设置 · 成员与邀请」共用。
  */
-import { useEffect, useState } from 'react'
-import type { LimitMetric, LimitRule, LimitStatus, LimitWindow, ModelUsage } from '../api/research'
+import { useEffect, useState, type ReactNode } from 'react'
+import type { LimitMetric, LimitRule, LimitStatus, LimitWindow, ModelUsage, RecordRetentionUsage } from '../api/research'
 
 /** 时间段：自然周期（每日 / 每周 / 每月 / 累计，按工作区时区切分）与滚动时间段。 */
 export const WINDOWS: [LimitWindow, string][] = [
@@ -107,19 +107,36 @@ export function LimitEditor({ rules, onChange, disabled, empty = '不限额', me
 }
 
 /** 限额进度条。 */
-export function LimitBars({ items, compact }: { items: LimitStatus[]; compact?: boolean }) {
+export function LimitBars({ items, compact, action }: {
+  items: LimitStatus[]
+  compact?: boolean
+  /** 每个限额旁的管理 / 申请入口；由调用方决定跳转或弹窗。 */
+  action?: (item: LimitStatus) => ReactNode
+}) {
   if (!items.length) return null
   return (
     <div className={`lim-bars${compact ? ' compact' : ''}`}>
       {items.map((s) => {
         const tone = s.exceeded ? 'over' : s.percent >= 80 ? 'warn' : ''
+        const usedPct = Math.max(0, Math.min(100, Math.round(s.percent)))
         return (
           <div key={`${s.metric}-${s.window}`} className={`lim-bar ${tone}`} title={s.label}>
             <div className="lim-bar-head">
               <span>{s.metric === 'storage_bytes' || s.metric === 'record_units' ? '当前占用' : WINDOWS.find(([k]) => k === s.window)?.[1]} · {METRIC_LABEL[s.metric]}</span>
-              <b>{fmtLimitValue(s.metric, s.used)} / {fmtLimitValue(s.metric, s.limit)}{metricUnit(s.metric) ? ` ${metricUnit(s.metric)}` : ''}</b>
+              <span className="lim-bar-right">
+                <b>{fmtLimitValue(s.metric, s.used)} / {fmtLimitValue(s.metric, s.limit)}{metricUnit(s.metric) ? ` ${metricUnit(s.metric)}` : ''}</b>
+                {action && <span className="lim-bar-action">{action(s)}</span>}
+              </span>
             </div>
-            <div className="lim-track"><i style={{ width: `${Math.min(100, s.percent)}%` }} /></div>
+            <div className="lim-track" role="img" aria-label={`${s.label}：已用 ${usedPct}%`}>
+              <i style={{ width: `${Math.min(100, s.percent)}%` }} />
+            </div>
+            {!compact && (
+              <div className="lim-bar-meta">
+                <span>已用 {usedPct}%</span>
+                <span>{s.exceeded ? '已超额' : `剩余 ${Math.max(0, 100 - usedPct)}%`}</span>
+              </div>
+            )}
           </div>
         )
       })}
@@ -127,7 +144,84 @@ export function LimitBars({ items, compact }: { items: LimitStatus[]; compact?: 
   )
 }
 
+/** 上下文 token 构成：未缓存输入 / 缓存命中 / 缓存写入 / 输出，用不同颜色展示占比。 */
+export function UsageComposition({ data }: { data: ModelUsage }) {
+  const input = Math.max(0, Number(data.total.input_tokens ?? 0))
+  const output = Math.max(0, Number(data.total.output_tokens ?? 0))
+  const read = Math.max(0, Number(data.total.cache_read_tokens ?? 0))
+  const write = Math.max(0, Number(data.total.cache_write_tokens ?? 0))
+  const fresh = Math.max(0, input - read - write)
+  const parts = [
+    { key: 'fresh', label: '未缓存输入', tokens: fresh },
+    { key: 'cache-read', label: '缓存命中', tokens: read },
+    { key: 'cache-write', label: '缓存写入', tokens: write },
+    { key: 'output', label: '输出', tokens: output },
+  ].filter((part) => part.tokens > 0)
+  const total = parts.reduce((n, part) => n + part.tokens, 0)
+  if (!total) {
+    return <div className="usage-composition empty"><span>这段时间还没有可拆分的上下文 token。</span></div>
+  }
+  return (
+    <div className="usage-composition">
+      <div className="usage-composition-head"><b>上下文构成</b><span>{fmtTokens(total)} token · 输入占 {Math.round((input / total) * 100)}%</span></div>
+      <div className="usage-composition-track" role="img" aria-label="上下文 token 构成">
+        {parts.map((part) => (
+          <i key={part.key} className={`uc-${part.key}`} style={{ width: `${(part.tokens / total) * 100}%` }}
+            title={`${part.label} ${fmtTokens(part.tokens)} · ${((part.tokens / total) * 100).toFixed(1)}%`} />
+        ))}
+      </div>
+      <div className="usage-composition-legend">
+        {parts.map((part) => (
+          <span key={part.key}>
+            <i className={`uc-${part.key}`} />
+            <em>{part.label}</em>
+            <b>{fmtTokens(part.tokens)}</b>
+            <small>{((part.tokens / total) * 100).toFixed(1)}%</small>
+          </span>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 /** 用量统计：总览数字 + 日趋势柱状图 + 按模型 / 按成员拆分。 */
+const RECORD_COLORS = ['var(--accent)', 'var(--violet, #8b5cf6)', '#3aa675', 'var(--amber)', 'var(--danger)', '#0ea5e9', '#f97316', '#64748b', '#14b8a6']
+
+/** 研究记录构成：按记录类型的单位数画一条堆叠条，和上下文 token 构成同一套视觉语言。 */
+export function RecordComposition({ usage }: { usage: RecordRetentionUsage }) {
+  const parts = usage.types
+    .filter((item) => item.count > 0 && item.units > 0)
+    .map((item, index) => ({ ...item, color: RECORD_COLORS[index % RECORD_COLORS.length] }))
+  const total = parts.reduce((sum, item) => sum + item.units, 0)
+  if (!total) {
+    return <div className="usage-composition empty"><span>还没有研究记录；回测、因子、模型、组合和执行记录会按类型出现在这里。</span></div>
+  }
+  return (
+    <div className="usage-composition">
+      <div className="usage-composition-head">
+        <b>研究记录构成</b>
+        <span>{usage.total_records.toLocaleString()} 条 · {total.toLocaleString(undefined, { maximumFractionDigits: 2 })} 单位</span>
+      </div>
+      <div className="usage-composition-track" role="img" aria-label="研究记录单位构成">
+        {parts.map((part) => (
+          <i key={part.key} style={{ width: `${(part.units / total) * 100}%`, background: part.color }}
+            title={`${part.label} · ${part.count} 条 · ${part.units.toFixed(2)} 单位 · ${((part.units / total) * 100).toFixed(1)}%`} />
+        ))}
+      </div>
+      <div className="usage-composition-legend">
+        {parts.map((part) => (
+          <span key={part.key}>
+            <i style={{ background: part.color }} />
+            <em>{part.label}</em>
+            <b>{part.count.toLocaleString()} 条</b>
+            <small>{part.units.toFixed(2)} 单位 · {((part.units / total) * 100).toFixed(1)}%</small>
+          </span>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 export function UsageSummary({ data, showUsers }: { data: ModelUsage; showUsers?: boolean }) {
   // 没填价格时费用全是 0：默认看 token
   const [metric, setMetric] = useState<'cost' | 'tokens'>(Number(data.total.cost) > 0 ? 'cost' : 'tokens')
@@ -144,6 +238,7 @@ export function UsageSummary({ data, showUsers }: { data: ModelUsage; showUsers?
           <b>{data.total.cache_hit_rate === null || data.total.cache_hit_rate === undefined ? '—' : `${(data.total.cache_hit_rate * 100).toFixed(1)}%`}</b>
         </div>
       </div>
+      <UsageComposition data={data} />
       <div className="usage-chart-head">
         <small>近 {data.days} 天（UTC 日）</small>
         <div className="seg seg-sm" role="tablist">

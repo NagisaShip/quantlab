@@ -57,6 +57,7 @@ from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from ..platform import context
+from ..platform.backtest_retention import DEFAULT_MEMBER_RECORD_UNITS
 from ..platform.db import Database, now_ms
 from ..platform.errors import AppError, ErrorCode
 from ..platform.secretbox import SecretError
@@ -295,17 +296,24 @@ class ModelHub:
     def policy(self, ws: str, user_id: str, role: str | None = None) -> dict[str, Any]:
         rec = self._ws(ws).get(POLICIES, user_id) or {}
         default_use = role != "reviewer"
+        # 管理员不受成员默认 200 单位限制；只有显式给管理员设置 limits 才继承。
+        defaults = [] if role == "admin" else self.default_limits(ws)
         return {
             "user_id": user_id,
             "use_workspace_models": bool(rec.get("use_workspace_models", default_use)),
             "allow_personal_models": bool(rec.get("allow_personal_models", True)),
             # 没单独设过限额的成员用工作区的「新成员默认限额」
-            "limits": clean_limits(rec.get("limits") if "limits" in rec else self.default_limits(ws)),
+            "limits": clean_limits(rec.get("limits") if "limits" in rec else defaults),
             "custom_limits": "limits" in rec,
         }
 
     def default_limits(self, ws: str) -> list[dict[str, Any]]:
-        return clean_limits((self._ws(ws).get(Collections.SETTINGS, "llm_default_member_limits") or {}).get("limits"))
+        raw = self._ws(ws).get(Collections.SETTINGS, "llm_default_member_limits") or {}
+        # 新工作区未显式配置时，普通成员默认 200 个研究记录单位。
+        # 显式保存空列表表示管理员主动选择“不限额”，不能再用默认值覆盖。
+        if "limits" not in raw:
+            return [{"metric": "record_units", "window": "total", "limit": str(DEFAULT_MEMBER_RECORD_UNITS)}]
+        return clean_limits(raw.get("limits"))
 
     def set_default_limits(self, ws: str, rules: list[dict[str, Any]]) -> list[dict[str, Any]]:
         self._ws(ws).upsert(Collections.SETTINGS, {"id": "llm_default_member_limits", "limits": clean_limits(rules)})
@@ -1120,14 +1128,21 @@ class ModelHub:
         total_tokens = sum(int(r["input_tokens"] or 0) + int(r["output_tokens"] or 0) for r in by_model)
         total_cost = sum(int(r["cost_micro"] or 0) for r in by_model)
         total_in = sum(int(r["input_tokens"] or 0) for r in by_model)
+        total_out = sum(int(r["output_tokens"] or 0) for r in by_model)
         total_read = sum(int(r.get("cache_read_tokens") or 0) for r in by_model)
+        total_write = sum(int(r.get("cache_write_tokens") or 0) for r in by_model)
         return {
             "days": days,
             "total": {
                 "calls": sum(int(r["calls"]) for r in by_model),
                 "tokens": total_tokens,
                 "cost": fmt_cost(total_cost),
+                # 上下文构成：input_tokens 是全部输入（含缓存读写），output_tokens 是输出。
+                # 前端用 max(0, input - cache_read - cache_write) 得到未缓存输入，再分色展示。
+                "input_tokens": total_in,
+                "output_tokens": total_out,
                 "cache_read_tokens": total_read,
+                "cache_write_tokens": total_write,
                 # 缓存命中率：命中的输入 / 全部输入
                 "cache_hit_rate": round(total_read / total_in, 4) if total_in else None,
             },
@@ -1170,8 +1185,8 @@ class ModelHub:
     def decide_request(self, rid: str, approve: bool, note: str = "") -> dict[str, Any]:
         ctx = context.current()
         ws = context.current_workspace()
-        if ctx.role != "admin":
-            raise AppError(ErrorCode.PERMISSION_DENIED, "只有工作区管理员可以处理额度申请")
+        if ctx.role != "admin" and not ctx.is_admin:
+            raise AppError(ErrorCode.PERMISSION_DENIED, "只有管理员可以处理额度申请")
         req = self._ws(ws).get(REQUESTS, rid)
         if not req or req.get("status") != "pending":
             raise AppError(ErrorCode.NOT_FOUND, "申请不存在或已处理")

@@ -158,16 +158,17 @@ def test_member_management_and_last_admin_guard(app):
         assert admin.put(f"/api/workspace/members/{mid}", json={"role": "reviewer"}).status_code == 200
 
 
-def test_invite_is_single_use_has_expiry_and_can_be_revoked(app):
+def test_invite_multi_use_counts_expiry_and_revoke(app):
     with _client(app) as admin:
         login(admin)
         r = admin.post(
             "/api/workspace/invites",
-            json={"role": "member", "email": "one@example.com", "expires_in_hours": 2},
+            json={"role": "member", "expires_in_hours": 2, "max_uses": 2},
         )
         assert r.status_code == 200, r.text
         created = r.json()["invite"]
         assert created["status"] == "active" and created["invited_count"] == 0
+        assert created["max_uses"] == 2 and created["remaining_uses"] == 2
         lifetime = created["expires_at"] - created["created_at"]
         assert 1.9 * 3600 * 1000 <= lifetime <= 2.1 * 3600 * 1000
 
@@ -176,19 +177,22 @@ def test_invite_is_single_use_has_expiry_and_can_be_revoked(app):
         assert row["status"] == "active" and row["invited_count"] == 0
         assert row["created_by_name"] == "管理员"
 
-        with _client(app) as member:
-            login(member, email="one@example.com", password="Member123!", name="One", invite_code=created["code"])
+        with _client(app) as first:
+            login(first, email="one@example.com", password="Member123!", name="One", invite_code=created["code"])
+        with _client(app) as second:
+            login(second, email="two@example.com", password="Member123!", name="Two", invite_code=created["code"])
 
         listed = admin.get("/api/workspace/members").json()["invites"]
         used = next(i for i in listed if i["id"] == created["id"])
-        assert used["status"] == "used" and used["invited_count"] == 1
-        assert used["used_by_email"] == "one@example.com" and used["used_by_name"] == "One"
+        assert used["status"] == "used" and used["invited_count"] == 2
+        assert used["remaining_uses"] == 0
+        assert {u["email"] for u in used["invitees"]} == {"one@example.com", "two@example.com"}
 
-        with _client(app) as second:
-            second.headers.update({"X-Requested-With": "test"})
-            r = second.post(
+        with _client(app) as third:
+            third.headers.update({"X-Requested-With": "test"})
+            r = third.post(
                 "/api/auth/register",
-                json={"email": "two@example.com", "password": "Member123!", "invite_code": created["code"]},
+                json={"email": "three@example.com", "password": "Member123!", "invite_code": created["code"]},
             )
             _assert_error(r, 403, "PERMISSION_DENIED")
 
@@ -196,15 +200,19 @@ def test_invite_is_single_use_has_expiry_and_can_be_revoked(app):
 
         r = admin.post(
             "/api/workspace/invites",
-            json={"role": "reviewer", "expires_in_hours": 6},
+            json={"role": "reviewer", "expires_in_hours": 6, "max_uses": 5},
         )
         active = r.json()["invite"]
+        with _client(app) as partial:
+            login(
+                partial, email="partial@example.com", password="Member123!", name="Partial", invite_code=active["code"]
+            )
         assert admin.delete(f"/api/workspace/invites/{active['id']}").status_code == 200
         listed = admin.get("/api/workspace/members").json()["invites"]
         revoked = next(i for i in listed if i["id"] == active["id"])
-        assert revoked["status"] == "revoked" and revoked["invited_count"] == 0
+        assert revoked["status"] == "revoked" and revoked["invited_count"] == 1
 
-        r = admin.post("/api/workspace/invites", json={"role": "member", "expires_in_hours": 1})
+        r = admin.post("/api/workspace/invites", json={"role": "member", "expires_in_hours": 1, "max_uses": 3})
         expired = r.json()["invite"]
         get_services().db.execute("UPDATE invites SET expires_at=? WHERE id=?", (now_ms() - 1, expired["id"]))
         listed = admin.get("/api/workspace/members").json()["invites"]
@@ -355,6 +363,7 @@ def test_workspace_shared_models_permissions_limits_and_usage(app):
         # (8×2 + 4×8) × 7 = 336 微元
         total = s.model_hub.stats(ws, days=1, user_id=member_id)["total"]
         assert (total["calls"], total["tokens"], total["cost"], total["cache_read_tokens"]) == (1, 12, "0.0003", 0)
+        assert (total["input_tokens"], total["output_tokens"], total["cache_write_tokens"]) == (8, 4, 0)
         assert s.model_hub.guard(pc, "m") is None
 
     with _client(app) as admin:
@@ -381,7 +390,10 @@ def test_workspace_shared_models_permissions_limits_and_usage(app):
             == "approved"
         )
         row = next(m for m in admin.get("/api/config/members").json()["members"] if m["user_id"] == member_id)
-        assert row["limits"] == [{"metric": "tokens", "window": "1d", "limit": "100000"}]
+        assert row["limits"] == [
+            {"metric": "tokens", "window": "1d", "limit": "100000"},
+            {"metric": "record_units", "window": "total", "limit": "200"},
+        ]
         # 关闭成员使用工作区模型：成员就看不到共享服务商了
         admin.put(f"/api/config/members/{member_id}", json={"use_workspace_models": False})
     with _client(app) as member:

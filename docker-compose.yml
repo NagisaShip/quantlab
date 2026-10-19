@@ -72,7 +72,7 @@ services:
 
   worker:
     <<: *app
-    command: ["qagent", "worker", "--slots", "${QAGENT_WORKER_SLOTS:-2}"]
+    command: ["qagent", "worker", "--slots", "${QAGENT_WORKER_SLOTS:-8}"]
     volumes: [appdata:/data]
     # worker 是容器的 1 号进程，退出即由 restart 策略拉起；存活与心跳在“设置与审计 → 平台 → Worker”查看
     healthcheck: { disable: true }

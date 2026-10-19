@@ -30,10 +30,11 @@ from typing import Any, Literal
 from fastapi import APIRouter, Query
 from pydantic import BaseModel, Field
 
-from ..platform import context
+from ..platform import context, sysinfo
 from ..platform.auth import hash_password, public_email, validate_password
 from ..platform.db import jload, now_ms
 from ..platform.errors import AppError, ErrorCode
+from ..platform.worker_config import read_worker_config, write_worker_config
 from ..store import Collections
 from .deps import get_services
 
@@ -134,7 +135,14 @@ def overview() -> dict:
     runs = {r["state"]: int(r["n"]) for r in db.fetchall("SELECT state, COUNT(*) AS n FROM runs GROUP BY state")}
     try:
         h = watchdog.health(s)
-        workers = {"alive": h["workers_alive"], "list": h["workers"], "stale_runs": len(h.get("stale_runs") or [])}
+        workers = {
+            "alive": h["workers_alive"],
+            "list": h["workers"],
+            "stale_runs": len(h.get("stale_runs") or []),
+            "queued": h.get("queued", 0),
+            "slots_total": h.get("slots_total", 0),
+            "busy_total": h.get("busy_total", 0),
+        }
     except Exception as exc:  # 运维页不能因为某个子系统挂了打不开
         workers = {"alive": 0, "list": [], "error": str(exc)[:200]}
     sessions = int(
@@ -157,6 +165,8 @@ def overview() -> dict:
             "db_bytes": db_size,
             "disk": {"total": disk.total, "used": disk.used, "free": disk.free},
             "folders": folders,
+            "memory": sysinfo.system_memory(),
+            "process": sysinfo.process_stats(),
             "worker_mode": os.environ.get("QAGENT_WORKER", "process"),
             "open_registration": s.auth.open_registration(),
         },
@@ -172,10 +182,35 @@ def overview() -> dict:
         "groups": int(db.scalar("SELECT COUNT(*) AS n FROM collab_groups WHERE archived_at IS NULL") or 0),
         "runs": runs,
         "workers": workers,
+        "worker_config": read_worker_config(s.global_store),
         "llm": {"24h": _usage_since(1), "7d": _usage_since(7), "30d": _usage_since(30)},
         "issues": s.collab.issue_counts(),
         "uploads_bytes": s.collab.storage_bytes(),
     }
+
+
+class WorkerConfigIn(BaseModel):
+    slots: int = Field(..., ge=1, le=32, description="worker 同时执行的批处理任务数")
+
+
+@router.get("/worker-config", summary="读取 worker 槽位配置")
+def get_worker_config() -> dict:
+    _require_admin()
+    return {"config": read_worker_config(get_services().global_store)}
+
+
+@router.put("/worker-config", summary="设置 worker 槽位；超出槽位的任务自动排队")
+def put_worker_config(payload: WorkerConfigIn) -> dict:
+    _require_admin()
+    s = get_services()
+    cfg = write_worker_config(s.global_store, payload.slots, user_id=context.current().user_id or "")
+    s.audit.record(
+        "admin.worker_config",
+        object_type="server",
+        object_id="worker",
+        details={"slots": cfg["slots"]},
+    )
+    return {"config": cfg}
 
 
 # ---------------------------------------------------------------------------
@@ -196,6 +231,11 @@ class CreateUserIn(BaseModel):
     role: Literal["admin", "member", "reviewer"] = "member"
 
 
+def _primary_admin_id() -> str:
+    """第一个注册的账号是部署主管理员：不可封禁、不可撤销或降级。"""
+    return get_services().auth.primary_admin_id()
+
+
 def _user_row(uid: str) -> dict[str, Any]:
     row = get_services().db.fetchone("SELECT * FROM users WHERE id=?", (uid,))
     if row is None:
@@ -203,9 +243,11 @@ def _user_row(uid: str) -> dict[str, Any]:
     return row
 
 
-def _user_view(r: dict[str, Any]) -> dict[str, Any]:
+def _user_view(r: dict[str, Any], primary_id: str | None = None) -> dict[str, Any]:
+    primary = _primary_admin_id() if primary_id is None else primary_id
     return {
         "id": r["id"],
+        "is_primary_admin": str(r["id"]) == primary,
         "email": public_email(r["email"]),
         "username": r.get("username") or "",
         "email_verified": bool(r.get("email_verified_at")),
@@ -251,9 +293,10 @@ def list_users(
         for r in db.fetchall("SELECT user_id, COUNT(*) AS n FROM memberships WHERE status='active' GROUP BY user_id")
     }
     totp = {r["user_id"] for r in db.fetchall("SELECT user_id FROM user_totp WHERE enabled_at IS NOT NULL")}
+    primary_id = _primary_admin_id()
     out = []
     for r in rows:
-        u = _user_view(r)
+        u = _user_view(r, primary_id)
         c = cost.get(r["id"]) or {}
         u.update(
             {
@@ -330,6 +373,8 @@ def _last_admin_guard(uid: str) -> None:
 def ban_user(uid: str, payload: BanIn) -> dict:
     _require_admin()
     _guard_self(uid, "封禁")
+    if uid == _primary_admin_id():
+        raise AppError(ErrorCode.PERMISSION_DENIED, "主管理员账号受保护，不能被封禁")
     _last_admin_guard(uid)
     s = get_services()
     now = now_ms()
@@ -357,6 +402,11 @@ def set_admin(uid: str, payload: AdminFlagIn) -> dict:
     _require_admin()
     if not payload.is_admin:
         _guard_self(uid, "撤销")
+    if (context.current().user_id or "") != _primary_admin_id():
+        raise AppError(ErrorCode.PERMISSION_DENIED, "只有主管理员可以授予或撤销部署管理员")
+    if uid == _primary_admin_id():
+        raise AppError(ErrorCode.PERMISSION_DENIED, "主管理员是部署中的最高权限账号，不能撤销")
+    if not payload.is_admin:
         _last_admin_guard(uid)
     s = get_services()
     s.db.execute("UPDATE users SET is_admin=? WHERE id=?", (1 if payload.is_admin else 0, uid))
@@ -367,6 +417,8 @@ def set_admin(uid: str, payload: AdminFlagIn) -> dict:
 @router.post("/users/{uid}/sessions/revoke", summary="强制下线：作废该账号的全部会话")
 def revoke_sessions(uid: str) -> dict:
     _require_admin()
+    if uid == _primary_admin_id():
+        raise AppError(ErrorCode.PERMISSION_DENIED, "主管理员账号受保护，不能被其他管理员强制下线")
     _guard_self(uid, "强制下线")
     s = get_services()
     n = s.db.execute("UPDATE sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL", (now_ms(), uid))
@@ -382,6 +434,8 @@ def _temp_password() -> str:
 @router.post("/users/{uid}/reset-password", summary="重置密码：生成临时密码（只显示一次），并作废全部会话")
 def reset_password(uid: str) -> dict:
     _require_admin()
+    if uid == _primary_admin_id():
+        raise AppError(ErrorCode.PERMISSION_DENIED, "主管理员密码只能由本人在账号设置中修改")
     _user_row(uid)
     pw = _temp_password()
     validate_password(pw)

@@ -70,6 +70,7 @@ class AppServices:
     websearch: Any = None  # WebSearch：联网搜索与网页抓取（密钥在模型配置页登记）
     model_hub: Any = None  # ModelHub：工作区 / 个人模型服务商、成员模型权限与限额、用量计量
     collab: Any = None  # CollabService：群组、任务、可见性、编辑标记、通知中心、问题报告
+    collab_bot: Any = None  # CollabBot：群组与策略广场里的 QuantLab Bot
     social: Any = None  # SocialService：用户资料、关注、拉黑与私信策略
     dbcache: Any = None  # DbCache：外部接口结果的数据库缓存（行情摘要、搜索结果、网页正文）
 
@@ -126,9 +127,11 @@ class AppServices:
         services.demo = DemoConnectionService(services.store, services.secrets, home)
         services.quota = QuotaService(db)
         from ..platform.collab import CollabService
+        from ..platform.collab_bot import CollabBot
         from ..platform.social import SocialService
 
         services.collab = CollabService(db, home)
+        services.collab_bot = CollabBot(db)
         services.social = SocialService(db, store)
         services.auth.settings_reader = lambda: global_store.get(Collections.SETTINGS, "platform_settings")
         services._register_collab_hooks()
@@ -174,19 +177,29 @@ class AppServices:
         _repo.SAVE_HOOKS.append(on_save)
 
     def _init_workspace_store(self, workspace_id: str, store: JsonStore) -> None:
-        """新工作区第一次被访问：写入内置角色、团队与通过审核的默认研究资产。"""
+        """新工作区第一次被访问：写入内置角色、团队、默认研究资产与协作示例。"""
         self.roles._seed_builtin(store)
         sync_builtin_teams(store)
+        ws = self.auth.workspace(workspace_id) if self.auth is not None else {}
+        owner_id = ws.get("owner_id") or "system"
         try:
             from ..research.default_assets import seed_default_assets
 
-            ws = self.auth.workspace(workspace_id) if self.auth is not None else {}
-            seed_default_assets(self, store, workspace_id, owner_id=(ws.get("owner_id") or "system"))
+            seed_default_assets(self, store, workspace_id, owner_id=owner_id)
         except Exception:
             # 种子失败不能阻断工作区登录；失败详情会留在服务日志里，后续版本可重试。
             import logging
 
             logging.getLogger("quantlab.default_assets").exception("工作区默认研究资产初始化失败：%s", workspace_id)
+        try:
+            from ..platform.collab_seed import seed_builtin_collab
+
+            seed_builtin_collab(self, workspace_id, owner_id=owner_id)
+        except Exception:
+            # 协作示例失败同样不能阻断登录；下次访问会重试。
+            import logging
+
+            logging.getLogger("quantlab.collab_seed").exception("工作区内置协作示例初始化失败：%s", workspace_id)
 
     # ---------------- 大模型密钥（部署级，加密存放） ----------------
     @property

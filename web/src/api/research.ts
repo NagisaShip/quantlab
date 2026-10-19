@@ -474,13 +474,19 @@ export interface StorageUsage {
 export interface ModelUsage {
   days: number
   view: 'me' | 'workspace'
-  total: { calls: number; tokens: number; cost: string; cache_read_tokens?: number; cache_hit_rate?: number | null }
+  total: {
+    calls: number; tokens: number; cost: string
+    input_tokens?: number; output_tokens?: number
+    cache_read_tokens?: number; cache_write_tokens?: number
+    cache_hit_rate?: number | null
+  }
   by_model: UsageRow[]
   by_user: UsageRow[]
   daily: { day: string; tokens: number; calls: number; cost: string }[]
   my_limits: LimitStatus[]
   storage: StorageUsage
   tasks: { backtests: string; cpu_seconds: string; optimize_combinations: string }
+  research_records: RecordRetentionUsage
 }
 
 export interface MemberModelPolicy {
@@ -527,6 +533,7 @@ export interface RecordRetentionUsage {
   total_records: number
   pinned_records: number
   total_units: number
+  approx_bytes: number
   max_units_per_user: number
   remaining_units: number
   types: RecordTypeUsage[]
@@ -534,7 +541,11 @@ export interface RecordRetentionUsage {
 }
 
 export interface RecordRetention {
-  workspace: { max_units_per_user: number; max_records_per_user?: number }
+  workspace: {
+    max_units_per_user: number; max_records_per_user?: number
+    hard_max_units?: number; default_max_units?: number
+    disk_total_bytes?: number; reserved_bytes?: number; reserved_ratio?: number; record_unit_bytes?: number
+  }
   user: BacktestRetentionPrefs
   usage: RecordRetentionUsage
   is_workspace_admin?: boolean
@@ -714,7 +725,7 @@ export interface CommentRow {
   like_count: number
   liked: boolean
   is_ai: boolean
-  meta: { mode?: string; model?: string }
+  meta: { mode?: string; model?: string; bot?: boolean }
   author_id?: string
   muted?: boolean
 }
@@ -824,6 +835,14 @@ export const v3 = {
     post<{ pinned: boolean; record: ResearchRecordRow }>(`/api/research/record-retention/${encodeURIComponent(type)}/${encodeURIComponent(id)}/pin`),
   deleteRetentionRecord: (type: string, id: string) =>
     del<{ ok: boolean }>(`/api/research/record-retention/${encodeURIComponent(type)}/${encodeURIComponent(id)}`),
+  batchDeleteRetentionRecords: (items: { type: string; id: string }[]) =>
+    post<{ deleted: string[]; failed: { type: string; id: string; error: string }[] }>(
+      '/api/research/record-retention/records/batch-delete', { items },
+    ),
+  batchPinRetentionRecords: (items: { type: string; id: string }[], pinned: boolean) =>
+    post<{ updated: string[]; failed: { type: string; id: string; error: string }[] }>(
+      '/api/research/record-retention/records/batch-pin', { items, pinned },
+    ),
   cleanupRecordRetention: () => post<{ deleted: number; usage: RecordRetentionUsage }>('/api/research/record-retention/cleanup', {}),
   backtestRetention: () => get<BacktestRetention>('/api/research/backtest-retention'),
   saveBacktestRetention: (p: BacktestRetentionPrefs) => put<BacktestRetention>('/api/research/backtest-retention', p),
@@ -941,7 +960,7 @@ export const v3 = {
   clonePost: (id: string) => post<{ strategy: StrategyFile }>(`/api/community/posts/${id}/clone`),
   aiReviewPost: (id: string) => post<{ comment: CommentRow }>(`/api/community/posts/${id}/ai-review`),
   comment: (id: string, body: string, parent_id?: string | null) =>
-    post<{ comment: CommentRow }>(`/api/community/posts/${id}/comments`, { body, parent_id }),
+    post<{ comment: CommentRow; bot_comment?: CommentRow | null }>(`/api/community/posts/${id}/comments`, { body, parent_id }),
   deleteComment: (id: string) => del<{ ok: boolean }>(`/api/community/comments/${id}`),
   likeComment: (id: string) => post<{ on: boolean; count: number }>(`/api/community/comments/${id}/like`),
   accept: (postId: string, commentId: string) =>

@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-from quant_agent.store import JsonStore
+from quant_agent.store import JsonStore, WorkspaceStore
 
 
 def test_upsert_is_reentrant_on_the_file_lock(tmp_path):
@@ -66,6 +66,56 @@ def test_nested_xlock_does_not_deadlock(tmp_path):
     # 还能拿到锁，说明没有把锁泄漏在已获取状态。
     with store._xlock("roles"):
         pass
+
+
+def test_workspace_initializer_is_serialized_across_processes(tmp_path):
+    """API 与 worker 同时首次访问新工作区时，初始化回调必须串行执行。
+
+    回归背景：两个进程各自持有线程锁，服务器里又各有一份 `WorkspaceStore`；
+    首次登录时 API 与 worker 会同时 seed 角色 / 团队 / 内置研究资产。
+    策略目录被两个 seed 同时写时，`approve_strategy` 可能读到被覆盖中的 meta，
+    返回 None 并在日志里留下“工作区默认研究资产初始化失败”。
+
+    修复不是“只初始化一次”（那会让升级后的内置角色 / 团队同步失效），
+    而是用跨进程文件锁把每个进程的初始化回调串行化。默认资产与协作示例
+    各自有幂等标记，第二次回调会快速返回。
+    """
+    import multiprocessing as mp
+
+    start = tmp_path / "start.flag"
+    ctx = mp.get_context("spawn" if sys.platform == "win32" else "fork")
+    procs = [ctx.Process(target=_run_workspace_init, args=(str(tmp_path), str(start))) for _ in range(2)]
+    for p in procs:
+        p.start()
+    time.sleep(0.4)
+    start.write_text("go", encoding="utf-8")
+    for p in procs:
+        p.join(timeout=30)
+        assert p.exitcode == 0, f"初始化子进程异常退出：exitcode={p.exitcode}"
+
+    log = tmp_path / "workspaces" / "ws1" / "store" / "init.log"
+    # 串行时日志一定是 start/end/start/end；并发时会交错成 start/start/end/end。
+    assert log.read_text(encoding="utf-8").splitlines() == ["start", "end", "start", "end"]
+
+
+def _run_workspace_init(home: str, start_flag: str) -> None:
+    deadline = time.time() + 10
+    while not Path(start_flag).exists():
+        if time.time() > deadline:
+            raise TimeoutError("等待跨进程同时启动超时")
+        time.sleep(0.02)
+    store = WorkspaceStore(home)
+    store.initializer = _record_workspace_init
+    store.for_workspace("ws1")
+
+
+def _record_workspace_init(workspace_id: str, store) -> None:
+    del workspace_id
+    with open(store.root / "init.log", "a", encoding="utf-8") as fh:
+        fh.write("start\n")
+    time.sleep(0.3)
+    with open(store.root / "init.log", "a", encoding="utf-8") as fh:
+        fh.write("end\n")
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="该竞争只在 Windows 上稳定复现")

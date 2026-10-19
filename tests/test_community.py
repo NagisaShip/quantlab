@@ -8,6 +8,8 @@ from fastapi.testclient import TestClient
 
 from quant_agent.api.app import create_app
 from quant_agent.api.deps import AppServices, reset_services, set_services
+from quant_agent.api.routes_community import _migrate_seed_ids
+from quant_agent.store import Collections, JsonStore
 
 
 @pytest.fixture()
@@ -35,6 +37,33 @@ def test_seeded_posts_and_pinned_first(client):
     assert body["items"][0]["pinned"]
     assert "body" not in body["items"][0]
     assert any(t["tag"] == "入门" for t in client.get("/api/community/tags").json()["hot"])
+
+
+def test_legacy_seed_posts_are_rekeyed_to_stable_ids(tmp_path):
+    """旧库里的随机 id 种子帖要迁移成新手引导使用的稳定 id。"""
+    store = JsonStore(tmp_path)
+    legacy = {
+        "id": "legacy-random-id",
+        "type": "strategy",
+        "title": "模板分享：多币种动量轮动（趋势质量打分）",
+        "body": "旧版种子",
+        "tags": ["轮动"],
+        "author": "平台小助手",
+        "author_id": "system",
+        "likes": [],
+        "favorites": [],
+        "comment_count": 1,
+        "clones": 0,
+    }
+    store.upsert(Collections.POSTS, legacy)
+    store.upsert(Collections.COMMENTS, {"id": "c1", "post_id": "legacy-random-id", "body": "保留评论"})
+
+    _migrate_seed_ids(store)
+
+    post = store.get(Collections.POSTS, "seed-momentum-rotation")
+    assert post is not None and post["title"] == legacy["title"]
+    assert store.get(Collections.POSTS, "legacy-random-id") is None
+    assert store.get(Collections.COMMENTS, "c1")["post_id"] == "seed-momentum-rotation"
 
 
 def test_strategy_post_freezes_code_and_backtest(client):

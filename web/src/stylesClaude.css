@@ -815,12 +815,15 @@ main:not(.full) { padding-bottom: 88px; }
 .settings-page .network-table th:nth-child(3) { width: 18%; }
 .settings-page .network-table th:nth-child(4) { width: 21%; }
 .settings-page .network-table th:nth-child(5) { width: 20%; }
-.settings-page .records-table th:nth-child(1) { width: 38%; }
-.settings-page .records-table th:nth-child(2) { width: 13%; }
-.settings-page .records-table th:nth-child(3) { width: 18%; }
-.settings-page .records-table th:nth-child(4) { width: 8%; }
-.settings-page .records-table th:nth-child(5) { width: 9%; }
-.settings-page .records-table th:nth-child(6) { width: 14%; }
+.settings-page .records-table th:nth-child(1) { width: 34px; }
+.settings-page .records-table th:nth-child(2) { width: 34%; }
+.settings-page .records-table th:nth-child(3) { width: 11%; }
+.settings-page .records-table th:nth-child(4) { width: 16%; }
+.settings-page .records-table th:nth-child(5) { width: 8%; }
+.settings-page .records-table th:nth-child(6) { width: 9%; }
+.settings-page .records-table th:nth-child(7) { width: 18%; }
+.settings-page .records-table .retention-check { width: 34px; text-align: center; padding-left: 4px; padding-right: 4px; }
+.settings-page .records-table .retention-check input { width: auto; margin: 0; }
 @media (max-width: 900px) {
   .settings-record-head { align-items: stretch; }
   .settings-record-head .settings-filter-row { justify-content: flex-start; }

@@ -385,6 +385,10 @@ class CollabService:
         settings = jload(row.get("settings"), {}) or {}
         role = self.group_role(row["id"], user_id)
         n = int(self.db.scalar("SELECT COUNT(*) AS n FROM collab_group_members WHERE group_id=?", (row["id"],)) or 0)
+        from .collab_bot import bot_member
+
+        if bot_member(row["id"], settings) and not settings.get("dm"):
+            n += 1  # Bot 是虚拟成员：不复制用户关系，但显示与成员计数都算一个人
         last = self.db.fetchone(
             "SELECT id, body, author_name, created_at FROM collab_messages WHERE group_id=? AND deleted_at IS NULL "
             "ORDER BY id DESC LIMIT 1",
@@ -467,6 +471,11 @@ class CollabService:
             "SELECT user_id, role, joined_at FROM collab_group_members WHERE group_id=? ORDER BY joined_at", (gid,)
         )
         view["members"] = [{**m, "name": names.get(m["user_id"], "?")} for m in members]
+        from .collab_bot import bot_member
+
+        bot = bot_member(gid, self.group_settings(gid))
+        if bot:
+            view["members"].append(bot)
         return view
 
     def create_group(
@@ -1528,8 +1537,14 @@ class CollabService:
                 force=True,
             )
 
-    def issue_counts(self) -> dict[str, int]:
-        rows = self.db.fetchall("SELECT status, COUNT(*) AS n FROM issue_reports GROUP BY status")
+    def issue_counts(self, workspace_id: str | None = None) -> dict[str, int]:
+        if workspace_id:
+            rows = self.db.fetchall(
+                "SELECT status, COUNT(*) AS n FROM issue_reports WHERE workspace_id=? GROUP BY status",
+                (workspace_id,),
+            )
+        else:
+            rows = self.db.fetchall("SELECT status, COUNT(*) AS n FROM issue_reports GROUP BY status")
         return {r["status"]: int(r["n"]) for r in rows}
 
     # ================================================================== 上传

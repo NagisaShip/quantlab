@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any, Literal
 
@@ -18,6 +19,7 @@ from pydantic import BaseModel, Field
 
 from ..platform import context
 from ..platform.collab import ISSUE_CATEGORIES, ISSUE_STATUS, NOTIFY_KINDS, TASK_STATUS_LABEL
+from ..platform.collab_bot import BOT_NAME, bot_member_id, mentions_bot
 from ..platform.db import jload
 from ..platform.errors import AppError, ErrorCode
 from ..store import Collections
@@ -25,6 +27,7 @@ from .deps import get_services
 from .schemas import QmojiIn
 
 router = APIRouter(prefix="/api", tags=["协作与通知"])
+log = logging.getLogger(__name__)
 
 
 def _c():
@@ -210,6 +213,14 @@ class MemberRoleIn(BaseModel):
     role: Literal["owner", "admin", "member"]
 
 
+class GroupBotIn(BaseModel):
+    enabled: bool = True
+    model_target: str = Field("", max_length=200, description="provider/model；留空使用工作区默认路由")
+    system_prompt: str = Field("", max_length=4000, description="追加到内置短对话提示词之后")
+    personality: str = Field("friendly", max_length=200, description="preset key or custom personality text")
+    qmoji_enabled: bool = True
+
+
 @router.get("/collab/groups", summary="群组列表：我加入的与工作区内公开的群组")
 def list_groups() -> dict:
     ws, uid, _ = _me()
@@ -244,8 +255,93 @@ def get_group(gid: str) -> dict:
     ws, uid, _ = _me()
     view = _c().get_group(ws, gid, uid, ws_admin=_ws_admin())
     for m in view.get("members") or []:
+        if m.get("kind") == "bot":
+            continue
         m["avatar_color"] = get_services().social.profile(ws, m["user_id"]).get("avatar_color", "#2E5C9A")
     return {"group": _dm_view(view, gid, ws, uid)}
+
+
+def _bot_models() -> list[dict[str, Any]]:
+    """Bot 可选模型：只把当前成员能解析到的模型暴露给下拉框。"""
+    out: list[dict[str, Any]] = []
+    for m in get_services().router.available_models():
+        out.append(
+            {
+                "target": m.get("target") or "",
+                "provider": m.get("provider") or "",
+                "model": m.get("model") or "",
+                "label": m.get("label") or m.get("target") or "",
+                "scope": m.get("scope") or "",
+                "ready": bool(m.get("ready")),
+            }
+        )
+    return out
+
+
+def _bot_can_manage(gid: str, uid: str) -> bool:
+    return _ws_admin() or _c().group_role(gid, uid) in ("owner", "admin")
+
+
+@router.get("/collab/groups/{gid}/bot", summary="群组 QuantLab Bot 配置与可选模型")
+def get_group_bot(gid: str) -> dict:
+    _ws, uid, _ = _me()
+    _readable_group(gid)
+    if _c().is_dm(gid):
+        raise AppError(ErrorCode.INVALID_PARAMETER, "私聊不能添加 QuantLab Bot")
+    return {
+        "bot": get_services().collab_bot.public_config(gid),
+        "models": _bot_models(),
+        "can_manage": _bot_can_manage(gid, uid),
+        "defaults": {
+            "personality": "friendly",
+            "qmoji_enabled": True,
+            "member_id": bot_member_id(gid),
+            "name": BOT_NAME,
+        },
+    }
+
+
+@router.put("/collab/groups/{gid}/bot", summary="添加或修改群组 QuantLab Bot（群主 / 群管理员）")
+def save_group_bot(gid: str, payload: GroupBotIn) -> dict:
+    _writer()
+    ws, uid, _ = _me()
+    _readable_group(gid)
+    if _c().is_dm(gid):
+        raise AppError(ErrorCode.INVALID_PARAMETER, "私聊不能添加 QuantLab Bot")
+    _c().require_group_admin(gid, uid, ws_admin=_ws_admin())
+    target = payload.model_target.strip()
+    if target and target not in {m["target"] for m in _bot_models()}:
+        raise AppError(ErrorCode.INVALID_PARAMETER, "这个模型不在你可用范围内，请先在「设置 · 模型」里登记")
+    bot = get_services().collab_bot.save_config(
+        gid,
+        actor_id=uid,
+        enabled=payload.enabled,
+        model_target=target,
+        system_prompt=payload.system_prompt,
+        personality=payload.personality,
+        qmoji_enabled=payload.qmoji_enabled,
+    )
+    get_services().audit.record(
+        "group.bot_save",
+        object_type="group",
+        object_id=gid,
+        details={"enabled": payload.enabled, "model_target": target, "qmoji": payload.qmoji_enabled},
+    )
+    return {"bot": bot, "models": _bot_models(), "group": _c().get_group(ws, gid, uid, ws_admin=_ws_admin())}
+
+
+@router.delete("/collab/groups/{gid}/bot", summary="移除群组 QuantLab Bot（群主 / 群管理员）")
+def delete_group_bot(gid: str) -> dict:
+    _writer()
+    ws, uid, _ = _me()
+    _readable_group(gid)
+    if _c().is_dm(gid):
+        raise AppError(ErrorCode.INVALID_PARAMETER, "私聊不能添加 QuantLab Bot")
+    _c().require_group_admin(gid, uid, ws_admin=_ws_admin())
+    removed = get_services().collab_bot.remove_config(gid)
+    if removed:
+        get_services().audit.record("group.bot_remove", object_type="group", object_id=gid)
+    return {"ok": removed, "group": _c().get_group(ws, gid, uid, ws_admin=_ws_admin())}
 
 
 @router.post("/collab/groups/{gid}/number/rotate", summary="销毁并重新生成 QuantLab 群号")
@@ -384,11 +480,61 @@ def post_message(gid: str, payload: MessageIn) -> dict:
             if not state.get("ok"):
                 raise AppError(ErrorCode.PERMISSION_DENIED, str(state.get("reason") or "当前无法发送私信"))
     refs = _resolve_refs(payload.refs)
-    return {
-        "message": _c().post_message(
-            gid, author_id=uid, author_name=name, body=payload.body, refs=refs, reply_to=payload.reply_to
+    message = _c().post_message(
+        gid, author_id=uid, author_name=name, body=payload.body, refs=refs, reply_to=payload.reply_to
+    )
+    bot_message = None
+    if not dm and mentions_bot(payload.body):
+        bot_message = _reply_as_group_bot(
+            gid,
+            ws=ws,
+            trigger=message,
+            trigger_name=name,
+            trigger_body=payload.body,
+            trigger_refs=refs,
         )
-    }
+    return {"message": message, "bot_message": bot_message}
+
+
+def _reply_as_group_bot(
+    gid: str,
+    *,
+    ws: str,
+    trigger: dict[str, Any],
+    trigger_name: str,
+    trigger_body: str,
+    trigger_refs: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """在用户消息落库后调用 Bot；Bot 故障不能回滚或阻断原消息。"""
+    bot = get_services().collab_bot
+    cfg = bot.config(gid)
+    if not cfg or not cfg.get("enabled", True):
+        return None
+    created_by = str(cfg.get("created_by") or "")
+    role = get_services().auth.role_in(ws, created_by) or "member"
+    history = [m for m in _c().messages(gid, limit=14, viewer=created_by) if m.get("id", 0) < trigger.get("id", 0)]
+    try:
+        reply = bot.reply_group(
+            get_services().router,
+            workspace_id=ws,
+            role=role,
+            cfg=cfg,
+            history=history,
+            trigger_name=trigger_name,
+            trigger_body=trigger_body,
+            trigger_refs=trigger_refs,
+        )
+        return _c().post_message(
+            gid,
+            author_id=bot_member_id(gid),
+            author_name=BOT_NAME,
+            body=reply["body"],
+            reply_to=trigger.get("id"),
+            author_kind="agent",
+        )
+    except Exception:
+        log.exception("group QuantLab Bot reply failed: group=%s", gid)
+        return None
 
 
 @router.put("/collab/messages/{mid}", summary="编辑自己的消息")
@@ -1041,6 +1187,9 @@ def inbox_summary() -> dict:
         out["group_unread"] = sum(g["unread"] for g in c.list_groups(ctx.workspace_id, uid) if g["my_role"])
     if ctx.is_admin:
         out["open_issues"] = c.issue_counts().get("open", 0)
+    elif ctx.role == "admin" and ctx.workspace_id:
+        # 其他工作区管理员也看到本工作区的 BUG 待处理角标，不只部署管理员。
+        out["open_issues"] = c.issue_counts(ctx.workspace_id).get("open", 0)
     return out
 
 
@@ -1115,6 +1264,21 @@ def _admin_workspaces() -> list[str]:
     return [m["id"] for m in get_services().auth.memberships(uid) if m["role"] == "admin"]
 
 
+def _issue_staff_ids(workspace_id: str | None) -> set[str]:
+    """部署管理员 + 该工作区的全部管理员，共同处理 BUG / 问题反馈。"""
+    db = get_services().db
+    ids = {r["id"] for r in db.fetchall("SELECT id FROM users WHERE is_admin=1 AND is_active=1")}
+    if workspace_id:
+        ids |= {
+            r["user_id"]
+            for r in db.fetchall(
+                "SELECT user_id FROM memberships WHERE workspace_id=? AND role='admin' AND status='active'",
+                (workspace_id,),
+            )
+        }
+    return ids
+
+
 def _is_staff(issue: dict[str, Any]) -> bool:
     ctx = context.current()
     return bool(ctx.is_admin or (issue.get("workspace_id") and issue["workspace_id"] in _admin_workspaces()))
@@ -1140,7 +1304,9 @@ def list_issues(scope: Literal["mine", "all"] = "mine", status: str | None = Non
         "categories": ISSUE_CATEGORIES,
         "statuses": ISSUE_STATUS,
         "is_staff": bool(ctx.is_admin or _admin_workspaces()),
-        "counts": c.issue_counts() if ctx.is_admin else None,
+        "counts": c.issue_counts()
+        if ctx.is_admin
+        else (c.issue_counts(ctx.workspace_id) if ctx.role == "admin" and ctx.workspace_id else None),
     }
 
 
@@ -1159,16 +1325,7 @@ def create_issue(payload: IssueIn) -> dict:
         context_info=payload.context,
     )
     # 通知部署管理员与该工作区的管理员
-    db = get_services().db
-    staff = {r["id"] for r in db.fetchall("SELECT id FROM users WHERE is_admin=1 AND is_active=1")}
-    if ctx.workspace_id:
-        staff |= {
-            r["user_id"]
-            for r in db.fetchall(
-                "SELECT user_id FROM memberships WHERE workspace_id=? AND role='admin' AND status='active'",
-                (ctx.workspace_id,),
-            )
-        }
+    staff = _issue_staff_ids(ctx.workspace_id)
     c.notify(
         staff,
         kind="issue",
@@ -1210,11 +1367,11 @@ def reply_issue(iid: str, payload: IssueReplyIn) -> dict:
         staff=staff,
         attachments=payload.attachments,
     )
+    staff_ids = _issue_staff_ids(row.get("workspace_id"))
     if not staff:
-        db = get_services().db
-        admins = {r["id"] for r in db.fetchall("SELECT id FROM users WHERE is_admin=1 AND is_active=1")}
+        staff_ids.discard(ctx.user_id or "")
         _c().notify(
-            admins,
+            staff_ids,
             kind="issue",
             title=f"问题报告有新补充：{row['title']}",
             body=payload.body[:200],
@@ -1226,6 +1383,23 @@ def reply_issue(iid: str, payload: IssueReplyIn) -> dict:
             workspace_id=row["workspace_id"],
             force=True,
         )
+    else:
+        # 一位管理员处理完，其他共同管理员也能看到进展，避免重复回复。
+        watchers = staff_ids - {ctx.user_id or "", row["user_id"]}
+        if watchers:
+            _c().notify(
+                watchers,
+                kind="issue",
+                title=f"{ctx.user_name} 回复了问题「{row['title']}」",
+                body=payload.body[:200],
+                link=f"issues/{iid}",
+                actor_id=ctx.user_id,
+                actor_name=ctx.user_name,
+                source_type="issue",
+                source_id=iid,
+                workspace_id=row["workspace_id"],
+                force=True,
+            )
     return {"issue": _c().issue(iid)}
 
 

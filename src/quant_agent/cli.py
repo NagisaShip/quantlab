@@ -229,7 +229,7 @@ def _spawn_worker(slots: int):
     env.setdefault("QAGENT_WORKER", "external")
     creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
     proc = subprocess.Popen(
-        [sys.executable, "-m", "quant_agent.cli", "worker", "--slots", str(max(1, int(slots or 2)))],
+        [sys.executable, "-m", "quant_agent.cli", "worker", "--slots", str(max(1, min(32, int(slots or 8))))],
         stdin=subprocess.DEVNULL,
         stdout=out,
         stderr=err,
@@ -409,11 +409,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="同时启动并守护独立 worker；默认在回环地址且没有在线 worker 时自动启动",
     )
-    sv.add_argument("--worker-slots", type=int, default=2)
+    sv.add_argument("--worker-slots", type=int, default=8)
     sv.set_defaults(func=cmd_serve)
 
     w = sub.add_parser("worker", help="启动独立 worker（执行回测、优化、实时模拟）")
-    w.add_argument("--slots", type=int, default=2, help="同时执行的批处理任务数")
+    w.add_argument("--slots", type=int, default=8, help="同时执行的批处理任务数（默认 8，可在部署总览动态调整）")
     w.add_argument("--poll", type=float, default=3.0, help="没有 Redis 唤醒时的数据库轮询间隔（秒）")
     w.add_argument("--database-url", default="")
     w.set_defaults(func=cmd_worker)

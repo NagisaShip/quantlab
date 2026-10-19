@@ -58,6 +58,15 @@ function GateView({ notify, onNavigate, initialSlug }: Pick<PageProps, 'notify' 
   const load = useCallback(() => validation.board().then((r) => { setRows(r.board); setCfg(r.config) }).catch((e: Error) => notify(e.message, true)), [notify])
   useEffect(() => { load() }, [load])
   const show = useCallback(async (slug: string) => { try { setOpen(await validation.grad(slug)) } catch (e) { notify((e as Error).message, true) } }, [notify])
+  const removeStrategy = useCallback(async (slug: string, name: string) => {
+    if (!await appConfirm(`删除策略「${name}」？代码目录与全部历史版本会真实删除，不能恢复；已有回测和运行记录会保留。`, { danger: true })) return
+    try {
+      await v3.deleteStrategy(slug)
+      if (open?.strategy === slug) setOpen(null)
+      await load()
+      notify('策略及代码目录已删除')
+    } catch (e) { notify((e as Error).message, true) }
+  }, [open, load, notify])
   // 从首页的流水线点进来：直接打开这个策略的晋级检查
   useEffect(() => { if (initialSlug) show(initialSlug) }, [initialSlug, show])
   if (!rows) return <Loading label="正在读取策略阶段" />
@@ -80,7 +89,12 @@ function GateView({ notify, onNavigate, initialSlug }: Pick<PageProps, 'notify' 
                     <td><StageTrack stage={r.stage} /></td>
                     <td className="muted">{r.next ? `→ ${STAGE_SHORT[r.next]}` : '已毕业'}</td>
                     <td>{r.next ? (r.passed ? <Tag tone="ok">可以晋级</Tag> : <span className="muted">{r.progress} 通过</span>) : '—'}</td>
-                    <td className="right"><button className="button small">查看</button></td>
+                    <td className="right">
+                      <span className="button-row tight">
+                        <button className="button small" onClick={(e) => { e.stopPropagation(); void show(r.strategy) }}>查看</button>
+                        <button className="button small danger" onClick={(e) => { e.stopPropagation(); void removeStrategy(r.strategy, r.name) }}>删除</button>
+                      </span>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -89,6 +103,7 @@ function GateView({ notify, onNavigate, initialSlug }: Pick<PageProps, 'notify' 
         )}
       </Panel>
       {open && <GateModal d={open} name={rows.find((r) => r.strategy === open.strategy)?.name ?? open.strategy} onClose={() => setOpen(null)} notify={notify} onNavigate={onNavigate}
+        onDelete={() => void removeStrategy(open.strategy, rows.find((r) => r.strategy === open.strategy)?.name ?? open.strategy)}
         onChanged={(d) => { setOpen(d); load() }} />}
     </>
   )
@@ -103,8 +118,8 @@ function StageTrack({ stage }: { stage: string }) {
   )
 }
 
-function GateModal({ d, name, onClose, onChanged, notify, onNavigate }: {
-  d: GradDetail; name: string; onClose: () => void; onChanged: (d: GradDetail) => void
+function GateModal({ d, name, onClose, onChanged, notify, onNavigate, onDelete }: {
+  d: GradDetail; name: string; onClose: () => void; onChanged: (d: GradDetail) => void; onDelete: () => void
 } & Pick<PageProps, 'notify' | 'onNavigate'>) {
   const [busy, setBusy] = useState(false)
   const promote = async () => {
@@ -122,6 +137,7 @@ function GateModal({ d, name, onClose, onChanged, notify, onNavigate }: {
     <Modal title={<>{name} <StageTrack stage={d.stage} /></>} onClose={onClose} width={640}
       footer={<>
         {d.stage !== 'backtest' && <button className="button small" onClick={demote}>退回上一级</button>}
+        <button className="button small danger" onClick={onDelete}>删除策略</button>
         <div className="spacer" />
         {d.next && <button className="button primary" disabled={!d.passed || busy} onClick={promote}
           title={d.passed ? '' : '还有检查没通过'}>晋级到{d.next_label}</button>}

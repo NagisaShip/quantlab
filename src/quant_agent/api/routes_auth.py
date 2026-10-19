@@ -63,6 +63,7 @@ class InviteIn(BaseModel):
     role: Literal["admin", "member", "reviewer"] = "member"
     email: str | None = None
     expires_in_hours: int = Field(168, ge=1, le=8760, description="邀请码有效期（小时），默认 7 天")
+    max_uses: int = Field(10, ge=0, le=1000, description="最多邀请人数；0 表示不限")
 
 
 class RoleIn(BaseModel):
@@ -336,6 +337,7 @@ def me() -> dict:
             "quantlab_uid": acc.get("quantlab_uid", ""),
             "name": ctx.user_name,
             "is_admin": ctx.is_admin,
+            "is_primary_admin": bool(ctx.is_admin and s.auth.primary_admin_id() == ctx.user_id),
             "avatar_color": s.social.profile(ctx.workspace_id or "", ctx.user_id or "").get("avatar_color", "#2E5C9A")
             if s.social and ctx.workspace_id
             else "#2E5C9A",
@@ -347,6 +349,8 @@ def me() -> dict:
             "name": current["name"],
             "role": ctx.role,
             "is_demo": current["is_demo"],
+            "owner_id": current.get("owner_id") or "",
+            "is_primary_admin": str(current.get("owner_id") or "") == (ctx.user_id or ""),
             "settings": current["settings"],
         },
         "onboarding": onboarding_state,
@@ -475,16 +479,22 @@ def create_invite(payload: InviteIn) -> dict:
         created_by=context.current().user_id,
         email=payload.email,
         expires_in_hours=payload.expires_in_hours,
+        max_uses=payload.max_uses,
     )
     s.audit.record(
         "member.invite",
         object_type="invite",
         object_id=inv["id"],
-        details={"role": payload.role, "email": payload.email, "expires_in_hours": payload.expires_in_hours},
+        details={
+            "role": payload.role,
+            "email": payload.email,
+            "expires_in_hours": payload.expires_in_hours,
+            "max_uses": payload.max_uses,
+        },
     )
     return {
         "invite": inv,
-        "note": "每个邀请码只能成功注册 1 人，且只显示这一次；请通过安全渠道发给对方",
+        "note": "邀请码可邀请多人，明文只显示这一次；请通过安全渠道发给对方",
     }
 
 

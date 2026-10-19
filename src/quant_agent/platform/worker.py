@@ -115,7 +115,7 @@ class Worker:
         batch: dict[str, BatchHandler] | None = None,
         resident: dict[str, Callable[[], ResidentDriver]] | None = None,
         owner: str | None = None,
-        slots: int = 2,
+        slots: int = 8,
         poll_seconds: float = 3.0,
         periodic: list[tuple[float, Callable[[Any], None]]] | None = None,
     ) -> None:
@@ -124,9 +124,9 @@ class Worker:
         self.batch = batch or {}
         self.resident = resident or {}
         self.owner = owner or worker_id()
-        self.slots = slots
+        self.slots = max(1, min(32, int(slots)))
         self.poll_seconds = poll_seconds
-        self.pool = ThreadPoolExecutor(max_workers=slots, thread_name_prefix="run")
+        self.pool = ThreadPoolExecutor(max_workers=32, thread_name_prefix="run")
         self.busy: dict[str, Any] = {}
         self.drivers: dict[str, tuple[ResidentDriver, TaskCtl, float]] = {}
         self._lock = threading.Lock()
@@ -134,10 +134,13 @@ class Worker:
         self.started_at = now_ms()
         self.periodic = [[interval, fn, 0.0] for interval, fn in (periodic or [])]
         self.max_resident = int(os.environ.get("QAGENT_WORKER_MAX_RESIDENT", "50"))
+        self._config_checked_at = 0.0
 
     # ------------------------------------------------------------------ 主循环
     def run_forever(self) -> None:
-        log.info("worker %s 启动：批处理 %s，常驻 %s", self.owner, list(self.batch), list(self.resident))
+        log.info(
+            "worker %s 启动：槽位 %s，批处理 %s，常驻 %s", self.owner, self.slots, list(self.batch), list(self.resident)
+        )
         wake = getattr(self.runs, "wake", None)
         from .watchdog import HangGuard
 
@@ -158,10 +161,16 @@ class Worker:
         self.shutdown()
 
     def register(self) -> None:
+        from .sysinfo import process_stats
+
         info = {
             "busy": list(self.busy),
             "resident": list(self.drivers),
             "kinds": list(self.batch) + list(self.resident),
+            "slots": self.slots,
+            "busy_count": len(self.busy),
+            "resident_count": len(self.drivers),
+            **process_stats(),
         }
         db = self.runs.db
         now = now_ms()
@@ -182,6 +191,21 @@ class Worker:
         if wake is not None:
             wake.worker_alive(self.owner, {"host": socket.gethostname(), "pid": os.getpid(), **info})
 
+    def refresh_config(self) -> None:
+        """周期读取部署级槽位配置；未显式配置时保留启动参数。"""
+        now = time.monotonic()
+        if now - self._config_checked_at < 5:
+            return
+        self._config_checked_at = now
+        try:
+            from .worker_config import read_worker_config
+
+            cfg = read_worker_config(getattr(self.services, "global_store", None))
+            if cfg.get("configured"):
+                self.slots = int(cfg["slots"])
+        except Exception:
+            log.debug("读取 worker 槽位配置失败", exc_info=True)
+
     def run_periodic(self) -> None:
         for item in self.periodic:
             interval, fn, last = item
@@ -193,6 +217,7 @@ class Worker:
                     log.exception("周期任务失败：%s", getattr(fn, "__name__", fn))
 
     def loop_once(self) -> None:
+        self.refresh_config()
         self.run_periodic()
         # 1) 认领新任务
         while True:

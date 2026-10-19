@@ -45,7 +45,7 @@ export function PageHead({ title, purpose, page, onSlot, onNavigate }: {
   const next = useNextStep(page)
   const [dismissed, setDismissed] = useState(() => store.get(DISMISS_KEY, ''))
   return (
-    <header className="page-head">
+    <header className="page-head" data-tour={`page-${page}`}>
       <div className="page-head-main">
         <h1>{title}</h1>
         {purpose && <p>{purpose}</p>}

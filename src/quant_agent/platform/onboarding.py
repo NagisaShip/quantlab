@@ -14,7 +14,22 @@ from typing import Any
 from .db import Database
 
 ONBOARDING_VERSION = 1
-STEPS = ("welcome", "flow", "goal", "agents", "backtest", "finish")
+STEPS = (
+    "welcome",
+    "flow",
+    "goal",
+    "agents",
+    "backtest",
+    "data",
+    "factors",
+    "modellib",
+    "portfolio",
+    "validation",
+    "paper",
+    "square",
+    "groups",
+    "finish",
+)
 STATUSES = ("not_started", "in_progress", "completed", "skipped")
 TRACKS = ("owner", "member")
 

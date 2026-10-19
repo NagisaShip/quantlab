@@ -427,7 +427,19 @@ class WorkspaceStore:
                 )
                 self._stores[workspace_id] = store
                 if self.initializer is not None:
-                    self.initializer(workspace_id, store)
+                    # API 与 worker 是两个进程，首次访问同一工作区时会同时走到这里。
+                    # 只用线程锁挡不住跨进程并发：两个 seed 同时写策略目录时，
+                    # approve_strategy 可能读到正在被覆盖的 meta 而返回 None。
+                    # 用跨进程文件锁串行化；每个新进程仍会执行一次初始化回调，
+                    # 这样 roles / teams 的内置同步在升级后还能生效，而默认资产与
+                    # 协作示例由各自的幂等标记 / 查询避免重复写入。
+                    try:
+                        with _FileLock(store.root / ".workspace-init.lock"):
+                            self.initializer(workspace_id, store)
+                    except BaseException:
+                        # 初始化失败不要留下半初始化的缓存，下一次访问继续重试。
+                        self._stores.pop(workspace_id, None)
+                        raise
             return store
 
     def current(self) -> JsonStore:

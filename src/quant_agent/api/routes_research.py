@@ -435,7 +435,7 @@ def get_record_retention() -> dict:
         {"max_units_per_user": max_units, "remaining_units": round(max(0, max_units - usage["total_units"]), 3)}
     )
     return {
-        "workspace": {"max_units_per_user": max_units, "max_records_per_user": max_units},
+        "workspace": {"max_units_per_user": max_units, "max_records_per_user": max_units, **BR.workspace_hard_max()},
         "user": prefs,
         "usage": usage,
         "is_workspace_admin": ctx.role == "admin",
@@ -456,7 +456,7 @@ def put_record_retention(payload: BacktestRetentionIn) -> dict:
     )
     services.audit.record("research.record_retention", object_type="user", object_id=ctx.user_id, details=prefs)
     return {
-        "workspace": {"max_units_per_user": max_units, "max_records_per_user": max_units},
+        "workspace": {"max_units_per_user": max_units, "max_records_per_user": max_units, **BR.workspace_hard_max()},
         "user": prefs,
         "usage": usage,
     }
@@ -468,6 +468,12 @@ def put_record_retention_workspace(payload: BacktestWorkspaceRetentionIn) -> dic
     ctx = context.current()
     if ctx.role != "admin":
         raise HTTPException(403, "只有工作区管理员可以修改记录单位上限")
+    hard = BR.workspace_hard_max()
+    if int(payload.max_records_per_user) > int(hard["hard_max_units"]):
+        raise HTTPException(
+            400,
+            f"记录单位上限不能超过服务器空间的 20%（最多 {hard['hard_max_units']:,} 单位）",
+        )
     ws_id = context.current_workspace()
     prefs = BR.user_prefs(services.store, ctx.user_id or "")
     # 历史键名继续用于兼容旧部署；值为统一记录单位，不再只是回测条数。
@@ -489,6 +495,7 @@ def put_record_retention_workspace(payload: BacktestWorkspaceRetentionIn) -> dic
         "workspace": {
             "max_units_per_user": payload.max_records_per_user,
             "max_records_per_user": payload.max_records_per_user,
+            **hard,
         },
         "user": prefs,
         "usage": usage,
@@ -578,6 +585,79 @@ def delete_retention_record(type: str, record_id: str) -> dict:
     return {"ok": ok}
 
 
+class RecordRefIn(BaseModel):
+    type: str = Field(..., max_length=40)
+    id: str = Field(..., max_length=160)
+
+
+class BatchRecordsIn(BaseModel):
+    items: list[RecordRefIn] = Field(..., min_length=1, max_length=500)
+    pinned: bool | None = None
+
+
+def _batch_record(type_key: str, record_id: str) -> tuple[Any, dict[str, Any]]:
+    services = get_services()
+    ctx = context.current()
+    item = BR.RECORD_TYPE_BY_KEY.get(type_key)
+    if item is None:
+        raise HTTPException(400, "未知的记录类型")
+    row = services.store.get(item.collection, record_id)
+    if row is None:
+        raise HTTPException(404, "记录不存在")
+    if row.get("created_by") not in (None, "", "user", ctx.user_id) and ctx.role != "admin":
+        raise HTTPException(403, "只能管理自己的记录")
+    return item, row
+
+
+@router.post("/record-retention/records/batch-delete", summary="批量删除研究记录及报告 / 结果文件")
+def batch_delete_retention_records(payload: BatchRecordsIn) -> dict:
+    services = get_services()
+    deleted: list[str] = []
+    failed: list[dict[str, str]] = []
+    for ref in payload.items:
+        try:
+            item, row = _batch_record(ref.type, ref.id)
+            if row.get("pinned") and context.current().role != "admin":
+                raise HTTPException(409, "已 PIN 保护，请先取消 PIN")
+            if BR.delete_record(services.store, context.current_workspace(), item, row):
+                deleted.append(f"{item.key}:{ref.id}")
+            else:
+                failed.append({"type": item.key, "id": ref.id, "error": "删除失败"})
+        except HTTPException as exc:
+            failed.append({"type": ref.type, "id": ref.id, "error": str(exc.detail)})
+    services.audit.record(
+        "research.record_batch_delete",
+        object_type="user",
+        object_id=context.current().user_id,
+        details={"deleted": deleted, "failed": len(failed)},
+    )
+    return {"deleted": deleted, "failed": failed}
+
+
+@router.post("/record-retention/records/batch-pin", summary="批量 PIN / 取消 PIN 研究记录")
+def batch_pin_retention_records(payload: BatchRecordsIn) -> dict:
+    services = get_services()
+    pinned = bool(payload.pinned)
+    updated: list[str] = []
+    failed: list[dict[str, str]] = []
+    for ref in payload.items:
+        try:
+            item, row = _batch_record(ref.type, ref.id)
+            row["pinned"] = pinned
+            row["pinned_at"] = time.time() if pinned else None
+            services.store.upsert(item.collection, row)
+            updated.append(f"{item.key}:{ref.id}")
+        except HTTPException as exc:
+            failed.append({"type": ref.type, "id": ref.id, "error": str(exc.detail)})
+    services.audit.record(
+        "research.record_batch_pin",
+        object_type="user",
+        object_id=context.current().user_id,
+        details={"pinned": pinned, "updated": len(updated), "failed": len(failed)},
+    )
+    return {"updated": updated, "failed": failed}
+
+
 @router.post("/record-retention/cleanup", summary="按记录单位上限立即清理最旧的未 PIN 记录")
 def cleanup_record_retention() -> dict:
     services = get_services()
@@ -606,18 +686,20 @@ def put_workspace_backtest_retention(payload: BacktestWorkspaceRetentionIn) -> d
     if ctx.role != "admin":
         raise HTTPException(403, "只有工作区管理员可以修改回测记录上限")
     ws_id = context.current_workspace()
-    services.auth.update_settings(ws_id, {"quotas": {"backtest_max_records_per_user": payload.max_records_per_user}})
+    hard = BR.workspace_hard_max()
+    value = min(int(payload.max_records_per_user), int(hard["hard_max_units"]))
+    services.auth.update_settings(ws_id, {"quotas": {"backtest_max_records_per_user": value}})
     services.audit.record(
         "workspace.backtest_retention",
         object_type="workspace",
         object_id=ws_id,
-        details={"max_records_per_user": payload.max_records_per_user},
+        details={"max_records_per_user": value},
     )
     prefs = BR.user_prefs(services.store, ctx.user_id or "")
     return {
-        "workspace": {"max_records_per_user": payload.max_records_per_user},
+        "workspace": {"max_records_per_user": value, **hard},
         "user": prefs,
-        "usage": BR.usage(services.store, ctx.user_id or "", max_records=payload.max_records_per_user, prefs=prefs),
+        "usage": BR.usage(services.store, ctx.user_id or "", max_records=value, prefs=prefs),
     }
 
 

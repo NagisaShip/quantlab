@@ -16,8 +16,9 @@ from fastapi import APIRouter, Query, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
 from ..platform import context
+from ..platform.db import jload
 from ..platform.errors import AppError, ErrorCode
-from ..platform.runs import TERMINAL
+from ..platform.runs import QUEUED, TERMINAL
 from . import tasks
 from .deps import get_services
 
@@ -100,6 +101,13 @@ def _public(run: dict[str, Any]) -> dict[str, Any]:
     m = run.get("manifest") or {}
     out["manifest"] = {k: v for k, v in m.items() if k != "source"}
     out["terminal"] = run["state"] in TERMINAL
+    if run.get("state") == QUEUED:
+        s = get_services()
+        ahead = s.db.scalar(
+            "SELECT COUNT(*) AS n FROM runs WHERE state=? AND (created_at<? OR (created_at=? AND id<?))",
+            (QUEUED, run["created_at"], run["created_at"], run["id"]),
+        )
+        out["queue_position"] = int(ahead or 0) + 1
     return out
 
 
@@ -143,7 +151,35 @@ def workers() -> dict:
         "SELECT id, host, pid, started_at, last_seen, info FROM workers WHERE last_seen>? ORDER BY last_seen DESC",
         (now - 60_000,),
     )
-    return {"workers": rows, "mode": tasks.worker_mode(), "wake": getattr(s.runs.wake, "kind", "none")}
+    items = []
+    for row in rows:
+        info = jload(row.get("info"), {}) or {}
+        items.append(
+            {
+                "id": row["id"],
+                "host": row["host"],
+                "pid": row.get("pid"),
+                "started_at": row.get("started_at"),
+                "last_seen": row["last_seen"],
+                "slots": int(info.get("slots") or 0),
+                "busy": int(info.get("busy_count") or len(info.get("busy") or [])),
+                "resident": int(info.get("resident_count") or len(info.get("resident") or [])),
+                "rss_bytes": int(info.get("rss_bytes") or 0),
+                "private_bytes": int(info.get("private_bytes") or 0),
+                "cpu_seconds": float(info.get("cpu_seconds") or 0),
+                "threads": int(info.get("threads") or 0),
+                "kinds": info.get("kinds") or [],
+            }
+        )
+    queued = int(s.db.scalar("SELECT COUNT(*) AS n FROM runs WHERE state=?", (QUEUED,)) or 0)
+    return {
+        "workers": items,
+        "mode": tasks.worker_mode(),
+        "wake": getattr(s.runs.wake, "kind", "none"),
+        "queued": queued,
+        "slots_total": sum(int(w["slots"]) for w in items),
+        "busy_total": sum(int(w["busy"]) for w in items),
+    }
 
 
 @router.get("/{run_id}")

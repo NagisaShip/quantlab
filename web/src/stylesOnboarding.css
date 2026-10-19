@@ -17,9 +17,6 @@
 .onboarding-welcome-card .qbot { filter: drop-shadow(0 12px 24px rgba(46, 69, 200, .22)); }
 .onboarding-welcome-card h2 { margin: 12px 0 8px; font-size: 24px; letter-spacing: -.02em; }
 .onboarding-welcome-card > p { margin: 0 auto; max-width: 460px; color: var(--muted); font-size: 13px; line-height: 1.75; }
-.onboarding-welcome-card ul { margin: 18px auto 22px; padding: 0; list-style: none; display: grid; gap: 8px; max-width: 430px; text-align: left; }
-.onboarding-welcome-card li { position: relative; padding-left: 20px; color: var(--ink-2); font-size: 12.5px; }
-.onboarding-welcome-card li::before { content: '✓'; position: absolute; left: 0; color: var(--accent); font-weight: 700; }
 .onboarding-welcome-actions { display: flex; justify-content: center; flex-wrap: wrap; gap: 8px; }
 .onboarding-kicker { margin-top: 10px; color: var(--accent); font-family: var(--mono); font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; }
 
@@ -27,7 +24,11 @@
   position: fixed; left: 50%; bottom: 88px; z-index: 1700;
   width: min(560px, calc(100vw - 32px)); transform: translateX(-50%);
   pointer-events: none;
-  animation: m-rise var(--dur-3, 260ms) var(--ease-out, ease) both;
+  animation: onboarding-tutor-rise var(--dur-3, 260ms) var(--ease-out, ease) both;
+}
+@keyframes onboarding-tutor-rise {
+  from { opacity: 0; transform: translate(-50%, 10px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
 }
 .onboarding-tutor-main { display: flex; align-items: flex-end; gap: 10px; pointer-events: auto; }
 .onboarding-bot { flex: none; filter: drop-shadow(0 8px 18px rgba(46, 69, 200, .22)); }
@@ -44,9 +45,8 @@
   background: var(--sunken); color: var(--muted); font-size: 11.5px; line-height: 1.55;
   animation: m-fade var(--dur-2, 180ms) var(--ease-out, ease) both;
 }
-.onboarding-progress { display: flex; gap: 5px; margin: 10px 0 9px; }
-.onboarding-progress i { width: 6px; height: 6px; border-radius: 99px; background: var(--line); transition: background .2s, width .2s; }
-.onboarding-progress i.on { width: 16px; background: var(--accent); }
+.onboarding-progress { height: 4px; margin: 10px 0 9px; border-radius: 99px; background: var(--line); overflow: hidden; }
+.onboarding-progress i { display: block; height: 100%; background: var(--accent); border-radius: inherit; transition: width .28s cubic-bezier(.2,.8,.2,1); }
 .onboarding-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 6px; }
 .onboarding-actions .button { min-height: 30px; }
 .onboarding-actions .ghost { margin-right: auto; }
@@ -70,16 +70,26 @@
 .onboarding-resume-x { border: 0; background: transparent; color: var(--faint); font-size: 18px; line-height: 1; cursor: pointer; }
 
 @media (max-width: 720px) {
-  .onboarding-welcome-card { padding: 24px 18px 20px; border-radius: 20px; }
+  .onboarding-welcome-card { padding: 22px 16px 18px; border-radius: 20px; }
   .onboarding-welcome-card h2 { font-size: 21px; }
-  .onboarding-tutor { bottom: calc(76px + env(safe-area-inset-bottom)); }
-  .onboarding-tutor-main { gap: 6px; align-items: flex-end; }
-  .onboarding-bubble { padding: 12px 12px 10px; max-height: 42vh; overflow: auto; }
+  .onboarding-welcome-actions { flex-direction: column; align-items: stretch; }
+  .onboarding-tutor { bottom: calc(8px + env(safe-area-inset-bottom)); width: calc(100vw - 16px); animation-name: onboarding-tutor-fade; }
+  .onboarding-tutor-main { position: relative; display: block; }
+  .onboarding-bot { position: absolute; top: -28px; left: 14px; z-index: 2; width: 50px; height: 50px; }
+  .onboarding-bubble { padding: 28px 14px 12px; max-height: 56vh; overflow: auto; border-radius: 18px; }
   .onboarding-bubble h3 { font-size: 14px; }
-  .onboarding-actions .button { flex: 1; min-width: 0; }
+  .onboarding-bubble > p { font-size: 13px; line-height: 1.6; }
+  .onboarding-actions { position: sticky; bottom: -1px; z-index: 1; padding: 8px 0 2px; background: var(--sheet); }
+  .onboarding-actions .button { flex: 1; min-width: 0; height: auto; min-height: 30px; padding: 5px 10px; white-space: normal; line-height: 1.3; }
+  .onboarding-actions .primary { flex-basis: 100%; }
   .onboarding-actions .ghost { flex-basis: 100%; margin-right: 0; }
-  .onboarding-bot { width: 48px; height: 48px; }
   .onboarding-resume { bottom: calc(12px + env(safe-area-inset-bottom)); }
+  [data-tour] { scroll-margin-bottom: 46vh; }
+}
+
+@keyframes onboarding-tutor-fade {
+  from { opacity: 0; transform: translate(-50%, 0) scale(.985); }
+  to { opacity: 1; transform: translate(-50%, 0) scale(1); }
 }
 
 @media (prefers-reduced-motion: reduce) {
