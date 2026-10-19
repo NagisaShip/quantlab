@@ -47,10 +47,20 @@
 .mk-chips .chip.auto.on { border-style: solid; }
 .mk-auto-note { padding: 7px 9px; border-radius: 7px; background: var(--accent-soft); color: var(--muted); font-size: 11.5px; line-height: 1.5; }
 .mk-menu { width: 340px; max-width: calc(100vw - 24px); padding: 12px; display: grid; gap: 8px; }
-.mk-chips { display: flex; flex-wrap: wrap; gap: 6px; }
-.mk-add { display: flex; gap: 6px; }
+/* 弹层里的每个格子都要能被压缩：grid/flex 子项默认 min-width:auto，会被长标签撑破卡片 */
+.mk-menu > * { min-width: 0; }
+.mk-chips { display: flex; flex-wrap: wrap; gap: 6px; max-height: 168px; overflow-y: auto; }
+/* 10 个周期用换行而非 10 列网格：列宽按 1fr 会把「250ms」这类标签挤爆，把底部按钮顶出卡片 */
+.mk-tfs { display: flex; flex-wrap: wrap; gap: 4px; margin: 0 8px; padding: 2px; background: var(--sunken); border-radius: 8px; }
+.mk-tfs button {
+  flex: 1 1 52px; min-width: 0; height: 28px; padding: 0 4px; border: 0; border-radius: 6px;
+  background: none; color: var(--muted); font-size: 12.5px; font-family: var(--num); cursor: pointer;
+}
+.mk-tfs button:hover { color: var(--ink); }
+.mk-tfs button.on { background: var(--sheet); color: var(--ink); box-shadow: 0 1px 2px rgba(0, 0, 0, .08); }
+.mk-add { display: flex; gap: 6px; min-width: 0; }
 .mk-add input { flex: 1; margin: 0; min-width: 0; }
-.mk-foot { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+.mk-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 4px; min-width: 0; }
 
 /* ---------------- 数据核验 ---------------- */
 .rg-check { margin-top: 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--sunken); overflow: hidden; }

@@ -281,7 +281,7 @@ export function MarketSwitcher({ symbols, timeframe, auto, onChange, multi, disa
           {!autoMode && (
             <>
               <div className="cmp-menu-label">周期</div>
-              <div className="cmp-seg" role="group" aria-label="周期" style={{ gridTemplateColumns: `repeat(${TIMEFRAMES.length}, 1fr)` }}>
+              <div className="mk-tfs" role="group" aria-label="周期">
                 {TIMEFRAMES.map((t) => <button key={t} type="button" className={tf === t ? 'on' : ''} aria-pressed={tf === t} onClick={() => setTf(t)}>{t}</button>)}
               </div>
             </>

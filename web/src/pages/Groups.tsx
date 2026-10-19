@@ -13,6 +13,7 @@ import {
 } from '../apiCollab'
 import { Callout, EmptyState, Loading, Modal, Tag } from '../components/ui'
 import { RichBody, RichEditor } from '../components/RichText'
+import { mentionTargets } from '../components/mentions'
 import { LimitBars, LimitEditor, fmtCost, fmtTokens } from '../components/modelUsage'
 import { QuantBot } from '../components/QuantBot'
 import { QmojiReactionBar } from '../components/QmojiReactionBar'
@@ -276,7 +277,7 @@ function GroupView({ group: g0, tab, me, members, onNavigate, notify, onChanged,
         {tabs.map((t) => <button key={t.key} type="button" aria-pressed={tab === t.key} onClick={() => go(t.key)}>{t.label}{t.key === 'tasks' && g.open_tasks > 0 && <small> {g.open_tasks}</small>}</button>)}
       </nav>
       <div className="grp-body page-enter" key={tab}>
-        {tab === 'chat' && <Chat g={g} me={me} members={members} isMember={isMember} isMod={isMod} notify={notify} onChanged={() => { reload(); onChanged() }} onStartDm={onStartDm} />}
+        {tab === 'chat' && <Chat g={g} me={me} members={members} isMember={isMember} isMod={isMod} notify={notify} onChanged={() => { reload(); onChanged() }} onStartDm={onStartDm} onNavigate={onNavigate} />}
         {tab === 'tasks' && <TaskBoard g={g} me={me} isMember={isMember} isMod={isMod} notify={notify} />}
         {tab === 'shared' && <Shared g={g} onNavigate={onNavigate} />}
         {tab === 'models' && <GroupModels g={g} isWsAdmin={me.workspace?.role === 'admin'} notify={notify} onSaved={reload} />}
@@ -333,8 +334,9 @@ function MemberMuteButton({ member, notify, onChanged, compact = false }: {
 }
 
 /* ------------------------------------------------------------------ 讨论 */
-function Chat({ g, me, members, isMember, isMod, notify, onChanged, onStartDm }: {
-  g: Group; me: Me; members: Member[]; isMember: boolean; isMod: boolean; notify: PageProps['notify']; onChanged: () => void; onStartDm: (uid: string) => void
+function Chat({ g, me, members, isMember, isMod, notify, onChanged, onStartDm, onNavigate }: {
+  g: Group; me: Me; members: Member[]; isMember: boolean; isMod: boolean; notify: PageProps['notify']; onChanged: () => void
+  onStartDm: (uid: string) => void; onNavigate: (k: string) => void
 }) {
   const adminIds = useMemo(() => new Set(members.filter((m) => m.role === 'admin').map((m) => m.user_id)), [members])
   const [msgs, setMsgs] = useState<Message[] | null>(null)
@@ -389,6 +391,18 @@ function Chat({ g, me, members, isMember, isMod, notify, onChanged, onStartDm }:
     { id: 'all', name: '所有人', hint: '通知全部群成员' },
     ...(g.members ?? []).filter((m) => m.user_id !== me.user.id).map((m) => ({ id: m.user_id, name: m.name, hint: ROLE_LABEL[m.role] })),
   ], [g.members, me.user.id])
+  // @提及的渲染候选：群成员（不含「所有人」这种没有主页的伪成员）
+  const targets = useMemo(
+    () => mentionTargets((g.members ?? []).filter((m) => m.kind !== 'bot' && m.user_id !== me.user.id).map((m) => ({ id: m.user_id, name: m.name }))),
+    [g.members, me.user.id],
+  )
+  /** 回复某人：默认把 @对方 放进输入框（光标已在末尾时不重复加）。 */
+  const startReply = (m: Message) => {
+    setReply(m)
+    if (m.author_kind === 'user' && m.author_id !== me.user.id) {
+      setText((prev) => (prev.startsWith(`@${m.author_name}`) ? prev : `@${m.author_name} ${prev.replace(/^\s+/, '')}`))
+    }
+  }
 
   const send = async () => {
     if ((!text.trim() && !refs.length) || sending) return
@@ -439,7 +453,7 @@ function Chat({ g, me, members, isMember, isMod, notify, onChanged, onStartDm }:
       {pinned.length > 0 && (
         <div className="chat-pinned anim-expand">
           <span className="chat-pin-tag">置顶</span>
-          <span className="chat-pin-text">{pinned[0].author_name}：{pinned[0].body.slice(0, 80) || '（引用）'}</span>
+          <span className="chat-pin-text">{pinned[0].author_name}：<RichBody text={pinned[0].body} refs={pinned[0].refs} compact mentions={targets} /></span>
           {pinned.length > 1 && <small>等 {pinned.length} 条</small>}
         </div>
       )}
@@ -471,24 +485,35 @@ function Chat({ g, me, members, isMember, isMod, notify, onChanged, onStartDm }:
               <div className={`chat-msg${cont ? ' cont' : ''}${m.author_kind === 'agent' ? ' agent' : ''}${m.pinned ? ' pinned' : ''} anim-in`}>
                 <span className="chat-av">{cont ? '' : m.author_kind === 'agent' ? <QuantBot size={26} state="idle" motion="low" /> : mineMsg
                   ? <UserAvatar color={g.members?.find((x) => x.user_id === m.author_id)?.avatar_color} size={30} title={m.author_name} />
-                  : <button type="button" className="chat-av-btn" title={`与 ${m.author_name} 私聊`} aria-label={`与 ${m.author_name} 私聊`} onClick={() => onStartDm(m.author_id)}><UserAvatar color={g.members?.find((x) => x.user_id === m.author_id)?.avatar_color} size={30} title={m.author_name} /></button>}</span>
+                  : <button type="button" className="chat-av-btn" title={`查看 ${m.author_name} 的主页`} aria-label={`查看 ${m.author_name} 的主页`} onClick={() => onNavigate(`profile/${m.author_id}`)}><UserAvatar color={g.members?.find((x) => x.user_id === m.author_id)?.avatar_color} size={30} title={m.author_name} /></button>}</span>
                 <div className="chat-content">
                   {!cont && (
                     <div className="chat-meta">
-                      <b>{m.author_name}</b>
+                      {m.author_kind === 'user' && !mineMsg
+                        ? <button type="button" className="chat-author" title={`查看 ${m.author_name} 的主页`} onClick={() => onNavigate(`profile/${m.author_id}`)}>{m.author_name}</button>
+                        : <b>{m.author_name}</b>}
                       {m.author_kind === 'agent' && <span className="src-badge agent">Agent</span>}
                       <time>{new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>
                       {m.edited_at && <small>（已编辑）</small>}
                       {m.pinned && <span className="chat-pin-tag small">置顶</span>}
                     </div>
                   )}
-                  {parent && <div className="chat-quote">回复 {parent.author_name}：{parent.deleted ? '（已撤回）' : parent.body.slice(0, 80)}</div>}
+                  {parent && (
+                    <div className="chat-quote">
+                      <span className="chat-quote-head">回复 {parent.author_name}：</span>
+                      {parent.deleted
+                        ? '（已撤回）'
+                        : <span className="chat-quote-body"><RichBody text={parent.body} refs={parent.refs} compact mentions={targets} /></span>}
+                    </div>
+                  )}
                   {m.deleted ? <div className="chat-deleted">消息已撤回</div>
                     : hidden ? <button type="button" className="chat-muted" onClick={() => setShowMuted(new Set([...showMuted, m.id]))}><Icon name="bell-off" size={13} />已屏蔽 {m.author_name} 的消息 · 点击显示</button>
-                      : <RichBody text={m.body} refs={m.refs} compact />}
+                      : <RichBody text={m.body} refs={m.refs} compact mentions={targets} />}
                   {!m.deleted && isMember && (
                     <div className="chat-actions">
-                      <button type="button" onClick={() => setReply(m)}>回复</button>
+                      <button type="button" onClick={() => startReply(m)}>回复</button>
+                      {!mineMsg && m.author_kind === 'user' && <button type="button" onClick={() => onStartDm(m.author_id)}>私聊</button>}
+                      <button type="button" onClick={() => onNavigate(`profile/${m.author_id}`)}>主页</button>
                       <button type="button" onClick={() => setTaskFrom(m)}>转为任务</button>
                       {!mineMsg && m.author_kind === 'user' && !adminIds.has(m.author_id) && (
                         <button type="button" onClick={() => act(
@@ -517,7 +542,13 @@ function Chat({ g, me, members, isMember, isMod, notify, onChanged, onStartDm }:
         <Callout tone="warn" title="暂时不能继续发送">{g.dm_reason || '对方尚未回复，或已关闭私信。等待对方回复后再继续。'}</Callout>
       ) : (
         <div className="chat-composer">
-          {reply && <div className="chat-replybar anim-in">回复 <b>{reply.author_name}</b>：{reply.body.slice(0, 60)} <button type="button" className="link-btn" onClick={() => setReply(null)}>取消</button></div>}
+          {reply && (
+            <div className="chat-replybar anim-in">
+              <span className="chat-quote-head">回复 <b>{reply.author_name}</b>：</span>
+              <span className="chat-quote-body"><RichBody text={reply.body} refs={reply.refs} compact mentions={targets} /></span>
+              <button type="button" className="link-btn" onClick={() => setReply(null)}>取消</button>
+            </div>
+          )}
           <RichEditor compact rows={3} value={text} onChange={setText} refs={refs} onRefs={setRefs} onSubmit={send} mentions={mentions}
             draftKey={`group.${g.id}`} placeholder={`发消息到「${g.name}」… 输入 @ 提及成员`} notify={notify}
             footer={<button type="button" className="button small primary" disabled={sending || (!text.trim() && !refs.length)} onClick={send}>{sending ? (asksBot ? 'Bot 正在回复…' : '发送中…') : '发送'}</button>} />
@@ -842,7 +873,7 @@ const BOT_PERSONALITIES: [string, string][] = [
 function GroupBotSettings({ g, isMod, members, notify, onSaved }: {
   g: Group; isMod: boolean; members: Member[]; notify: PageProps['notify']; onSaved: () => void
 }) {
-  const empty = { enabled: true, model_target: '', system_prompt: '', personality: 'friendly', qmoji_enabled: true }
+  const empty = { enabled: true, model_target: '', system_prompt: '', personality: 'friendly', qmoji_enabled: true, reply_default_mention: true }
   const [data, setData] = useState<BotData | null>(null)
   const [form, setForm] = useState(empty)
   const [editing, setEditing] = useState(false)
@@ -857,6 +888,7 @@ function GroupBotSettings({ g, isMod, members, notify, onSaved }: {
           system_prompt: r.bot.system_prompt,
           personality: r.bot.personality || r.defaults.personality,
           qmoji_enabled: r.bot.qmoji_enabled,
+          reply_default_mention: r.bot.reply_default_mention !== false,
         })
       }
     }).catch((e) => notify((e as Error).message, true))
@@ -927,8 +959,9 @@ function GroupBotSettings({ g, isMod, members, notify, onSaved }: {
           </label>
           <div className="grp-bot-toggles">
             <label className="check"><input type="checkbox" checked={form.enabled} onChange={(e) => setForm({ ...form, enabled: e.target.checked })} />启用 Bot</label>
+            <label className="check"><input type="checkbox" checked={form.reply_default_mention} onChange={(e) => setForm({ ...form, reply_default_mention: e.target.checked })} />回复时默认 @对方</label>
             <label className="check"><input type="checkbox" checked={form.qmoji_enabled} onChange={(e) => setForm({ ...form, qmoji_enabled: e.target.checked })} />允许使用 Qmoji</label>
-            <span className="hint">Qmoji 会由提示词引导，最多一个，例如 <code>:qbot-hi:</code>、<code>:qbot-think:</code>。</span>
+            <span className="hint">开启后 Bot 每次回复都会先带上 @对方；策略广场的 Bot 回复沿用同一开关。</span>
           </div>
           <div className="grp-bot-billing">
             <Icon name="accounts" size={14} />

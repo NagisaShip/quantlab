@@ -14,14 +14,14 @@
 | Check | Result |
 |---|---|
 | `ruff check src tests scripts` | Passed |
-| `ruff format --check src tests scripts` | Passed, 338 files formatted |
-| `pytest -q` | **1,208 passed / 4 skipped** |
+| `ruff format --check src tests scripts` | Passed, 349 files formatted |
+| `pytest -q` | **1,226 passed / 4 skipped** |
 | `npm run build` in `web/` | Passed; circular-chunk warning removed, `page-research` is about 624KB |
 | `npm run e2e:typecheck` | Passed |
-| `npm run e2e` | **33 passed** (10.5 min, Microsoft Edge, video disabled) |
+| `npm run e2e` | **38 passed** (12.7 min, Microsoft Edge, video disabled) |
 | English UI crawl | No visible Chinese UI strings on the checked authenticated pages or landing page |
 | Research Flow coverage | 30/44 pages direct, 8 contextual detail pages, 6 explicitly non-research pages |
-| API snapshot | 604 operations / 513 paths |
+| API snapshot | 613 operations / 519 paths |
 
 ---
 
@@ -45,7 +45,7 @@ python -m pytest -q
 Result:
 
 ```text
-1208 passed, 4 skipped
+1226 passed, 4 skipped
 ```
 
 The remaining warnings are upstream FastAPI/Starlette/httpx deprecation notices.
@@ -145,7 +145,7 @@ npm run e2e
 Result:
 
 ```text
-33 passed (10.5m)
+38 passed (12.7m)
 ```
 
 CI should run the same suite against both SQLite and PostgreSQL storage legs with standard Playwright Chromium.

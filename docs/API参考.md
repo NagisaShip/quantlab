@@ -2,7 +2,7 @@
 
 [English](API-Reference.en.md) | [文档索引](README.md) | [返回 README](../README.md)
 
-平台共 **604 个端点**。本文件由 `scripts/gen_api_doc.py` 从 FastAPI 的 OpenAPI 规范生成，
+平台共 **613 个端点**。本文件由 `scripts/gen_api_doc.py` 从 FastAPI 的 OpenAPI 规范生成，
 与运行中服务的 `/docs`（可交互调试）来自同一份定义。
 
 机器可读版本：`docs/openapi.json`（同一次生成）。
@@ -121,6 +121,8 @@
 | `POST` | `/api/research/record-retention/cleanup` | 按记录单位上限立即清理最旧的未 PIN 记录 |
 | `PUT` | `/api/research/record-retention/multipliers` | 设置各类研究记录的存储倍率（工作区管理员） |
 | `GET` | `/api/research/record-retention/records` | 统一记录列表（当前成员） |
+| `POST` | `/api/research/record-retention/records/batch-delete` | 批量删除研究记录及报告 / 结果文件 |
+| `POST` | `/api/research/record-retention/records/batch-pin` | 批量 PIN / 取消 PIN 研究记录 |
 | `PUT` | `/api/research/record-retention/workspace` | 设置每个成员的记录单位上限（工作区管理员） |
 | `DELETE` | `/api/research/record-retention/{type}/{record_id}` | 删除任意自己的研究记录（PIN 需先取消） |
 | `POST` | `/api/research/record-retention/{type}/{record_id}/pin` | 切换任意研究记录的 PIN 保护 |
@@ -245,6 +247,7 @@
 | `POST` | `/api/community/favorites` | 收藏内容；已收藏时再次调用会取消 |
 | `DELETE` | `/api/community/favorites/{object_type}/{object_id}` | 取消收藏 |
 | `GET` | `/api/community/favorites/{object_type}/{object_id}` | 检查某个对象是否已收藏 |
+| `GET` | `/api/community/mutuals` | 和我互相关注的成员：@ 提及与快捷私聊的候选名单 |
 | `GET` | `/api/community/posts` | 帖子列表（分类、标签、搜索、排序） |
 | `POST` | `/api/community/posts` | 发帖（可附策略与回测快照） |
 | `DELETE` | `/api/community/posts/{post_id}` | 删除自己的帖子 |
@@ -272,6 +275,7 @@
 | `POST` | `/api/community/users/{identifier}/block` | 拉黑用户：自动解除关注并隐藏其帖子 |
 | `DELETE` | `/api/community/users/{identifier}/follow` | 取消关注 |
 | `POST` | `/api/community/users/{identifier}/follow` | 关注用户 |
+| `GET` | `/api/community/users/{identifier}/showcase` | 用户主页展示：按本人配置返回因子、策略、回测、模型与模拟收益 |
 
 ## 统一赛道与比较
 
@@ -522,6 +526,9 @@
 | `DELETE` | `/api/collab/groups/{gid}` | 解散（归档）群组：群主或工作区管理员 |
 | `GET` | `/api/collab/groups/{gid}` | 群组详情与成员 |
 | `PUT` | `/api/collab/groups/{gid}` | 修改群组名称、简介、可见性与群成员的群组模型限额（群主 / 群管理员） |
+| `DELETE` | `/api/collab/groups/{gid}/bot` | 移除群组 QuantLab Bot（群主 / 群管理员） |
+| `GET` | `/api/collab/groups/{gid}/bot` | 群组 QuantLab Bot 配置与可选模型 |
+| `PUT` | `/api/collab/groups/{gid}/bot` | 添加或修改群组 QuantLab Bot（群主 / 群管理员） |
 | `POST` | `/api/collab/groups/{gid}/join` | 加入公开群组 |
 | `POST` | `/api/collab/groups/{gid}/members` | 拉成员进群（群主 / 群管理员；公开群的成员也可以邀请） |
 | `DELETE` | `/api/collab/groups/{gid}/members/{user_id}` | 移出群成员（群主 / 群管理员）或退出群组（本人） |
@@ -799,5 +806,7 @@
 | `POST` | `/api/admin/users/{uid}/reset-password` | 重置密码：生成临时密码（只显示一次），并作废全部会话 |
 | `POST` | `/api/admin/users/{uid}/sessions/revoke` | 强制下线：作废该账号的全部会话 |
 | `POST` | `/api/admin/users/{uid}/unban` | 解封账号 |
+| `GET` | `/api/admin/worker-config` | 读取 worker 槽位配置 |
+| `PUT` | `/api/admin/worker-config` | 设置 worker 槽位；超出槽位的任务自动排队 |
 | `GET` | `/api/admin/workspaces` | 全部工作区：所有者、成员数、群组数、近 30 天模型费用与运行数、状态 |
 | `PUT` | `/api/admin/workspaces/{wid}/status` | 停用 / 恢复工作区（停用后成员无法进入，数据保留） |

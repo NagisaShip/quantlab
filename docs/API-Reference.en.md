@@ -247,6 +247,7 @@ Generated from `openapi.json`. Each operation ID maps to a handler and schema in
 | `POST` | `/api/community/favorites` | `toggle_favorite_api_community_favorites_post` |
 | `DELETE` | `/api/community/favorites/{object_type}/{object_id}` | `delete_favorite_api_community_favorites__object_type___object_id__delete` |
 | `GET` | `/api/community/favorites/{object_type}/{object_id}` | `favorite_status_api_community_favorites__object_type___object_id__get` |
+| `GET` | `/api/community/mutuals` | `list_mutuals_api_community_mutuals_get` |
 | `GET` | `/api/community/posts` | `list_posts_api_community_posts_get` |
 | `POST` | `/api/community/posts` | `create_post_api_community_posts_post` |
 | `DELETE` | `/api/community/posts/{post_id}` | `delete_post_api_community_posts__post_id__delete` |
@@ -274,6 +275,7 @@ Generated from `openapi.json`. Each operation ID maps to a handler and schema in
 | `POST` | `/api/community/users/{identifier}/block` | `block_user_api_community_users__identifier__block_post` |
 | `DELETE` | `/api/community/users/{identifier}/follow` | `unfollow_user_api_community_users__identifier__follow_delete` |
 | `POST` | `/api/community/users/{identifier}/follow` | `follow_user_api_community_users__identifier__follow_post` |
+| `GET` | `/api/community/users/{identifier}/showcase` | `user_showcase_api_community_users__identifier__showcase_get` |
 | `GET` | `/api/comparisons` | `list_comparisons_api_comparisons_get` |
 | `POST` | `/api/comparisons` | `create_comparison_api_comparisons_post` |
 | `GET` | `/api/comparisons/{cid}` | `get_comparison_api_comparisons__cid__get` |

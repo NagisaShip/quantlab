@@ -146,6 +146,9 @@ jobs:
       - name: 研究流程页面覆盖审计
         run: npm run qa:research
 
+      - name: Mermaid 中文兼容自检
+        run: npm run qa:mermaid
+
       - name: E2E 类型检查（spec 语法与类型）
         run: npm run e2e:typecheck
 

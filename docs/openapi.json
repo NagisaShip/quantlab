@@ -9917,6 +9917,92 @@
     }
    }
   },
+  "/api/research/record-retention/records/batch-delete": {
+   "post": {
+    "tags": [
+     "研究中心"
+    ],
+    "summary": "批量删除研究记录及报告 / 结果文件",
+    "operationId": "batch_delete_retention_records_api_research_record_retention_records_batch_delete_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/BatchRecordsIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "type": "object",
+         "title": "Response Batch Delete Retention Records Api Research Record Retention Records Batch Delete Post"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/research/record-retention/records/batch-pin": {
+   "post": {
+    "tags": [
+     "研究中心"
+    ],
+    "summary": "批量 PIN / 取消 PIN 研究记录",
+    "operationId": "batch_pin_retention_records_api_research_record_retention_records_batch_pin_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/BatchRecordsIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "type": "object",
+         "title": "Response Batch Pin Retention Records Api Research Record Retention Records Batch Pin Post"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
   "/api/research/record-retention/cleanup": {
    "post": {
     "tags": [
@@ -18534,6 +18620,74 @@
     }
    }
   },
+  "/api/community/mutuals": {
+   "get": {
+    "tags": [
+     "策略广场"
+    ],
+    "summary": "和我互相关注的成员：@ 提及与快捷私聊的候选名单",
+    "operationId": "list_mutuals_api_community_mutuals_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "type": "object",
+         "title": "Response List Mutuals Api Community Mutuals Get"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/community/users/{identifier}/showcase": {
+   "get": {
+    "tags": [
+     "策略广场"
+    ],
+    "summary": "用户主页展示：按本人配置返回因子、策略、回测、模型与模拟收益",
+    "description": "主页成果区。只返回该用户自己创建（或登记为所有者）的条目，且尊重他的展示开关。",
+    "operationId": "user_showcase_api_community_users__identifier__showcase_get",
+    "parameters": [
+     {
+      "name": "identifier",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Identifier"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "additionalProperties": true,
+         "title": "Response User Showcase Api Community Users  Identifier  Showcase Get"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
   "/api/community/users/{identifier}": {
    "get": {
     "tags": [
@@ -20596,6 +20750,144 @@
          "type": "object",
          "additionalProperties": true,
          "title": "Response Archive Group Api Collab Groups  Gid  Delete"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/collab/groups/{gid}/bot": {
+   "get": {
+    "tags": [
+     "协作与通知"
+    ],
+    "summary": "群组 QuantLab Bot 配置与可选模型",
+    "operationId": "get_group_bot_api_collab_groups__gid__bot_get",
+    "parameters": [
+     {
+      "name": "gid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Gid"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "additionalProperties": true,
+         "title": "Response Get Group Bot Api Collab Groups  Gid  Bot Get"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   },
+   "put": {
+    "tags": [
+     "协作与通知"
+    ],
+    "summary": "添加或修改群组 QuantLab Bot（群主 / 群管理员）",
+    "operationId": "save_group_bot_api_collab_groups__gid__bot_put",
+    "parameters": [
+     {
+      "name": "gid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Gid"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/GroupBotIn"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "additionalProperties": true,
+         "title": "Response Save Group Bot Api Collab Groups  Gid  Bot Put"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   },
+   "delete": {
+    "tags": [
+     "协作与通知"
+    ],
+    "summary": "移除群组 QuantLab Bot（群主 / 群管理员）",
+    "operationId": "delete_group_bot_api_collab_groups__gid__bot_delete",
+    "parameters": [
+     {
+      "name": "gid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Gid"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "additionalProperties": true,
+         "title": "Response Delete Group Bot Api Collab Groups  Gid  Bot Delete"
         }
        }
       }
@@ -22687,6 +22979,70 @@
          "additionalProperties": true,
          "type": "object",
          "title": "Response Overview Api Admin Overview Get"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/admin/worker-config": {
+   "get": {
+    "tags": [
+     "部署运维"
+    ],
+    "summary": "读取 worker 槽位配置",
+    "operationId": "get_worker_config_api_admin_worker_config_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "type": "object",
+         "title": "Response Get Worker Config Api Admin Worker Config Get"
+        }
+       }
+      }
+     }
+    }
+   },
+   "put": {
+    "tags": [
+     "部署运维"
+    ],
+    "summary": "设置 worker 槽位；超出槽位的任务自动排队",
+    "operationId": "put_worker_config_api_admin_worker_config_put",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/WorkerConfigIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "type": "object",
+         "title": "Response Put Worker Config Api Admin Worker Config Put"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
         }
        }
       }
@@ -27159,6 +27515,35 @@
     "type": "object",
     "title": "BatchDeleteIn"
    },
+   "BatchRecordsIn": {
+    "properties": {
+     "items": {
+      "items": {
+       "$ref": "#/components/schemas/RecordRefIn"
+      },
+      "type": "array",
+      "maxItems": 500,
+      "minItems": 1,
+      "title": "Items"
+     },
+     "pinned": {
+      "anyOf": [
+       {
+        "type": "boolean"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Pinned"
+     }
+    },
+    "type": "object",
+    "required": [
+     "items"
+    ],
+    "title": "BatchRecordsIn"
+   },
    "BotIn": {
     "properties": {
      "kind": {
@@ -29063,6 +29448,49 @@
     "type": "object",
     "title": "GradConfigIn"
    },
+   "GroupBotIn": {
+    "properties": {
+     "enabled": {
+      "type": "boolean",
+      "title": "Enabled",
+      "default": true
+     },
+     "model_target": {
+      "type": "string",
+      "maxLength": 200,
+      "title": "Model Target",
+      "description": "provider/model；留空使用工作区默认路由",
+      "default": ""
+     },
+     "system_prompt": {
+      "type": "string",
+      "maxLength": 4000,
+      "title": "System Prompt",
+      "description": "追加到内置短对话提示词之后",
+      "default": ""
+     },
+     "personality": {
+      "type": "string",
+      "maxLength": 200,
+      "title": "Personality",
+      "description": "preset key or custom personality text",
+      "default": "friendly"
+     },
+     "qmoji_enabled": {
+      "type": "boolean",
+      "title": "Qmoji Enabled",
+      "default": true
+     },
+     "reply_default_mention": {
+      "type": "boolean",
+      "title": "Reply Default Mention",
+      "description": "回复别人时默认带上 @对方；策略广场沿用同一开关",
+      "default": true
+     }
+    },
+    "type": "object",
+    "title": "GroupBotIn"
+   },
    "GroupIn": {
     "properties": {
      "name": {
@@ -29318,6 +29746,14 @@
       "title": "Expires In Hours",
       "description": "邀请码有效期（小时），默认 7 天",
       "default": 168
+     },
+     "max_uses": {
+      "type": "integer",
+      "maximum": 1000.0,
+      "minimum": 0.0,
+      "title": "Max Uses",
+      "description": "最多邀请人数；0 表示不限",
+      "default": 10
      }
     },
     "type": "object",
@@ -31363,6 +31799,16 @@
       "type": "boolean",
       "title": "Public Profile",
       "default": false
+     },
+     "showcase": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/ShowcaseIn"
+       },
+       {
+        "type": "null"
+       }
+      ]
      }
     },
     "type": "object",
@@ -32399,6 +32845,26 @@
     "type": "object",
     "title": "RecordMultipliersIn"
    },
+   "RecordRefIn": {
+    "properties": {
+     "type": {
+      "type": "string",
+      "maxLength": 40,
+      "title": "Type"
+     },
+     "id": {
+      "type": "string",
+      "maxLength": 160,
+      "title": "Id"
+     }
+    },
+    "type": "object",
+    "required": [
+     "type",
+     "id"
+    ],
+    "title": "RecordRefIn"
+   },
    "RegisterIn": {
     "properties": {
      "username": {
@@ -33427,6 +33893,49 @@
      "ref"
     ],
     "title": "ShareToIn"
+   },
+   "ShowcaseIn": {
+    "properties": {
+     "items": {
+      "items": {
+       "$ref": "#/components/schemas/ShowcaseItemIn"
+      },
+      "type": "array",
+      "maxItems": 16,
+      "title": "Items"
+     },
+     "limit": {
+      "type": "integer",
+      "maximum": 12.0,
+      "minimum": 1.0,
+      "title": "Limit",
+      "default": 5
+     }
+    },
+    "type": "object",
+    "title": "ShowcaseIn",
+    "description": "个人主页展示配置：展示哪些板块、每块显示几条。"
+   },
+   "ShowcaseItemIn": {
+    "properties": {
+     "key": {
+      "type": "string",
+      "maxLength": 32,
+      "minLength": 1,
+      "title": "Key"
+     },
+     "show": {
+      "type": "boolean",
+      "title": "Show",
+      "default": true
+     }
+    },
+    "type": "object",
+    "required": [
+     "key"
+    ],
+    "title": "ShowcaseItemIn",
+    "description": "主页上的一个板块：key 见 platform/social.py 的 SHOWCASE_KEYS。"
    },
    "SimIn": {
     "properties": {
@@ -34931,6 +35440,22 @@
     },
     "type": "object",
     "title": "WalkForwardIn"
+   },
+   "WorkerConfigIn": {
+    "properties": {
+     "slots": {
+      "type": "integer",
+      "maximum": 32.0,
+      "minimum": 1.0,
+      "title": "Slots",
+      "description": "worker 同时执行的批处理任务数"
+     }
+    },
+    "type": "object",
+    "required": [
+     "slots"
+    ],
+    "title": "WorkerConfigIn"
    },
    "WorkspaceIn": {
     "properties": {

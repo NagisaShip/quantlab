@@ -23,6 +23,7 @@ from fastapi import APIRouter, HTTPException, Query
 from ..agents.copilot import StrategyCopilot
 from ..platform import context
 from ..platform.collab_bot import BOT_AUTHOR_ID, BOT_NAME, mentions_bot
+from ..platform.social import SHOWCASE_LABELS, default_showcase
 from ..sdk import declared_params
 from ..store import Collections
 from ..strategies.repo import StrategyRepository
@@ -314,6 +315,7 @@ def put_profile(payload: ProfileIn) -> dict:
         dm_policy=payload.dm_policy,
         avatar_color=payload.avatar_color,
         public_profile=payload.public_profile,
+        showcase=payload.showcase.model_dump() if payload.showcase is not None else None,
     )
     # 兼容旧版本：同步写一份到原 JSON 资料，避免回滚后简介丢失。
     _store().upsert(Collections.PROFILE, {"id": ctx.user_id, "bio": payload.bio.strip()})
@@ -366,9 +368,11 @@ def _profile_view(identifier: str) -> dict[str, Any]:
             "likes": sum(len(p.get("likes", [])) for p in posts),
             "clones": sum(int(p.get("clones", 0)) for p in posts),
             "comments": len(comments),
+            "showcase": prof.get("showcase") or default_showcase(),
         },
         "is_me": is_self,
         "is_following": social.is_following(ws, viewer, uid) if viewer else False,
+        "is_mutual": social.is_mutual(ws, viewer, uid) if viewer else False,
         "is_blocked": blocked,
         "blocked_me": blocked_me,
         "can_dm": can_dm,
@@ -377,6 +381,208 @@ def _profile_view(identifier: str) -> dict[str, Any]:
         else ("你们之间存在拉黑关系" if blocked or blocked_me else ""),
         "posts": cards,
     }
+
+
+@router.get("/mutuals", summary="和我互相关注的成员：@ 提及与快捷私聊的候选名单")
+def list_mutuals() -> dict:
+    ws, uid = context.current_workspace(), context.current().user_id or ""
+    return {"users": get_services().social.mutual_people(ws, uid)}
+
+
+def _owner_ids(ws: str, object_type: str, owner_id: str) -> list[str]:
+    rows = get_services().db.fetchall(
+        "SELECT object_id FROM collab_shares WHERE workspace_id=? AND object_type=? AND owner_id=?",
+        (ws, object_type, owner_id),
+    )
+    return [str(r["object_id"]) for r in rows]
+
+
+@router.get(
+    "/users/{identifier}/showcase",
+    summary="用户主页展示：按本人配置返回因子、策略、回测、模型与模拟收益",
+)
+def user_showcase(identifier: str) -> dict:
+    """主页成果区。只返回该用户自己创建（或登记为所有者）的条目，且尊重他的展示开关。"""
+    ctx = context.current()
+    ws = ctx.workspace_id or ""
+    social = get_services().social
+    target = social.user(ws, identifier)
+    if target is None:
+        raise HTTPException(404, "用户不存在")
+    uid = str(target["id"])
+    prof = social.profile(ws, uid)
+    viewer = ctx.user_id or ""
+    if social.blocked(ws, viewer, uid) or social.blocked(ws, uid, viewer):
+        return {
+            "showcase": prof["showcase"],
+            "is_me": uid == viewer,
+            "sections": [],
+            "hidden_reason": "你们之间存在拉黑关系",
+        }
+    cfg = prof["showcase"]
+    limit = int(cfg.get("limit") or 5)
+    enabled = [it["key"] for it in cfg["items"] if it.get("show")]
+    services = get_services()
+    out: dict[str, Any] = {
+        "showcase": cfg,
+        "is_me": uid == viewer,
+        "hidden_reason": "",
+        "sections": [{"key": k, "label": SHOWCASE_LABELS[k], "count": 0, "items": []} for k in enabled],
+    }
+    by_key = {s["key"]: s for s in out["sections"]}
+    if not by_key:
+        return out
+
+    if "factors" in by_key:
+        from ..research.factor_lib import FactorLibrary
+
+        rows = [r for r in FactorLibrary(services.store).list() if str(r.get("created_by") or "") == uid]
+        rows.sort(key=lambda r: r.get("created_at") or 0, reverse=True)
+        sec = by_key["factors"]
+        sec["count"] = len(rows)
+        sec["items"] = [
+            {
+                "id": r.get("id"),
+                "title": r.get("name") or r.get("id"),
+                "sub": _factor_sub(r),
+                "status": r.get("status") or "",
+                "at": r.get("created_at") or 0,
+                "link": "factors",
+            }
+            for r in rows[:limit]
+        ]
+
+    if "strategies" in by_key:
+        from .routes_collab import filter_visible
+
+        owned = set(_owner_ids(ws, "strategy", uid))
+        repo = StrategyRepository(services.store.root / "strategies")
+        items = filter_visible(
+            "strategy",
+            [r.to_dict(include_source=False) for r in repo.list()],
+            "slug",
+        )
+        mine = [
+            s
+            for s in items
+            if s.get("slug") in owned or (s.get("author") or "").strip() == str(target.get("name") or "")
+        ]
+        mine.sort(key=lambda s: s.get("updated_at") or 0, reverse=True)
+        sec = by_key["strategies"]
+        sec["count"] = len(mine)
+        sec["items"] = [
+            {
+                "id": s.get("slug"),
+                "title": s.get("name") or s.get("slug"),
+                "sub": f"{'、'.join(s.get('securities') or []) or s.get('symbol') or ''} · {s.get('timeframe') or ''} · v{s.get('version') or ''}".strip(
+                    " ·"
+                ),
+                "status": s.get("status") or "",
+                "at": s.get("updated_at") or s.get("created_at") or 0,
+                "link": f"editor/{s.get('slug')}",
+                "approved": bool(s.get("human_approved")),
+            }
+            for s in mine[:limit]
+        ]
+
+    if "backtests" in by_key:
+        rows = [r for r in services.store.list(Collections.BACKTESTS) if str(r.get("created_by") or "") == uid]
+        rows.sort(key=lambda r: r.get("created_at") or 0, reverse=True)
+        sec = by_key["backtests"]
+        sec["count"] = len(rows)
+        sec["items"] = [
+            {
+                "id": r.get("id"),
+                "title": r.get("strategy_name") or r.get("slug") or r.get("id"),
+                "sub": f"{r.get('timeframe') or ''} · {'、'.join(r.get('securities') or [])}".strip(" ·"),
+                "metrics": {
+                    k: _num(((r.get("metrics") or {}) if isinstance(r.get("metrics"), dict) else {}).get(k))
+                    for k in ("total_return", "sharpe", "max_drawdown")
+                },
+                "at": r.get("created_at") or 0,
+                "link": f"backtest/{r.get('id')}",
+            }
+            for r in rows[:limit]
+        ]
+
+    if "models" in by_key:
+        from ..research.model_lib import ModelLibrary
+
+        rows = [r for r in ModelLibrary(services.store).list() if str(r.get("created_by") or "") == uid]
+        rows.sort(key=lambda r: r.get("created_at") or 0, reverse=True)
+        sec = by_key["models"]
+        sec["count"] = len(rows)
+        sec["items"] = [
+            {
+                "id": r.get("id"),
+                "title": r.get("name") or r.get("id"),
+                "sub": f"{len((r.get('spec') or {}).get('symbols') or [])} 个标的 · {(r.get('spec') or {}).get('timeframe') or ''}".strip(
+                    " ·"
+                ),
+                "status": r.get("status") or "",
+                "at": r.get("created_at") or 0,
+                "link": "modellib",
+            }
+            for r in rows[:limit]
+        ]
+
+    if "paper" in by_key:
+        sessions = [
+            r for r in services.store.list(Collections.PAPER_SESSIONS) if _run_owner(services, r.get("id")) == uid
+        ]
+        sessions.sort(key=lambda r: r.get("started_at") or 0, reverse=True)
+        sec = by_key["paper"]
+        sec["count"] = len(sessions)
+        sec["items"] = []
+        for r in sessions[:limit]:
+            pts = r.get("equity_points") or []
+            last = pts[-1].get("v") if pts and isinstance(pts[-1], dict) else None
+            initial = r.get("initial_cash") or 0
+            ret = (last / initial - 1) if (last and initial) else None
+            sec["items"].append(
+                {
+                    "id": r.get("id"),
+                    "title": r.get("strategy_name") or r.get("strategy_id") or r.get("id"),
+                    "sub": f"{r.get('symbol') or ''} · {r.get('timeframe') or ''} · {r.get('status') or ''}".strip(
+                        " ·"
+                    ),
+                    "pnl": _num(ret),
+                    "status": r.get("status") or "",
+                    "at": r.get("started_at") or 0,
+                    "link": f"paper/{r.get('id')}",
+                }
+            )
+
+    return out
+
+
+def _run_owner(services: Any, run_id: str | None) -> str:
+    """实时模拟的会话文档就是 run 文档，归属看 runs.created_by。"""
+    if not run_id:
+        return ""
+    row = services.db.fetchone("SELECT created_by FROM runs WHERE id=?", (str(run_id),))
+    return str((row or {}).get("created_by") or "")
+
+
+def _num(v: Any) -> float | None:
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if f == f and abs(f) != float("inf") else None
+
+
+def _factor_sub(row: dict[str, Any]) -> str:
+    """因子卡片副标题：周期 + 样本外/全样本 rank IC。"""
+    summary = row.get("summary") if isinstance(row.get("summary"), dict) else {}
+    parts = [str(row.get("timeframe") or "")]
+    ic = _num(summary.get("rank_ic"))
+    oos = _num(summary.get("oos_rank_ic"))
+    if ic is not None:
+        parts.append(f"rank IC {ic:.3f}")
+    if oos is not None:
+        parts.append(f"样本外 {oos:.3f}")
+    return " · ".join(p for p in parts if p)
 
 
 @router.get("/users/{identifier}", summary="用户主页：资料、关注/拉黑状态、私信策略与帖子")
@@ -399,12 +605,20 @@ def follow_user(identifier: str) -> dict:
     if social.blocked(ws, viewer, uid) or social.blocked(ws, uid, viewer):
         raise HTTPException(403, "存在拉黑关系，无法关注")
     added = social.follow(ws, viewer, uid)
+    mutual = social.is_mutual(ws, viewer, uid)
+    dm_group_id = ""
+    if mutual:
+        # 互相关注 = 已经是熟人：直接把二人对话建好，不必再点一次「私聊」
+        try:
+            dm_group_id = get_services().collab.open_dm(ws, viewer, uid)
+        except Exception:
+            log.exception("open dm on mutual follow failed: %s -> %s", viewer, uid)
     if added:
         get_services().collab.notify(
             [uid],
             kind="follow",
-            title=f"{name} 关注了你",
-            body="",
+            title=f"{name} 关注了你" + ("，你们已互相关注" if mutual else ""),
+            body="已经为你们建好私聊，可以直接聊" if mutual else "",
             link=f"profile/{viewer}",
             actor_id=viewer,
             actor_name=name,
@@ -413,7 +627,14 @@ def follow_user(identifier: str) -> dict:
             workspace_id=ws,
         )
     followers, following = social.follow_counts(ws, uid)
-    return {"following": True, "added": added, "followers": followers, "following_count": following}
+    return {
+        "following": True,
+        "added": added,
+        "mutual": mutual,
+        "dm_group_id": dm_group_id,
+        "followers": followers,
+        "following_count": following,
+    }
 
 
 @router.delete("/users/{identifier}/follow", summary="取消关注")
@@ -1273,7 +1494,11 @@ def _square_bot_reply(
     parent: dict[str, Any] | None,
     trigger_id: str,
 ) -> dict[str, Any]:
-    """广场 Bot 回复：模型调用按触发 @ 的读者计费，回复挂在触发评论下。"""
+    """广场 Bot 回复：模型调用按触发 @ 的读者计费，回复挂在触发评论下。
+
+    默认在正文开头带上 `@触发者`：这样读者一眼看出这条回复是在回应谁，
+    也和人类回复的默认行为一致（见 add_comment）。可以在群组 Bot 设置里关掉。
+    """
     store = _store()
     recent = [
         c
@@ -1292,9 +1517,16 @@ def _square_bot_reply(
         parent_author=str((parent or {}).get("author") or ""),
         recent=recent[-8:],
     )
+    body = str(reply["body"] or "").strip()
+    if get_services().collab_bot.reply_mentions_enabled(context.current_workspace()):
+        who = str(trigger.get("author") or "").strip()
+        if who and who not in (BOT_AUTHOR, AI_AUTHOR):
+            mention = f"@{who}"
+            if not body.startswith(mention):
+                body = f"{mention} {body}"
     return _add_comment(
         post,
-        reply["body"],
+        body,
         author=BOT_AUTHOR,
         author_id=BOT_AUTHOR_ID,
         parent_id=trigger.get("id"),

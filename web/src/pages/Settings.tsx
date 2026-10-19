@@ -8,6 +8,9 @@ import {
 import { LimitBars, LimitEditor, MEMBER_METRICS, METRIC_LABEL, RecordComposition, UsageComposition, UsageSummary, WINDOWS, fmtCost, fmtTokens, fmtLimitValue, metricUnit, fmtStorageBytes, editorUnit, storageBytesFromInput, storageInputValue } from '../components/modelUsage'
 import { Callout, EmptyState, Field, Heading, Loading, Modal, Panel, Tag } from '../components/ui'
 import { SETTINGS_GROUPS } from '../components/SettingsShell'
+import { AvatarColorPicker } from '../components/UserAvatar'
+import { copyText } from '../components/PublicShare'
+import type { ProfileShowcase } from '../api/research'
 import NodeTab from './NodeTab'
 import QRCode from '../components/QRCode'
 import LabPrefsTab from './settings/LabPrefs'
@@ -1472,6 +1475,7 @@ function AccountTab({ me, notify, onSaved }: { me: Me; notify: PageProps['notify
   return (
     <div style={{ maxWidth: 520 }}>
       <ProfileSection me={me} notify={notify} onSaved={onSaved} />
+      <PublicProfileSection me={me} notify={notify} onSaved={onSaved} />
       <EmailSection notify={notify} onSaved={onSaved} />
       <h3 className="set-sub">密码</h3>
       <Field label="当前密码"><input type="password" value={oldPw} onChange={(e) => setOld(e.target.value)} /></Field>
@@ -1487,18 +1491,151 @@ function AccountTab({ me, notify, onSaved }: { me: Me; notify: PageProps['notify
   )
 }
 
-/** 用户名（可用来登录）与显示名。 */
+/** 主页展示板块：顺序即展示顺序，可以单独隐藏。 */
+const SHOWCASE_LABEL: Record<string, string> = {
+  factors: '因子',
+  strategies: '策略',
+  backtests: '回测结果',
+  models: '模型',
+  paper: '模拟收益',
+}
+const SHOWCASE_ORDER = ['factors', 'strategies', 'backtests', 'models', 'paper']
+
+function defaultShowcase(): ProfileShowcase {
+  return { items: SHOWCASE_ORDER.map((key) => ({ key, show: true })), limit: 5 }
+}
+
+/**
+ * 个人资料：显示名、简介、头像颜色、私信策略、公开目录开关、QuantLab UID 轮换，
+ * 以及主页要展示哪些研究成果。这里是**唯一**的资料编辑入口（主页与策略广场只放跳转按钮）。
+ */
+function PublicProfileSection({ me, notify, onSaved }: { me: Me; notify: PageProps['notify']; onSaved: () => void }) {
+  const [name, setName] = useState(me.user.name)
+  const [bio, setBio] = useState('')
+  const [policy, setPolicy] = useState<'reply_only' | 'open' | 'none'>('reply_only')
+  const [color, setColor] = useState(me.user.avatar_color || '#2E5C9A')
+  const [publicProfile, setPublicProfile] = useState(false)
+  const [showcase, setShowcase] = useState<ProfileShowcase>(defaultShowcase)
+  const [uid, setUid] = useState(me.user.quantlab_uid || '')
+  const [loaded, setLoaded] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [rotOpen, setRotOpen] = useState(false)
+  const [password, setPassword] = useState('')
+  const [rotating, setRotating] = useState(false)
+  useEffect(() => {
+    v3.profile().then((r) => {
+      setName(r.profile.name || me.user.name)
+      setBio(r.profile.bio || '')
+      setPolicy(r.profile.dm_policy)
+      setColor(r.profile.avatar_color || '#2E5C9A')
+      setPublicProfile(!!r.profile.public_profile)
+      setUid(r.profile.quantlab_uid || '')
+      setShowcase(r.profile.showcase?.items?.length ? r.profile.showcase : defaultShowcase())
+      setLoaded(true)
+    }).catch(() => setLoaded(true))
+  }, [me.user.name])
+  const move = (i: number, dir: -1 | 1) => {
+    setShowcase((prev) => {
+      const items = [...prev.items]
+      const j = i + dir
+      if (j < 0 || j >= items.length) return prev
+      ;[items[i], items[j]] = [items[j], items[i]]
+      return { ...prev, items }
+    })
+  }
+  const save = async () => {
+    setBusy(true)
+    try {
+      await v3.saveProfile({ name: name.trim(), bio, dm_policy: policy, avatar_color: color, public_profile: publicProfile, showcase })
+      notify('个人资料已保存')
+      onSaved()
+    } catch (e) { notify((e as Error).message, true) } finally { setBusy(false) }
+  }
+  if (!loaded) return <Loading />
+  return (
+    <>
+      <h3 className="set-sub">个人资料</h3>
+      <p className="hint" style={{ marginTop: 0 }}>这些信息会显示在策略广场、群组和你的个人主页。</p>
+      <Field label="显示名"><input value={name} maxLength={30} onChange={(e) => setName(e.target.value)} /></Field>
+      <div style={{ height: 10 }} />
+      <Field label="简介" hint="最多 200 字"><textarea rows={3} maxLength={200} value={bio} onChange={(e) => setBio(e.target.value)} /></Field>
+      <div style={{ marginTop: 12 }}>
+        <div className="hint" style={{ marginBottom: 4 }}>头像颜色</div>
+        <AvatarColorPicker value={color} onChange={setColor} />
+      </div>
+      <div style={{ height: 12 }} />
+      <Field label="谁能私信我">
+        <select value={policy} onChange={(e) => setPolicy(e.target.value as typeof policy)}>
+          <option value="reply_only">回复后可继续（默认：陌生人只能发一条）</option>
+          <option value="open">允许自由私信</option>
+          <option value="none">不允许私信</option>
+        </select>
+      </Field>
+      <label className="profile-public-toggle">
+        <input type="checkbox" checked={publicProfile} onChange={(e) => setPublicProfile(e.target.checked)} />
+        <span><b>在公开目录中显示我</b><small>开启后，其他成员可通过显示名、用户名或 QuantLab UID 找到你。关闭不影响你主动分享的主页链接。</small></span>
+      </label>
+      <div className="profile-id-actions">
+        <span><small>QuantLab UID</small><code>{uid || '—'}</code></span>
+        <button type="button" className="button small" onClick={() => copyText(uid).then(() => notify('QuantLab UID 已复制')).catch(() => undefined)}>复制</button>
+        <button type="button" className="button small" onClick={() => { setPassword(''); setRotOpen(true) }}>销毁并重新生成</button>
+      </div>
+
+      <h3 className="set-sub">主页展示</h3>
+      <p className="hint" style={{ marginTop: 0 }}>选择主页上展示哪些研究成果，并调整顺序；隐藏的板块任何人都看不到。</p>
+      <ul className="showcase-edit">
+        {showcase.items.map((it, i) => (
+          <li key={it.key}>
+            <label className="check">
+              <input type="checkbox" checked={it.show} onChange={(e) => setShowcase((prev) => ({ ...prev, items: prev.items.map((x, k) => (k === i ? { ...x, show: e.target.checked } : x)) }))} />
+              {SHOWCASE_LABEL[it.key] ?? it.key}
+            </label>
+            <span className="showcase-edit-move">
+              <button type="button" className="link" disabled={i === 0} title="上移" onClick={() => move(i, -1)}>↑</button>
+              <button type="button" className="link" disabled={i === showcase.items.length - 1} title="下移" onClick={() => move(i, 1)}>↓</button>
+            </span>
+          </li>
+        ))}
+      </ul>
+      <div style={{ height: 8 }} />
+      <Field label="每块显示条数" hint="1–12 条">
+        <input type="number" min={1} max={12} className="set-num" value={showcase.limit}
+          onChange={(e) => setShowcase((prev) => ({ ...prev, limit: Math.max(1, Math.min(12, Number(e.target.value) || 1)) }))} />
+      </Field>
+      <div className="button-row" style={{ marginTop: 14 }}>
+        <button className="button primary" disabled={busy || !name.trim()} onClick={save}>{busy ? '保存中…' : '保存资料与展示'}</button>
+      </div>
+      {rotOpen && (
+        <Modal title="销毁并重新生成 QuantLab UID" onClose={() => setRotOpen(false)} width={460}
+          footer={<><button type="button" className="button" onClick={() => setRotOpen(false)}>取消</button><button type="button" className="button danger" disabled={rotating || !password} onClick={async () => {
+            setRotating(true)
+            try {
+              const r = await v4.rotateQuantlabUid(password)
+              setUid(r.account.quantlab_uid)
+              notify(`新 UID：${r.account.quantlab_uid}`)
+              setRotOpen(false)
+              setPassword('')
+              onSaved()
+            } catch (e) { notify((e as Error).message, true) } finally { setRotating(false) }
+          }}>{rotating ? '正在生成…' : '确认销毁并生成'}</button></>}>
+          <p className="hint" style={{ marginTop: 0 }}>旧 UID 会立即失效，其他成员无法再用旧号码搜索到你。你已有的帖子、策略和分享链接不受影响。</p>
+          <label>输入当前密码确认<input type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} autoFocus /></label>
+        </Modal>
+      )}
+    </>
+  )
+}
+
+/** 用户名（可用来登录）。显示名在下面的「个人资料」里编辑。 */
 function ProfileSection({ me, notify, onSaved }: { me: Me; notify: PageProps['notify']; onSaved: () => void }) {
   const [username, setUsername] = useState(me.user.username || '')
-  const [name, setName] = useState(me.user.name)
   const [busy, setBusy] = useState(false)
-  const dirty = username !== (me.user.username || '') || name !== me.user.name
+  const dirty = username !== (me.user.username || '')
   return (
     <>
       <h3 className="set-sub">账号</h3>
       <div className="field-row">
         <Field label="用户名" hint="可以用用户名或已绑定的邮箱登录"><input value={username} maxLength={32} onChange={(e) => setUsername(e.target.value.trim())} /></Field>
-        <Field label="显示名称"><input value={name} maxLength={40} onChange={(e) => setName(e.target.value)} /></Field>
       </div>
       <dl className="kv" style={{ margin: '10px 0' }}>
         <dt>部署管理员</dt><dd>{me.user.is_admin ? '是（可配置模型服务）' : '否'}</dd>
@@ -1506,7 +1643,7 @@ function ProfileSection({ me, notify, onSaved }: { me: Me; notify: PageProps['no
       <div className="button-row">
         <button className="button primary" disabled={!dirty || busy || username.length < 2} onClick={async () => {
           setBusy(true)
-          try { await v4.updateAccount({ username, name }); notify('已保存'); onSaved() } catch (e) { notify((e as Error).message, true) } finally { setBusy(false) }
+          try { await v4.updateAccount({ username, name: me.user.name }); notify('已保存'); onSaved() } catch (e) { notify((e as Error).message, true) } finally { setBusy(false) }
         }}>保存</button>
       </div>
     </>

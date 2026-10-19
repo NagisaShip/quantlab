@@ -564,12 +564,28 @@ class QmojiIn(BaseModel):
     emoji: str = Field(..., min_length=3, max_length=40, pattern=r"^:qbot-[a-z0-9-]+:$")
 
 
+class ShowcaseItemIn(BaseModel):
+    """主页上的一个板块：key 见 platform/social.py 的 SHOWCASE_KEYS。"""
+
+    key: str = Field(..., min_length=1, max_length=32)
+    show: bool = True
+
+
+class ShowcaseIn(BaseModel):
+    """个人主页展示配置：展示哪些板块、每块显示几条。"""
+
+    items: list[ShowcaseItemIn] = Field(default_factory=list, max_length=16)
+    limit: int = Field(5, ge=1, le=12)
+
+
 class ProfileIn(BaseModel):
     name: str = Field(..., min_length=1, max_length=30)
     bio: str = Field("", max_length=200)
     dm_policy: Literal["reply_only", "open", "none"] = "reply_only"
     avatar_color: str = Field("#2E5C9A", pattern=r"^#[0-9a-fA-F]{6}$")
     public_profile: bool = False
+    # 不传表示保持原配置（PUT 资料表单里没有展示设置时不会把它清空）
+    showcase: ShowcaseIn | None = None
 
 
 class FavoriteIn(BaseModel):

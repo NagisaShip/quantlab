@@ -348,6 +348,10 @@ a.ref-card:hover { border-color: var(--accent-line); box-shadow: 0 6px 18px -12p
 .chat-pin-tag { font-size: 10.5px; font-weight: 700; color: var(--amber); padding: 0 6px; border: 1px solid var(--amber-line); border-radius: 8px; line-height: 16px; }
 .chat-pin-tag.small { margin-left: 4px; }
 .chat-pin-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+/* 置顶条里的正文也是渲染过的 Markdown（Qmoji / @提及），保持单行收口 */
+.chat-pin-text .rich, .chat-pin-text .md, .chat-pin-text .md > p { display: inline; margin: 0; }
+.chat-pin-text .rich { display: inline-flex; align-items: baseline; gap: 4px; vertical-align: bottom; }
+.chat-pin-text .qb-qmoji { vertical-align: -3px; }
 .chat-list { flex: 1; min-height: 240px; overflow: auto; padding: 8px 22px; scroll-behavior: smooth; }
 .chat-older { display: block; margin: 4px auto 10px; }
 .chat-empty { display: grid; justify-items: center; gap: 8px; padding: 60px 0; color: var(--faint); font-size: 13px; }
@@ -365,7 +369,15 @@ a.ref-card:hover { border-color: var(--accent-line); box-shadow: 0 6px 18px -12p
 .chat-meta b { font-weight: 600; }
 .chat-meta time { font-size: 11px; color: var(--faint); }
 .chat-meta small { font-size: 11px; color: var(--faint); }
-.chat-quote { font-size: 12px; color: var(--muted); border-left: 2px solid var(--line); padding-left: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-meta .chat-author { border: 0; background: none; padding: 0; font: inherit; font-weight: 600; color: inherit; cursor: pointer; border-radius: 4px; }
+.chat-meta .chat-author:hover { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+/* 回复预览：渲染 Qmoji / @提及（不再是裸文本截断），最多两行后收口 */
+.chat-quote { font-size: 12px; color: var(--muted); border-left: 2px solid var(--line); padding-left: 8px; min-width: 0; }
+.chat-quote-head { color: var(--faint); }
+.chat-quote-body { display: block; max-height: 2.9em; overflow: hidden; }
+.chat-quote-body .rich, .chat-quote-body .md { display: inline; }
+.chat-quote-body .md > p { margin: 0; display: inline; }
+.chat-quote-body .md .qb-qmoji { vertical-align: -3px; }
 .chat-deleted { font-size: 12.5px; color: var(--faint); font-style: italic; }
 .chat-muted { border: 1px dashed var(--line); background: none; color: var(--faint); font-size: 12px; border-radius: 8px; padding: 4px 10px; cursor: pointer; justify-self: start; }
 .chat-muted:hover { color: var(--muted); border-color: var(--faint); }
@@ -375,7 +387,8 @@ a.ref-card:hover { border-color: var(--accent-line); box-shadow: 0 6px 18px -12p
 .chat-actions button:hover { background: var(--hover); color: var(--ink); }
 .chat-actions button.danger:hover { color: var(--danger); background: var(--danger-soft); }
 .chat-composer { padding: 0 22px 16px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; }
-.chat-replybar { font-size: 12px; color: var(--muted); padding: 5px 10px; border-radius: 8px; background: var(--sunken); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-replybar { display: flex; align-items: flex-start; gap: 6px; font-size: 12px; color: var(--muted); padding: 5px 10px; border-radius: 8px; background: var(--sunken); }
+.chat-replybar .chat-quote-body { flex: 1; min-width: 0; }
 
 /* 任务看板 */
 .board-wrap { display: grid; gap: 12px; }

@@ -734,18 +734,30 @@ class CollabService:
         refs: Any = None,
         reply_to: int | None = None,
         author_kind: str = "user",
+        auto_mention: bool = True,
     ) -> dict[str, Any]:
         row = self._group_row(gid)
         body = (body or "").strip()
         refs_clean = clean_refs(refs)
-        if not body and not refs_clean:
-            raise _err("消息不能为空")
-        if len(body) > 20000:
-            raise _err("消息太长（上限 2 万字）")
         if reply_to and not self.db.fetchone(
             "SELECT id FROM collab_messages WHERE id=? AND group_id=?", (reply_to, gid)
         ):
             reply_to = None
+        # 回复默认带上 @对方：读者一眼看清在回谁，也让 @ 高亮与通知有一致的依据。
+        # 私聊（两人对话）不加前缀；对方是 Bot / 系统时不加，否则会反过来触发 Bot 回复。
+        if auto_mention and reply_to and '"dm"' not in (row.get("settings") or ""):
+            parent = self.db.fetchone(
+                "SELECT author_id, author_name, author_kind FROM collab_messages WHERE id=?", (reply_to,)
+            )
+            if parent and parent.get("author_id") != author_id and parent.get("author_kind") == "user":
+                who = str(parent.get("author_name") or "").strip()
+                mention = f"@{who}"
+                if who and not body.startswith(mention):
+                    body = f"{mention} {body}".strip()
+        if not body and not refs_clean:
+            raise _err("消息不能为空")
+        if len(body) > 20000:
+            raise _err("消息太长（上限 2 万字）")
         with self.db.tx() as t:
             mid = t.insert_id(
                 "INSERT INTO collab_messages (group_id, workspace_id, author_id, author_name, author_kind, body, refs, "

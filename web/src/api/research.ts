@@ -685,6 +685,44 @@ export interface FavoriteItem {
   created_at: number
 }
 
+export interface ShowcaseItem { key: string; show: boolean }
+/** 个人主页展示配置：展示哪些板块、每块几条。 */
+export interface ProfileShowcase { items: ShowcaseItem[]; limit: number }
+
+/** 主页上的一个成果板块（因子 / 策略 / 回测 / 模型 / 模拟收益）。 */
+export interface ShowcaseSection {
+  key: string
+  label: string
+  count: number
+  items: {
+    id?: string
+    title?: string
+    sub?: string
+    status?: string
+    at?: number
+    link?: string
+    approved?: boolean
+    pnl?: number | null
+    metrics?: Record<string, number | null>
+  }[]
+}
+
+export interface UserShowcase {
+  showcase: ProfileShowcase
+  is_me: boolean
+  hidden_reason: string
+  sections: ShowcaseSection[]
+}
+
+export interface MutualUser {
+  id: string
+  name: string
+  username: string
+  quantlab_uid: string
+  avatar_color: string
+  public_profile: boolean
+}
+
 export interface UserProfile {
   user: {
     id: string
@@ -703,9 +741,11 @@ export interface UserProfile {
     likes: number
     clones: number
     comments: number
+    showcase: ProfileShowcase
   }
   is_me: boolean
   is_following: boolean
+  is_mutual?: boolean
   is_blocked: boolean
   blocked_me: boolean
   can_dm: boolean
@@ -930,10 +970,14 @@ export const v3 = {
   toggleFavorite: (p: { object_type: FavoriteItem['object_type']; object_id: string; title?: string; link?: string; meta?: Record<string, unknown> }) =>
     post<{ favorite: boolean; added: boolean }>('/api/community/favorites', p),
   removeFavorite: (type: string, id: string) => del<{ favorite: boolean; removed: boolean }>(`/api/community/favorites/${encodeURIComponent(type)}/${encodeURIComponent(id)}`),
-  profile: () => get<{ profile: { name: string; username: string; quantlab_uid: string; bio: string; avatar_color: string; dm_policy: 'reply_only' | 'open' | 'none'; dm_policy_label: string; public_profile: boolean } }>('/api/community/profile'),
-  saveProfile: (p: { name: string; bio: string; dm_policy: 'reply_only' | 'open' | 'none'; avatar_color: string; public_profile: boolean }) => put<{ profile: { name: string; username: string; quantlab_uid: string; bio: string; avatar_color: string; dm_policy: 'reply_only' | 'open' | 'none'; dm_policy_label: string; public_profile: boolean } }>('/api/community/profile', p),
+  profile: () => get<{ profile: { name: string; username: string; quantlab_uid: string; bio: string; avatar_color: string; dm_policy: 'reply_only' | 'open' | 'none'; dm_policy_label: string; public_profile: boolean; showcase?: ProfileShowcase } }>('/api/community/profile'),
+  saveProfile: (p: { name: string; bio: string; dm_policy: 'reply_only' | 'open' | 'none'; avatar_color: string; public_profile: boolean; showcase?: ProfileShowcase }) => put<{ profile: { name: string; username: string; quantlab_uid: string; bio: string; avatar_color: string; dm_policy: 'reply_only' | 'open' | 'none'; dm_policy_label: string; public_profile: boolean; showcase?: ProfileShowcase } }>('/api/community/profile', p),
   userProfile: (identifier: string) => get<UserProfile>(`/api/community/users/${encodeURIComponent(identifier)}`),
-  followUser: (identifier: string) => post<{ following: boolean | number; added: boolean; followers: number }>(`/api/community/users/${encodeURIComponent(identifier)}/follow`, {}),
+  /** 主页成果区：按对方的展示配置返回因子 / 策略 / 回测 / 模型 / 模拟收益 */
+  userShowcase: (identifier: string) => get<UserShowcase>(`/api/community/users/${encodeURIComponent(identifier)}/showcase`),
+  /** 和我互相关注的成员：广场 @ 提及与快捷私聊的候选名单 */
+  mutuals: () => get<{ users: MutualUser[] }>('/api/community/mutuals'),
+  followUser: (identifier: string) => post<{ following: boolean | number; added: boolean; mutual?: boolean; dm_group_id?: string; followers: number }>(`/api/community/users/${encodeURIComponent(identifier)}/follow`, {}),
   unfollowUser: (identifier: string) => del<{ following: boolean | number; removed: boolean; followers: number }>(`/api/community/users/${encodeURIComponent(identifier)}/follow`),
   blockUser: (identifier: string) => post<{ blocked: boolean; added: boolean }>(`/api/community/users/${encodeURIComponent(identifier)}/block`, {}),
   unblockUser: (identifier: string) => del<{ blocked: boolean; removed: boolean }>(`/api/community/users/${encodeURIComponent(identifier)}/block`),

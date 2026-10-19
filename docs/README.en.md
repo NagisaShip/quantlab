@@ -13,7 +13,8 @@
 5. [Operations and Recovery Manual](Operations-and-Recovery-Manual.en.md) / [中文](运维与恢复手册.md) — deployment, recovery, backup and real-money switches.
 6. [Isolation Capability Matrix](Isolation-Capability-Matrix.en.md) / [中文](隔离能力矩阵.md) — Linux/Windows isolation status.
 7. [Personal Account Integration Guide](Personal-Account-Integration-Guide.en.md) / [中文](个人账户接入教程.md) — CSV and read-only API keys.
-8. [API Reference](API-Reference.en.md) / [中文](API参考.md) — English guide with a complete endpoint index, Chinese operation reference and [openapi.json](openapi.json).
+8. [Plugin and Extension Guide](Plugin-and-Extension-Guide.en.md) / [中文](插件与扩展指南.md) — API conventions, strategy plugins, data sources, content blocks and capability switches; what is not extensible yet.
+9. [API Reference](API-Reference.en.md) / [中文](API参考.md) — English guide with a complete endpoint index, Chinese operation reference and [openapi.json](openapi.json) (613 operations).
 
 ## Current capability boundary
 

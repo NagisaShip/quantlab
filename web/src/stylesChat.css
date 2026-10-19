@@ -87,7 +87,7 @@ main.full { padding: 0; max-width: none; flex: 1; min-height: 0; display: flex; 
 .cmp-menu-sub { font-size: 12px; color: var(--faint); }
 .cmp-check { width: 14px; color: var(--accent); }
 .cmp-seg { display: grid; grid-template-columns: repeat(4, 1fr); gap: 2px; margin: 2px 8px; padding: 2px; background: var(--sunken); border-radius: 8px; }
-.cmp-seg button { border: 0; background: none; height: 28px; border-radius: 6px; font-size: 13px; color: var(--muted); }
+.cmp-seg button { border: 0; background: none; height: 28px; border-radius: 6px; font-size: 13px; color: var(--muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cmp-seg button.on { background: var(--sheet); color: var(--ink); box-shadow: 0 1px 2px rgba(0, 0, 0, .08); }
 
 .cmp-menu-ctx { width: 300px; padding: 12px; }

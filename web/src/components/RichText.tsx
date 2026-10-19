@@ -8,6 +8,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { collab, fmtSize, uploadFile, uploadUrl, type Ref } from '../apiCollab'
 import { Markdown } from './markdown'
+import { linkifyMentions, type MentionTarget } from './mentions'
 import { MentionList, filterMentions, mentionQuery, type MentionOption } from './chat/Composer'
 import { QmojiPicker } from './Qmoji'
 import { UPLOAD_ACCEPT } from './uploadAccept'
@@ -22,8 +23,8 @@ const num = (v: unknown, d = 2) => (typeof v === 'number' ? v.toFixed(d) : '—'
 const tone = (v: unknown) => (typeof v === 'number' ? (v > 0 ? 'up' : v < 0 ? 'down' : '') : '')
 
 /* ------------------------------------------------------------------ 渲染 */
-export function RichBody({ text, refs = [], compact, attachmentsTitle = '附件与引用' }: {
-  text: string; refs?: Ref[]; compact?: boolean; attachmentsTitle?: string
+export function RichBody({ text, refs = [], compact, attachmentsTitle = '附件与引用', mentions }: {
+  text: string; refs?: Ref[]; compact?: boolean; attachmentsTitle?: string; mentions?: MentionTarget[]
 }) {
   const byKey = useMemo(() => new Map(refs.map((r) => [keyOf(r), r])), [refs])
   const { blocks, used } = useMemo(() => {
@@ -49,7 +50,9 @@ export function RichBody({ text, refs = [], compact, attachmentsTitle = '附件�
     <div className={`rich${compact ? ' compact' : ''}`}>
       {blocks.map((b, i) =>
         b.md !== undefined
-          ? b.md.trim() ? <Markdown key={i} text={b.md} compact={compact} /> : null
+          ? b.md.trim()
+            ? <Markdown key={i} text={mentions?.length ? linkifyMentions(b.md, mentions) : b.md} compact={compact} />
+            : null
           : <Fragment key={i}>{byKey.get(b.ref!) ? <RefCard r={byKey.get(b.ref!)!} /> : <div className="ref-card missing">引用已失效或你无权查看</div>}</Fragment>,
       )}
       {rest.length > 0 && (
@@ -318,6 +321,35 @@ export function RichEditor({
       }
       if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); pickMention(mentionList[mention.active]); return }
       if (e.key === 'Escape') { setMention(null); return }
+    }
+    // @提及整体删除：光标紧贴在 `@名字`（含后面的一个空格）两侧时，一次退格 / 删除键整段去掉，
+    // 不用逐字删；两个方向的删除都支持。
+    if ((e.key === 'Backspace' || e.key === 'Delete') && !e.altKey && !e.ctrlKey && !e.metaKey && mentions?.length) {
+      const el = ta.current
+      if (el && el.selectionStart === el.selectionEnd) {
+        const pos = el.selectionStart
+        const names = [...mentions].sort((a, b) => b.name.length - a.name.length)
+        const hit = e.key === 'Backspace'
+          ? (() => {
+            const head = value.slice(0, pos)
+            const tail = head.endsWith(' ') ? head.slice(0, -1) : head
+            const m = names.find((o) => tail.endsWith(`@${o.name}`))
+            return m ? { start: tail.length - m.name.length - 1, end: pos } : null
+          })()
+          : (() => {
+            const rest = value.slice(pos)
+            const m = names.find((o) => rest.startsWith(`@${o.name}`))
+            if (!m) return null
+            const cut = rest.startsWith(`@${m.name} `) ? m.name.length + 2 : m.name.length + 1
+            return { start: pos, end: pos + cut }
+          })()
+        if (hit) {
+          e.preventDefault()
+          onChange(value.slice(0, hit.start) + value.slice(hit.end))
+          requestAnimationFrame(() => { el.focus(); el.setSelectionRange(hit.start, hit.start) })
+          return
+        }
+      }
     }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b') { e.preventDefault(); wrap('**', '**', '粗体') }
     else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'i') { e.preventDefault(); wrap('*', '*', '斜体') }

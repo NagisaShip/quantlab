@@ -7,6 +7,7 @@ import {
   v3,
   type BacktestRow,
   type CommentRow,
+  type MutualUser,
   type Post,
   type PostReactionResult,
   type PostReport,
@@ -22,8 +23,10 @@ import { PresenceBar, ShareToButton, usePresence } from '../components/Social'
 import type { PageProps } from './types'
 import { appConfirm } from '../components/dialog'
 import { RichBody, RichEditor, SourceBadge } from '../components/RichText'
+import { linkifyMentions, mentionTargets } from '../components/mentions'
+import { type MentionOption } from '../components/chat/Composer'
 import { collab, inbox, uploadThumbUrl, type QmojiReaction, type Ref } from '../apiCollab'
-import { AvatarColorPicker, UserAvatar } from '../components/UserAvatar'
+import { UserAvatar } from '../components/UserAvatar'
 import { QmojiPicker } from '../components/Qmoji'
 import { QmojiReactionBar } from '../components/QmojiReactionBar'
 import { lang } from '../i18n'
@@ -31,6 +34,8 @@ import { Icon } from '../components/icons'
 import { SharePublicButton } from '../components/PublicShare'
 
 interface CommunityProfile { name: string; username?: string; bio: string; avatar_color: string; dm_policy: 'reply_only' | 'open' | 'none'; dm_policy_label?: string; public_profile?: boolean }
+/** 广场 Bot 的作者 id（后端 platform/collab_bot.py 的 BOT_AUTHOR_ID）。 */
+const BOT_AUTHOR_ID = 'bot:quantlab'
 const SEED_POST_EN: Record<string, { title: string; body: string; tags: string[] }> = {
   'seed-guide': {
     title: 'Strategy Square beginner guide',
@@ -147,7 +152,6 @@ export default function CommunityPage({ onNavigate, notify, me }: PageProps) {
   const [tags, setTags] = useState<{ tag: string; count: number }[]>([])
   const [stats, setStats] = useState<{ ranking: { author: string; posts: number; likes: number; clones: number; score: number }[]; counts: Record<string, number> } | null>(null)
   const [profile, setProfile] = useState<CommunityProfile | null>(null)
-  const [editProfile, setEditProfile] = useState(false)
   const [reports, setReports] = useState<PostReportPage | null>(null)
   const [reportStatus, setReportStatus] = useState<'open' | 'resolved' | 'dismissed' | 'all'>('open')
   const visibleTabs = isAdmin ? [...TABS, ADMIN_TAB] : TABS
@@ -223,15 +227,15 @@ export default function CommunityPage({ onNavigate, notify, me }: PageProps) {
 
         {tab !== 'reports' && <aside className="community-side">
           <Panel title="我">
-            {profile && !editProfile && (
+            {profile && (
               <div className="me-card">
                 <UserAvatar color={profile.avatar_color} size={46} title={profile.name} />
                 <div><b>{profile.name}</b><small>{profile.bio || '还没有简介'}</small></div>
                 <button className="button small" onClick={() => onNavigate(`profile/${profile.username}`)}>我的主页</button>
-                <button className="button small" onClick={() => setEditProfile(true)}>编辑</button>
+                {/* 个人资料统一在「设置 · 我的账号」里编辑，这里只做入口，避免三处表单互相打架 */}
+                <button className="button small" onClick={() => onNavigate('settings/account')}>编辑资料</button>
               </div>
             )}
-            {profile && editProfile && <ProfileForm profile={profile} onSaved={(p) => { setProfile(p); setEditProfile(false); load() }} notify={notify} />}
             {stats && (
               <div className="stat-row">
                 <div><b>{stats.counts.posts}</b><span>帖子</span></div>
@@ -477,34 +481,6 @@ function ModerationPanel({ data, status, notify, onOpen, onChanged }: {
   )
 }
 
-function ProfileForm({ profile, onSaved, notify }: {
-  profile: CommunityProfile
-  onSaved: (p: CommunityProfile) => void
-  notify: PageProps['notify']
-}) {
-  const [name, setName] = useState(profile.name)
-  const [bio, setBio] = useState(profile.bio)
-  const [policy, setPolicy] = useState(profile.dm_policy)
-  const [avatarColor, setAvatarColor] = useState(profile.avatar_color || '#2E5C9A')
-  return (
-    <div>
-      <label>作者名<input value={name} maxLength={30} onChange={(e) => setName(e.target.value)} /></label>
-      <label style={{ marginTop: 8 }}>简介<textarea rows={3} maxLength={500} value={bio} onChange={(e) => setBio(e.target.value)} /></label>
-      <div style={{ marginTop: 10 }}><div className="hint">头像颜色</div><AvatarColorPicker value={avatarColor} onChange={setAvatarColor} /></div>
-      <label style={{ marginTop: 8 }}>谁能私信我
-        <select value={policy} onChange={(e) => setPolicy(e.target.value as typeof policy)}>
-          <option value="reply_only">回复后可继续（默认）</option>
-          <option value="open">允许自由私信</option>
-          <option value="none">不允许私信</option>
-        </select>
-      </label>
-      <button className="button small primary" style={{ marginTop: 10 }} onClick={async () => {
-        try { onSaved((await v3.saveProfile({ name, bio, dm_policy: policy, avatar_color: avatarColor, public_profile: !!profile.public_profile })).profile) } catch (e) { notify((e as Error).message, true) }
-      }}>保存</button>
-    </div>
-  )
-}
-
 /* ---------------- 发帖 / 编辑：完整页面（#/post/new/<类型>、#/post/<id>/edit） ---------------- */
 type PostType = 'article' | 'question' | 'strategy'
 const TYPE_LABEL: Record<PostType, string> = { strategy: '策略分享', article: '文章', question: '问答' }
@@ -661,6 +637,9 @@ export function PostPage({ id, onNavigate, notify }: PageProps & { id: string })
     }).catch((e) => setError(e.message))
   }, [id])
   useEffect(load, [load])
+  // 广场只能 @ 互相关注的人：候选名单来自 /api/community/mutuals
+  const [mutuals, setMutuals] = useState<MutualUser[]>([])
+  useEffect(() => { v3.mutuals().then((r) => setMutuals(r.users)).catch(() => undefined) }, [])
 
   const commentRows = data?.comments ?? []
   const childrenMap = useMemo(() => {
@@ -686,6 +665,23 @@ export function PostPage({ id, onNavigate, notify }: PageProps & { id: string })
     }
     return counts
   }, [commentRows])
+  // @提及候选：互关成员 + 这篇帖子里出现过的人（含 Bot）。注意：必须放在下面的提前 return 之前，
+  // 否则「先 Loading 再渲染」会让 hook 数量变化，React 会直接抛 #310。
+  const mentionOptions: MentionOption[] = useMemo(() => {
+    const item = data?.post
+    const people = [
+      ...mutuals.map((u) => ({ id: u.id, name: u.name, hint: u.username ? `@${u.username}` : '互相关注' })),
+      ...(item?.author_id && item.author_id !== 'system' ? [{ id: item.author_id, name: item.author }] : []),
+      ...commentRows
+        .filter((c) => c.author_id && c.author_id !== 'system' && c.author_id !== BOT_AUTHOR_ID)
+        .map((c) => ({ id: c.author_id!, name: c.author })),
+    ]
+    const seen = new Set<string>()
+    return people.filter((p) => { const k = `${p.id}|${p.name}`; if (seen.has(k)) return false; seen.add(k); return true })
+  }, [mutuals, data?.post, commentRows])
+  const mentionList = useMemo(() => mentionTargets(mentionOptions.map((o) => ({ id: o.id, name: o.name }))), [mentionOptions])
+  // 广场只允许 @ 互相关注的成员：快捷按钮只列互关，渲染候选仍包含帖子里出现过的人
+  const mutualOptions = useMemo(() => mutuals.map((u) => ({ id: u.id, name: u.name, hint: u.username ? `@${u.username}` : '互相关注' })), [mutuals])
 
   if (error) return (
     <EmptyState
@@ -722,6 +718,28 @@ export function PostPage({ id, onNavigate, notify }: PageProps & { id: string })
     }
     return next
   })
+  /** 回复某条评论：默认把 @对方 放进输入框（可整体删除）。 */
+  const startReply = (c: CommentRow) => {
+    setReplyTo(c)
+    if (c.author_id && c.author_id !== 'system') {
+      setText((prev) => (prev.startsWith(`@${c.author}`) ? prev : `@${c.author} ${prev.replace(/^\s+/, '')}`))
+    }
+    requestAnimationFrame(() => commentRef.current?.focus())
+  }
+  /** 点选互关成员：在光标处插入 @名字 。 */
+  const pickMention = (name: string) => {
+    const el = commentRef.current
+    const start = el ? el.selectionStart : text.length
+    const end = el ? el.selectionEnd : text.length
+    const head = text.slice(0, start)
+    const token = `${head && !/\s$/.test(head) ? ' ' : ''}@${name} `
+    setText(head + token + text.slice(end))
+    requestAnimationFrame(() => {
+      el?.focus()
+      const pos = start + token.length
+      el?.setSelectionRange(pos, pos)
+    })
+  }
 
   const act = async (fn: () => Promise<unknown>, msg?: string) => {
     try {
@@ -796,6 +814,14 @@ export function PostPage({ id, onNavigate, notify }: PageProps & { id: string })
       onNavigate(`groups/${r.group.id}`)
     } catch (e) { notify((e as Error).message, true) }
   }
+  /** 广场里的快捷私聊：和「私信」走同一条链路（互关已自动建好会话，这里直接打开）。 */
+  const openDmWith = async (uid: string, name: string) => {
+    try {
+      const r = await collab.dm(uid)
+      void name
+      onNavigate(`groups/${r.group.id}`)
+    } catch (e) { notify((e as Error).message, true) }
+  }
 
   const renderComment = (c: CommentRow, depth = 0) => {
     const replies = children(c.id)
@@ -804,18 +830,24 @@ export function PostPage({ id, onNavigate, notify }: PageProps & { id: string })
     return (
     <div key={c.id} className={`comment${c.is_ai ? ' ai' : ''}${post.accepted_comment === c.id ? ' accepted' : ''}`} style={{ marginLeft: depth ? 34 : 0 }}>
       <div className="comment-head">
-        <UserAvatar color={c.author_color || '#2E5C9A'} size={26} title={c.author} />
-        <b>{c.author}</b>
+        {c.author_id && c.author_id !== 'system' ? (
+          <button type="button" className="comment-author-link" title={`查看 ${c.author} 的主页`} onClick={() => onNavigate(`profile/${c.author_id}`)}>
+            <UserAvatar color={c.author_color || '#2E5C9A'} size={26} title={c.author} /><b>{c.author}</b>
+          </button>
+        ) : <><UserAvatar color={c.author_color || '#2E5C9A'} size={26} title={c.author} /><b>{c.author}</b></>}
         {c.is_ai && <Tag tone={c.meta?.mode === 'llm' ? 'agent' : 'warn'}>{c.meta?.bot ? (c.meta?.mode === 'llm' ? `Bot · ${c.meta.model}` : 'Bot · 离线') : (c.meta?.mode === 'llm' ? c.meta.model : '规则审稿')}</Tag>}
         {post.accepted_comment === c.id && <Tag tone="ok">已采纳</Tag>}
         <span className="muted">{ago(c.created_at)}</span>
       </div>
       <div className="comment-body">{c.muted && !showMuted.has(c.id)
         ? <button type="button" className="chat-muted" onClick={() => setShowMuted(new Set([...showMuted, c.id]))}>已屏蔽 {c.author} 的评论 · 点击显示</button>
-        : <Markdown text={c.body} compact />}</div>
+        : <Markdown text={mentionList.length ? linkifyMentions(c.body, mentionList) : c.body} compact />}</div>
       <div className="comment-actions">
         <button className={`link${c.liked ? ' on' : ''}`} onClick={() => act(() => v3.likeComment(c.id))}>▲ {c.like_count}</button>
-        <button className="link" onClick={() => { setReplyTo(c); document.getElementById('comment-box')?.focus() }}>回复</button>
+        <button className="link" onClick={() => startReply(c)}>回复</button>
+        {c.author_id && c.author_id !== viewer && c.author_id !== 'system' && c.author_id !== BOT_AUTHOR_ID && (
+          <button className="link" onClick={() => openDmWith(c.author_id!, c.author)}>私聊</button>
+        )}
         {post.type === 'question' && mine && !c.is_ai && <button className="link" onClick={() => act(() => v3.accept(id, c.id))}>{post.accepted_comment === c.id ? '取消采纳' : '采纳'}</button>}
         {(c.author === viewer || c.is_ai) && <button className="link danger" onClick={() => act(() => v3.deleteComment(c.id))}>删除</button>}
       </div>
@@ -916,7 +948,7 @@ export function PostPage({ id, onNavigate, notify }: PageProps & { id: string })
                 </div>
               )}
               {post.source?.kind === 'agent' && <Callout>这篇帖子由 {post.source.label || 'QuantBot'} 代 {post.source.on_behalf_of || post.author} 撰写并发布，结论请结合附带的回测自行判断。</Callout>}
-              <div className="post-body"><RichBody text={post.body} refs={post.refs ?? []} /></div>
+              <div className="post-body"><RichBody text={post.body} refs={post.refs ?? []} mentions={mentionList} /></div>
               {post.strategy?.code && (
                 <details className="post-code" open={!bt}>
                   <summary>策略代码 · {post.strategy.name} · {post.strategy.securities?.join(', ')} {post.strategy.timeframe} · <span className="mono">{post.strategy.code_sha256?.slice(0, 12)}</span></summary>
@@ -932,16 +964,25 @@ export function PostPage({ id, onNavigate, notify }: PageProps & { id: string })
             {roots.map((c) => renderComment(c))}
             {!comments.length && <div className="hint">还没有评论</div>}
             <div className="comment-box">
-              {replyTo && <div className="hint"><span>{`回复 @${replyTo.author}：`}</span>{replyTo.body.slice(0, 40)}… <button className="link" onClick={() => setReplyTo(null)}>取消</button></div>}
+              {replyTo && (
+                <div className="comment-reply-preview">
+                  <span className="chat-quote-head">回复 <b>{replyTo.author}</b>：</span>
+                  <span className="chat-quote-body"><Markdown text={mentionList.length ? linkifyMentions(replyTo.body, mentionList) : replyTo.body} compact /></span>
+                  <button className="link" onClick={() => setReplyTo(null)}>取消</button>
+                </div>
+              )}
               <div className="comment-input">
-                <textarea ref={commentRef} id="comment-box" rows={3} value={text} onChange={(e) => setText(e.target.value)} placeholder="说点什么（支持 Markdown、Qmoji；输入 @QuantLab Bot 召唤机器人）" onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) send() }} />
+                <textarea ref={commentRef} id="comment-box" rows={3} value={text} onChange={(e) => setText(e.target.value)} placeholder={mutualOptions.length ? '说点什么（支持 Markdown、Qmoji；输入 @ 提及互关成员，@QuantLab Bot 召唤机器人）' : '说点什么（支持 Markdown、Qmoji；@QuantLab Bot 召唤机器人）'} onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) send() }} />
                 <div className="comment-tools">
                   <QmojiPicker small placement="up" onPick={insertEmoji} />
+                  {mutualOptions.slice(0, 6).map((m) => (
+                    <button key={`${m.id}-${m.name}`} type="button" className="link comment-mention-btn" title={m.hint} onClick={() => pickMention(m.name)}>@{m.name}</button>
+                  ))}
                   <button type="button" className="link" onClick={() => {
                     setText((prev) => `${prev}${prev && !prev.endsWith(' ') ? ' ' : ''}@QuantLab Bot `)
                     commentRef.current?.focus()
                   }}>@QuantLab Bot</button>
-                  <span className="hint">输入 <code>:qbot-agree:</code> 也会显示 · 支持 Markdown</span>
+                  <span className="hint">{mutualOptions.length ? '只能 @ 互相关注的成员' : '互相关注后即可 @ 对方'} · 输入 <code>:qbot-agree:</code> 也会显示</span>
                 </div>
                 {/:qbot-[a-z0-9-]+:/.test(text) && <div className="comment-preview"><Markdown text={text} compact /></div>}
               </div>

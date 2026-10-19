@@ -144,6 +144,8 @@ Seven lessons cover hypothesis, data point-in-time, signal causality, backtests 
 - Binance/OKX/Bybit public data, local cache, gap filling and quality checks;
 - research data catalog and point-in-time conventions;
 - workspace roles, groups, mentions, notifications and audit logs;
+- group and Strategy Square replies mention the person by default (deletable as one token, blue and clickable to their profile); you can @ mutual follows in the square, mutual follows get a one-to-one conversation created automatically, and any reply can jump straight into a direct message;
+- personal profile: choose which factors, strategies, backtests, models and simulated P&L to show (reorder or hide them); profile editing lives in Settings · My account;
 - TOTP, quotas, idempotency, CSRF and Linux isolation.
 
 ![Data](docs/images/latest/en/09-data.png)

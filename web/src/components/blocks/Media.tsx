@@ -1,7 +1,9 @@
-import { useEffect, useId, useState, type ReactNode } from 'react'
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { viewImages } from '../ImageViewer'
 import { withWs } from '../../http'
+import { t } from '../../i18n'
 import { downloadBlob, safeImageSrc } from './protocol'
+import { prepareMermaid, svgToPngBlob } from './mermaidCompat'
 import { useReportRenderError } from './renderErrors'
 
 /**
@@ -64,39 +66,76 @@ function loadMermaid(): Promise<MermaidApi> {
   mermaidMod ||= import('mermaid/dist/mermaid.esm.min.mjs').then((m) => {
     const api = (m as unknown as { default: MermaidApi }).default
     const dark = document.documentElement.dataset.theme === 'dark'
-    api.initialize({ startOnLoad: false, securityLevel: 'strict', theme: dark ? 'dark' : 'neutral', fontFamily: 'inherit' })
+    api.initialize({
+      startOnLoad: false, securityLevel: 'strict', theme: dark ? 'dark' : 'neutral', fontFamily: 'inherit',
+      // 语法错时把错误 SVG 塞进 document.body，会在页面底部拖出一条报错图；交给我们自己在块里显示
+      suppressErrorRendering: true,
+    })
     return api
   })
   return mermaidMod
 }
 
+/** 导出 PNG 时的底色：取图块自身的背景，透明就退回页面背景。 */
+function exportBackground(el: HTMLElement | null): string {
+  const pick = (v: string) => (v && !/^(transparent|rgba\(0,\s*0,\s*0,\s*0\))$/.test(v) ? v : '')
+  const own = el ? pick(getComputedStyle(el).backgroundColor) : ''
+  if (own) return own
+  const page = pick(getComputedStyle(document.body).backgroundColor)
+  return page || (document.documentElement.dataset.theme === 'dark' ? '#14161c' : '#ffffff')
+}
+
 export function Mermaid({ code }: { code: string }) {
   const id = 'mm' + useId().replace(/[^a-zA-Z0-9]/g, '')
+  const figRef = useRef<HTMLElement>(null)
   const [svg, setSvg] = useState('')
   const [err, setErr] = useState('')
   const [showSrc, setShowSrc] = useState(false)
+  const [pngBusy, setPngBusy] = useState(false)
+  const [pngErr, setPngErr] = useState('')
   useEffect(() => {
     let alive = true
-    const t = window.setTimeout(() => {
+    const timer = window.setTimeout(() => {
+      // 中文在部分图类型里会被词法器拒绝，先改写成等价源码，渲染后再还原标签
+      const prepared = prepareMermaid(code)
       loadMermaid()
-        .then((m) => m.render(id, code))
+        .then((m) => m.render(id, prepared.code).then((r) => ({ ...r, svg: prepared.restore(r.svg) })))
         .then((r) => { if (alive) { setSvg(r.svg); setErr('') } })
-        .catch((e) => { if (alive) setErr(String((e as Error).message || e).slice(0, 200)) })
+        .catch((e) => { if (alive) setErr(String((e as Error).message || e).slice(0, 300)) })
+        .finally(() => { document.getElementById('d' + id)?.remove() }) // 渲染失败时 Mermaid 可能留下临时容器
     }, 120) // 流式输出时等内容稳定一下再画
-    return () => { alive = false; window.clearTimeout(t) }
+    return () => { alive = false; window.clearTimeout(timer) }
   }, [code, id])
   useReportRenderError(err ? { kind: 'mermaid', message: err, source: code } : null)
+  const exportPng = async () => {
+    if (!svg || pngBusy) return
+    setPngBusy(true)
+    setPngErr('')
+    try {
+      const blob = await svgToPngBlob(svg, { scale: 2, background: exportBackground(figRef.current) })
+      downloadBlob('diagram.png', blob, 'image/png')
+    } catch (e) {
+      setPngErr(String((e as Error).message || e))
+    } finally {
+      setPngBusy(false)
+    }
+  }
+  const inlineErr = err.replace(/\s+/g, ' ').trim()
   return (
-    <figure className="qb-mermaid">
+    <figure className="qb-mermaid" ref={figRef}>
       <figcaption className="qb-code-head">
-        <span className="qb-code-name">流程图</span>
+        <span className="qb-code-name">{t('流程图')}</span>
         <span className="qb-grow" />
-        {svg && <button type="button" className="qb-icon-btn" onClick={() => downloadBlob('diagram.svg', svg, 'image/svg+xml')}>下载 SVG</button>}
-        <button type="button" className="qb-icon-btn" onClick={() => setShowSrc(!showSrc)}>{showSrc ? '看图' : '源码'}</button>
+        {svg && <button type="button" className="qb-icon-btn" onClick={() => downloadBlob('diagram.svg', svg, 'image/svg+xml')}>{t('下载 SVG')}</button>}
+        {svg && <button type="button" className="qb-icon-btn" disabled={pngBusy} onClick={exportPng}>{pngBusy ? t('导出中…') : t('导出 PNG')}</button>}
+        <button type="button" className="qb-icon-btn" onClick={() => setShowSrc(!showSrc)}>{t(showSrc ? '看图' : '源码')}</button>
       </figcaption>
-      {showSrc || (!svg && err) ? <pre className="qb-math-src">{code}{err && `\n\n# 渲染失败：${err}`}</pre> : svg
-        ? <div className="qb-mermaid-svg anim-fade" dangerouslySetInnerHTML={{ __html: svg }} /> // securityLevel=strict：Mermaid 自己净化过
-        : <div className="shimmer-line" aria-hidden />}
+      {pngErr && <div className="qb-note">{t('PNG 导出失败')}：{pngErr}</div>}
+      {showSrc || (!svg && err)
+        ? <pre className="qb-math-src">{code}{inlineErr && `\n\n${t(`# 渲染失败：${inlineErr}`)}`}</pre>
+        : svg
+          ? <div className="qb-mermaid-svg anim-fade" dangerouslySetInnerHTML={{ __html: svg }} /> // securityLevel=strict：Mermaid 自己净化过
+          : <div className="shimmer-line" aria-hidden />}
     </figure>
   )
 }

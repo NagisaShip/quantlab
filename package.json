@@ -11,6 +11,7 @@
     "e2e:report": "playwright show-report tests/e2e/.artifacts/html",
     "i18n:check": "node scripts/qa-i18n.cjs",
     "qa:research": "node scripts/qa-research-coverage.cjs",
+    "qa:mermaid": "node --experimental-strip-types scripts/qa-mermaid.mjs",
     "shots": "node scripts/qa-shots.cjs"
   },
   "devDependencies": {

@@ -219,6 +219,7 @@ class GroupBotIn(BaseModel):
     system_prompt: str = Field("", max_length=4000, description="追加到内置短对话提示词之后")
     personality: str = Field("friendly", max_length=200, description="preset key or custom personality text")
     qmoji_enabled: bool = True
+    reply_default_mention: bool = Field(True, description="回复别人时默认带上 @对方；策略广场沿用同一开关")
 
 
 @router.get("/collab/groups", summary="群组列表：我加入的与工作区内公开的群组")
@@ -320,12 +321,18 @@ def save_group_bot(gid: str, payload: GroupBotIn) -> dict:
         system_prompt=payload.system_prompt,
         personality=payload.personality,
         qmoji_enabled=payload.qmoji_enabled,
+        reply_default_mention=payload.reply_default_mention,
     )
     get_services().audit.record(
         "group.bot_save",
         object_type="group",
         object_id=gid,
-        details={"enabled": payload.enabled, "model_target": target, "qmoji": payload.qmoji_enabled},
+        details={
+            "enabled": payload.enabled,
+            "model_target": target,
+            "qmoji": payload.qmoji_enabled,
+            "reply_default_mention": payload.reply_default_mention,
+        },
     )
     return {"bot": bot, "models": _bot_models(), "group": _c().get_group(ws, gid, uid, ws_admin=_ws_admin())}
 
@@ -524,13 +531,22 @@ def _reply_as_group_bot(
             trigger_body=trigger_body,
             trigger_refs=trigger_refs,
         )
+        body = str(reply["body"] or "").strip()
+        # 默认在开头 @触发者：和人类回复的默认行为一致；不想要可以在群组 Bot 设置里关掉。
+        if bool(cfg.get("reply_default_mention", True)) and trigger.get("author_kind") == "user":
+            who = str(trigger_name or "").strip()
+            mention = f"@{who}"
+            if who and not body.startswith(mention):
+                body = f"{mention} {body}"
         return _c().post_message(
             gid,
             author_id=bot_member_id(gid),
             author_name=BOT_NAME,
-            body=reply["body"],
+            body=body,
             reply_to=trigger.get("id"),
             author_kind="agent",
+            # Bot 的回复不再自动补 @：上一行已经按配置加过了，避免重复。
+            auto_mention=False,
         )
     except Exception:
         log.exception("group QuantLab Bot reply failed: group=%s", gid)

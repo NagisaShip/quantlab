@@ -108,11 +108,30 @@ class CollabBot:
             "system_prompt": str(cfg.get("system_prompt") or ""),
             "personality": str(cfg.get("personality") or DEFAULT_PERSONALITY),
             "qmoji_enabled": bool(cfg.get("qmoji_enabled", True)),
+            # 回复别人时默认带上 @对方；关掉就只回内容
+            "reply_default_mention": bool(cfg.get("reply_default_mention", True)),
             "created_by": str(cfg.get("created_by") or ""),
             "created_at": int(cfg.get("created_at") or 0),
             "updated_at": int(cfg.get("updated_at") or 0),
             "updated_by": str(cfg.get("updated_by") or ""),
         }
+
+    def reply_mentions_enabled(self, workspace_id: str) -> bool:
+        """策略广场没有独立的 Bot 配置：沿用工作区里任意一个群组的 Bot 开关。
+
+        一个都没配过时按默认值（开）处理。
+        """
+        row = self.db.fetchone(
+            "SELECT settings FROM collab_groups WHERE workspace_id=? AND settings LIKE '%\"bot\"%' "
+            "ORDER BY created_at DESC LIMIT 1",
+            (workspace_id,),
+        )
+        if not row:
+            return True
+        cfg = (jload(row.get("settings"), {}) or {}).get("bot")
+        if not isinstance(cfg, dict):
+            return True
+        return bool(cfg.get("reply_default_mention", True))
 
     def save_config(
         self,
@@ -124,6 +143,7 @@ class CollabBot:
         system_prompt: str = "",
         personality: str = "",
         qmoji_enabled: bool = True,
+        reply_default_mention: bool = True,
     ) -> dict[str, Any]:
         row = self._row(gid)
         if not row:
@@ -139,6 +159,7 @@ class CollabBot:
             "system_prompt": str(system_prompt or "").strip()[:4000],
             "personality": str(personality or DEFAULT_PERSONALITY).strip()[:200],
             "qmoji_enabled": bool(qmoji_enabled),
+            "reply_default_mention": bool(reply_default_mention),
             "created_by": str(old.get("created_by") or actor_id),
             "created_at": int(old.get("created_at") or now),
             "updated_at": now,

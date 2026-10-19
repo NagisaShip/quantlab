@@ -59,6 +59,8 @@ export interface GroupBotConfig {
   system_prompt: string
   personality: string
   qmoji_enabled: boolean
+  /** 回复别人时默认带上 @对方；策略广场 Bot 沿用同一开关 */
+  reply_default_mention: boolean
   created_by: string
   created_at: number
   updated_at: number
@@ -251,7 +253,7 @@ export const collab = {
   deleteTask: (tid: string) => del<{ ok: boolean }>(`/api/collab/tasks/${tid}`),
   usage: (id: string) => get<GroupUsage>(`/api/collab/groups/${id}/usage`),
   bot: (id: string) => get<{ bot: GroupBotConfig | null; models: BotModelOption[]; can_manage: boolean; defaults: { personality: string; qmoji_enabled: boolean; member_id: string; name: string } }>(`/api/collab/groups/${id}/bot`),
-  saveBot: (id: string, p: { enabled: boolean; model_target: string; system_prompt: string; personality: string; qmoji_enabled: boolean }) =>
+  saveBot: (id: string, p: { enabled: boolean; model_target: string; system_prompt: string; personality: string; qmoji_enabled: boolean; reply_default_mention: boolean }) =>
     put<{ bot: GroupBotConfig; models: BotModelOption[]; group: Group }>(`/api/collab/groups/${id}/bot`, p),
   removeBot: (id: string) => del<{ ok: boolean; group: Group }>(`/api/collab/groups/${id}/bot`),
   shared: (id: string) => get<{ strategies: SharedItem[]; projects: SharedItem[] }>(`/api/collab/groups/${id}/shared`),

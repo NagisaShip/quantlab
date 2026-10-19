@@ -15,6 +15,42 @@ DM_POLICIES = {
     "none": "不允许私信",
 }
 
+# 个人主页可以自由展示 / 隐藏的板块。顺序即展示顺序，默认全部展示。
+SHOWCASE_KEYS = ("factors", "strategies", "backtests", "models", "paper")
+SHOWCASE_LABELS = {
+    "factors": "因子",
+    "strategies": "策略",
+    "backtests": "回测结果",
+    "models": "模型",
+    "paper": "模拟收益",
+}
+SHOWCASE_LIMIT_MAX = 12
+
+
+def default_showcase() -> dict[str, Any]:
+    return {"items": [{"key": k, "show": True} for k in SHOWCASE_KEYS], "limit": 5}
+
+
+def normalize_showcase(raw: Any) -> dict[str, Any]:
+    """把用户提交的展示配置收敛成固定形状：已知板块、去重、未知板块自动补到末尾。"""
+    data = raw if isinstance(raw, dict) else {}
+    items = data.get("items") if isinstance(data.get("items"), list) else []
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for item in items:
+        key = str((item or {}).get("key") or "")
+        if key in SHOWCASE_KEYS and key not in seen:
+            seen.add(key)
+            out.append({"key": key, "show": bool((item or {}).get("show", True))})
+    for key in SHOWCASE_KEYS:  # 以后新增的板块：自动出现在末尾并默认展示
+        if key not in seen:
+            out.append({"key": key, "show": True})
+    try:
+        limit = int(data.get("limit"))
+    except (TypeError, ValueError):
+        limit = 5
+    return {"items": out, "limit": max(1, min(SHOWCASE_LIMIT_MAX, limit))}
+
 
 class SocialService:
     def __init__(self, db: Database, store: WorkspaceStore) -> None:
@@ -54,6 +90,7 @@ class SocialService:
             "dm_policy_label": DM_POLICIES[policy],
             "avatar_color": color,
             "public_profile": bool(row.get("public_profile")),
+            "showcase": normalize_showcase(jload(row.get("showcase"), None)),
         }
 
     def save_profile(
@@ -65,14 +102,25 @@ class SocialService:
         dm_policy: str,
         avatar_color: str = "#2E5C9A",
         public_profile: bool = False,
+        showcase: Any = None,
     ) -> dict[str, Any]:
         self._ensure_profile(ws, user_id)
         policy = dm_policy if dm_policy in DM_POLICIES else "reply_only"
         color = avatar_color if re.fullmatch(r"#[0-9a-fA-F]{6}", avatar_color or "") else "#2E5C9A"
+        current = normalize_showcase(jload(self._ensure_profile(ws, user_id).get("showcase"), None))
+        next_showcase = normalize_showcase(showcase) if showcase is not None else current
         self.db.execute(
-            "UPDATE community_profiles SET bio=?, dm_policy=?, avatar_color=?, public_profile=?, updated_at=? "
-            "WHERE user_id=?",
-            (bio.strip()[:500], policy, color, 1 if public_profile else 0, now_ms(), user_id),
+            "UPDATE community_profiles SET bio=?, dm_policy=?, avatar_color=?, public_profile=?, showcase=?, "
+            "updated_at=? WHERE user_id=?",
+            (
+                bio.strip()[:500],
+                policy,
+                color,
+                1 if public_profile else 0,
+                jdump(next_showcase),
+                now_ms(),
+                user_id,
+            ),
         )
         return self.profile(ws, user_id)
 
@@ -137,6 +185,49 @@ class SocialService:
             or 0
         )
         return followers, following
+
+    # -------------------------------------------------------------- 互相关注
+    def is_mutual(self, ws: str, a: str, b: str) -> bool:
+        """互相关注：双向都在 follow 表里。"""
+        if not a or not b or a == b:
+            return False
+        return self.is_following(ws, a, b) and self.is_following(ws, b, a)
+
+    def mutual_ids(self, ws: str, user_id: str) -> list[str]:
+        """和我互相关注的人（按名字排序）。"""
+        return [str(r["id"]) for r in self.mutual_people(ws, user_id)]
+
+    def mutual_people(self, ws: str, user_id: str) -> list[dict[str, Any]]:
+        """互相关注的成员：@ 提及与快捷私聊的候选名单。"""
+        if not user_id:
+            return []
+        rows = self.db.fetchall(
+            "SELECT u.id, u.name, u.username, u.quantlab_uid, "
+            "COALESCE(p.avatar_color, '#2E5C9A') AS avatar_color, COALESCE(p.public_profile, 0) AS public_profile "
+            "FROM user_follows mine "
+            "JOIN user_follows back ON back.workspace_id=mine.workspace_id "
+            "  AND back.follower_id=mine.following_id AND back.following_id=mine.follower_id "
+            "JOIN users u ON u.id=mine.following_id "
+            "LEFT JOIN community_profiles p ON p.user_id=u.id "
+            "WHERE mine.workspace_id=? AND mine.follower_id=? AND u.is_active=1 AND u.banned_at IS NULL "
+            "ORDER BY u.name",
+            (ws, user_id),
+        )
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            if self.blocked(ws, user_id, str(r["id"])) or self.blocked(ws, str(r["id"]), user_id):
+                continue
+            out.append(
+                {
+                    "id": str(r["id"]),
+                    "name": r.get("name") or r.get("username") or "研究员",
+                    "username": r.get("username") or "",
+                    "quantlab_uid": r.get("quantlab_uid") or "",
+                    "avatar_color": r.get("avatar_color") or "#2E5C9A",
+                    "public_profile": bool(r.get("public_profile")),
+                }
+            )
+        return out
 
     # ------------------------------------------------------------------ 拉黑
     def blocked(self, ws: str, blocker: str, blocked: str) -> bool:
