@@ -13,7 +13,7 @@ import logging
 import time
 from typing import Any, Literal
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Query, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -70,6 +70,7 @@ def members(q: str = "") -> dict:
                 "muted": r["user_id"] in muted,
                 "online": r["user_id"] in online,
                 "avatar_color": get_services().social.profile(ws, r["user_id"]).get("avatar_color", "#2E5C9A"),
+                "avatar_url": get_services().social.profile(ws, r["user_id"]).get("avatar_url", ""),
             }
             for r in rows
             if r["status"] == "active"
@@ -258,6 +259,7 @@ def get_group(gid: str) -> dict:
     for m in view.get("members") or []:
         if m.get("kind") == "bot":
             continue
+        m["avatar_url"] = get_services().social.profile(ws, m["user_id"]).get("avatar_url", "")
         m["avatar_color"] = get_services().social.profile(ws, m["user_id"]).get("avatar_color", "#2E5C9A")
     return {"group": _dm_view(view, gid, ws, uid)}
 
@@ -474,7 +476,7 @@ def list_messages(gid: str, after: int = 0, before: int | None = None, limit: in
 @router.post(
     "/collab/groups/{gid}/messages", summary="发群消息（Markdown + 引用回测 / 策略 / 代码 / 文件；@ 提及进通知中心）"
 )
-def post_message(gid: str, payload: MessageIn) -> dict:
+def post_message(gid: str, payload: MessageIn, background_tasks: BackgroundTasks) -> dict:
     _writer()
     ws, uid, name = _me()
     _c().require_group_member(gid, uid, ws=ws)
@@ -492,7 +494,8 @@ def post_message(gid: str, payload: MessageIn) -> dict:
     )
     bot_message = None
     if not dm and mentions_bot(payload.body):
-        bot_message = _reply_as_group_bot(
+        background_tasks.add_task(
+            _reply_as_group_bot,
             gid,
             ws=ws,
             trigger=message,
@@ -513,6 +516,8 @@ def _reply_as_group_bot(
     trigger_refs: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
     """在用户消息落库后调用 Bot；Bot 故障不能回滚或阻断原消息。"""
+    if trigger.get("author_kind") != "user":
+        return None
     bot = get_services().collab_bot
     cfg = bot.config(gid)
     if not cfg or not cfg.get("enabled", True):

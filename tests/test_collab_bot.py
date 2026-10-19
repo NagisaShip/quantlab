@@ -90,9 +90,14 @@ def test_group_bot_config_and_mention_billing(app):
 
     seen: dict = {}
     _fake_router(seen)
-    sent = b.post(f"/api/collab/groups/{g['id']}/messages", json={"body": "@QuantLab Bot 这组参数能上吗？"})
+    sent = b.post(
+        f"/api/collab/groups/{g['id']}/messages", json={"body": "@QuantLab Bot @QuantLab Bot 这组参数能上吗？"}
+    )
     assert sent.status_code == 200, sent.text
-    bot_msg = sent.json()["bot_message"]
+    assert sent.json()["bot_message"] is None
+    messages = b.get(f"/api/collab/groups/{g['id']}/messages").json()["messages"]
+    bot_msg = next(m for m in messages if m["author_kind"] == "agent")
+    assert len([m for m in messages if m["author_kind"] == "agent"]) == 1
     assert bot_msg["author_kind"] == "agent" and bot_msg["author_name"] == BOT_NAME
     assert "#" not in bot_msg["body"] and bot_msg["body"].count(":qbot-") == 1
     # 计费固定记在首次添加 Bot 的管理员（A）名下
@@ -120,3 +125,29 @@ def test_square_bot_mention_bills_triggering_user(app):
     assert bot["parent_id"] == comment["id"]
     assert seen["user_id"] == a_id
     assert seen["role"] == "member"
+
+
+def test_group_bot_is_scheduled_after_user_message(app, monkeypatch):
+    from fastapi import BackgroundTasks
+
+    from quant_agent.api import routes_collab
+
+    users = _team(app)
+    a, _ = users["a"]
+    g = a.post("/api/collab/groups", json={"name": "异步回复"}).json()["group"]
+    queued = []
+    monkeypatch.setattr(
+        BackgroundTasks, "add_task", lambda self, fn, *args, **kwargs: queued.append((fn, args, kwargs))
+    )
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Bot must not run before the message response")
+
+    monkeypatch.setattr(routes_collab, "_reply_as_group_bot", forbidden)
+    sent = a.post(f"/api/collab/groups/{g['id']}/messages", json={"body": "@QuantLab Bot @QuantLab Bot 请回答"})
+    assert sent.status_code == 200, sent.text
+    assert sent.json()["message"]["body"] and sent.json()["bot_message"] is None
+    assert len(queued) == 1
+    second = a.post(f"/api/collab/groups/{g['id']}/messages", json={"body": "无需等待，继续讨论"})
+    assert second.status_code == 200
+    assert len(queued) == 1

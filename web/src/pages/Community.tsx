@@ -33,7 +33,7 @@ import { lang } from '../i18n'
 import { Icon } from '../components/icons'
 import { SharePublicButton } from '../components/PublicShare'
 
-interface CommunityProfile { name: string; username?: string; bio: string; avatar_color: string; dm_policy: 'reply_only' | 'open' | 'none'; dm_policy_label?: string; public_profile?: boolean }
+interface CommunityProfile { avatar_url?: string; name: string; username?: string; bio: string; avatar_color: string; dm_policy: 'reply_only' | 'open' | 'none'; dm_policy_label?: string; public_profile?: boolean }
 /** 广场 Bot 的作者 id（后端 platform/collab_bot.py 的 BOT_AUTHOR_ID）。 */
 const BOT_AUTHOR_ID = 'bot:quantlab'
 const SEED_POST_EN: Record<string, { title: string; body: string; tags: string[] }> = {
@@ -229,7 +229,7 @@ export default function CommunityPage({ onNavigate, notify, me }: PageProps) {
           <Panel title="我">
             {profile && (
               <div className="me-card">
-                <UserAvatar color={profile.avatar_color} size={46} title={profile.name} />
+                <UserAvatar src={profile.avatar_url} color={profile.avatar_color} size={46} title={profile.name} />
                 <div><b>{profile.name}</b><small>{profile.bio || '还没有简介'}</small></div>
                 <button className="button small" onClick={() => onNavigate(`profile/${profile.username}`)}>我的主页</button>
                 {/* 个人资料统一在「设置 · 我的账号」里编辑，这里只做入口，避免三处表单互相打架 */}
@@ -313,7 +313,7 @@ export function PostCard({ post, onOpen, onTag, onAuthor, notify, canReport = tr
         )}
         <div className="post-meta">
           <button type="button" className="post-author-link" onClick={(e) => { e.stopPropagation(); onAuthor?.() }}>
-            <UserAvatar color={post.author_color} size={26} title={post.author} />
+            <UserAvatar src={post.author_avatar} color={post.author_color} size={26} title={post.author} />
             <span>{post.author}</span>
           </button>
           <SourceBadge source={post.source} />
@@ -732,6 +732,7 @@ export function PostPage({ id, onNavigate, notify }: PageProps & { id: string })
     const start = el ? el.selectionStart : text.length
     const end = el ? el.selectionEnd : text.length
     const head = text.slice(0, start)
+    if (name === 'QuantLab Bot' && text.includes('@QuantLab Bot')) { el?.focus(); return }
     const token = `${head && !/\s$/.test(head) ? ' ' : ''}@${name} `
     setText(head + token + text.slice(end))
     requestAnimationFrame(() => {
@@ -832,9 +833,9 @@ export function PostPage({ id, onNavigate, notify }: PageProps & { id: string })
       <div className="comment-head">
         {c.author_id && c.author_id !== 'system' ? (
           <button type="button" className="comment-author-link" title={`查看 ${c.author} 的主页`} onClick={() => onNavigate(`profile/${c.author_id}`)}>
-            <UserAvatar color={c.author_color || '#2E5C9A'} size={26} title={c.author} /><b>{c.author}</b>
+            <UserAvatar src={c.author_avatar} color={c.author_color || '#2E5C9A'} size={26} title={c.author} /><b>{c.author}</b>
           </button>
-        ) : <><UserAvatar color={c.author_color || '#2E5C9A'} size={26} title={c.author} /><b>{c.author}</b></>}
+        ) : <><UserAvatar src={c.author_avatar} color={c.author_color || '#2E5C9A'} size={26} title={c.author} /><b>{c.author}</b></>}
         {c.is_ai && <Tag tone={c.meta?.mode === 'llm' ? 'agent' : 'warn'}>{c.meta?.bot ? (c.meta?.mode === 'llm' ? `Bot · ${c.meta.model}` : 'Bot · 离线') : (c.meta?.mode === 'llm' ? c.meta.model : '规则审稿')}</Tag>}
         {post.accepted_comment === c.id && <Tag tone="ok">已采纳</Tag>}
         <span className="muted">{ago(c.created_at)}</span>
@@ -915,7 +916,7 @@ export function PostPage({ id, onNavigate, notify }: PageProps & { id: string })
               </div>
               <div className="post-meta">
                 <button type="button" className="post-author-link" onClick={() => post.author_id && onNavigate(`profile/${post.author_id}`)}>
-                  <UserAvatar color={post.author_color} size={26} title={post.author} /><span>{post.author}</span>
+                  <UserAvatar src={post.author_avatar} color={post.author_color} size={26} title={post.author} /><span>{post.author}</span>
                 </button>
                 <SourceBadge source={post.source} />
                 <span>· {ago(post.created_at)}{post.edited_at ? '（已编辑）' : ''}</span>
@@ -971,22 +972,21 @@ export function PostPage({ id, onNavigate, notify }: PageProps & { id: string })
                   <button className="link" onClick={() => setReplyTo(null)}>取消</button>
                 </div>
               )}
-              <div className="comment-input">
-                <textarea ref={commentRef} id="comment-box" rows={3} value={text} onChange={(e) => setText(e.target.value)} placeholder={mutualOptions.length ? '说点什么（支持 Markdown、Qmoji；输入 @ 提及互关成员，@QuantLab Bot 召唤机器人）' : '说点什么（支持 Markdown、Qmoji；@QuantLab Bot 召唤机器人）'} onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) send() }} />
+              <div className="comment-input rich-editor compact">
+                <textarea ref={commentRef} id="comment-box" rows={3} value={text} onChange={(e) => setText(e.target.value)} placeholder={mutualOptions.length ? '说点什么（支持 Markdown、Qmoji；输入 @ 提及互关成员，@QuantLab Bot 召唤机器人）' : '说点什么（支持 Markdown、Qmoji；@QuantLab Bot 召唤机器人）'} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send() } }} />
                 <div className="comment-tools">
                   <QmojiPicker small placement="up" onPick={insertEmoji} />
                   {mutualOptions.slice(0, 6).map((m) => (
                     <button key={`${m.id}-${m.name}`} type="button" className="link comment-mention-btn" title={m.hint} onClick={() => pickMention(m.name)}>@{m.name}</button>
                   ))}
                   <button type="button" className="link" onClick={() => {
-                    setText((prev) => `${prev}${prev && !prev.endsWith(' ') ? ' ' : ''}@QuantLab Bot `)
-                    commentRef.current?.focus()
+                    pickMention('QuantLab Bot')
                   }}>@QuantLab Bot</button>
-                  <span className="hint">{mutualOptions.length ? '只能 @ 互相关注的成员' : '互相关注后即可 @ 对方'} · 输入 <code>:qbot-agree:</code> 也会显示</span>
+                  <span className="hint">{mutualOptions.length ? '只能 @ 互相关注的成员' : '互相关注后即可 @ 对方'} · Enter 发表，Shift+Enter 换行</span>
                 </div>
                 {/:qbot-[a-z0-9-]+:/.test(text) && <div className="comment-preview"><Markdown text={text} compact /></div>}
+                <div className="rich-foot"><span className="hint">Markdown · Qmoji · Emoji</span><button className="button small primary" disabled={!text.trim()} onClick={send}>发表</button></div>
               </div>
-              <button className="button small primary" disabled={!text.trim()} onClick={send}>发表</button>
             </div>
           </Panel>
         </div>

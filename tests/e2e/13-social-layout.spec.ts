@@ -1,0 +1,131 @@
+import { expect, test, type APIRequestContext } from '@playwright/test'
+import { api, registerOrLogin, uiLogin, maCrossSpec, saveDsl, waitRun, type Session } from './helpers'
+
+async function createBacktest(request: APIRequestContext, session: Session) {
+  const strategy = await saveDsl(request, session.workspaceId, maCrossSpec(`Profile regression ${Date.now()}`))
+  const accepted = await api(request, '/api/research/backtests', { workspaceId: session.workspaceId, method: 'POST', data: { slug: strategy.slug, source: 'auto', bars_limit: 400, warmup_bars: 60, wait_seconds: 0 } })
+  expect([200, 202], JSON.stringify(accepted.body)).toContain(accepted.status)
+  const run = await waitRun(request, session.workspaceId, accepted.body.run_id, { timeoutMs: 120000 })
+  expect(run.state, run.error).toBe('COMPLETED')
+  const stored = await api(request, `/api/research/backtests?slug=${strategy.slug}`, { workspaceId: session.workspaceId })
+  expect(stored.body.backtests.length).toBeGreaterThan(0)
+  const bt = stored.body.backtests[0]
+  return bt
+}
+
+test('Landing charts fit their content region at desktop and phone widths', async ({ page }) => {
+  for (const width of [1280, 390]) {
+    await page.setViewportSize({ width, height: 800 })
+    await page.goto('/')
+    await page.locator('#scenarios').scrollIntoViewIfNeeded()
+    await expect(page.locator('#scenarios')).toHaveClass(/active/)
+    const body = page.locator('.lp-scenario-demo-body')
+    await expect(body).toBeVisible()
+    await expect(body.locator('.qb-chart')).toBeVisible()
+    const fits = await body.evaluate(el => el.scrollHeight <= el.clientHeight + 2)
+    expect(fits).toBe(true)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true)
+    await page.locator('#scenarios').screenshot({ path: `tests/e2e/.artifacts/landing-${width}.png` })
+  }
+})
+
+test('Account avatar upload and mobile layout', async ({ page, request }) => {
+  const session = await registerOrLogin(request)
+  await uiLogin(page, session)
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto('/#/settings/account')
+  const editor = page.locator('.profile-avatar-editor')
+  await expect(editor).toBeVisible()
+  await editor.locator('input[type=file]').setInputFiles({ name: 'avatar.png', mimeType: 'image/png', buffer: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j0ZkAAAAASUVORK5CYII=', 'base64') })
+  await expect(editor.locator('img')).toBeVisible()
+  const saved = page.waitForResponse(r => r.url().endsWith('/api/community/profile') && r.request().method() === 'PUT')
+  await page.getByRole('button', { name: '保存资料与展示', exact: true }).click()
+  expect((await saved).status()).toBe(200)
+  await page.reload()
+  await expect(editor.locator('img')).toBeVisible()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true)
+  await page.screenshot({ path: 'tests/e2e/.artifacts/account-mobile.png', fullPage: true })
+})
+
+test('Square composer offers Qmoji and emoji and prevents duplicate Bot insertion', async ({ page, request }) => {
+  const session = await registerOrLogin(request)
+  const post = await api(request, '/api/community/posts', { workspaceId: session.workspaceId, method: 'POST', data: { type: 'article', title: 'Composer regression', body: '讨论输入框' } })
+  expect(post.status).toBe(200)
+  await uiLogin(page, session)
+  await page.goto(`/#/post/${post.body.post.id}`)
+  const composer = page.locator('.comment-input')
+  await expect(composer).toBeVisible()
+  await composer.getByRole('button', { name: '@QuantLab Bot', exact: true }).click()
+  await composer.getByRole('button', { name: '@QuantLab Bot', exact: true }).click()
+  expect((await composer.locator('textarea').inputValue()).match(/@QuantLab Bot/g)).toHaveLength(1)
+  await composer.locator('.qmoji-trigger').click()
+  await expect(page.getByRole('tab', { name: 'Qmoji', exact: true })).toBeVisible()
+  await page.getByRole('tab', { name: 'Emoji', exact: true }).click()
+  await expect(page.getByRole('dialog', { name: '表情面板' })).toBeVisible()
+})
+
+test('Group reference menu opens upward without extending the document', async ({ page, request }) => {
+  const session = await registerOrLogin(request)
+  const group = await api(request, '/api/collab/groups', { workspaceId: session.workspaceId, method: 'POST', data: { name: 'Reference layout' } })
+  expect(group.status).toBe(200)
+  await uiLogin(page, session)
+  await page.goto(`/#/groups/${group.body.group.id}`)
+  const button = page.getByRole('button', { name: '＋ 引用', exact: true })
+  await expect(button).toBeVisible()
+  const height = await page.evaluate(() => document.documentElement.scrollHeight)
+  await button.click()
+  const menu = page.locator('.rt-menu')
+  await expect(menu).toBeVisible()
+  const top = await button.boundingBox()
+  const pop = await menu.boundingBox()
+  expect(pop!.y + pop!.height).toBeLessThanOrEqual(top!.y + 1)
+  expect(await page.evaluate(() => document.documentElement.scrollHeight)).toBeLessThanOrEqual(height + 2)
+})
+
+
+test('Agent-created conversation appears without reload', async ({ page, request }) => {
+  const session = await registerOrLogin(request)
+  await uiLogin(page, session)
+  const title = `Agent-created-${Date.now()}`
+  const project = await api(request, '/api/lab/projects', { workspaceId: session.workspaceId, method: 'POST', data: { title } })
+  expect(project.status).toBe(200)
+  await expect(page.getByRole('button', { name: title, exact: true })).toBeVisible({ timeout: 10000 })
+})
+
+test('Mobile backtest detail tables remain accessible', async ({ page, request }) => {
+  const session = await registerOrLogin(request)
+  const bt = await createBacktest(request, session)
+  await uiLogin(page, session)
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto(`/#/backtest/${bt.id}`)
+  await expect(page.locator('.backtest-detail')).toBeVisible()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true)
+  const clipped = await page.locator('.backtest-detail .panel > div').evaluateAll(nodes => nodes.filter(el => el.scrollWidth > el.clientWidth + 1 && !['auto', 'scroll'].includes(getComputedStyle(el).overflowX)).length)
+  expect(clipped).toBe(0)
+  await page.screenshot({ path: 'tests/e2e/.artifacts/backtest-mobile.png', fullPage: true })
+})
+
+
+test('Choose a specific backtest and show its metrics and curve on the profile', async ({ page, request }) => {
+  const session = await registerOrLogin(request)
+  const selected = await createBacktest(request, session)
+  await uiLogin(page, session)
+  await page.goto('/#/settings/account')
+  await page.getByRole('combobox', { name: '回测结果展示方式', exact: true }).selectOption('selected')
+  const chooser = page.locator('.showcase-edit > li').filter({ has: page.getByRole('combobox', { name: '回测结果展示方式', exact: true }) })
+  const option = chooser.locator('.showcase-choice').filter({ hasText: selected.strategy_name }).first()
+  await expect(option).toBeVisible()
+  await option.locator('input[type=checkbox]').check()
+  const saved = page.waitForResponse(r => r.url().endsWith('/api/community/profile') && r.request().method() === 'PUT')
+  await page.getByRole('button', { name: '保存资料与展示', exact: true }).click()
+  expect((await saved).status()).toBe(200)
+  await page.goto(`/#/profile/${session.userId}`)
+  const section = page.locator('#profile-section-backtests')
+  await expect(section.locator('.profile-result-card')).toHaveCount(1)
+  await expect(section.locator('.qb-metrics')).toBeVisible()
+  await expect(section.locator('.profile-result-chart svg[role=img]')).toBeVisible()
+  await page.screenshot({ path: 'tests/e2e/.artifacts/profile-selected-desktop.png', fullPage: true })
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true)
+  await page.screenshot({ path: 'tests/e2e/.artifacts/profile-selected-mobile.png', fullPage: true })
+})

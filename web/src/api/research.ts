@@ -595,6 +595,7 @@ export interface PostSummary {
   last_reply_at: number | null
   accepted_comment: string | null
   author_id?: string
+  author_avatar?: string
   author_color?: string
   author_role?: string
   /** 来源：成员手写 / Agent 代发 / 平台 */
@@ -685,7 +686,7 @@ export interface FavoriteItem {
   created_at: number
 }
 
-export interface ShowcaseItem { key: string; show: boolean }
+export interface ShowcaseItem { key: string; show: boolean; selection?: 'latest' | 'selected'; ids?: string[] }
 /** 个人主页展示配置：展示哪些板块、每块几条。 */
 export interface ProfileShowcase { items: ShowcaseItem[]; limit: number }
 
@@ -704,6 +705,7 @@ export interface ShowcaseSection {
     approved?: boolean
     pnl?: number | null
     metrics?: Record<string, number | null>
+    preview?: { timestamps?: number[]; equity?: number[]; benchmark?: number[] }
   }[]
 }
 
@@ -719,7 +721,7 @@ export interface MutualUser {
   name: string
   username: string
   quantlab_uid: string
-  avatar_color: string
+  avatar_url?: string; avatar_color: string
   public_profile: boolean
 }
 
@@ -731,7 +733,7 @@ export interface UserProfile {
     name: string
     bio: string
     public_profile: boolean
-    avatar_color: string
+    avatar_url?: string; avatar_color: string
     role: string
     dm_policy: 'reply_only' | 'open' | 'none'
     dm_policy_label: string
@@ -758,6 +760,7 @@ export interface CommentRow {
   post_id: string
   parent_id: string | null
   author: string
+  author_avatar?: string
   author_color?: string
   author_role?: string
   body: string
@@ -970,11 +973,11 @@ export const v3 = {
   toggleFavorite: (p: { object_type: FavoriteItem['object_type']; object_id: string; title?: string; link?: string; meta?: Record<string, unknown> }) =>
     post<{ favorite: boolean; added: boolean }>('/api/community/favorites', p),
   removeFavorite: (type: string, id: string) => del<{ favorite: boolean; removed: boolean }>(`/api/community/favorites/${encodeURIComponent(type)}/${encodeURIComponent(id)}`),
-  profile: () => get<{ profile: { name: string; username: string; quantlab_uid: string; bio: string; avatar_color: string; dm_policy: 'reply_only' | 'open' | 'none'; dm_policy_label: string; public_profile: boolean; showcase?: ProfileShowcase } }>('/api/community/profile'),
-  saveProfile: (p: { name: string; bio: string; dm_policy: 'reply_only' | 'open' | 'none'; avatar_color: string; public_profile: boolean; showcase?: ProfileShowcase }) => put<{ profile: { name: string; username: string; quantlab_uid: string; bio: string; avatar_color: string; dm_policy: 'reply_only' | 'open' | 'none'; dm_policy_label: string; public_profile: boolean; showcase?: ProfileShowcase } }>('/api/community/profile', p),
+  profile: () => get<{ profile: { name: string; username: string; quantlab_uid: string; bio: string; avatar_url?: string; avatar_color: string; dm_policy: 'reply_only' | 'open' | 'none'; dm_policy_label: string; public_profile: boolean; showcase?: ProfileShowcase } }>('/api/community/profile'),
+  saveProfile: (p: { name: string; bio: string; dm_policy: 'reply_only' | 'open' | 'none'; avatar_url?: string; avatar_color: string; public_profile: boolean; showcase?: ProfileShowcase }) => put<{ profile: { name: string; username: string; quantlab_uid: string; bio: string; avatar_url?: string; avatar_color: string; dm_policy: 'reply_only' | 'open' | 'none'; dm_policy_label: string; public_profile: boolean; showcase?: ProfileShowcase } }>('/api/community/profile', p),
   userProfile: (identifier: string) => get<UserProfile>(`/api/community/users/${encodeURIComponent(identifier)}`),
   /** 主页成果区：按对方的展示配置返回因子 / 策略 / 回测 / 模型 / 模拟收益 */
-  userShowcase: (identifier: string) => get<UserShowcase>(`/api/community/users/${encodeURIComponent(identifier)}/showcase`),
+  userShowcase: (identifier: string, catalog = false, q = '') => get<UserShowcase>(`/api/community/users/${encodeURIComponent(identifier)}/showcase${catalog ? `?catalog=true&q=${encodeURIComponent(q)}` : ''}`),
   /** 和我互相关注的成员：广场 @ 提及与快捷私聊的候选名单 */
   mutuals: () => get<{ users: MutualUser[] }>('/api/community/mutuals'),
   followUser: (identifier: string) => post<{ following: boolean | number; added: boolean; mutual?: boolean; dm_group_id?: string; followers: number }>(`/api/community/users/${encodeURIComponent(identifier)}/follow`, {}),

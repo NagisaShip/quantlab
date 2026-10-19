@@ -140,3 +140,191 @@ def test_profile_showcase_can_be_edited_and_hidden(app):
     )
     kept = a.get(f"/api/community/users/{a_id}").json()["user"]["showcase"]
     assert kept["limit"] == 3 and kept["items"][0]["key"] == "paper" and kept["items"][0]["show"] is False
+
+
+def test_private_strategy_backtest_showcase_and_stable_owner(app):
+    users = _team(app)
+    a, aid = users["a"]
+    b, bid = users["b"]
+    strategy = a.post("/api/research/strategies", json={"name": "私有成果", "template_id": "ma_cross"}).json()[
+        "strategy"
+    ]
+    slug = strategy["slug"]
+    result = a.post(
+        "/api/research/backtests", json={"slug": slug, "source": "synthetic", "bars_limit": 400, "warmup_bars": 60}
+    )
+    assert result.status_code == 200, result.text
+    bt = result.json()
+    assert bt["id"]
+    assert a.put(f"/api/collab/shares/strategy/{slug}", json={"visibility": "private"}).status_code == 200
+
+    def sections(client, uid):
+        r = client.get(f"/api/community/users/{uid}/showcase")
+        assert r.status_code == 200, r.text
+        return {s["key"]: s for s in r.json()["sections"]}
+
+    own = sections(a, aid)
+    assert own["backtests"]["items"][0]["id"] == bt["id"]
+    other = sections(b, aid)
+    assert other["backtests"]["count"] == 0 and other["strategies"]["count"] == 0
+    assert bt["id"] not in str(other)
+    # Same display name must not transfer ownership; a rename must not lose it.
+    assert b.put("/api/community/profile", json={"name": "研究员甲"}).status_code == 200
+    assert a.put(f"/api/collab/shares/strategy/{slug}", json={"visibility": "workspace"}).status_code == 200
+    assert sections(a, bid)["strategies"]["count"] == 0
+    assert a.put("/api/community/profile", json={"name": "研究员改名"}).status_code == 200
+    assert sections(b, aid)["strategies"]["items"][0]["id"] == slug
+
+
+def test_custom_avatar_ownership_validation_and_preservation(app):
+    import base64
+
+    users = _team(app)
+    a, aid = users["a"]
+    b, _ = users["b"]
+    image = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j0ZkAAAAASUVORK5CYII="
+    )
+    up = a.post("/api/uploads?filename=avatar.png", content=image, headers={"Content-Type": "image/png"})
+    assert up.status_code == 200, up.text
+    url = up.json()["file"]["url"]
+    assert b.put("/api/community/profile", json={"name": "乙", "avatar_url": url}).status_code == 400
+    assert (
+        a.put("/api/community/profile", json={"name": "甲", "avatar_url": "https://example.com/avatar.png"}).status_code
+        == 400
+    )
+    assert a.put("/api/community/profile", json={"name": "甲", "avatar_url": url}).status_code == 200
+    assert a.get("/api/auth/me").json()["user"]["avatar_url"] == url
+    assert b.get(f"/api/community/users/{aid}").json()["user"]["avatar_url"] == url
+    assert b.get(url).status_code == 200
+    a.put("/api/community/profile", json={"name": "改名", "bio": "保留头像"})
+    assert a.get("/api/community/profile").json()["profile"]["avatar_url"] == url
+    a.put("/api/community/profile", json={"name": "改名", "avatar_url": ""})
+    assert a.get("/api/community/profile").json()["profile"]["avatar_url"] == ""
+
+
+def test_mutual_dm_revoked_by_block_and_policy(app):
+    users = _team(app)
+    a, aid = users["a"]
+    b, bid = users["b"]
+    a.post(f"/api/community/users/{bid}/follow")
+    dm = b.post(f"/api/community/users/{aid}/follow").json()["dm_group_id"]
+    assert a.post(f"/api/collab/groups/{dm}/messages", json={"body": "互关私聊"}).status_code == 200
+    b.post(f"/api/community/users/{aid}/block")
+    assert a.post(f"/api/collab/groups/{dm}/messages", json={"body": "被拉黑后"}).status_code == 403
+    b.delete(f"/api/community/users/{aid}/block")
+    b.put("/api/community/profile", json={"name": "乙", "dm_policy": "none"})
+    assert a.post(f"/api/collab/groups/{dm}/messages", json={"body": "关闭私信后"}).status_code == 403
+
+
+def test_concurrent_mutual_follow_creates_one_dm(app):
+    from concurrent.futures import ThreadPoolExecutor
+
+    users = _team(app)
+    a, aid = users["a"]
+    b, bid = users["b"]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        fa = pool.submit(a.post, f"/api/community/users/{bid}/follow")
+        fb = pool.submit(b.post, f"/api/community/users/{aid}/follow")
+        replies = [fa.result(), fb.result()]
+    assert all(r.status_code == 200 for r in replies)
+    assert a.get("/api/community/mutuals").json()["users"][0]["id"] == bid
+    from quant_agent.api.deps import get_services
+
+    service = get_services()
+    ws = a.get("/api/auth/me").json()["workspace"]["id"]
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        gids = list(pool.map(lambda _: service.collab.open_dm(ws, aid, bid), range(8)))
+    assert len(set(gids)) == 1
+    assert len([g for g in a.get("/api/collab/groups").json()["groups"] if g["kind"] == "dm"]) == 1
+    # Removing a follow does not grant an unestablished DM unlimited messages.
+    a.delete(f"/api/community/users/{bid}/follow")
+    assert a.get("/api/community/mutuals").json()["users"] == []
+    assert a.post(f"/api/collab/groups/{gids[0]}/messages", json={"body": "第一条"}).status_code == 200
+    assert a.post(f"/api/collab/groups/{gids[0]}/messages", json={"body": "未回复的第二条"}).status_code == 403
+
+
+def test_showcase_migration_preserves_existing_profile(tmp_path, monkeypatch):
+    import shutil
+
+    from quant_agent.platform import db as db_module
+
+    old = tmp_path / "old-migrations"
+    old.mkdir()
+    original = db_module.MIGRATIONS_DIR
+    for sql in original.glob("*.sql"):
+        if sql.name < "0023":
+            shutil.copyfile(sql, old / sql.name)
+    monkeypatch.setattr(db_module, "MIGRATIONS_DIR", old)
+    db = db_module.Database(f"sqlite:///{tmp_path / 'legacy.db'}")
+    db.migrate()
+    db.execute(
+        "INSERT INTO community_profiles (user_id, workspace_id, bio, dm_policy, avatar_color, public_profile, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)",
+        ("legacy-user", "workspace", "已有简介", "none", "#123456", 1, 1, 2),
+    )
+    monkeypatch.setattr(db_module, "MIGRATIONS_DIR", original)
+    applied = db.migrate()
+    assert "0023_profile_showcase" in applied
+    row = db.fetchone("SELECT * FROM community_profiles WHERE user_id=?", ("legacy-user",))
+    assert row["bio"] == "已有简介" and row["dm_policy"] == "none" and row["avatar_color"] == "#123456"
+    assert row["public_profile"] == 1 and row["showcase"] == ""
+    assert db.migrate() == []
+    db.reset()
+
+
+def test_showcase_selects_specific_backtest_and_filters_preview(app):
+    users = _team(app)
+    a, aid = users["a"]
+    b, bid = users["b"]
+    strategy = a.post("/api/research/strategies", json={"name": "指定展示", "template_id": "ma_cross"}).json()[
+        "strategy"
+    ]
+    bt = a.post(
+        "/api/research/backtests",
+        json={"slug": strategy["slug"], "source": "synthetic", "bars_limit": 400, "warmup_bars": 60},
+    ).json()
+    rid = bt["id"]
+    # Newer rows must not displace an explicitly selected older report.
+    from quant_agent.api.deps import get_services
+    from quant_agent.platform import context
+    from quant_agent.store import Collections
+
+    ws = a.get("/api/auth/me").json()["workspace"]["id"]
+    with context.bind(ws, user_id=aid):
+        get_services().store.upsert(
+            Collections.BACKTESTS,
+            {"id": "newer-record", "created_by": aid, "slug": strategy["slug"], "created_at": 9999999999999},
+        )
+        get_services().store.upsert(
+            Collections.BACKTESTS, {"id": "other-users-record", "created_by": bid, "created_at": 9999999999999}
+        )
+    settings = {
+        "items": [
+            {"key": "backtests", "show": True, "selection": "selected", "ids": [rid, "other-users-record", "missing"]}
+        ],
+        "limit": 1,
+    }
+    saved = a.put("/api/community/profile", json={"name": "甲", "showcase": settings})
+    assert saved.status_code == 200, saved.text
+    view = b.get(f"/api/community/users/{aid}/showcase").json()
+    section = next(s for s in view["sections"] if s["key"] == "backtests")
+    assert section["count"] == 1 and section["items"][0]["id"] == rid
+    preview = section["items"][0]["preview"]
+    assert 2 <= len(preview["timestamps"]) <= 240
+    assert len(preview["equity"]) == len(preview["timestamps"])
+    assert preview["equity"][0] == 0
+    assert "code" not in preview and "fills" not in preview
+    assert b.get(f"/api/community/users/{aid}/showcase?catalog=true").status_code == 403
+    catalog = a.get(f"/api/community/users/{aid}/showcase?catalog=true").json()
+    choices = next(s for s in catalog["sections"] if s["key"] == "backtests")["items"]
+    assert {r["id"] for r in choices} == {rid, "newer-record"}
+    assert not any("preview" in r for r in choices)
+    assert a.put(f"/api/collab/shares/strategy/{strategy['slug']}", json={"visibility": "private"}).status_code == 200
+    hidden = b.get(f"/api/community/users/{aid}/showcase").json()
+    assert rid not in str(hidden) and "other-users-record" not in str(hidden)
+    assert rid not in str(b.get(f"/api/community/users/{aid}").json()["user"]["showcase"])
+    # Explicitly selecting nothing differs from the legacy latest-items mode.
+    settings["items"][0]["ids"] = []
+    a.put("/api/community/profile", json={"name": "甲", "showcase": settings})
+    own = a.get(f"/api/community/users/{aid}/showcase").json()
+    assert next(s for s in own["sections"] if s["key"] == "backtests")["count"] == 0

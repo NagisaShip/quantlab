@@ -41,7 +41,15 @@ def normalize_showcase(raw: Any) -> dict[str, Any]:
         key = str((item or {}).get("key") or "")
         if key in SHOWCASE_KEYS and key not in seen:
             seen.add(key)
-            out.append({"key": key, "show": bool((item or {}).get("show", True))})
+            ids = item.get("ids") if isinstance(item.get("ids"), list) else []
+            out.append(
+                {
+                    "key": key,
+                    "show": bool(item.get("show", True)),
+                    "selection": "selected" if item.get("selection") == "selected" else "latest",
+                    "ids": list(dict.fromkeys(str(i)[:200] for i in ids if isinstance(i, str) and i))[:100],
+                }
+            )
     for key in SHOWCASE_KEYS:  # 以后新增的板块：自动出现在末尾并默认展示
         if key not in seen:
             out.append({"key": key, "show": True})
@@ -89,6 +97,7 @@ class SocialService:
             "dm_policy": policy,
             "dm_policy_label": DM_POLICIES[policy],
             "avatar_color": color,
+            "avatar_url": (self.store.for_workspace(ws).get(Collections.PROFILE, user_id) or {}).get("avatar_url", ""),
             "public_profile": bool(row.get("public_profile")),
             "showcase": normalize_showcase(jload(row.get("showcase"), None)),
         }
@@ -158,13 +167,14 @@ class SocialService:
     def follow(self, ws: str, follower: str, following: str) -> bool:
         if follower == following or self.blocked(ws, follower, following) or self.blocked(ws, following, follower):
             return False
-        if self.is_following(ws, follower, following):
-            return False
-        self.db.execute(
-            "INSERT INTO user_follows (id, workspace_id, follower_id, following_id, created_at) VALUES (?,?,?,?,?)",
-            (uuid.uuid4().hex, ws, follower, following, now_ms()),
+        return (
+            self.db.execute(
+                "INSERT INTO user_follows (id, workspace_id, follower_id, following_id, created_at) VALUES (?,?,?,?,?) "
+                "ON CONFLICT (workspace_id, follower_id, following_id) DO NOTHING",
+                (uuid.uuid4().hex, ws, follower, following, now_ms()),
+            )
+            > 0
         )
-        return True
 
     def unfollow(self, ws: str, follower: str, following: str) -> bool:
         return (

@@ -150,7 +150,7 @@ export function Conversations({ projects, activeId, onOpen, onNew, onChanged, no
               if (!selected) onOpen(p.id)
             }}>
               {p.status !== 'idle' && <i className={`dot ${p.status}`} />}
-              {p.pinned && depth === 0 && <span className="conv-pin" aria-label="已置顶">📌</span>}
+              {p.pinned && depth === 0 && <span className="conv-pin" aria-label="已置顶"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="m16 3 5 5-4 1-4 4-1 4-5-5 4-1 4-4zM7 17l-4 4" /></svg></span>}
               <span className="conv-title">{p.title}</span>
               {ui && groupBy === 'project' && <span className="conv-kind">{ui.noun}</span>}
               {groupBy === 'type' && p.folder && <span className="conv-kind">{p.folder}</span>}
@@ -332,8 +332,7 @@ export function SidebarConversations({ activeId, notify }: { activeId: string; n
   // 有对话在跑时轮询，标题、状态点跟着变
   const running = projects.some((p) => p.status === 'running')
   useEffect(() => {
-    if (!running) return
-    const t = window.setInterval(refresh, 2500)
+    const t = window.setInterval(() => { if (!document.hidden) refresh() }, running ? 2500 : 5000)
     return () => window.clearInterval(t)
   }, [running, refresh])
   return (

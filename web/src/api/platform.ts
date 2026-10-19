@@ -20,7 +20,7 @@ export interface OnboardingState {
 export interface Account { id: string; username: string; name: string; email: string; email_verified: boolean; quantlab_uid: string }
 export interface Me {
   /** email 为空表示还没绑定邮箱 */
-  user: { id: string; email: string; username?: string; email_verified?: boolean; quantlab_uid?: string; name: string; is_admin: boolean; is_primary_admin?: boolean; avatar_color?: string }
+  user: { id: string; email: string; username?: string; email_verified?: boolean; quantlab_uid?: string; name: string; is_admin: boolean; is_primary_admin?: boolean; avatar_url?: string; avatar_color?: string }
   workspaces: { id: string; name: string; role: Role; is_demo?: boolean; owner_id?: string; is_primary_admin?: boolean }[]
   workspace: { id: string; name: string; role: Role; is_demo: boolean; owner_id?: string; is_primary_admin?: boolean; settings: WorkspaceSettings } | null
   onboarding: OnboardingState

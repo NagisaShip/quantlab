@@ -569,6 +569,8 @@ class ShowcaseItemIn(BaseModel):
 
     key: str = Field(..., min_length=1, max_length=32)
     show: bool = True
+    selection: Literal["latest", "selected"] = "latest"
+    ids: list[str] = Field(default_factory=list, max_length=100)
 
 
 class ShowcaseIn(BaseModel):
@@ -579,6 +581,7 @@ class ShowcaseIn(BaseModel):
 
 
 class ProfileIn(BaseModel):
+    avatar_url: str | None = Field(None, max_length=200)
     name: str = Field(..., min_length=1, max_length=30)
     bio: str = Field("", max_length=200)
     dm_policy: Literal["reply_only", "open", "none"] = "reply_only"

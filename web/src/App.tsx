@@ -715,7 +715,7 @@ function AccountMenu({ me, reachable, llmReady, onNavigate, notify }: { me: Me; 
     <div className="user-row acct" ref={ref}>
       {reporting && <NewIssueModal onClose={() => setReporting(false)} notify={notify} onDone={(id) => { setReporting(false); onNavigate(`issues/${id}`) }} />}
       <button className="acct-trigger" onClick={() => setOpen(!open)} aria-expanded={open} aria-haspopup="menu">
-        <span className="avatar"><UserAvatar color={me.user.avatar_color} size={30} title={name} /><UnreadDot /></span>
+        <span className="avatar"><UserAvatar src={me.user.avatar_url} color={me.user.avatar_color} size={30} title={name} /><UnreadDot /></span>
         <div className="acct-text">
           <div>{name}</div>
           <small>{me.user.quantlab_uid ? `${me.user.quantlab_uid} · ` : ''}{ws?.name ?? '未选择工作区'} · {ws?.is_primary_admin ? '主管理员' : ROLE_NAME[ws?.role ?? 'member']}</small>

@@ -187,7 +187,7 @@ export default function BacktestDetailPage({ id, onNavigate, notify }: PageProps
   const recordKeys = Object.keys(bt.records || {})
 
   return (
-    <div>
+    <div className="backtest-detail">
       <div className="editor-toolbar">
         <button className="button small" onClick={() => onNavigate(row?.slug ? `editor/${row.slug}` : 'strategies')}>← {row?.slug ? '回到编辑器' : '我的策略'}</button>
         <h1 className="toolbar-title">{bt.strategy_name}</h1>

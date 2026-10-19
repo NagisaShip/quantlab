@@ -119,7 +119,7 @@ export default function GroupsPage({ arg, me, onNavigate, notify }: PageProps & 
                 <div className="grp-label">公开目录 · 名称 / 号码</div>
                 {directory.users.map((u) => (
                   <button key={u.id} type="button" className="grp-directory-row" onClick={() => { setSideOpen(false); onNavigate(`profile/${u.id}`) }}>
-                    <UserAvatar color={u.avatar_color} size={30} title={u.name} />
+                    <UserAvatar src={u.avatar_url} color={u.avatar_color} size={30} title={u.name} />
                     <span><b>{u.name}</b><small>{u.quantlab_uid} {u.username ? `· @${u.username}` : ''}</small></span>
                   </button>
                 ))}
@@ -386,7 +386,6 @@ function Chat({ g, me, members, isMember, isMod, notify, onChanged, onStartDm, o
     return () => { alive = false; window.clearInterval(t) }
   }, [g.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const asksBot = /@\s*quantlab[\s_-]*bot/i.test(text)
   const mentions = useMemo(() => [
     { id: 'all', name: '所有人', hint: '通知全部群成员' },
     ...(g.members ?? []).filter((m) => m.user_id !== me.user.id).map((m) => ({ id: m.user_id, name: m.name, hint: ROLE_LABEL[m.role] })),
@@ -399,7 +398,7 @@ function Chat({ g, me, members, isMember, isMod, notify, onChanged, onStartDm, o
   /** 回复某人：默认把 @对方 放进输入框（光标已在末尾时不重复加）。 */
   const startReply = (m: Message) => {
     setReply(m)
-    if (m.author_kind === 'user' && m.author_id !== me.user.id) {
+    if (m.author_id !== me.user.id) {
       setText((prev) => (prev.startsWith(`@${m.author_name}`) ? prev : `@${m.author_name} ${prev.replace(/^\s+/, '')}`))
     }
   }
@@ -484,8 +483,8 @@ function Chat({ g, me, members, isMember, isMod, notify, onChanged, onStartDm, o
               {sep && <div className="chat-day"><span>{day}</span></div>}
               <div className={`chat-msg${cont ? ' cont' : ''}${m.author_kind === 'agent' ? ' agent' : ''}${m.pinned ? ' pinned' : ''} anim-in`}>
                 <span className="chat-av">{cont ? '' : m.author_kind === 'agent' ? <QuantBot size={26} state="idle" motion="low" /> : mineMsg
-                  ? <UserAvatar color={g.members?.find((x) => x.user_id === m.author_id)?.avatar_color} size={30} title={m.author_name} />
-                  : <button type="button" className="chat-av-btn" title={`查看 ${m.author_name} 的主页`} aria-label={`查看 ${m.author_name} 的主页`} onClick={() => onNavigate(`profile/${m.author_id}`)}><UserAvatar color={g.members?.find((x) => x.user_id === m.author_id)?.avatar_color} size={30} title={m.author_name} /></button>}</span>
+                  ? <UserAvatar src={g.members?.find((x) => x.user_id === m.author_id)?.avatar_url} color={g.members?.find((x) => x.user_id === m.author_id)?.avatar_color} size={30} title={m.author_name} />
+                  : <button type="button" className="chat-av-btn" title={`查看 ${m.author_name} 的主页`} aria-label={`查看 ${m.author_name} 的主页`} onClick={() => onNavigate(`profile/${m.author_id}`)}><UserAvatar src={g.members?.find((x) => x.user_id === m.author_id)?.avatar_url} color={g.members?.find((x) => x.user_id === m.author_id)?.avatar_color} size={30} title={m.author_name} /></button>}</span>
                 <div className="chat-content">
                   {!cont && (
                     <div className="chat-meta">
@@ -551,7 +550,7 @@ function Chat({ g, me, members, isMember, isMod, notify, onChanged, onStartDm, o
           )}
           <RichEditor compact rows={3} value={text} onChange={setText} refs={refs} onRefs={setRefs} onSubmit={send} mentions={mentions}
             draftKey={`group.${g.id}`} placeholder={`发消息到「${g.name}」… 输入 @ 提及成员`} notify={notify}
-            footer={<button type="button" className="button small primary" disabled={sending || (!text.trim() && !refs.length)} onClick={send}>{sending ? (asksBot ? 'Bot 正在回复…' : '发送中…') : '发送'}</button>} />
+            footer={<button type="button" className="button small primary" disabled={sending || (!text.trim() && !refs.length)} onClick={send}>{sending ? '发送中…' : '发送'}</button>} />
         </div>
       )) : <Callout>加入群组后可以发消息。</Callout>}
       {taskFrom && <TaskModal g={g} me={me} isMod={isMod} preset={{ title: taskFrom.body.split('\n')[0].slice(0, 60), description: `来自 ${taskFrom.author_name} 的消息：\n\n${taskFrom.body}`, refs: taskFrom.refs }}

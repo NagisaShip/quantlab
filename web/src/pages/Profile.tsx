@@ -5,10 +5,12 @@
  * 主页只按 /api/community/users/{id}/showcase 返回的配置渲染，隐藏的板块对任何人都不显示。
  */
 import { useCallback, useEffect, useState } from 'react'
-import { fmtNum, fmtPct, tone, v3, type UserShowcase } from '../api/research'
+import { fmtPct, tone, v3, type UserShowcase } from '../api/research'
 import { collab } from '../apiCollab'
 import { appConfirm } from '../components/dialog'
 import { Callout, EmptyState, Loading, Panel, Tag } from '../components/ui'
+import { MetricGrid } from '../components/blocks/RichBlock'
+import { LineChart, COLORS } from '../components/charts2'
 import { UserAvatar } from '../components/UserAvatar'
 import { PostCard } from './Community'
 import { copyText, SharePublicButton } from '../components/PublicShare'
@@ -25,22 +27,22 @@ function ShowcaseRow({ item, onOpen }: {
   item: UserShowcase['sections'][number]['items'][number]
   onOpen: (link: string) => void
 }) {
-  const m = item.metrics ?? {}
+  const labels: Record<string, string> = { total_return: '策略收益', sharpe: '夏普比率', max_drawdown: '最大回撤', rank_ic: 'Rank IC', oos_rank_ic: '样本外 Rank IC', ic_ir: 'IC IR', ic: 'IC', mse: 'MSE', accuracy: '准确率', r2: 'R²' }
+  const metrics = Object.entries(item.metrics || {}).filter(([, v]) => v !== null)
+  const curve = item.preview
   return (
-    <li className={item.link ? 'clickable' : undefined} onClick={item.link ? () => onOpen(item.link!) : undefined}>
-      <div className="profile-showcase-row">
-        <b className="ellipsis">{item.title || item.id}</b>
+    <li className="profile-result-card">
+      <div className="profile-result-heading">
+        <div><h3>{item.title || item.id}</h3>{item.sub && <p>{item.sub}</p>}</div>
         {item.approved && <Tag tone="ok">已批准</Tag>}
-        {typeof item.pnl === 'number' && <span className={`num ${tone(item.pnl)}`}>{fmtPct(item.pnl, 2, true)}</span>}
+        {item.link && <button type="button" className="button small" onClick={() => onOpen(item.link!)}>查看详情</button>}
       </div>
-      {item.sub && <small>{item.sub}</small>}
-      {(m.total_return !== undefined || m.sharpe !== undefined) && (
-        <small className="num profile-showcase-metrics">
-          {m.total_return !== undefined && <>收益 <i className={tone(m.total_return)}>{fmtPct(m.total_return, 2, true)}</i></>}
-          {m.sharpe !== undefined && <> · 夏普 {fmtNum(m.sharpe)}</>}
-          {m.max_drawdown !== undefined && <> · 回撤 {fmtPct(m.max_drawdown)}</>}
-        </small>
-      )}
+      {metrics.length > 0 && <MetricGrid items={metrics.map(([key, value]) => ({ key, label: labels[key] || key, value, format: ['total_return', 'max_drawdown', 'accuracy'].includes(key) ? 'pct' : 'num', digits: 3 }))} />}
+      {typeof item.pnl === 'number' && <div className={`profile-result-pnl num ${tone(item.pnl)}`}>{fmtPct(item.pnl, 2, true)}<small>模拟收益</small></div>}
+      {curve?.timestamps?.length && curve.equity?.length ? <div className="profile-result-chart"><LineChart timestamps={curve.timestamps} series={[
+        { name: '累计收益', values: curve.equity, color: COLORS.strategy, area: true },
+        ...(curve.benchmark?.length ? [{ name: '基准收益', values: curve.benchmark, color: COLORS.benchmark, dashed: true }] : []),
+      ]} height={220} width={640} ariaLabel={`${item.title}收益曲线`} /></div> : null}
     </li>
   )
 }
@@ -91,9 +93,9 @@ export default function ProfilePage({ identifier, onNavigate, notify }: PageProp
   const limit = showcase?.showcase.limit ?? 5
 
   return (
-    <div className="profile-page">
+    <div className="profile-page profile-research-page">
       <section className={`profile-hero${relationLocked ? ' locked' : ''}`}>
-        <UserAvatar color={u.avatar_color} size={76} title={u.name} />
+        <UserAvatar src={u.avatar_url} color={u.avatar_color} size={76} title={u.name} />
         <div className="profile-copy">
           <div className="profile-name"><h1>{u.name}</h1>{u.username && <span>@{u.username}</span>}{u.role === 'admin' && <Tag tone="warn">工作区管理员</Tag>}{data.is_me && <Tag tone="ok">我</Tag>}{u.public_profile && <Tag tone="ok">公开资料</Tag>}{data.is_mutual && <Tag tone="ok">互相关注</Tag>}</div>
           <button type="button" className="profile-uid" title="复制 QuantLab UID" onClick={() => { copyText(u.quantlab_uid).then(() => notify('QuantLab UID 已复制')).catch(() => undefined) }}><span>QuantLab UID</span><b>{u.quantlab_uid || '—'}</b><i>复制</i></button>
@@ -123,7 +125,7 @@ export default function ProfilePage({ identifier, onNavigate, notify }: PageProp
         <div>
           <Panel
             title="研究成果"
-            subtitle={sections.length ? `因子、策略、回测与模型 · 每块最多 ${limit} 条` : undefined}
+            subtitle={sections.length ? `研究记录与可复核数据 · 每块最多 ${limit} 条` : undefined}
             actions={data.is_me ? <button className="button small" onClick={() => onNavigate('settings/account')}>调整展示</button> : undefined}
           >
             {!showcase ? <div className="hint">没有开启展示。</div> : !sections.length ? (
@@ -132,8 +134,9 @@ export default function ProfilePage({ identifier, onNavigate, notify }: PageProp
               </EmptyState>
             ) : (
               <div className="profile-showcase">
+                <nav className="profile-section-nav" aria-label="研究成果板块">{sections.map(sec => <a key={sec.key} href={`#profile-section-${sec.key}`} onClick={e => { e.preventDefault(); document.getElementById(`profile-section-${sec.key}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' }) }}>{sec.label}<span>{sec.count}</span></a>)}</nav>
                 {sections.map((sec) => (
-                  <section key={sec.key} className="profile-showcase-block">
+                  <section key={sec.key} id={`profile-section-${sec.key}`} className="profile-showcase-block">
                     <div className="profile-showcase-head">
                       <b>{sec.label}</b>
                       <span className="muted small">{sec.count > sec.items.length ? `${sec.items.length} / ${sec.count}` : `${sec.count}`}</span>
@@ -174,7 +177,7 @@ export default function ProfilePage({ identifier, onNavigate, notify }: PageProp
               <div className="profile-relation-row"><span>私信</span><b>{data.can_dm ? POLICY_LABEL[u.dm_policy] : (data.dm_reason || '不可私信')}</b></div>
             </Panel>
           )}
-          <Panel title="私信规则" subtitle="服务端会按规则拦截，不能靠前端绕过">
+          <Panel title="交流与协作" subtitle="关注研究进展，讨论思路与验证结果">
             <ul className="hint profile-rule-list">
               <li>默认情况下，未建立会话的人只能发一条消息；对方回复后可继续。</li>
               <li>互相关注后会自动建好两人对话，可以直接聊。</li>

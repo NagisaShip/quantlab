@@ -302,6 +302,20 @@ def get_profile() -> dict:
 
 @router.put("/profile")
 def put_profile(payload: ProfileIn) -> dict:
+    if payload.avatar_url:
+        import re
+
+        match = re.fullmatch(r"/api/uploads/([a-zA-Z0-9_-]+)", payload.avatar_url)
+        up = get_services().collab.upload(match[1]) if match else None
+        ctx = context.current()
+        if (
+            not up
+            or up.get("user_id") != ctx.user_id
+            or up.get("workspace_id") != ctx.workspace_id
+            or int(up.get("size") or 0) > 2 * 1024 * 1024
+            or up.get("mime") not in ("image/png", "image/jpeg", "image/webp", "image/gif")
+        ):
+            raise HTTPException(400, "请选择本人上传的 PNG、JPEG、WebP 或 GIF 头像")
     name = payload.name.strip()
     if name in (SYSTEM_AUTHOR, AI_AUTHOR, BOT_AUTHOR):
         raise HTTPException(400, "这个名字保留给平台使用")
@@ -318,7 +332,10 @@ def put_profile(payload: ProfileIn) -> dict:
         showcase=payload.showcase.model_dump() if payload.showcase is not None else None,
     )
     # 兼容旧版本：同步写一份到原 JSON 资料，避免回滚后简介丢失。
-    _store().upsert(Collections.PROFILE, {"id": ctx.user_id, "bio": payload.bio.strip()})
+    legacy = _store().get(Collections.PROFILE, ctx.user_id) or {}
+    if payload.avatar_url is not None:
+        legacy["avatar_url"] = payload.avatar_url
+    _store().upsert(Collections.PROFILE, {**legacy, "id": ctx.user_id, "bio": payload.bio.strip()})
     return {"profile": me()}
 
 
@@ -359,6 +376,7 @@ def _profile_view(identifier: str) -> dict[str, Any]:
             "bio": prof["bio"],
             "public_profile": prof.get("public_profile", False),
             "avatar_color": prof["avatar_color"],
+            "avatar_url": prof.get("avatar_url", ""),
             "role": target.get("role") or "member",
             "dm_policy": prof["dm_policy"],
             "dm_policy_label": prof["dm_policy_label"],
@@ -368,7 +386,12 @@ def _profile_view(identifier: str) -> dict[str, Any]:
             "likes": sum(len(p.get("likes", [])) for p in posts),
             "clones": sum(int(p.get("clones", 0)) for p in posts),
             "comments": len(comments),
-            "showcase": prof.get("showcase") or default_showcase(),
+            "showcase": (prof.get("showcase") or default_showcase())
+            if is_self
+            else {
+                **(prof.get("showcase") or default_showcase()),
+                "items": [{**i, "ids": []} for i in (prof.get("showcase") or default_showcase())["items"]],
+            },
         },
         "is_me": is_self,
         "is_following": social.is_following(ws, viewer, uid) if viewer else False,
@@ -401,7 +424,7 @@ def _owner_ids(ws: str, object_type: str, owner_id: str) -> list[str]:
     "/users/{identifier}/showcase",
     summary="用户主页展示：按本人配置返回因子、策略、回测、模型与模拟收益",
 )
-def user_showcase(identifier: str) -> dict:
+def user_showcase(identifier: str, catalog: bool = False, q: str = Query("", max_length=100)) -> dict:
     """主页成果区。只返回该用户自己创建（或登记为所有者）的条目，且尊重他的展示开关。"""
     ctx = context.current()
     ws = ctx.workspace_id or ""
@@ -414,14 +437,32 @@ def user_showcase(identifier: str) -> dict:
     viewer = ctx.user_id or ""
     if social.blocked(ws, viewer, uid) or social.blocked(ws, uid, viewer):
         return {
-            "showcase": prof["showcase"],
+            "showcase": {**prof["showcase"], "items": [{**i, "ids": []} for i in prof["showcase"]["items"]]},
             "is_me": uid == viewer,
             "sections": [],
             "hidden_reason": "你们之间存在拉黑关系",
         }
+    if catalog and uid != viewer:
+        raise HTTPException(403, "只能选择自己的研究成果")
     cfg = prof["showcase"]
-    limit = int(cfg.get("limit") or 5)
-    enabled = [it["key"] for it in cfg["items"] if it.get("show")]
+    limit = 200 if catalog else int(cfg.get("limit") or 5)
+    enabled = [it["key"] for it in cfg["items"] if catalog or it.get("show")]
+
+    def choose(rows: list[dict], key: str, id_key: str = "id") -> list[dict]:
+        setting = next((i for i in cfg["items"] if i["key"] == key), {})
+        if catalog:
+            query = q.strip().lower()
+            return [
+                r
+                for r in rows
+                if not query
+                or query in " ".join(str(r.get(k) or "") for k in ("id", "slug", "name", "strategy_name")).lower()
+            ]
+        if setting.get("selection") != "selected":
+            return rows
+        by_id = {str(r.get(id_key)): r for r in rows}
+        return [by_id[i] for i in setting.get("ids", []) if i in by_id]
+
     services = get_services()
     out: dict[str, Any] = {
         "showcase": cfg,
@@ -438,6 +479,7 @@ def user_showcase(identifier: str) -> dict:
 
         rows = [r for r in FactorLibrary(services.store).list() if str(r.get("created_by") or "") == uid]
         rows.sort(key=lambda r: r.get("created_at") or 0, reverse=True)
+        rows = choose(rows, "factors")
         sec = by_key["factors"]
         sec["count"] = len(rows)
         sec["items"] = [
@@ -462,12 +504,9 @@ def user_showcase(identifier: str) -> dict:
             [r.to_dict(include_source=False) for r in repo.list()],
             "slug",
         )
-        mine = [
-            s
-            for s in items
-            if s.get("slug") in owned or (s.get("author") or "").strip() == str(target.get("name") or "")
-        ]
+        mine = [s for s in items if s.get("slug") in owned or str(s.get("created_by") or "") == uid]
         mine.sort(key=lambda s: s.get("updated_at") or 0, reverse=True)
+        mine = choose(mine, "strategies", "slug")
         sec = by_key["strategies"]
         sec["count"] = len(mine)
         sec["items"] = [
@@ -486,8 +525,15 @@ def user_showcase(identifier: str) -> dict:
         ]
 
     if "backtests" in by_key:
-        rows = [r for r in services.store.list(Collections.BACKTESTS) if str(r.get("created_by") or "") == uid]
+        from .routes_collab import filter_visible
+
+        rows = filter_visible(
+            "strategy",
+            [r for r in services.store.list(Collections.BACKTESTS) if str(r.get("created_by") or "") == uid],
+            "slug",
+        )
         rows.sort(key=lambda r: r.get("created_at") or 0, reverse=True)
+        rows = choose(rows, "backtests")
         sec = by_key["backtests"]
         sec["count"] = len(rows)
         sec["items"] = [
@@ -510,6 +556,7 @@ def user_showcase(identifier: str) -> dict:
 
         rows = [r for r in ModelLibrary(services.store).list() if str(r.get("created_by") or "") == uid]
         rows.sort(key=lambda r: r.get("created_at") or 0, reverse=True)
+        rows = choose(rows, "models")
         sec = by_key["models"]
         sec["count"] = len(rows)
         sec["items"] = [
@@ -531,6 +578,7 @@ def user_showcase(identifier: str) -> dict:
             r for r in services.store.list(Collections.PAPER_SESSIONS) if _run_owner(services, r.get("id")) == uid
         ]
         sessions.sort(key=lambda r: r.get("started_at") or 0, reverse=True)
+        sessions = choose(sessions, "paper")
         sec = by_key["paper"]
         sec["count"] = len(sessions)
         sec["items"] = []
@@ -553,7 +601,70 @@ def user_showcase(identifier: str) -> dict:
                 }
             )
 
+    if uid != viewer:
+        visible = {s["key"]: {str(i.get("id")) for i in s["items"]} for s in out["sections"]}
+        out["showcase"] = {
+            **cfg,
+            "items": [
+                {**i, "ids": [rid for rid in i.get("ids", []) if rid in visible.get(i["key"], set())]}
+                for i in cfg["items"]
+            ],
+        }
+    if not catalog:
+        for section in out["sections"]:
+            for item in section["items"]:
+                key, rid = section["key"], str(item.get("id") or "")
+                if key == "backtests":
+                    report = services.store.get_blob("backtests", rid) or {}
+                    item["preview"] = _showcase_curve(
+                        report.get("timestamps"), report.get("equity_curve"), report.get("benchmark_curve")
+                    )
+                elif key == "paper":
+                    session = services.store.get(Collections.PAPER_SESSIONS, rid) or {}
+                    points = session.get("equity_points") or []
+                    item["preview"] = _showcase_curve([p.get("t") for p in points], [p.get("v") for p in points])
+                elif key == "factors":
+                    from ..research.factor_lib import FactorLibrary
+
+                    factor = FactorLibrary(services.store).get(rid) or {}
+                    summary = factor.get("summary") or {}
+                    item["metrics"] = {
+                        k: _num(summary.get(k))
+                        for k in ("rank_ic", "oos_rank_ic", "ic_ir")
+                        if _num(summary.get(k)) is not None
+                    }
+                elif key == "models":
+                    from ..research.model_lib import ModelLibrary
+
+                    model = ModelLibrary(services.store).get(rid) or {}
+                    metrics = model.get("metrics") or (model.get("report") or {}).get("metrics") or {}
+                    item["metrics"] = {
+                        k: _num(metrics.get(k))
+                        for k in ("ic", "rank_ic", "mse", "accuracy", "r2")
+                        if _num(metrics.get(k)) is not None
+                    }
     return out
+
+
+def _showcase_curve(timestamps: Any, equity: Any, benchmark: Any = None) -> dict:
+    """Whitelist bounded chart data; never expose code, positions or report internals."""
+    times = timestamps if isinstance(timestamps, list) else []
+    values = equity if isinstance(equity, list) else []
+    n = min(len(times), len(values))
+    if n < 2:
+        return {}
+    indices = sorted({round(i * (n - 1) / min(n - 1, 239)) for i in range(min(n, 240))})
+    rows = [(times[i], _num(values[i])) for i in indices]
+    rows = [(t, v) for t, v in rows if _num(t) is not None and v is not None]
+    base = next((v for _, v in rows if v > 0), None)
+    if not base or len(rows) < 2:
+        return {}
+    result = {"timestamps": [t for t, _ in rows], "equity": [v / base - 1 for _, v in rows]}
+    if benchmark and len(benchmark) >= n:
+        b = [_num(benchmark[i]) for i in indices]
+        if all(v is not None for v in b) and b[0] and len(b) == len(rows):
+            result["benchmark"] = [v / b[0] - 1 for v in b]
+    return result
 
 
 def _run_owner(services: Any, run_id: str | None) -> str:
@@ -844,6 +955,7 @@ def list_posts(
             author_prof = social.profile(ws, author_id)
             author_user = social.user(ws, author_id) or {}
             p["author_color"] = author_prof.get("avatar_color", "#2E5C9A")
+            p["author_avatar"] = author_prof.get("avatar_url", "")
             p["author_role"] = author_user.get("role") or "member"
         else:
             p["author_color"] = "#2E5C9A"
@@ -974,6 +1086,7 @@ def read_post(post_id: str) -> dict:
             cp = social.profile(ws, cid)
             cu = social.user(ws, cid) or {}
             c["author_color"] = cp.get("avatar_color", "#2E5C9A")
+            c["author_avatar"] = cp.get("avatar_url", "")
             c["author_role"] = cu.get("role") or "member"
         else:
             c["author_color"] = "#2E5C9A"
@@ -992,6 +1105,7 @@ def read_post(post_id: str) -> dict:
     author_user = (social.user(ws, author_id) if author_id else None) or {}
     post_view = _public(post, viewer)
     post_view["author_color"] = author_prof.get("avatar_color", "#2E5C9A")
+    post_view["author_avatar"] = author_prof.get("avatar_url", "")
     post_view["author_role"] = author_user.get("role") or "system"
     relation = {
         "author_id": author_id,

@@ -112,6 +112,11 @@ function nodeChecks(mod) {
   ok('sankey-beta 渲染后能还原中文节点名', restored.includes('31笔交易') && restored.includes('成本合计930.27'), restored)
   ok('sankey-beta 占位符互不串味', !/QLSANK\d/.test(restored))
 
+  const csv = mod.prepareMermaid('sankey-beta\n"Sales, US",QLSANK0X,12\nQLSANK0X,中文,5')
+  ok('Sankey preserves quoted ASCII commas', mod.splitSankeyLine(csv.code.split('\n')[1])[0] === 'Sales, US')
+  const token = mod.splitSankeyLine(csv.code.split('\n')[2])[1]
+  ok('Sankey avoids existing placeholder names', token !== 'QLSANK0X' && csv.restore(`<text>QLSANK0X</text><text>${token}</text>`) === '<text>QLSANK0X</text><text>中文</text>')
+
   const x = mod.prepareMermaid(XYCHART_ZH)
   ok('xychart-beta 分类轴被加上引号', x.code.includes('x-axis ["一月", "二月", "三月"]'))
   ok('xychart-beta 轴标题被加上引号', x.code.includes('y-axis "收入" 0 --> 100'))
@@ -182,6 +187,7 @@ async function browserChecks(bundlePath) {
       ['quadrantChart', QUADRANT_ZH, ['成本低', '成本高', '拆小做', '分段标注行情']],
       ['sankey-beta', SANKEY_ZH, ['31笔交易', '盈利出场', '滑点残差']],
       ['xychart-beta', XYCHART_ZH, ['一月', '三月', '收入']],
+      ['sankey-csv', 'sankey-beta\n"Sales, US",QLSANK0X,12\nQLSANK0X,中文,5', ['Sales, US', 'QLSANK0X', '中文']],
     ]) {
       const r = await page.evaluate(async ([src, tag]) => {
         const { prepareMermaid } = window.__compat
@@ -210,6 +216,25 @@ async function browserChecks(bundlePath) {
       return { type: blob.type, size: blob.size, w: bmp.width, h: bmp.height }
     })
     ok('SVG → PNG 导出成功', png.type === 'image/png' && png.size > 2000 && png.w > 100 && png.h > 100, JSON.stringify(png))
+
+    for (const theme of ['neutral', 'dark']) {
+      const result = await page.evaluate(async (theme) => {
+        window.__mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', suppressErrorRendering: true, theme, htmlLabels: false, flowchart: { htmlLabels: false } })
+        const container = document.createElement('div')
+        container.style.cssText = 'position:fixed;left:-100000px;top:0;width:1200px;visibility:hidden'
+        const before = document.documentElement.scrollHeight
+        document.body.appendChild(container)
+        const during = document.documentElement.scrollHeight
+        try {
+          const out = await window.__mermaid.render('flow' + theme, 'flowchart LR\n A[开始] --> B[结束]', container)
+          const blob = await window.__compat.svgToPngBlob(out.svg, { background: theme === 'dark' ? '#14161c' : '#fff' })
+          return { labels: out.svg.includes('开始') && out.svg.includes('结束') && !out.svg.includes('<foreignObject'), png: blob.size > 1000, noGrowth: before === during }
+        } finally { container.remove() }
+      }, theme)
+      ok(`Flowchart ${theme} SVG labels export without foreignObject`, result.labels)
+      ok(`Flowchart ${theme} PNG export`, result.png)
+      ok(`Render container does not extend page (${theme})`, result.noGrowth)
+    }
 
     const leak = await page.evaluate(async () => {
       const before = document.body.children.length

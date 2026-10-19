@@ -59,7 +59,9 @@ function render(k: Katex, tex: string, display?: boolean): string {
 }
 
 // ---------------------------------------------------------------- Mermaid
-type MermaidApi = { initialize: (c: Record<string, unknown>) => void; render: (id: string, code: string) => Promise<{ svg: string }> }
+type MermaidApi = { initialize: (c: Record<string, unknown>) => void; render: (id: string, code: string, container?: HTMLElement) => Promise<{ svg: string }> }
+let renderQueue: Promise<unknown> = Promise.resolve()
+let renderSequence = 0
 let mermaidMod: Promise<MermaidApi> | null = null
 function loadMermaid(): Promise<MermaidApi> {
   // 用 Mermaid 自带的已压缩、自包含构建（内部已按图类型拆分），避免把 cytoscape 等大依赖拼成超过 1MB 的 chunk
@@ -88,6 +90,12 @@ function exportBackground(el: HTMLElement | null): string {
 export function Mermaid({ code }: { code: string }) {
   const id = 'mm' + useId().replace(/[^a-zA-Z0-9]/g, '')
   const figRef = useRef<HTMLElement>(null)
+  const [theme, setTheme] = useState(document.documentElement.dataset.theme || '')
+  useEffect(() => {
+    const observer = new MutationObserver(() => setTheme(document.documentElement.dataset.theme || ''))
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
+    return () => observer.disconnect()
+  }, [])
   const [svg, setSvg] = useState('')
   const [err, setErr] = useState('')
   const [showSrc, setShowSrc] = useState(false)
@@ -98,14 +106,24 @@ export function Mermaid({ code }: { code: string }) {
     const timer = window.setTimeout(() => {
       // 中文在部分图类型里会被词法器拒绝，先改写成等价源码，渲染后再还原标签
       const prepared = prepareMermaid(code)
-      loadMermaid()
-        .then((m) => m.render(id, prepared.code).then((r) => ({ ...r, svg: prepared.restore(r.svg) })))
-        .then((r) => { if (alive) { setSvg(r.svg); setErr('') } })
+      const container = document.createElement('div')
+      container.style.cssText = 'position:fixed;left:-100000px;top:0;width:1200px;visibility:hidden;pointer-events:none'
+      document.body.appendChild(container)
+      const job = renderQueue.catch(() => undefined).then(async () => {
+        if (!alive) return null
+        const m = await loadMermaid()
+        m.initialize({ startOnLoad: false, securityLevel: 'strict', suppressErrorRendering: true, theme: theme === 'dark' ? 'dark' : 'neutral', fontFamily: 'inherit', htmlLabels: false, flowchart: { htmlLabels: false } })
+        const r = await m.render(`${id}-${++renderSequence}`, prepared.code, container)
+        return { svg: prepared.restore(r.svg) }
+      })
+      renderQueue = job
+      job
+        .then((r) => { if (alive && r) { setSvg(r.svg); setErr('') } })
         .catch((e) => { if (alive) setErr(String((e as Error).message || e).slice(0, 300)) })
-        .finally(() => { document.getElementById('d' + id)?.remove() }) // 渲染失败时 Mermaid 可能留下临时容器
+        .finally(() => { container.remove() }) // 渲染失败时 Mermaid 可能留下临时容器
     }, 120) // 流式输出时等内容稳定一下再画
     return () => { alive = false; window.clearTimeout(timer) }
-  }, [code, id])
+  }, [code, id, theme])
   useReportRenderError(err ? { kind: 'mermaid', message: err, source: code } : null)
   const exportPng = async () => {
     if (!svg || pngBusy) return

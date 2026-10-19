@@ -8,7 +8,7 @@ import {
 import { LimitBars, LimitEditor, MEMBER_METRICS, METRIC_LABEL, RecordComposition, UsageComposition, UsageSummary, WINDOWS, fmtCost, fmtTokens, fmtLimitValue, metricUnit, fmtStorageBytes, editorUnit, storageBytesFromInput, storageInputValue } from '../components/modelUsage'
 import { Callout, EmptyState, Field, Heading, Loading, Modal, Panel, Tag } from '../components/ui'
 import { SETTINGS_GROUPS } from '../components/SettingsShell'
-import { AvatarColorPicker } from '../components/UserAvatar'
+import { AvatarColorPicker, UserAvatar } from '../components/UserAvatar'
 import { copyText } from '../components/PublicShare'
 import type { ProfileShowcase } from '../api/research'
 import NodeTab from './NodeTab'
@@ -18,7 +18,7 @@ import PrivacyTab from './settings/Privacy'
 import type { PageProps } from './types'
 import { appConfirm, appPrompt } from '../components/dialog'
 import { tData } from '../i18n'
-import { admin, memberDefaults } from '../apiCollab'
+import { admin, memberDefaults, uploadFile } from '../apiCollab'
 import { useDebouncedValue } from '../useDebouncedValue'
 
 type Tab = 'workspace' | 'quota' | 'retention' | 'members' | 'runs' | 'node' | 'audit' | 'system' | 'account' | 'lab' | 'privacy'
@@ -1473,10 +1473,11 @@ function AccountTab({ me, notify, onSaved }: { me: Me; notify: PageProps['notify
   const [oldPw, setOld] = useState('')
   const [newPw, setNew] = useState('')
   return (
-    <div style={{ maxWidth: 520 }}>
-      <ProfileSection me={me} notify={notify} onSaved={onSaved} />
-      <PublicProfileSection me={me} notify={notify} onSaved={onSaved} />
-      <EmailSection notify={notify} onSaved={onSaved} />
+    <div className="account-layout">
+      <section className="account-card"><ProfileSection me={me} notify={notify} onSaved={onSaved} /></section>
+      <section className="account-card account-public"><PublicProfileSection me={me} notify={notify} onSaved={onSaved} /></section>
+      <section className="account-card"><EmailSection notify={notify} onSaved={onSaved} /></section>
+      <section className="account-card">
       <h3 className="set-sub">密码</h3>
       <Field label="当前密码"><input type="password" value={oldPw} onChange={(e) => setOld(e.target.value)} /></Field>
       <div style={{ height: 10 }} />
@@ -1487,6 +1488,7 @@ function AccountTab({ me, notify, onSaved }: { me: Me; notify: PageProps['notify
         }}>修改密码</button>
       </div>
       <TotpSection notify={notify} />
+      </section>
     </div>
   )
 }
@@ -1513,6 +1515,12 @@ function PublicProfileSection({ me, notify, onSaved }: { me: Me; notify: PagePro
   const [name, setName] = useState(me.user.name)
   const [bio, setBio] = useState('')
   const [policy, setPolicy] = useState<'reply_only' | 'open' | 'none'>('reply_only')
+  const [catalog, setCatalog] = useState<import('../api/research').UserShowcase | null>(null)
+  const [catalogSearch, setCatalogSearch] = useState('')
+  const [catalogError, setCatalogError] = useState('')
+  const catalogQuery = useDebouncedValue(catalogSearch)
+  const [avatar, setAvatar] = useState('')
+  const [uploadingAvatar, setUploadingAvatar] = useState(false)
   const [color, setColor] = useState(me.user.avatar_color || '#2E5C9A')
   const [publicProfile, setPublicProfile] = useState(false)
   const [showcase, setShowcase] = useState<ProfileShowcase>(defaultShowcase)
@@ -1527,6 +1535,7 @@ function PublicProfileSection({ me, notify, onSaved }: { me: Me; notify: PagePro
       setName(r.profile.name || me.user.name)
       setBio(r.profile.bio || '')
       setPolicy(r.profile.dm_policy)
+      setAvatar(r.profile.avatar_url || '')
       setColor(r.profile.avatar_color || '#2E5C9A')
       setPublicProfile(!!r.profile.public_profile)
       setUid(r.profile.quantlab_uid || '')
@@ -1534,6 +1543,11 @@ function PublicProfileSection({ me, notify, onSaved }: { me: Me; notify: PagePro
       setLoaded(true)
     }).catch(() => setLoaded(true))
   }, [me.user.name])
+  useEffect(() => {
+    let alive = true
+    v3.userShowcase(me.user.id, true, catalogQuery).then(r => { if (alive) { setCatalog(r); setCatalogError('') } }).catch(() => { if (alive) setCatalogError('可选成果读取失败，请重新打开设置重试') })
+    return () => { alive = false }
+  }, [me.user.id, catalogQuery])
   const move = (i: number, dir: -1 | 1) => {
     setShowcase((prev) => {
       const items = [...prev.items]
@@ -1546,7 +1560,7 @@ function PublicProfileSection({ me, notify, onSaved }: { me: Me; notify: PagePro
   const save = async () => {
     setBusy(true)
     try {
-      await v3.saveProfile({ name: name.trim(), bio, dm_policy: policy, avatar_color: color, public_profile: publicProfile, showcase })
+      await v3.saveProfile({ name: name.trim(), bio, dm_policy: policy, avatar_url: avatar, avatar_color: color, public_profile: publicProfile, showcase })
       notify('个人资料已保存')
       onSaved()
     } catch (e) { notify((e as Error).message, true) } finally { setBusy(false) }
@@ -1556,6 +1570,19 @@ function PublicProfileSection({ me, notify, onSaved }: { me: Me; notify: PagePro
     <>
       <h3 className="set-sub">个人资料</h3>
       <p className="hint" style={{ marginTop: 0 }}>这些信息会显示在策略广场、群组和你的个人主页。</p>
+      <div className="profile-avatar-editor">
+        <UserAvatar src={avatar} color={color} size={72} title={name} />
+        <div><b>个人头像</b><p className="hint">PNG、JPEG、WebP 或 GIF，最大 2 MB</p>
+          <label className="button small">{uploadingAvatar ? '上传中…' : '上传头像'}<input hidden type="file" accept="image/png,image/jpeg,image/webp,image/gif" disabled={uploadingAvatar} onChange={async (e) => {
+            const file = e.target.files?.[0]; e.target.value = ''
+            if (!file) return
+            if (!['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(file.type) || file.size > 2 * 1024 * 1024) { notify('请选择 2 MB 以内的图片', true); return }
+            setUploadingAvatar(true)
+            try { const result = await uploadFile(file); setAvatar(result.url || `/api/uploads/${result.id}`) } catch (error) { notify((error as Error).message, true) } finally { setUploadingAvatar(false) }
+          }} /></label>
+          {avatar && <button type="button" className="link" onClick={() => setAvatar('')}>恢复默认头像</button>}
+        </div>
+      </div>
       <Field label="显示名"><input value={name} maxLength={30} onChange={(e) => setName(e.target.value)} /></Field>
       <div style={{ height: 10 }} />
       <Field label="简介" hint="最多 200 字"><textarea rows={3} maxLength={200} value={bio} onChange={(e) => setBio(e.target.value)} /></Field>
@@ -1582,7 +1609,8 @@ function PublicProfileSection({ me, notify, onSaved }: { me: Me; notify: PagePro
       </div>
 
       <h3 className="set-sub">主页展示</h3>
-      <p className="hint" style={{ marginTop: 0 }}>选择主页上展示哪些研究成果，并调整顺序；隐藏的板块任何人都看不到。</p>
+      <p className="hint" style={{ marginTop: 0 }}>选择展示板块，或手动挑选具体成果。所有内容仍遵循原有可见性权限。</p>
+      <input type="search" aria-label="搜索可展示成果" placeholder="搜索策略、回测、因子或模型" value={catalogSearch} onChange={(e) => setCatalogSearch(e.target.value)} />
       <ul className="showcase-edit">
         {showcase.items.map((it, i) => (
           <li key={it.key}>
@@ -1594,6 +1622,22 @@ function PublicProfileSection({ me, notify, onSaved }: { me: Me; notify: PagePro
               <button type="button" className="link" disabled={i === 0} title="上移" onClick={() => move(i, -1)}>↑</button>
               <button type="button" className="link" disabled={i === showcase.items.length - 1} title="下移" onClick={() => move(i, 1)}>↓</button>
             </span>
+            {it.show && <div className="showcase-selection">
+              <select aria-label={`${SHOWCASE_LABEL[it.key]}展示方式`} value={it.selection || 'latest'} onChange={(e) => setShowcase(prev => ({ ...prev, items: prev.items.map((x, k) => k === i ? { ...x, selection: e.target.value as 'latest' | 'selected' } : x) }))}>
+                <option value="latest">自动展示最新成果</option><option value="selected">手动选择具体成果</option>
+              </select>
+              {it.selection === 'selected' && <div className="showcase-picker">
+                <p className="hint">已选 {it.ids?.length || 0} 项，按勾选顺序展示；每块最多显示 {showcase.limit} 项。</p>
+                {!catalog ? <p className="hint">{catalogError || '正在读取可选成果…'}</p> : (catalog.sections.find(s => s.key === it.key)?.items || []).filter(row => !catalogSearch || `${row.title} ${row.id} ${row.sub}`.toLowerCase().includes(catalogSearch.toLowerCase())).map(row => <label className="showcase-choice" key={row.id}>
+                  <input type="checkbox" checked={!!row.id && !!it.ids?.includes(row.id)} onChange={(e) => {
+                    if (!row.id) return
+                    const checked = e.target.checked
+                    setShowcase(prev => ({ ...prev, items: prev.items.map((x, k) => k !== i ? x : { ...x, ids: checked ? [...(x.ids || []), row.id!].slice(0, 100) : (x.ids || []).filter(id => id !== row.id) }) }))
+                  }} /><span><b>{row.title}</b><small>{row.sub}{row.at ? ` · ${fmtTime(row.at)}` : ''}</small></span>
+                </label>)}
+                {catalog && !catalog.sections.find(s => s.key === it.key)?.items.length && <p className="hint">暂无可选择的成果</p>}
+              </div>}
+            </div>}
           </li>
         ))}
       </ul>
@@ -1603,7 +1647,7 @@ function PublicProfileSection({ me, notify, onSaved }: { me: Me; notify: PagePro
           onChange={(e) => setShowcase((prev) => ({ ...prev, limit: Math.max(1, Math.min(12, Number(e.target.value) || 1)) }))} />
       </Field>
       <div className="button-row" style={{ marginTop: 14 }}>
-        <button className="button primary" disabled={busy || !name.trim()} onClick={save}>{busy ? '保存中…' : '保存资料与展示'}</button>
+        <button className="button primary" disabled={busy || uploadingAvatar || !name.trim()} onClick={save}>{busy ? '保存中…' : '保存资料与展示'}</button>
       </div>
       {rotOpen && (
         <Modal title="销毁并重新生成 QuantLab UID" onClose={() => setRotOpen(false)} width={460}

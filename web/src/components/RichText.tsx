@@ -306,6 +306,10 @@ export function RichEditor({
     const head = value.slice(0, pos)
     const mq = mentionQuery(head)
     if (!mq) return
+    const rest = head.slice(0, mq[0]) + value.slice(pos)
+    if (o.name === 'QuantLab Bot' && rest.includes('@QuantLab Bot')) {
+      onChange(rest); setMention(null); el?.focus(); return
+    }
     onChange(head.slice(0, mq[0]) + `@${o.name} ` + value.slice(pos))
     setMention(null)
     requestAnimationFrame(() => { el?.focus(); const p = mq[0] + o.name.length + 2; el?.setSelectionRange(p, p) })

@@ -17,7 +17,7 @@ export interface Ref {
   size?: number
 }
 
-export interface Member { user_id: string; name: string; username?: string; role: string; muted?: boolean; online?: boolean; avatar_color?: string }
+export interface Member { user_id: string; name: string; username?: string; role: string; muted?: boolean; online?: boolean; avatar_url?: string; avatar_color?: string }
 export type GroupRole = 'owner' | 'admin' | 'member'
 export interface Group {
   id: string
@@ -41,7 +41,7 @@ export interface Group {
   last_message: { body: string; author: string; at: number } | null
   ws_limits: LimitRule[]
   member_limits: LimitRule[]
-  members?: { user_id: string; name: string; role: GroupRole; joined_at: number; avatar_color?: string; kind?: 'user' | 'bot'; is_bot?: boolean }[]
+  members?: { user_id: string; name: string; role: GroupRole; joined_at: number; avatar_url?: string; avatar_color?: string; kind?: 'user' | 'bot'; is_bot?: boolean }[]
 }
 export interface BotModelOption {
   target: string
@@ -204,7 +204,7 @@ export interface DirectoryUser {
   username: string
   quantlab_uid: string
   bio: string
-  avatar_color: string
+  avatar_url?: string; avatar_color: string
   role: string
 }
 export interface DiscoverResult { query: string; groups: Group[]; users: DirectoryUser[] }

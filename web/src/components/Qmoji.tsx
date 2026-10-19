@@ -286,7 +286,7 @@ export function QmojiPicker({ onPick, small, placement = 'down', label = '表情
 
   return (
     <div className={`qmoji-anchor${open ? ' open' : ''}`} ref={root}>
-      <button ref={trigger} type="button" className={`rt-btn qmoji-trigger${small ? ' small' : ''}`} title={title}
+      <button ref={trigger} type="button" className={`rt-btn qmoji-trigger${small ? ' small' : ''}`} title={title} aria-label={title}
         aria-haspopup="dialog" aria-expanded={open} onMouseDown={(e) => e.preventDefault()} onClick={() => setOpen(!open)}>
         <Qmoji id="agree" size={16} animated={false} />
         {!small && <span>{label}</span>}

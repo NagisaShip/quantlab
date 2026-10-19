@@ -338,6 +338,9 @@ def me() -> dict:
             "name": ctx.user_name,
             "is_admin": ctx.is_admin,
             "is_primary_admin": bool(ctx.is_admin and s.auth.primary_admin_id() == ctx.user_id),
+            "avatar_url": s.social.profile(ctx.workspace_id or "", ctx.user_id or "").get("avatar_url", "")
+            if ctx.workspace_id
+            else "",
             "avatar_color": s.social.profile(ctx.workspace_id or "", ctx.user_id or "").get("avatar_color", "#2E5C9A")
             if s.social and ctx.workspace_id
             else "#2E5C9A",

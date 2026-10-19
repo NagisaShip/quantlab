@@ -10,7 +10,8 @@ export const AVATAR_COLORS = [
   { color: '#3F4A3C', label: '石墨绿' },
 ]
 
-export function UserAvatar({ color = '#2E5C9A', size = 30, title, className = '' }: {
+export function UserAvatar({ color = '#2E5C9A', size = 30, title, src, className = '' }: {
+  src?: string
   color?: string
   size?: number
   title?: string
@@ -24,7 +25,7 @@ export function UserAvatar({ color = '#2E5C9A', size = 30, title, className = ''
   } as CSSProperties
   return (
     <span className={`user-avatar ${className}`.trim()} style={style} title={title}>
-      <QuantBot size={Math.round(size * .7)} state="idle" motion="none" variant={size >= 32 ? 'full' : 'simple'} title={title || 'QuantLab Bot 用户头像'} />
+      {src ? <img src={src} alt={title || '用户头像'} style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <QuantBot size={Math.round(size * .7)} state="idle" motion="none" variant={size >= 32 ? 'full' : 'simple'} title={title || 'QuantLab Bot 用户头像'} />}
     </span>
   )
 }

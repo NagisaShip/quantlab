@@ -535,12 +535,13 @@ class CollabService:
         with self.db.tx() as t:
             t.execute(
                 "INSERT INTO collab_groups (id, workspace_id, name, description, visibility, owner_id, settings, "
-                "created_at) VALUES (?,?,?,?,?,?,?,?)",
+                "created_at) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT (id) DO UPDATE SET archived_at=NULL",
                 (gid, ws, f"私聊 {gid[-6:]}", "", "private", a, jdump({"dm": [a, b]}), now),
             )
             for uid in (a, b):
                 t.execute(
-                    "INSERT INTO collab_group_members (group_id, user_id, role, joined_at) VALUES (?,?,?,?)",
+                    "INSERT INTO collab_group_members (group_id, user_id, role, joined_at) VALUES (?,?,?,?) "
+                    "ON CONFLICT (group_id, user_id) DO NOTHING",
                     (gid, uid, "member", now),
                 )
         return gid

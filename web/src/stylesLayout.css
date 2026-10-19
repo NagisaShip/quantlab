@@ -361,3 +361,16 @@ pre, code, .code-editor, .code-view, .cm-editor, .qb-math-src,
   .segments button { margin-block: 1px; }
   .bt-tabs button { height: auto; min-height: 30px; padding-block: 5px; }
 }
+
+/* Keep wide data inside its own scroll region at every sidebar/window width. */
+.panel, .panel-body, .panel > div, .table-wrap, .qb-table-scroll { min-width: 0; max-width: 100%; }
+.table-wrap, .panel-body:has(> table), .panel > div:has(> table) { overflow-x: auto; overscroll-behavior-x: contain; }
+.table-wrap > table:not([data-mobile-cards="true"]) { min-width: max-content; width: 100%; }
+.backtest-detail { min-width: 0; max-width: 100%; }
+.backtest-detail .panel > div { overflow-x: auto; }
+.backtest-detail .tabs { max-width: 100%; overflow-x: auto; }
+@media (max-width: 900px) {
+  .backtest-detail .grid-2, .backtest-detail .grid-3 { grid-template-columns: minmax(0, 1fr); }
+  .backtest-detail .editor-toolbar { gap: 8px; }
+  .backtest-detail .toolbar-title { flex: 1 1 100%; white-space: normal; }
+}

@@ -470,8 +470,8 @@
 .lp-catalog-blocks .qb-metric-value { font-size: 15px; }
 .lp-catalog-blocks .qb-claims { gap: 4px; }
 .lp-catalog-blocks .qb-claims li { padding: 4px 7px; font-size: 10.5px; }
-.lp-catalog-blocks .qb-chart svg { max-height: 135px; }
-.lp-catalog-blocks .qb-chart-plot { max-height: 135px; overflow: hidden; }
+.lp-catalog-blocks .qb-chart svg { width: 100%; height: auto; max-height: none; }
+.lp-catalog-blocks .qb-chart-plot { height: auto; max-height: none; overflow: visible; }
 .lp-catalog-blocks .qb-steps li { padding-bottom: 8px; font-size: 11px; }
 .lp-catalog-blocks .md { display: grid; gap: 10px; }
 @keyframes lp-item-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
@@ -655,3 +655,39 @@
 }
 .lp-drawer-inner { width: 100%; max-width: 380px; display: grid; gap: 14px; }
 .lp-drawer-bot { animation: lp-drop .9s var(--ease-out) .1s backwards; transform-origin: 50% 100%; }
+
+/* Let each screen grow with its content, including short laptop viewports. */
+.lp-deck { scroll-snap-type: y proximity; scrollbar-width: thin; }
+.lp-screen { height: auto; min-height: 100%; flex-shrink: 0; }
+.lp-screen.lp-section { padding-top: clamp(36px, 7vh, 84px); padding-bottom: clamp(40px, 7vh, 80px); }
+.lp-screen.lp-demo { padding-top: clamp(32px, 6vh, 72px); }
+.lp-screen .lp-catalog-page { grid-template-rows: auto auto; }
+.lp-screen .lp-catalog-live { grid-template-columns: minmax(0, 1fr); }
+.lp-screen .lp-catalog-showcase { align-self: stretch; }
+.lp-screen .lp-catalog-head p { max-width: 64ch; }
+.lp-screen .lp-catalog-grid { gap: 10px; }
+.lp-screen .lp-catalog-item { padding: 12px; }
+.lp-screen .lp-catalog-item p { line-height: 1.65; }
+.lp-screen .lp-catalog-blocks .qb-chart-plot { min-height: 150px; }
+.lp-screen .lp-catalog-showcase-head { flex-wrap: wrap; }
+@media (max-width: 960px) {
+  .lp-screen .lp-catalog-live { grid-template-columns: minmax(0, 1fr); }
+  .lp-screen .lp-catalog-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 540px) {
+  .lp-screen .lp-catalog-grid { grid-template-columns: minmax(0, 1fr); }
+  .lp-screen .lp-catalog-head { align-items: flex-start; }
+}
+
+#scenarios > div:last-child { flex: none; }
+.lp-screen .lp-scenario, .lp-screen .lp-scenario-stage { height: auto; }
+.lp-screen .lp-scenario-demo { grid-template-rows: auto auto auto; }
+.lp-screen .lp-scenario-demo-body { max-height: none; overflow: visible; }
+.lp-screen .lp-scenario-demo-body .qb-chart-plot { height: auto; min-height: 180px; }
+
+@media (min-width: 961px) {
+  .lp-scenario-demo .qb-metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+  .lp-scenario-demo .qb-metric { padding: 8px; }
+  .lp-scenario-demo .qb-metric-label { font-size: 10px; }
+  .lp-scenario-demo .qb-metric-value { font-size: 18px; }
+}

@@ -18660,6 +18660,27 @@
        "type": "string",
        "title": "Identifier"
       }
+     },
+     {
+      "name": "catalog",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean",
+       "default": false,
+       "title": "Catalog"
+      }
+     },
+     {
+      "name": "q",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "maxLength": 100,
+       "default": "",
+       "title": "Q"
+      }
      }
     ],
     "responses": {
@@ -31767,6 +31788,18 @@
    },
    "ProfileIn": {
     "properties": {
+     "avatar_url": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 200
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Avatar Url"
+     },
      "name": {
       "type": "string",
       "maxLength": 30,
@@ -33928,6 +33961,23 @@
       "type": "boolean",
       "title": "Show",
       "default": true
+     },
+     "selection": {
+      "type": "string",
+      "enum": [
+       "latest",
+       "selected"
+      ],
+      "title": "Selection",
+      "default": "latest"
+     },
+     "ids": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array",
+      "maxItems": 100,
+      "title": "Ids"
      }
     },
     "type": "object",

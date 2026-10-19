@@ -129,13 +129,14 @@ function prepareSankey(code: string): PreparedMermaid {
       if (!name || !NON_ASCII.test(name)) return raw
       let token = byName.get(name)
       if (!token) {
-        token = `QLSANK${seq++}`
+        do { token = `QLSANK${seq++}X` } while (code.includes(token))
         byName.set(name, token)
         restoreMap.set(token, name)
       }
       return raw.replace(name, token)
     }
-    return [mapField(fields[0]), mapField(fields[1]), fields[2]].join(',')
+    const csv = (v: string) => /[,"\r\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v
+    return [mapField(fields[0]), mapField(fields[1]), fields[2]].map(csv).join(',')
   })
   return {
     code: out.join('\n'),
