@@ -29,7 +29,26 @@ export interface WorkspaceSettings {
   }
 }
 export interface Member { user_id: string; name: string; email: string; role: Role; status: string; created_at: number; last_login_at: number | null }
-export interface Invite { id: string; role: Role; email?: string | null; expires_at: number; created_at: number; code?: string; used_at?: number | null }
+export type InviteStatus = 'active' | 'used' | 'expired' | 'revoked'
+export interface Invite {
+  id: string
+  role: Role
+  email?: string | null
+  expires_at: number
+  created_at: number
+  code?: string
+  used_at?: number | null
+  used_by?: string | null
+  used_by_name?: string | null
+  used_by_email?: string | null
+  revoked_at?: number | null
+  created_by?: string
+  created_by_name?: string | null
+  expires_in_hours?: number
+  status: InviteStatus
+  invited_count: number
+  remaining_ms?: number
+}
 export interface AuditItem { id: number; ts: number; action: string; object_type: string; object_id: string; user_name: string | null; ip: string; trace_id: string; details: Record<string, unknown> }
 
 export type RunState = 'QUEUED' | 'RUNNING' | 'PAUSED' | 'COMPLETED' | 'FAILED' | 'CANCELED' | 'RECOVERING'
@@ -214,7 +233,7 @@ export const v4 = {
   createWorkspace: (name: string) => post<{ id: string }>('/api/workspaces', { name }),
   joinWorkspace: (code: string) => post<{ id: string }>('/api/workspaces/join', { code }),
   members: () => get<{ members: Member[]; invites: Invite[] }>('/api/workspace/members'),
-  invite: (role: Role, email?: string) => post<{ invite: Invite; note: string }>('/api/workspace/invites', { role, email: email || undefined }),
+  invite: (role: Role, email?: string, expiresInHours = 168) => post<{ invite: Invite; note: string }>('/api/workspace/invites', { role, email: email || undefined, expires_in_hours: expiresInHours }),
   revokeInvite: (id: string) => del<{ ok: boolean }>(`/api/workspace/invites/${id}`),
   setRole: (userId: string, role: Role) => put<{ ok: boolean }>(`/api/workspace/members/${userId}`, { role }),
   removeMember: (userId: string) => del<{ ok: boolean }>(`/api/workspace/members/${userId}`),

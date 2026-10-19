@@ -28,7 +28,8 @@ from .db import Database, IntegrityError, jdump, jload, now_ms
 from .errors import AppError, ErrorCode
 
 SESSION_TTL_MS = 14 * 24 * 3600 * 1000
-INVITE_TTL_MS = 7 * 24 * 3600 * 1000
+INVITE_TTL_HOURS = 7 * 24
+INVITE_MAX_TTL_HOURS = 365 * 24
 ROLES = ("admin", "member", "reviewer")
 
 # T11 · 双因素登录：验证码错误锁定策略（5 次 / 15 分钟）
@@ -254,11 +255,17 @@ class AuthService:
             except IntegrityError as exc:
                 raise AppError(ErrorCode.CONFLICT, "该邮箱或用户名已注册") from exc
             if invite is not None:
+                reserved = t.execute(
+                    "UPDATE invites SET used_by=?, used_at=? "
+                    "WHERE id=? AND used_at IS NULL AND revoked_at IS NULL AND expires_at>=?",
+                    (user_id, now, invite["id"], now),
+                )
+                if not reserved:
+                    raise AppError(ErrorCode.PERMISSION_DENIED, "邀请码无效、已使用或已过期")
                 t.execute(
                     "INSERT INTO memberships (workspace_id, user_id, role, created_at) VALUES (?,?,?,?)",
                     (invite["workspace_id"], user_id, invite["role"], now),
                 )
-                t.execute("UPDATE invites SET used_by=?, used_at=? WHERE id=?", (user_id, now, invite["id"]))
                 workspace_id = invite["workspace_id"]
             else:
                 workspace_id = self._create_workspace(t, owner_id=user_id, name=f"{name} 的工作区")
@@ -952,13 +959,34 @@ class AuthService:
             )
 
     def create_invite(
-        self, *, workspace_id: str, role: str, created_by: str, email: str | None = None
+        self,
+        *,
+        workspace_id: str,
+        role: str,
+        created_by: str,
+        email: str | None = None,
+        expires_in_hours: int = INVITE_TTL_HOURS,
     ) -> dict[str, Any]:
+        """Create a single-use invitation with an explicit lifetime.
+
+        One code can be consumed exactly once. The atomic reservation in
+        register()/join_with_invite() prevents two concurrent redemptions.
+        """
         if role not in ROLES:
             raise AppError(ErrorCode.INVALID_PARAMETER, f"角色只能是 {', '.join(ROLES)}")
+        try:
+            hours = int(expires_in_hours)
+        except (TypeError, ValueError) as exc:
+            raise AppError(ErrorCode.INVALID_PARAMETER, "有效期必须是整数小时") from exc
+        if hours < 1 or hours > INVITE_MAX_TTL_HOURS:
+            raise AppError(
+                ErrorCode.INVALID_PARAMETER,
+                f"有效期需在 1–{INVITE_MAX_TTL_HOURS} 小时之间",
+            )
         code = secrets.token_urlsafe(12)
         invite_id = uuid.uuid4().hex[:12]
         now = now_ms()
+        expires_at = now + hours * 3600 * 1000
         self.db.execute(
             "INSERT INTO invites (id, code_hash, workspace_id, role, email, created_by, created_at, expires_at) "
             "VALUES (?,?,?,?,?,?,?,?)",
@@ -970,26 +998,64 @@ class AuthService:
                 (email or "").strip().lower() or None,
                 created_by,
                 now,
-                now + INVITE_TTL_MS,
+                expires_at,
             ),
         )
-        # 明文邀请码只在创建时返回一次
-        return {"id": invite_id, "code": code, "role": role, "email": email, "expires_at": now + INVITE_TTL_MS}
+        # Plaintext is returned only once; only its hash is stored.
+        return {
+            "id": invite_id,
+            "code": code,
+            "role": role,
+            "email": (email or "").strip().lower() or None,
+            "created_by": created_by,
+            "created_at": now,
+            "expires_at": expires_at,
+            "expires_in_hours": hours,
+            "status": "active",
+            "invited_count": 0,
+        }
 
     def invites(self, workspace_id: str) -> list[dict[str, Any]]:
-        return self.db.fetchall(
-            "SELECT id, role, email, created_at, expires_at, used_at, revoked_at FROM invites WHERE workspace_id=? "
-            "ORDER BY created_at DESC",
+        rows = self.db.fetchall(
+            "SELECT i.id, i.role, i.email, i.created_by, i.created_at, i.expires_at, "
+            "i.used_at, i.used_by, i.revoked_at, "
+            "creator.name AS created_by_name, invitee.name AS used_by_name, invitee.email AS used_by_email "
+            "FROM invites i "
+            "LEFT JOIN users creator ON creator.id=i.created_by "
+            "LEFT JOIN users invitee ON invitee.id=i.used_by "
+            "WHERE i.workspace_id=? ORDER BY i.created_at DESC",
             (workspace_id,),
         )
+        now = now_ms()
+        for row in rows:
+            if row.get("used_at"):
+                status = "used"
+            elif row.get("revoked_at"):
+                status = "revoked"
+            elif int(row.get("expires_at") or 0) <= now:
+                status = "expired"
+            else:
+                status = "active"
+            row["status"] = status
+            row["invited_count"] = 1 if row.get("used_by") else 0
+            row["remaining_ms"] = max(0, int(row.get("expires_at") or 0) - now) if status == "active" else 0
+        return rows
 
     def revoke_invite(self, workspace_id: str, invite_id: str) -> None:
-        n = self.db.execute(
-            "UPDATE invites SET revoked_at=? WHERE id=? AND workspace_id=? AND used_at IS NULL",
+        row = self.db.fetchone(
+            "SELECT used_at, revoked_at FROM invites WHERE id=? AND workspace_id=?",
+            (invite_id, workspace_id),
+        )
+        if row is None:
+            raise AppError(ErrorCode.NOT_FOUND, "邀请码不存在")
+        if row.get("used_at"):
+            raise AppError(ErrorCode.CONFLICT, "邀请码已使用，无法撤销；如需移出成员请使用成员管理")
+        if row.get("revoked_at"):
+            raise AppError(ErrorCode.CONFLICT, "邀请码已撤销")
+        self.db.execute(
+            "UPDATE invites SET revoked_at=? WHERE id=? AND workspace_id=? AND used_at IS NULL AND revoked_at IS NULL",
             (now_ms(), invite_id, workspace_id),
         )
-        if not n:
-            raise AppError(ErrorCode.NOT_FOUND, "邀请不存在或已使用")
 
     def join_with_invite(self, user_id: str, code: str) -> str:
         now = now_ms()
@@ -998,8 +1064,15 @@ class AuthService:
                 "SELECT * FROM invites WHERE code_hash=? AND used_at IS NULL AND revoked_at IS NULL",
                 (_token_hash(code.strip()),),
             )
-            if inv is None or inv["expires_at"] < now:
+            if inv is None or int(inv["expires_at"]) <= now:
                 raise AppError(ErrorCode.PERMISSION_DENIED, "邀请码无效或已过期")
+            reserved = t.execute(
+                "UPDATE invites SET used_by=?, used_at=? "
+                "WHERE id=? AND used_at IS NULL AND revoked_at IS NULL AND expires_at>=?",
+                (user_id, now, inv["id"], now),
+            )
+            if not reserved:
+                raise AppError(ErrorCode.PERMISSION_DENIED, "邀请码已被使用或已撤销")
             existing = t.fetchone(
                 "SELECT status FROM memberships WHERE workspace_id=? AND user_id=?", (inv["workspace_id"], user_id)
             )
@@ -1013,7 +1086,6 @@ class AuthService:
                     "INSERT INTO memberships (workspace_id, user_id, role, created_at) VALUES (?,?,?,?)",
                     (inv["workspace_id"], user_id, inv["role"], now),
                 )
-            t.execute("UPDATE invites SET used_by=?, used_at=? WHERE id=?", (user_id, now, inv["id"]))
             return inv["workspace_id"]
 
 

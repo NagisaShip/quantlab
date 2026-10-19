@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from quant_agent.api.app import create_app
 from quant_agent.api.deps import AppServices, get_services, reset_services, set_services
-from quant_agent.platform.db import Database
+from quant_agent.platform.db import Database, now_ms
 
 
 @pytest.fixture()
@@ -156,6 +156,61 @@ def test_member_management_and_last_admin_guard(app):
         _assert_error(admin.put(f"/api/workspace/members/{me['user']['id']}", json={"role": "member"}), 409, "CONFLICT")
         mid = next(x["user_id"] for x in members if x["role"] == "member")
         assert admin.put(f"/api/workspace/members/{mid}", json={"role": "reviewer"}).status_code == 200
+
+
+def test_invite_is_single_use_has_expiry_and_can_be_revoked(app):
+    with _client(app) as admin:
+        login(admin)
+        r = admin.post(
+            "/api/workspace/invites",
+            json={"role": "member", "email": "one@example.com", "expires_in_hours": 2},
+        )
+        assert r.status_code == 200, r.text
+        created = r.json()["invite"]
+        assert created["status"] == "active" and created["invited_count"] == 0
+        lifetime = created["expires_at"] - created["created_at"]
+        assert 1.9 * 3600 * 1000 <= lifetime <= 2.1 * 3600 * 1000
+
+        listed = admin.get("/api/workspace/members").json()["invites"]
+        row = next(i for i in listed if i["id"] == created["id"])
+        assert row["status"] == "active" and row["invited_count"] == 0
+        assert row["created_by_name"] == "管理员"
+
+        with _client(app) as member:
+            login(member, email="one@example.com", password="Member123!", name="One", invite_code=created["code"])
+
+        listed = admin.get("/api/workspace/members").json()["invites"]
+        used = next(i for i in listed if i["id"] == created["id"])
+        assert used["status"] == "used" and used["invited_count"] == 1
+        assert used["used_by_email"] == "one@example.com" and used["used_by_name"] == "One"
+
+        with _client(app) as second:
+            second.headers.update({"X-Requested-With": "test"})
+            r = second.post(
+                "/api/auth/register",
+                json={"email": "two@example.com", "password": "Member123!", "invite_code": created["code"]},
+            )
+            _assert_error(r, 403, "PERMISSION_DENIED")
+
+        _assert_error(admin.delete(f"/api/workspace/invites/{created['id']}"), 409, "CONFLICT")
+
+        r = admin.post(
+            "/api/workspace/invites",
+            json={"role": "reviewer", "expires_in_hours": 6},
+        )
+        active = r.json()["invite"]
+        assert admin.delete(f"/api/workspace/invites/{active['id']}").status_code == 200
+        listed = admin.get("/api/workspace/members").json()["invites"]
+        revoked = next(i for i in listed if i["id"] == active["id"])
+        assert revoked["status"] == "revoked" and revoked["invited_count"] == 0
+
+        r = admin.post("/api/workspace/invites", json={"role": "member", "expires_in_hours": 1})
+        expired = r.json()["invite"]
+        get_services().db.execute("UPDATE invites SET expires_at=? WHERE id=?", (now_ms() - 1, expired["id"]))
+        listed = admin.get("/api/workspace/members").json()["invites"]
+        expired_row = next(i for i in listed if i["id"] == expired["id"])
+        assert expired_row["status"] == "expired"
+        assert admin.delete(f"/api/workspace/invites/{expired['id']}").status_code == 200
 
 
 # ---------------- CSRF ----------------

@@ -29223,6 +29223,14 @@
        }
       ],
       "title": "Email"
+     },
+     "expires_in_hours": {
+      "type": "integer",
+      "maximum": 8760.0,
+      "minimum": 1.0,
+      "title": "Expires In Hours",
+      "description": "邀请码有效期（小时），默认 7 天",
+      "default": 168
      }
     },
     "type": "object",

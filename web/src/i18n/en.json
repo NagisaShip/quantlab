@@ -5788,5 +5788,16 @@
  "全屏查看图表（默认横屏）": "View chart fullscreen (landscape by default)",
  "页面只显示掩码；凭证加密保存，不会写入日志。": "Only masked values are shown; credentials are encrypted and never written to logs.",
  "按研究保障、导入导出、协作复用、研究配置和运行入口集中浏览。": "Browse research assurance, import/export, collaboration, research setup and runtime entry points.",
- "安全": "Safety"
+ "安全": "Safety",
+ "邀请码管理": "Invite code management",
+ "可使用": "Usable",
+ "有效期": "Valid for",
+ "正在使用": "Active",
+ "生成一次性邀请码": "Generate single-use invite",
+ "筛选邀请码": "Filter invite codes",
+ "6 小时": "6 hours",
+ "3 天": "3 days",
+ "尚未使用": "Not used yet",
+ "没有符合筛选条件的邀请码。": "No invite codes match this filter.",
+ "每个邀请码只能成功注册 1 人。邀请码明文只在创建时显示一次，平台只保存哈希；管理员可随时撤销未使用的码。": "Each invite code can register exactly one person. The plaintext code is shown only once; only its hash is stored. Admins can revoke an unused code at any time."
 }

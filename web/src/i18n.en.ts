@@ -778,4 +778,8 @@ export const EN_PATTERNS: [string, string][] = [
   ['回复 @(.+?)：', 'Reply to @$1:'],
   ['合成行情（旧设置）(.*)', 'Synthetic data (legacy setting)$1'],
   ['未接入数据(.*)', 'No market data$1'],
+  ['剩余约 (\d+) 天', 'About $1 days left'],
+  ['剩余约 (\d+) 小时', 'About $1 hours left'],
+  ['由 (.+?) 创建', 'Created by $1'],
+  ['请通过安全渠道发给对方；每个邀请码只能注册 1 人。有效期至 (.+?)，关闭后无法再次查看。', 'Send it through a secure channel; each invite can register only one person. Valid until $1. It cannot be viewed again after closing.'],
 ]

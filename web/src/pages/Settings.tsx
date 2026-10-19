@@ -24,6 +24,22 @@ const TABS: { key: Tab; label: string }[] = SETTINGS_GROUPS
   .filter((item) => item.key.startsWith('settings/'))
   .map((item) => ({ key: item.key.slice('settings/'.length) as Tab, label: item.label }))
 const ROLE_LABEL: Record<Role, string> = { admin: '管理员', member: '成员', reviewer: '审阅者（只读）' }
+const INVITE_STATUS_LABEL: Record<Invite['status'], string> = { active: '可使用', used: '已使用', expired: '已过期', revoked: '已撤销' }
+const INVITE_STATUS_TONE: Record<Invite['status'], string> = { active: 'ok', used: '', expired: 'warn', revoked: 'fail' }
+const INVITE_EXPIRY_OPTIONS = [
+  { hours: 1, label: '1 小时' },
+  { hours: 6, label: '6 小时' },
+  { hours: 24, label: '1 天' },
+  { hours: 72, label: '3 天' },
+  { hours: 168, label: '7 天' },
+  { hours: 720, label: '30 天' },
+  { hours: 2160, label: '90 天' },
+]
+function inviteRemainingText(i: Invite) {
+  if (i.status !== 'active') return ''
+  const hours = Math.max(1, Math.ceil((i.remaining_ms ?? Math.max(0, i.expires_at - Date.now())) / 3_600_000))
+  return hours >= 48 ? `剩余约 ${Math.ceil(hours / 24)} 天` : `剩余约 ${hours} 小时`
+}
 
 export default function SettingsPage({ tab, me, onNavigate, notify, onMeChanged }: PageProps & { tab?: string; me: Me; onMeChanged: () => void }) {
   const current = (TABS.find((t) => t.key === tab)?.key ?? 'workspace') as Tab
@@ -515,6 +531,8 @@ function MembersTab({ me, isAdmin, notify, onNavigate }: {
   const [mine, setMine] = useState<ModelUsage | null>(null)
   const [role, setRole] = useState<Role>('member')
   const [email, setEmail] = useState('')
+  const [expiryHours, setExpiryHours] = useState(168)
+  const [inviteFilter, setInviteFilter] = useState<'all' | Invite['status']>('all')
   const [created, setCreated] = useState<Invite | null>(null)
   const [policies, setPolicies] = useState<Record<string, MemberModelPolicy>>({})
   const [editing, setEditing] = useState<{ m: MemberModelPolicy; limits: LimitRule[] } | null>(null)
@@ -525,6 +543,8 @@ function MembersTab({ me, isAdmin, notify, onNavigate }: {
   }, [notify, isAdmin])
   useEffect(load, [load])
   if (!data) return <Loading />
+  const inviteCounts = data.invites.reduce<Record<Invite['status'], number>>((acc, i) => ({ ...acc, [i.status]: acc[i.status] + 1 }), { active: 0, used: 0, expired: 0, revoked: 0 })
+  const visibleInvites = inviteFilter === 'all' ? data.invites : data.invites.filter((i) => i.status === inviteFilter)
   const act = async (fn: () => Promise<unknown>, ok: string) => {
     try { await fn(); notify(ok); load() } catch (e) { notify((e as Error).message, true) }
   }
@@ -612,39 +632,68 @@ function MembersTab({ me, isAdmin, notify, onNavigate }: {
       {isAdmin && <DefaultLimits notify={notify} />}
       {isAdmin && (
         <>
-          <h3 className="section-title" style={{ marginTop: 22 }}>邀请成员</h3>
-          <div className="field-row" style={{ maxWidth: 640 }}>
+          <h3 className="section-title" style={{ marginTop: 22 }}>邀请码管理</h3>
+          <p className="hint" style={{ marginTop: 0 }}>
+            每个邀请码只能成功注册 1 人。邀请码明文只在创建时显示一次，平台只保存哈希；管理员可随时撤销未使用的码。
+          </p>
+          <div className="invite-stats" aria-label="邀请码统计">
+            <span><b>{inviteCounts.active}</b><small>正在使用</small></span>
+            <span><b>{inviteCounts.used}</b><small>已邀请</small></span>
+            <span><b>{inviteCounts.expired}</b><small>已过期</small></span>
+            <span><b>{inviteCounts.revoked}</b><small>已撤销</small></span>
+          </div>
+          <div className="field-row invite-create-row">
             <Field label="角色"><select value={role} onChange={(e) => setRole(e.target.value as Role)}>
               {(['member', 'reviewer', 'admin'] as Role[]).map((r) => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
             </select></Field>
             <Field label="限定邮箱（可选）"><input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="只允许该邮箱使用" /></Field>
+            <Field label="有效期"><select value={expiryHours} onChange={(e) => setExpiryHours(Number(e.target.value))}>
+              {INVITE_EXPIRY_OPTIONS.map((o) => <option key={o.hours} value={o.hours}>{o.label}</option>)}
+            </select></Field>
           </div>
           <div className="button-row" style={{ marginTop: 10 }}>
             <button className="button primary small" onClick={async () => {
-              try { const r = await v4.invite(role, email); setCreated(r.invite); setEmail(''); load() } catch (e) { notify((e as Error).message, true) }
-            }}>生成邀请码</button>
+              try { const r = await v4.invite(role, email, expiryHours); setCreated(r.invite); setEmail(''); load() } catch (e) { notify((e as Error).message, true) }
+            }}>生成一次性邀请码</button>
           </div>
           {data.invites.length > 0 && (
-            <div className="table-wrap" style={{ marginTop: 14 }}>
-              <table>
-                <thead><tr><th>邀请</th><th>角色</th><th>限定邮箱</th><th>到期</th><th>状态</th><th /></tr></thead>
-                <tbody>
-                  {data.invites.map((i) => (
-                    <tr key={i.id}>
-                      <td className="mono">{i.id}</td><td>{ROLE_LABEL[i.role]}</td><td>{i.email ?? '—'}</td><td>{fmtTime(i.expires_at)}</td>
-                      <td>{i.used_at ? '已使用' : '有效'}</td>
-                      <td className="right">{!i.used_at && <button className="button small" onClick={() => act(() => v4.revokeInvite(i.id), '已撤销')}>撤销</button>}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <>
+              <div className="seg seg-sm invite-filter" role="tablist" aria-label="筛选邀请码">
+                {(['all', 'active', 'used', 'expired', 'revoked'] as const).map((key) => (
+                  <button key={key} type="button" role="tab" aria-selected={inviteFilter === key} onClick={() => setInviteFilter(key)}>
+                    {key === 'all' ? '全部' : INVITE_STATUS_LABEL[key]}
+                    {key !== 'all' && inviteCounts[key] > 0 ? ` ${inviteCounts[key]}` : ''}
+                  </button>
+                ))}
+              </div>
+              <div className="table-wrap invite-table-wrap">
+                <table className="invite-table" data-mobile-cards="true">
+                  <thead><tr><th>邀请码</th><th>角色</th><th>限定邮箱</th><th>有效期</th><th>已邀请</th><th>状态</th><th /></tr></thead>
+                  <tbody>
+                    {visibleInvites.map((i) => (
+                      <tr key={i.id}>
+                        <td className="mono mobile-card-title" data-label="邀请码" title={i.id}>{i.id.slice(0, 8)}<small className="invite-sub">{i.created_by_name ? `由 ${i.created_by_name} 创建` : ''}</small></td>
+                        <td data-label="角色">{ROLE_LABEL[i.role]}</td>
+                        <td data-label="限定邮箱">{i.email ?? '不限'}</td>
+                        <td data-label="有效期">{fmtTime(i.expires_at)}<small className="invite-sub">{inviteRemainingText(i)}</small></td>
+                        <td data-label="已邀请"><b>{i.invited_count} 人</b><small className="invite-sub">{i.used_by_name || i.used_by_email || '尚未使用'}</small></td>
+                        <td className="mobile-card-leading" data-label="状态"><Tag tone={INVITE_STATUS_TONE[i.status]}>{INVITE_STATUS_LABEL[i.status]}</Tag></td>
+                        <td className="right mobile-card-actions" data-label="操作">{(i.status === 'active' || i.status === 'expired') && (
+                          <button className="button small danger" onClick={() => act(() => v4.revokeInvite(i.id), '邀请码已撤销')}>撤销</button>
+                        )}</td>
+                      </tr>
+                    ))}
+                    {!visibleInvites.length && <tr><td colSpan={7} className="muted">没有符合筛选条件的邀请码。</td></tr>}
+                  </tbody>
+                </table>
+              </div>
+            </>
           )}
         </>
       )}
       {created && (
         <Modal title="邀请码（只显示这一次）" onClose={() => setCreated(null)} width={520}>
-          <p className="hint" style={{ marginTop: 0 }}>请通过安全渠道发给对方，7 天内有效。平台只保存它的哈希，关闭后无法再次查看。</p>
+          <p className="hint" style={{ marginTop: 0 }}>请通过安全渠道发给对方；每个邀请码只能注册 1 人。有效期至 {fmtTime(created.expires_at)}，关闭后无法再次查看。</p>
           <div className="secret-once">{created.code}</div>
           <p className="hint">对方在登录页选择“凭邀请码注册”，或已有账号的在“设置 → 工作区”里加入。</p>
         </Modal>

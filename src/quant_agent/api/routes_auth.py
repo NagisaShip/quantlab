@@ -62,6 +62,7 @@ class JoinIn(BaseModel):
 class InviteIn(BaseModel):
     role: Literal["admin", "member", "reviewer"] = "member"
     email: str | None = None
+    expires_in_hours: int = Field(168, ge=1, le=8760, description="邀请码有效期（小时），默认 7 天")
 
 
 class RoleIn(BaseModel):
@@ -466,15 +467,22 @@ def create_invite(payload: InviteIn) -> dict:
     ws_id = _require_ws_admin()
     s = get_services()
     inv = s.auth.create_invite(
-        workspace_id=ws_id, role=payload.role, created_by=context.current().user_id, email=payload.email
+        workspace_id=ws_id,
+        role=payload.role,
+        created_by=context.current().user_id,
+        email=payload.email,
+        expires_in_hours=payload.expires_in_hours,
     )
     s.audit.record(
         "member.invite",
         object_type="invite",
         object_id=inv["id"],
-        details={"role": payload.role, "email": payload.email},
+        details={"role": payload.role, "email": payload.email, "expires_in_hours": payload.expires_in_hours},
     )
-    return {"invite": inv, "note": "邀请码只显示这一次，请通过安全渠道发给对方；7 天内有效"}
+    return {
+        "invite": inv,
+        "note": "每个邀请码只能成功注册 1 人，且只显示这一次；请通过安全渠道发给对方",
+    }
 
 
 @router.delete("/workspace/invites/{invite_id}")
@@ -482,7 +490,9 @@ def revoke_invite(invite_id: str) -> dict:
     ws_id = _require_ws_admin()
     s = get_services()
     s.auth.revoke_invite(ws_id, invite_id)
-    s.audit.record("member.invite_revoke", object_type="invite", object_id=invite_id)
+    s.audit.record(
+        "member.invite_revoke", object_type="invite", object_id=invite_id, details={"reason": "admin_revoke"}
+    )
     return {"ok": True}
 
 
