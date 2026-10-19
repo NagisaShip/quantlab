@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import types
 from dataclasses import dataclass, field
@@ -149,6 +150,17 @@ def check_source(source: str) -> list[str]:
                         issues.append(msg)
     if "def " not in source:
         issues.append("策略至少要定义一个函数（通常从 `def initialize(ctx)` 开始）")
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        tree = None
+    if tree is not None:
+        top_level = {node.name for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
+        if not top_level.intersection({"initialize", "handle_data", "on_bar"}):
+            issues.append(
+                "策略必须使用模块级函数 `def initialize(ctx)`、`def handle_data(ctx)` 或 `def on_bar(ctx)`；"
+                "类方法不会被执行"
+            )
     for problem in audit(source):
         # 关键字层已经报过的模块不重复报
         if any(

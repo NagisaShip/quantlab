@@ -21,7 +21,7 @@ from ..engine.research import (
 from ..platform import backtest_retention as BR
 from ..platform import context, isolation
 from ..platform.errors import AppError, ErrorCode
-from ..sdk import check_source, declared_params
+from ..sdk import StrategyLoadError, check_source, declared_params, load_source
 from ..store import Collections
 from ..strategies import lang as L
 from ..strategies.params_util import ParamsError
@@ -86,6 +86,13 @@ def new_strategy(payload: NewStrategyIn) -> dict:
     if payload.code is None and tpl is None:
         raise HTTPException(400, "请选择模板或提供代码")
     code = payload.code if payload.code is not None else tpl.code  # type: ignore[union-attr]
+    issues = check_source(code)
+    if issues:
+        raise HTTPException(400, "；".join(issues))
+    try:
+        load_source(code, name="template_preflight")
+    except StrategyLoadError as exc:
+        raise HTTPException(400, f"模板代码无法加载：{exc}") from exc
     securities = payload.securities or (tpl.securities if tpl else ["BTC/USDT"])
     timeframe = payload.timeframe or (tpl.timeframe if tpl else "1h")
     repo = _repo()
@@ -102,7 +109,7 @@ def new_strategy(payload: NewStrategyIn) -> dict:
         notes=payload.notes or (f"由模板「{tpl.name}」创建" if tpl and payload.code is None else ""),
         slug=repo.unique_slug(payload.name),
     )
-    return {"strategy": rec.to_dict(), "issues": check_source(code)}
+    return {"strategy": rec.to_dict(), "issues": []}
 
 
 @router.post("/strategies/{slug}/clone")

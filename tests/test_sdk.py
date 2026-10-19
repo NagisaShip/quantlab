@@ -541,3 +541,45 @@ def test_dynamic_slippage_changes_fill_prices(bars):
     dyn = run(TREND, bars, warmup_bars=100, cost=RuntimeCost(dynamic_slippage=True, vol_slippage=1.0))
     assert base.fills and dyn.fills
     assert base.fills[0]["price"] != dyn.fills[0]["price"]
+
+
+def test_class_only_strategy_is_rejected_before_save():
+    source = """
+class Strategy:
+    def initialize(self, ctx):
+        pass
+
+    def on_bar(self, ctx, bar):
+        ctx.set_target_position(0.0)
+"""
+    issues = check_source(source)
+    assert any("模块级函数" in issue for issue in issues)
+
+
+def test_every_sdk_template_runs_directly():
+    from quant_agent.strategies.sdk_templates import TEMPLATES
+
+    for tpl in TEMPLATES:
+        bars = {s: synthetic_bars(s, tpl.timeframe, 700) for s in tpl.securities}
+        result = run_backtest(
+            load_source(tpl.code, name=tpl.id),
+            bars,
+            initial_cash=10_000,
+            warmup_bars=80,
+            cost=RuntimeCost(taker_fee=0.001, slippage_bps=5),
+        )
+        assert not result.errors, (tpl.id, result.errors)
+        assert result.timestamps, tpl.id
+
+
+def test_strategy_generation_fallback_is_runnable():
+    from quant_agent.agents.strategy_gen import StrategyGenAgent
+
+    parsed = StrategyGenAgent._parse("模型没有返回代码块")
+    assert check_source(parsed.code) == []
+    result = run_backtest(
+        load_source(parsed.code, name="generated_fallback"),
+        {"BTC/USDT": synthetic_bars("BTC/USDT", "1h", 200)},
+        warmup_bars=20,
+    )
+    assert not result.errors

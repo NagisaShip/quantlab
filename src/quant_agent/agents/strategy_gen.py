@@ -135,15 +135,18 @@ class StrategyGenAgent:
         code = ""
         for match in re.finditer(r"```(?:python)?\n(.*?)```", text, re.DOTALL):
             block = match.group(1)
-            if "class" in block or "def initialize" in block:
+            if re.search(r"(?m)^def\s+(initialize|handle_data|on_bar)\s*\(", block):
                 code = block.strip()
                 break
         if not code:
             code = (
-                "# 未解析到完整代码，请检查 Agent 输出\n"
-                "class Strategy:\n"
-                "    def initialize(self, ctx): pass\n"
-                "    def on_bar(self, ctx, bar): ctx.set_target_position(0.0)\n"
+                "# 未解析到完整代码，已使用可运行的空白策略骨架。\n"
+                "PARAMS = {}\n\n"
+                "def initialize(ctx):\n"
+                "    run_daily(step)\n\n"
+                "def step(ctx):\n"
+                "    if ctx.securities:\n"
+                "        order_target_percent(ctx.securities[0], 0.0)\n"
             )
 
         params = _extract_params(text)
