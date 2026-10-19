@@ -47,6 +47,7 @@ test.describe('09 · 首次注册新手引导', () => {
     await expect(page.locator('.onboarding-bubble h3')).toHaveText('回测不是只看收益')
     await page.getByRole('button', { name: '看内置回测' }).click()
     await expect(page).toHaveURL(/#\/backtest\/[^/]+/)
+    await expect(page.locator('[data-tour="backtest-review"]')).toBeVisible()
     await expect(page.locator('.onboarding-bubble h3')).toHaveText('回测不是只看收益')
     await page.getByRole('button', { name: '我已看过审查' }).click()
 

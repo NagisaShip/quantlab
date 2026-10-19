@@ -113,13 +113,22 @@ test.describe('01 · 注册与登录', () => {
     expect(ids).toContain(second.workspaceId)
 
     // 跨工作区隔离：runs 是按工作区隔离的（`/api/runs` 走 current_workspace）。
-    // 新工作区里不应看到任何历史 run。
+    // 新工作区会生成内置策略审核 run，但不能含其他工作区的历史任务。
     const aRuns = await api(request, '/api/runs', { workspaceId: first.workspaceId })
     const bRuns = await api(request, '/api/runs', { workspaceId: second.workspaceId })
     expect(aRuns.status).toBe(200)
     expect(bRuns.status).toBe(200)
-    expect(aRuns.body.items?.length, '新工作区不应有历史 run').toBe(0)
-    expect(bRuns.body.items?.length, '新工作区不应有历史 run').toBe(0)
+    for (const [workspaceId, runs] of [[first.workspaceId, aRuns.body.items], [second.workspaceId, bRuns.body.items]] as const) {
+      expect(runs, '新工作区应有两条内置策略审核任务').toHaveLength(2)
+      expect(runs.map((r: any) => r.kind).sort()).toEqual(['builtin_review_1', 'builtin_review_2'])
+      for (const run of runs) {
+        expect(run.workspace_id).toBe(workspaceId)
+        expect(run.manifest.label).toBe('内置策略审核')
+        const otherWorkspace = workspaceId === first.workspaceId ? second.workspaceId : first.workspaceId
+        const foreign = await api(request, `/api/runs/${run.id}`, { workspaceId: otherWorkspace })
+        expect(foreign.status, '其他工作区的真实任务必须不可读').toBe(404)
+      }
+    }
 
     // 用 A 的工作区头去读 B 工作区里不存在的 run，必须 404 而不是泄漏。
     const cross = await api(request, '/api/runs/does-not-exist', { workspaceId: first.workspaceId })

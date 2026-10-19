@@ -140,16 +140,14 @@ export default function OnboardingHost({ me, page, go, notify, onMeChanged }: {
   useEffect(() => {
     const onGoal = () => { if (state.status === 'in_progress' && state.current_step === 'goal') advance('goal') }
     const onTeam = () => { if (state.status === 'in_progress' && state.current_step === 'agents') advance('agents') }
-    const onReview = () => { if (state.status === 'in_progress' && state.current_step === 'backtest') advance('backtest') }
+    // 打开报告只表示开始阅读；由「我已看过审查」确认完成，避免自动前进与点击竞争。
     const onRestart = () => { restart() }
     window.addEventListener('qa:onboarding:goal-sent', onGoal)
     window.addEventListener('qa:onboarding:team-started', onTeam)
-    window.addEventListener('qa:onboarding:review-opened', onReview)
     window.addEventListener('qa:onboarding:restart', onRestart)
     return () => {
       window.removeEventListener('qa:onboarding:goal-sent', onGoal)
       window.removeEventListener('qa:onboarding:team-started', onTeam)
-      window.removeEventListener('qa:onboarding:review-opened', onReview)
       window.removeEventListener('qa:onboarding:restart', onRestart)
     }
   }) // 依赖在闭包里读取最新 state；每次渲染重绑，成本很低
