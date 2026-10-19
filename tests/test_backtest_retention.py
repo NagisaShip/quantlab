@@ -8,7 +8,12 @@ from fastapi.testclient import TestClient
 
 from quant_agent.api.app import create_app
 from quant_agent.api.deps import AppServices, reset_services, set_services
-from quant_agent.platform.backtest_retention import plan_for_new, record_rows_for_user
+from quant_agent.platform.backtest_retention import (
+    DEFAULT_MAX_RECORDS,
+    plan_for_new,
+    record_rows_for_user,
+    workspace_hard_max,
+)
 from quant_agent.store import JsonStore
 
 
@@ -37,7 +42,10 @@ def _backtest(client: TestClient, slug: str) -> dict:
 
 def test_retention_defaults_and_admin_setting(client):
     body = client.get("/api/research/backtest-retention").json()
-    assert body["workspace"]["max_records_per_user"] == 100_000
+    # 默认是 100,000 个记录单位，但会被「磁盘可用空间的硬上限」收紧；
+    # 断言按同一公式计算，避免在磁盘更小的构建机上误报（CI 上曾出现 86436）。
+    expected = max(1, min(DEFAULT_MAX_RECORDS, int(workspace_hard_max()["hard_max_units"])))
+    assert body["workspace"]["max_records_per_user"] == expected
     assert body["user"] == {
         "auto_delete_oldest": False,
         "per_strategy_limit": 5,
@@ -48,7 +56,8 @@ def test_retention_defaults_and_admin_setting(client):
         client.put("/api/research/backtest-retention/workspace", json={"max_records_per_user": 100_000}).status_code
         == 200
     )
-    assert client.get("/api/research/backtest-retention").json()["workspace"]["max_records_per_user"] == 100_000
+    # 设定值同样会被磁盘硬上限收紧：小磁盘的构建机上不会真的是 100,000
+    assert client.get("/api/research/backtest-retention").json()["workspace"]["max_records_per_user"] == expected
 
     code = client.post("/api/workspace/invites", json={"role": "member"}).json()["invite"]["code"]
     with TestClient(client.app) as member:
