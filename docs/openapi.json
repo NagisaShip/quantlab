@@ -1427,6 +1427,93 @@
     }
    }
   },
+  "/api/onboarding": {
+   "get": {
+    "tags": [
+     "新手引导"
+    ],
+    "summary": "读取当前账号的新手引导进度",
+    "operationId": "get_onboarding_api_onboarding_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "type": "object",
+         "title": "Response Get Onboarding Api Onboarding Get"
+        }
+       }
+      }
+     }
+    }
+   },
+   "put": {
+    "tags": [
+     "新手引导"
+    ],
+    "summary": "更新新手引导进度",
+    "operationId": "put_onboarding_api_onboarding_put",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/OnboardingIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "type": "object",
+         "title": "Response Put Onboarding Api Onboarding Put"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/onboarding/reset": {
+   "post": {
+    "tags": [
+     "新手引导"
+    ],
+    "summary": "重新开始新手引导",
+    "operationId": "reset_onboarding_api_onboarding_reset_post",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "type": "object",
+         "title": "Response Reset Onboarding Api Onboarding Reset Post"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
   "/api/runs": {
    "get": {
     "tags": [
@@ -30128,6 +30215,60 @@
      "idea"
     ],
     "title": "NightTaskIn"
+   },
+   "OnboardingIn": {
+    "properties": {
+     "current_step": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 32
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Current Step"
+     },
+     "completed_step": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 32
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Completed Step"
+     },
+     "status": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 32
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Status"
+     },
+     "track": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 16
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Track"
+     }
+    },
+    "type": "object",
+    "title": "OnboardingIn"
    },
    "OptimizeIn": {
     "properties": {

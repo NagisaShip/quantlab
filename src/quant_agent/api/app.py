@@ -40,6 +40,7 @@ from . import (
     routes_microlive,
     routes_missions,
     routes_node,
+    routes_onboarding,
     routes_ops,
     routes_public,
     routes_realperp,
@@ -87,9 +88,11 @@ def create_app(*, with_scheduler: bool = False) -> FastAPI:
         routes_dsl.router,
         routes_live.router,
         routes_demo.router,
+        routes_onboarding.router,
     )
 
     app.include_router(routes_auth.router)
+    app.include_router(routes_onboarding.router)
     app.include_router(routes_runs.router)
     app.include_router(routes_dsl.router)
     app.include_router(routes_live.router)

@@ -98,6 +98,9 @@ export default function BacktestDetailPage({ id, onNavigate, notify }: PageProps
   useEffect(() => {
     v3.backtest(id).then(setBt).catch((e) => setError(e.message))
   }, [id])
+  useEffect(() => {
+    if (bt?.review) window.dispatchEvent(new CustomEvent('qa:onboarding:review-opened', { detail: { runId: id } }))
+  }, [bt?.review, id])
   useAskAIContext(bt ? backtestAskContext(bt) : null)
 
   const series = useMemo(() => {
@@ -237,16 +240,16 @@ export default function BacktestDetailPage({ id, onNavigate, notify }: PageProps
       {bt.errors.length > 0 && <Callout tone="fail" title={`${bt.errors.length} 个运行错误`}>{bt.errors.slice(0, 5).join('；')}</Callout>}
       {bt.unfilled > 0 && <Callout>回测结束时有 {bt.unfilled} 笔委托因没有下一根 bar 而未成交，不影响以上指标。</Callout>}
 
-      <Panel title="收益概述" subtitle="指标口径与聚宽一致：超额收益 = (1+策略)/(1+基准)−1；Alpha、Beta 按逐 bar 收益计算，无风险利率取 0。样本不足或零波动时显示 —">
+      <div data-tour="backtest-metrics"><Panel title="收益概述" subtitle="指标口径与聚宽一致：超额收益 = (1+策略)/(1+基准)−1；Alpha、Beta 按逐 bar 收益计算，无风险利率取 0。样本不足或零波动时显示 —">
         <div className="overview-grid">
           {overview.map(([label, value, cls]) => (
             <div key={label}><span>{label}</span><b className={cls ?? ''}>{value}</b></div>
           ))}
         </div>
         {m.notes?.length > 0 && <div className="hint" style={{ marginTop: 10 }}>{m.notes.join('；')}</div>}
-      </Panel>
+      </Panel></div>
 
-      {bt.review && <ReviewGate review={bt.review} />}
+      {bt.review && <div data-tour="backtest-review"><ReviewGate review={bt.review} /></div>}
 
       <Panel
         title="收益曲线"

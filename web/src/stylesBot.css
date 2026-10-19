@@ -35,6 +35,41 @@
 .qbot .qbot-mouth.on { opacity: 1; transform: scale(1); }
 .qbot .qbot-head { transform-box: fill-box; transform-origin: 50% 70%; }
 
+/* ---- Tutor：极简白色圆角手 + 弹跳入场 ---- */
+.qbot .qbot-hand {
+  stroke: #fff; stroke-width: 1.7; stroke-linecap: round; opacity: .55;
+  transform-box: fill-box; transform-origin: 0% 50%;
+  transition: transform .32s cubic-bezier(.2,.8,.2,1), opacity .2s ease;
+}
+.qbot .qbot-hand--r { transform-origin: 100% 50%; }
+.qbot.qbot-hover .qbot-hand--r { transform: rotate(-8deg) translate(-.3px,-.4px); opacity: .9; }
+.qbot.qbot-hover .qbot-hand--l { transform: rotate(8deg) translate(.3px,-.4px); opacity: .8; }
+.qbot.qbot-interactive { outline: none; border-radius: 8px; }
+.qbot.qbot-interactive:focus-visible { outline: 2px solid var(--accent, #5b6cff); outline-offset: 4px; }
+.qbot.qbot-enter { animation: qb-enter .78s cubic-bezier(.2,.85,.25,1.12) both; transform-origin: 50% 80%; }
+@keyframes qb-enter {
+  0%   { opacity: 0; transform: translateY(18px) scale(.82,.90); }
+  45%  { opacity: 1; transform: translateY(-7px) scale(1.06,.94); }
+  70%  { transform: translateY(2px) scale(.98,1.03); }
+  100% { transform: translateY(0) scale(1); }
+}
+.qbot-gesture-wave .qbot-hand--r { animation: qb-hand-wave .9s cubic-bezier(.2,.8,.2,1) 1; opacity: .95; }
+@keyframes qb-hand-wave {
+  0%, 100% { transform: rotate(-8deg); }
+  25% { transform: rotate(-28deg) translate(-.4px,-1px); }
+  50% { transform: rotate(10deg) translate(1px,-.4px); }
+  75% { transform: rotate(-24deg) translate(-.4px,-.8px); }
+}
+.qbot-gesture-think .qbot-hand--r { transform: translate(-1px,-2px) rotate(-32deg); opacity: .9; }
+.qbot-gesture-point-right .qbot-hand--r { transform: translate(1px,-.6px) rotate(-42deg); opacity: 1; }
+.qbot-gesture-point-left .qbot-hand--l { transform: translate(-1px,-.6px) rotate(42deg); opacity: 1; }
+.qbot-gesture-clap .qbot-hand--l { animation: qb-hand-clap-l .64s cubic-bezier(.2,.8,.2,1) 1; opacity: .95; }
+.qbot-gesture-clap .qbot-hand--r { animation: qb-hand-clap-r .64s cubic-bezier(.2,.8,.2,1) 1; opacity: .95; }
+@keyframes qb-hand-clap-l { 0%,100% { transform: rotate(18deg); } 45% { transform: translate(2px,-1px) rotate(30deg); } }
+@keyframes qb-hand-clap-r { 0%,100% { transform: rotate(-18deg); } 45% { transform: translate(-2px,-1px) rotate(-30deg); } }
+.qbot-gesture-shrug .qbot-hand--l { transform: translate(-1px,-1px) rotate(24deg); opacity: .9; }
+.qbot-gesture-shrug .qbot-hand--r { transform: translate(1px,-1px) rotate(-24deg); opacity: .9; }
+
 /* ---- 纯眼睛符号：跟随文字颜色（√ 也跟随文字色；× 仍是橙色） ---- */
 .qeyes { --qb-eye: currentColor; }
 .qeyes .qbot-mouth.check { stroke: currentColor; }
@@ -218,4 +253,8 @@
 @media (prefers-reduced-motion: reduce) {
   .qbot.lively, .qbot.lively * { animation: none !important; }
   .cb-finish { animation: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .qbot.qbot-enter, .qbot .qbot-hand { animation: none !important; transition: none !important; }
 }

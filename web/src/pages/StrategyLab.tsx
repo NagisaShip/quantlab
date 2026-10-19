@@ -291,6 +291,14 @@ function Welcome({ meta, notify, onCreated, folder }: {
       : defaults)
   }, [defaults, draft])
   useEffect(() => { clearLabDraft() }, [])
+  useEffect(() => {
+    const onPrefill = (e: Event) => {
+      const text = (e as CustomEvent<{ text?: string }>).detail?.text
+      if (text) setIdea(text)
+    }
+    window.addEventListener('qa:onboarding:prefill', onPrefill)
+    return () => window.removeEventListener('qa:onboarding:prefill', onPrefill)
+  }, [setIdea])
 
   const queueNight = async (text: string) => {
     setBusy(true)
@@ -371,6 +379,7 @@ function Welcome({ meta, notify, onCreated, folder }: {
       else if (!startAuto) await lab.send(id, text, { suggest: suggestOn() })
       setIdea('')
       onCreated(id)
+      window.dispatchEvent(new CustomEvent('qa:onboarding:goal-sent', { detail: { projectId: id } }))
     } catch (e) {
       notify((e as Error).message, true)
       setBusy(false)
@@ -428,7 +437,7 @@ function Welcome({ meta, notify, onCreated, folder }: {
           </div>
         </div>
       </div>
-      <div className="lab2-dock">
+      <div className="lab2-dock" data-tour="lab-composer">
         {goalOpen && (
           <div className="lab2-goal-pop">
             <GoalForm meta={dmeta} domain={kind} initial={goalOpen.initial} unparsed={goalOpen.unparsed} onCancel={() => setGoalOpen(null)}
@@ -562,6 +571,14 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
       if (v) { setInput(v); sessionStorage.removeItem(k) }
     } catch { /* 存储不可用 */ }
   }, [id])
+  useEffect(() => {
+    const onPrefill = (e: Event) => {
+      const text = (e as CustomEvent<{ text?: string }>).detail?.text
+      if (text) setInput(text)
+    }
+    window.addEventListener('qa:onboarding:prefill', onPrefill)
+    return () => window.removeEventListener('qa:onboarding:prefill', onPrefill)
+  }, [setInput])
   const [rounds, setRounds] = useState<number | null>(null)
   // 回合从「运行中」变成结束：短暂显示 Bot 打勾（或报错）
   const [finishedAt, setFinishedAt] = useState(0)
@@ -1015,7 +1032,7 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
           </div>
         </div>
 
-        <div className="lab2-dock">
+        <div className="lab2-dock" data-tour="lab-composer">
           {goalOpen && (
             <div className="lab2-goal-pop">
               <GoalForm meta={dmeta} domain={project.kind} initial={goalOpen.initial} unparsed={goalOpen.unparsed} projectId={id}

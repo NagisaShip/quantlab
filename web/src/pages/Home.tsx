@@ -143,7 +143,7 @@ const FLOW = [
 /** 策略流水线：每个策略在哪一关、离下一关还差什么。点卡片打开它的晋级检查。 */
 function FlowBoard({ board, onNavigate }: { board: { rows: GradRow[]; cfg: Record<string, number> } | null; onNavigate: (k: string) => void }) {
   return (
-    <section className="sf" aria-label="策略流水线">
+    <section className="sf" data-tour="home-flow" aria-label="策略流水线">
       <div className="sf-head">
         <h2>策略流水线</h2>
         <span className="muted small">每个策略从回测一关关走到交易所模拟盘，每一关都要你确认</span>

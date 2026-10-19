@@ -61,7 +61,7 @@ export default function BacktestListPage({ slug: arg, onNavigate, notify }: Page
   const tabs = (
     <div className="bt-tabs" role="tablist">
       {TABS.map(([k, label]) => (
-        <button key={k} role="tab" aria-selected={tab === k} className={tab === k ? 'on' : ''} onClick={() => onNavigate(k ? `backtests/${k}` : 'backtests')}>{label}</button>
+        <button key={k} role="tab" aria-selected={tab === k} data-tour={k === 'new' ? 'backtest-new' : undefined} className={tab === k ? 'on' : ''} onClick={() => onNavigate(k ? `backtests/${k}` : 'backtests')}>{label}</button>
       ))}
     </div>
   )

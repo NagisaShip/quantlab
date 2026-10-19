@@ -13,7 +13,7 @@
 5. [运维与恢复手册](运维与恢复手册.md) / [English](Operations-and-Recovery-Manual.en.md)：部署、恢复、备份与真实资金开关。
 6. [隔离能力矩阵](隔离能力矩阵.md) / [English](Isolation-Capability-Matrix.en.md)：Linux / Windows 隔离能力。
 7. [个人账户接入教程](个人账户接入教程.md) / [English](Personal-Account-Integration-Guide.en.md)：CSV 与只读 Key。
-8. [API 参考](API参考.md) / [English](API-Reference.en.md)：601 个操作；机器可读版本 [openapi.json](openapi.json)。
+8. [API 参考](API参考.md) / [English](API-Reference.en.md)：604 个操作；机器可读版本 [openapi.json](openapi.json)。
 
 ## 当前能力边界
 

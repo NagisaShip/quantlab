@@ -27,12 +27,13 @@
  * 策略广场的社交表情见 Qmoji.tsx：复用同一个头部与 K 线眼睛，只扩展眼睛几何与短动画，
  * 不改变这里的交互状态语法，也不把涨跌红绿用于社交情绪。
  */
-import { useCallback, useEffect, useId, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 
 export type BotState = 'idle' | 'thinking' | 'focus' | 'strain' | 'happy' | 'confused' | 'error'
 export type BotView = 'neutral' | 'unknown' | 'bull' | 'bear'
 /** 一次性的眼睛短动画：按钮点击、任务启动、完成反馈 */
 export type BotFlash = 'tap' | 'start' | 'done' | 'fail'
+export type BotGesture = 'none' | 'wave' | 'point-left' | 'point-right' | 'think' | 'clap' | 'shrug'
 /** full：完整动画；low：只保留待机眨眼与一次性反馈（通知、空状态、错误页）；none：完全静态 */
 export type BotMotion = 'full' | 'low' | 'none'
 
@@ -163,7 +164,7 @@ function Mouth({ kind, y }: { kind: 'check' | 'cross' | null; y: number }) {
   )
 }
 
-export function QuantBot({ size = 24, state = 'idle', view = 'neutral', title, className, speed = 1, still, motion, flash, variant }: {
+export function QuantBot({ size = 24, state = 'idle', view = 'neutral', title, className, speed = 1, still, motion, flash, variant, hands, interactive, gesture = 'none', entrance, onActivate, onHoverChange }: {
   size?: number
   state?: BotState
   view?: BotView
@@ -177,16 +178,45 @@ export function QuantBot({ size = 24, state = 'idle', view = 'neutral', title, c
   flash?: { kind: BotFlash; n: number } | null
   /** simple：简化静态版（图标、≤18px 小头像）；默认按尺寸自动选择 */
   variant?: 'full' | 'simple'
+  /** Tutor 形态的两只白色圆角手；品牌图标默认不显示 */
+  hands?: boolean
+  /** 可点击：点击播放 tap 并回调 onActivate */
+  interactive?: boolean
+  gesture?: BotGesture
+  /** 首次出现时弹跳拉伸入场 */
+  entrance?: boolean
+  onActivate?: () => void
+  onHoverChange?: (hovering: boolean) => void
 }) {
   const uid = useId().replace(/:/g, '')
+  const [tapN, setTapN] = useState(0)
+  const [hover, setHover] = useState(false)
   const simple = variant ? variant === 'simple' : size <= 18
   const m: BotMotion = still ? 'none' : motion ?? (simple ? 'low' : 'full')
-  const { effective, mouth, extra } = useBotLife(state, m, flash)
+  const activeFlash = flash ?? (tapN ? { kind: 'tap' as BotFlash, n: tapN } : null)
+  const { effective, mouth, extra } = useBotLife(state, m, activeFlash)
   const label = title ?? labelOf(effective, view)
+  const gestureClass = hands && gesture !== 'none' ? ` qbot-gesture-${gesture}` : ''
+  const activate = () => {
+    if (!interactive) return
+    setTapN((n) => n + 1)
+    onActivate?.()
+  }
+  const interaction = interactive ? {
+    role: 'button' as const,
+    tabIndex: 0,
+    'aria-label': `${label}，点击与我互动`,
+    onClick: activate,
+    onKeyDown: (e: ReactKeyboardEvent<SVGSVGElement>) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); activate() }
+    },
+    onMouseEnter: () => { setHover(true); onHoverChange?.(true) },
+    onMouseLeave: () => { setHover(false); onHoverChange?.(false) },
+  } : { role: 'img' as const, 'aria-label': label }
   return (
-    <svg className={`qbot qbot-${effective} qbot-${view}${simple ? ' simple' : ''}${extra}${className ? ' ' + className : ''}`}
-      width={size} height={size} viewBox="0 0 24 24" role="img" aria-label={label}
-      style={{ ['--qb-speed' as string]: String(1 / Math.max(0.25, speed)) }}>
+    <svg className={`qbot qbot-${effective} qbot-${view}${simple ? ' simple' : ''}${hands ? ' qbot-hands' : ''}${interactive ? ' qbot-interactive' : ''}${hover ? ' qbot-hover' : ''}${entrance ? ' qbot-enter' : ''}${gestureClass}${extra}${className ? ' ' + className : ''}`}
+      width={size} height={size} viewBox="0 0 24 24" {...interaction}
+      style={{ ['--qb-speed' as string]: String(1 / Math.max(0.25, speed)), cursor: interactive ? 'pointer' : undefined }}>
       <title>{label}</title>
       {!simple && (
         <defs>
@@ -200,6 +230,12 @@ export function QuantBot({ size = 24, state = 'idle', view = 'neutral', title, c
         <rect x="2.5" y="3.25" width="19" height="17.5" rx="5.2" fill={simple ? 'var(--qb-head)' : `url(#qbh-${uid})`} />
         {!simple && <rect className="qbot-visor" x="4.6" y="5.85" width="14.8" height="10.6" rx="3.4" />}
       </g>
+      {!simple && hands && (
+        <g className="qbot-hands" aria-hidden="true">
+          <line className="qbot-hand qbot-hand--l" x1="3.4" y1="15.1" x2="1.0" y2="16.8" />
+          <line className="qbot-hand qbot-hand--r" x1="20.6" y1="15.1" x2="23.0" y2="16.8" />
+        </g>
+      )}
       <Eyes />
       <Mouth kind={mouth} y={16.9} />
     </svg>

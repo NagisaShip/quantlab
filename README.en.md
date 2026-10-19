@@ -94,6 +94,7 @@ LLM providers can be configured in the Models page, through environment variable
 - 21 slash commands, 51 tool commands and 7 home commands;
 - 16 built-in roles with parallel review, conflict resolution, red-team challenges and research auditing;
 - background jobs report back to the conversation.
+- first-registration QuantLab Bot onboarding: goal → multi-agent review → backtest and Review Gate → next steps; skippable and replayable from the account menu.
 
 ![AI Lab](docs/images/latest/en/02-ai-lab.png)
 
@@ -194,12 +195,12 @@ Worker process  qagent worker
 | Check | Result |
 |---|---|
 | Ruff lint / formatting | Passed |
-| Full backend suite | **1,203 passed / 4 skipped** |
+| Full backend suite | **1,208 passed / 4 skipped** |
 | TypeScript + Vite production build | Passed |
 | Research Flow coverage audit | 30/44 direct, 8 contextual, 6 non-research |
-| Playwright E2E | **32 passed** |
+| Playwright E2E | **33 passed** |
 | English UI crawl | 0 visible Chinese UI strings on checked pages |
-| API snapshot | 601 operations / 511 paths |
+| API snapshot | 604 operations / 513 paths |
 
 See the [Test and Verification Report](docs/Test-and-Verification-Report.en.md).
 

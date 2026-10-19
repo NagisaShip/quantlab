@@ -8,7 +8,7 @@ from fastapi import APIRouter, Query, Request, Response
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
-from ..platform import context
+from ..platform import context, onboarding
 from ..platform.errors import AppError, ErrorCode
 from .deps import get_services
 from .middleware import SESSION_COOKIE
@@ -128,6 +128,7 @@ def register(payload: RegisterIn, request: Request, response: Response) -> dict:
         password=payload.password,
         invite_code=payload.invite_code,
     )
+    onboarding.ensure(s.auth.db, res["user_id"], is_admin=res["is_admin"])
     token, _ = s.auth.login(
         email=payload.email or payload.username,
         password=payload.password,
@@ -325,6 +326,7 @@ def me() -> dict:
     workspaces = s.auth.memberships(ctx.user_id)
     current = s.auth.workspace(ctx.workspace_id) if ctx.workspace_id else None
     acc = s.auth.account(ctx.user_id)
+    onboarding_state = onboarding.get(s.auth.db, ctx.user_id, is_admin=ctx.is_admin)
     return {
         "user": {
             "id": ctx.user_id,
@@ -347,6 +349,7 @@ def me() -> dict:
             "is_demo": current["is_demo"],
             "settings": current["settings"],
         },
+        "onboarding": onboarding_state,
         "live_enabled": False,
     }
 

@@ -6,7 +6,7 @@
 
 ## Scope
 
-The current snapshot contains **601 operations across 511 paths**. During the preview period, endpoint details may change before a stable release.
+The current snapshot contains **604 operations across 513 paths**. During the preview period, endpoint details may change before a stable release.
 
 ## Base URL and authentication
 

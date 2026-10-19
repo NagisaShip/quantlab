@@ -15,13 +15,13 @@
 |---|---|
 | `ruff check src tests scripts` | Passed |
 | `ruff format --check src tests scripts` | Passed, 338 files formatted |
-| `pytest -q` | **1,203 passed / 4 skipped** |
+| `pytest -q` | **1,208 passed / 4 skipped** |
 | `npm run build` in `web/` | Passed; circular-chunk warning removed, `page-research` is about 624KB |
 | `npm run e2e:typecheck` | Passed |
-| `npm run e2e` | **32 passed** (12.3 min, Microsoft Edge, video disabled) |
+| `npm run e2e` | **33 passed** (10.5 min, Microsoft Edge, video disabled) |
 | English UI crawl | No visible Chinese UI strings on the checked authenticated pages or landing page |
 | Research Flow coverage | 30/44 pages direct, 8 contextual detail pages, 6 explicitly non-research pages |
-| API snapshot | 601 operations / 511 paths |
+| API snapshot | 604 operations / 513 paths |
 
 ---
 
@@ -45,7 +45,7 @@ python -m pytest -q
 Result:
 
 ```text
-1203 passed, 4 skipped
+1208 passed, 4 skipped
 ```
 
 The remaining warnings are upstream FastAPI/Starlette/httpx deprecation notices.
@@ -84,6 +84,7 @@ npm run build
 - Removed the unused duplicate rating component and legacy API shims; added Chinese summaries for the community dislike/report endpoints and regenerated the OpenAPI snapshot.
 - The E2E API now starts with `--no-with-worker` so `serve` cannot race the explicit worker for paper-session leases. The paper-fill wait budget is 240 seconds to tolerate CI / low-spec scheduling delays.
 - Research Flow data moved to `web/src/pages/research-flow/data.ts`, reducing the page component to layout and interaction logic.
+- `tests/test_onboarding.py` + `tests/e2e/09-onboarding.spec.ts`: first-registration state machine, skip/resume/reset, user isolation, Bot welcome layer, hands/gestures, step progression and persistence after reload.
 
 ### 3.3 Workspace-gating fix
 
@@ -144,7 +145,7 @@ npm run e2e
 Result:
 
 ```text
-32 passed (12.3m)
+33 passed (10.5m)
 ```
 
 CI should run the same suite against both SQLite and PostgreSQL storage legs with standard Playwright Chromium.

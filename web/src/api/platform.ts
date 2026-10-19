@@ -4,6 +4,18 @@ import { del, get, idemKey, post, put, withWs } from '../http'
 
 export type Dec = string
 export type Role = 'admin' | 'member' | 'reviewer'
+export type OnboardingStatus = 'not_started' | 'in_progress' | 'completed' | 'skipped'
+export type OnboardingStep = 'welcome' | 'flow' | 'goal' | 'agents' | 'backtest' | 'finish'
+export interface OnboardingState {
+  version: number
+  status: OnboardingStatus
+  current_step: OnboardingStep
+  track: 'owner' | 'member'
+  completed_steps: string[]
+  started_at: number | null
+  completed_at: number | null
+  updated_at: number | null
+}
 
 export interface Account { id: string; username: string; name: string; email: string; email_verified: boolean; quantlab_uid: string }
 export interface Me {
@@ -11,6 +23,7 @@ export interface Me {
   user: { id: string; email: string; username?: string; email_verified?: boolean; quantlab_uid?: string; name: string; is_admin: boolean; avatar_color?: string }
   workspaces: { id: string; name: string; role: Role; is_demo?: boolean }[]
   workspace: { id: string; name: string; role: Role; is_demo: boolean; settings: WorkspaceSettings } | null
+  onboarding: OnboardingState
   live_enabled: boolean
 }
 export interface WorkspaceSettings {
@@ -215,6 +228,9 @@ export const v4 = {
     post<{ ok: boolean }>('/api/auth/login', { login, password, totp_code: totp_code || undefined }),
   logout: () => post<{ ok: boolean }>('/api/auth/logout'),
   me: () => get<Me>('/api/auth/me'),
+  onboarding: () => get<{ onboarding: OnboardingState }>('/api/onboarding'),
+  updateOnboarding: (p: { current_step?: OnboardingStep; completed_step?: OnboardingStep; status?: OnboardingStatus; track?: 'owner' | 'member' }) => put<{ onboarding: OnboardingState }>('/api/onboarding', p),
+  resetOnboarding: () => post<{ onboarding: OnboardingState }>('/api/onboarding/reset'),
   // ---- 账号资料与绑定邮箱 ----
   account: () => get<{ account: Account }>('/api/auth/account'),
   updateAccount: (p: { username?: string; name?: string }) => put<{ account: Account }>('/api/auth/account', p),

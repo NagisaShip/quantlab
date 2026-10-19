@@ -27,6 +27,7 @@ import './stylesQmoji.css'
 import './stylesMotion.css'
 import './stylesPublic.css'
 import './stylesResponsiveTables.css'
+import './stylesOnboarding.css'
 
 applyPrefs()
 watchSystemTheme()

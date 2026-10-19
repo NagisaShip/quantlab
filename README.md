@@ -129,6 +129,7 @@ qagent serve --with-worker   # 单机：API + 守护 worker，http://127.0.0.1:8
 - 16 个内置角色，支持并行评审、团队讨论、红队质疑、研究审计；
 - 后台任务完成后主动回到对话汇报；AI 自己查到结果时取消重复跟进；
 - 结构化内容块：回测报告、净值曲线、因子分层、模型诊断、执行仿真、调研报告。
+- 首次注册支持 QuantLab Bot 步骤式引导：提出研究目标 → 多 Agent 评审 → 回测与 Review Gate → 下一步；可跳过，并可从账号菜单重播。
 
 ![AI 研究室](./docs/images/latest/02-ai-lab.png)
 
@@ -239,11 +240,11 @@ Worker 进程  qagent worker
 | `ruff check src tests scripts` | ✅ All checks passed |
 | `ruff format --check src tests scripts` | ✅ 338 files already formatted |
 | `tsc -b && vite build`（`web/`） | ✅ 通过 |
-| `pytest -q`（完整套件） | ✅ **1,203 passed / 4 skipped** |
+| `pytest -q`（完整套件） | ✅ **1,208 passed / 4 skipped** |
 | 定向后端测试（账本 v2 / 真实永续 / 资金费 / 能力矩阵） | ✅ 60 passed |
 | 英文界面逐页巡检 | ✅ 35 个登录页 + 未登录首页无 UI 中文残留（系统错误文本、运行时路径除外） |
-| 浏览器端 E2E（Microsoft Edge，关闭录像） | ✅ 32 passed |
-| API 快照 | 由 `scripts/gen_api_doc.py` 重新生成（601 个操作 / 511 条路径） |
+| 浏览器端 E2E（Microsoft Edge，关闭录像） | ✅ 33 passed |
+| API 快照 | 由 `scripts/gen_api_doc.py` 重新生成（604 个操作 / 513 条路径） |
 
 完整结果与复现命令见 [测试与验证报告](docs/测试与验证报告.md)。
 
@@ -253,13 +254,13 @@ Worker 进程  qagent worker
 
 | 维度 | 数值 |
 |---|---:|
-| Python 文件 / 行数（`src/quant_agent`） | 217 / 100,338 |
-| 前端 TS/TSX 文件 / 行数 | 166 / 42,624 |
-| CSS 文件 / 行数 | 23 / 7,890 |
-| 测试文件 / 收集用例 | 95 / 1,205 |
-| API 路由模块 / 操作 / 路径 | 35 / 601 / 511 |
+| Python 文件 / 行数（`src/quant_agent`） | 219 / 100,665 |
+| 前端 TS/TSX 文件 / 行数 | 170 / 43,172 |
+| CSS 文件 / 行数 | 24 / 8,040 |
+| 测试文件 / 收集用例 | 96 / 1,212 |
+| API 路由模块 / 操作 / 路径 | 36 / 604 / 513 |
 | 前端路由 / 侧栏入口 | 44 / 24 |
-| 数据库迁移 / 表 | 18 / 40 |
+| 数据库迁移 / 表 | 20 / 40 |
 | 内置 Agent 角色 / 工具 | 16 / 51 |
 
 > 行数口径：源文件总行数（含注释与空行），由当前工作区直接统计。
@@ -301,7 +302,7 @@ Worker 进程  qagent worker
 | [隔离能力矩阵](docs/隔离能力矩阵.md) | [Isolation Matrix](docs/Isolation-Capability-Matrix.en.md) | Linux / Windows 下各隔离能力的真实状态 |
 | [策略协议与数据口径](docs/策略协议与数据口径.md) | [Strategy Protocol](docs/Strategy-Protocol-and-Data-Conventions.en.md) | 事件模型、信号协议、撮合规则、指标口径 |
 | [运维与恢复手册](docs/运维与恢复手册.md) | [Operations & Recovery](docs/Operations-and-Recovery-Manual.en.md) | 部署、状态机、检查点恢复、备份、微实盘开关 |
-| [API 参考](docs/API参考.md) | [API Reference](docs/API-Reference.en.md) | 601 个操作；英文索引与机器可读版本 [openapi.json](docs/openapi.json) |
+| [API 参考](docs/API参考.md) | [API Reference](docs/API-Reference.en.md) | 604 个操作；英文索引与机器可读版本 [openapi.json](docs/openapi.json) |
 | [个人账户接入教程](docs/个人账户接入教程.md) | [Account Integration](docs/Personal-Account-Integration-Guide.en.md) | CSV 导入与只读 Key 接入 |
 | [交易所模拟盘与策略包](docs/交易所模拟盘与策略包.md) | [Exchange Demo & Packages](docs/Exchange-Demo-Trading-and-Strategy-Packages.en.md) | 模拟盘接入与 `.qstrat` 策略包 |
 

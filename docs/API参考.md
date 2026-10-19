@@ -2,7 +2,7 @@
 
 [English](API-Reference.en.md) | [文档索引](README.md) | [返回 README](../README.md)
 
-平台共 **601 个端点**。本文件由 `scripts/gen_api_doc.py` 从 FastAPI 的 OpenAPI 规范生成，
+平台共 **604 个端点**。本文件由 `scripts/gen_api_doc.py` 从 FastAPI 的 OpenAPI 规范生成，
 与运行中服务的 `/docs`（可交互调试）来自同一份定义。
 
 机器可读版本：`docs/openapi.json`（同一次生成）。
@@ -649,6 +649,14 @@
 | `POST` | `/api/missions/{mid}/approve` | 关卡批准：进入下一阶段 |
 | `POST` | `/api/missions/{mid}/say` | 指挥官插话；指定 to_role 时该角色会回应 |
 | `POST` | `/api/missions/{mid}/stop` | 叫停任务（在当前发言结束后停下） |
+
+## 新手引导
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/api/onboarding` | 读取当前账号的新手引导进度 |
+| `PUT` | `/api/onboarding` | 更新新手引导进度 |
+| `POST` | `/api/onboarding/reset` | 重新开始新手引导 |
 
 ## 模型库
 

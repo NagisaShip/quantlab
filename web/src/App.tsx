@@ -44,6 +44,7 @@ import RunBanner from './components/RunBanner'
 import MicroLivePage from './pages/MicroLive'
 import RealPerpPage from './pages/RealPerp'
 import AskAIPanel from './components/AskAI'
+import OnboardingHost from './onboarding/OnboardingHost'
 import GroupsPage from './pages/Groups'
 import InboxPage from './pages/Inbox'
 import IssuesPage, { NewIssueModal } from './pages/Issues'
@@ -563,6 +564,7 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
         {busy && <BusyOverlay title={busy.title} note={busy.note} />}
         <RoleDrawer notify={notify} />
         <DialogHost />
+        <OnboardingHost me={me} page={page} go={go} notify={notify} />
         <MessageToasts meName={me.user.name || me.user.username || ''} onNavigate={go} />
         {toast && <Toast message={toast.message} error={toast.error} onDone={() => setToast(null)} />}
       </>
@@ -683,6 +685,7 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
       <RoleDrawer notify={notify} />
       <DialogHost />
       <AskAIPanel />
+      <OnboardingHost me={me} page={page} go={go} notify={notify} />
       <MessageToasts meName={me.user.name || me.user.username || ''} onNavigate={go} />
       {toast && <Toast message={toast.message} error={toast.error} onDone={() => setToast(null)} />}
     </>
@@ -751,6 +754,9 @@ function AccountMenu({ me, reachable, llmReady, onNavigate, notify }: { me: Me; 
             <button type="button" aria-pressed={lang === 'en'} onClick={() => lang !== 'en' && setLang('en')}>English</button>
           </div>
           <hr />
+          <button role="menuitem" title="重新播放新手引导" onClick={() => { setOpen(false); window.dispatchEvent(new CustomEvent('qa:onboarding:restart')) }}>
+            <span>新手引导</span><span className="role-chip">重播</span>
+          </button>
           <button role="menuitem" title={llmReady ? '设置' : '模型未配置'} onClick={() => pick(llmReady ? 'settings/account' : 'models')}>
             <span>设置</span>{!llmReady && <span className="role-chip warn">模型未配置</span>}
           </button>

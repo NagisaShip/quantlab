@@ -411,7 +411,7 @@ async function openAuthDrawer(page: Page): Promise<void> {
   }
 }
 
-export async function uiLogin(page: Page, session: { email: string; password: string; workspaceId?: string }): Promise<void> {
+export async function uiLogin(page: Page, session: { email: string; password: string; workspaceId?: string }, opts: { onboarding?: boolean } = {}): Promise<void> {
   // 先访问一次同源页面，才能写该源的 localStorage。
   await page.goto('/')
   await page.waitForLoadState('domcontentloaded')
@@ -443,6 +443,16 @@ export async function uiLogin(page: Page, session: { email: string; password: st
   await expect(page.locator('nav[aria-label="主导航"]'), '提交登录表单后没有进入工作台').toBeVisible({
     timeout: 30_000,
   })
+
+  // 既有 UI 用例默认跳过首次引导；新手引导 spec 传 onboarding:true 保留它。
+  if (!opts.onboarding) {
+    await page.request.put('/api/onboarding', {
+      headers: { 'X-Requested-With': 'e2e' },
+      data: { status: 'skipped' },
+    })
+    await page.reload()
+    await expect(page.locator('nav[aria-label="主导航"]')).toBeVisible({ timeout: 30_000 })
+  }
 
   // 登录流程会刷新工作区列表；确认前端锁定的就是本次 spec 的工作区，
   // 否则后续界面操作会打到别的工作区，断言会以"看不到刚建的数据"的形式失败。
