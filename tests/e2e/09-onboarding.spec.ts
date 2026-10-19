@@ -84,7 +84,8 @@ test.describe('09 · 首次注册新手引导', () => {
   })
 
   test('欢迎页：模型 Key 配置入口直达模型 API 设置', async ({ page, request }) => {
-    const session = await registerOrLogin(request)
+    // 使用新邀请成员，避免部署管理员的 onboarding 已被其他 spec 标记完成。
+    const session = await invitedMember(request)
     await uiLogin(page, session, { onboarding: true })
     await expect(page.locator('.onboarding-welcome-card')).toBeVisible({ timeout: 30_000 })
     await page.getByRole('button', { name: '去配置模型 Key，获得更佳体验' }).click()
