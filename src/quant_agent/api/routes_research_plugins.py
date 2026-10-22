@@ -1,7 +1,8 @@
 """Plugin settings remain available even when optional research tools are off."""
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter
 from pydantic import BaseModel
+from starlette.requests import HTTPConnection
 
 from ..workflows.agent import service
 from ..workflows.plugins import configured_policy, impact, update
@@ -9,14 +10,16 @@ from ..workflows.plugins import configured_policy, impact, update
 router = APIRouter(prefix="/api/auth/research-plugins", tags=["研究插件"])
 
 
-def enforce(request: Request):
+def enforce(connection: HTTPConnection):
     """Disable new work, preserving historical reads, task cancellation and settings."""
     from ..platform.context import current
     from ..workflows.plugins import require
 
-    if not current().workspace_id or request.method in ("GET", "HEAD", "OPTIONS"):
+    if connection.scope["type"] == "websocket" or not current().workspace_id:
         return
-    path = request.url.path
+    if connection.scope.get("method") in ("GET", "HEAD", "OPTIONS"):
+        return
+    path = connection.url.path
     if path.endswith(("/cancel", "/stop")):
         return
     for prefix, plugin in (

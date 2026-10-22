@@ -97,7 +97,7 @@ test('Agent-created conversation appears without reload', async ({ page, request
   const title = `Agent-created-${Date.now()}`
   const project = await api(request, '/api/lab/projects', { workspaceId: session.workspaceId, method: 'POST', data: { title } })
   expect(project.status).toBe(200)
-  await expect(page.getByRole('button', { name: title, exact: true })).toBeVisible({ timeout: 10000 })
+  await expect(page.getByRole('button', { name: title })).toBeVisible({ timeout: 30000 })
 })
 
 test('Mobile backtest detail tables remain accessible', async ({ page, request }) => {

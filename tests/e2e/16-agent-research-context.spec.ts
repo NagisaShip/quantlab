@@ -482,11 +482,12 @@ test('Round 3：主入口 handoff 保留研究身份与已选输出，移除项�
   await openAskAI(page)
   await expect(page.locator('.ask-ref')).toHaveCount(1)
 
-  // Main AskAI button intentionally navigates to the full lab; capture the handoff
-  // payload before the lab consumes it. The sidebar was only used to inspect refs.
+  // Open the temporary panel, then explicitly continue in the research lab.
   await page.locator('.ask-panel .ask-icon').click()
   await expect(page.locator('.ask-panel')).toBeHidden()
   await page.locator('.ask-fab').click()
+  await expect(page.locator('.ask-panel')).toBeVisible()
+  await page.getByRole('button', { name: '新建研究' }).click()
   await expect(page).toHaveURL(/#\/lab$/)
   let handoffs = await page.evaluate(() => (window as unknown as { __qaHandoffs?: any[] }).__qaHandoffs || [])
   expect(handoffs).toHaveLength(1)
@@ -509,6 +510,8 @@ test('Round 3：主入口 handoff 保留研究身份与已选输出，移除项�
   await expect(page.locator('.ask-ref')).toHaveCount(0)
   await page.locator('.ask-panel .ask-icon').click()
   await page.locator('.ask-fab').click()
+  await expect(page.locator('.ask-panel')).toBeVisible()
+  await page.getByRole('button', { name: '新建研究' }).click()
   await expect(page).toHaveURL(/#\/lab$/)
   handoffs = await page.evaluate(() => (window as unknown as { __qaHandoffs?: any[] }).__qaHandoffs || [])
   expect(handoffs).toHaveLength(2)
