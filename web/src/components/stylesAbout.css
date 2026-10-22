@@ -1,0 +1,85 @@
+/* 关于 QuantLab：居中卡片，沿用平台的设计 token 与动效语言 */
+.about-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 3000;
+  display: grid;
+  place-items: center;
+  padding: 28px;
+  background: color-mix(in srgb, #0a0e1c 46%, transparent);
+  backdrop-filter: blur(4px);
+  animation: about-fade var(--dur-2, .16s) var(--ease-out, ease-out);
+}
+.about-card {
+  position: relative;
+  width: min(560px, 100%);
+  max-height: min(86vh, 780px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  background: var(--sheet);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 28px 30px 24px;
+  box-shadow: 0 30px 90px rgba(10, 14, 28, .28);
+  animation: about-in var(--dur-3, .22s) var(--ease-out, ease-out);
+}
+.about-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: var(--canvas);
+  color: var(--ink-2, var(--ink));
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background var(--dur-1, .12s) var(--ease-out, ease-out), transform var(--dur-1, .12s) var(--ease-out, ease-out);
+}
+.about-close:hover { background: var(--hover); transform: rotate(90deg); }
+.about-hero { display: flex; align-items: center; gap: 14px; padding-right: 32px; }
+.about-title { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.about-title h2 { margin: 0; font-size: 26px; letter-spacing: -.02em; }
+.about-version {
+  font: 11px/1 var(--mono);
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 4px 9px;
+  background: var(--canvas);
+}
+.about-lead { margin: 18px 0 8px; font-size: 16px; font-weight: 600; color: var(--ink); }
+.about-text { margin: 0; font-size: 13px; line-height: 1.75; color: var(--ink-2, var(--muted)); }
+.about-chips { display: flex; flex-wrap: wrap; gap: 8px; list-style: none; margin: 18px 0 20px; padding: 0; }
+.about-chips li {
+  font-size: 11.5px;
+  color: var(--ink-2, var(--ink));
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 5px 10px;
+  background: var(--canvas);
+}
+.about-facts { margin: 0 0 22px; padding: 14px 16px; border: 1px solid var(--line-2, var(--line)); border-radius: 12px; background: var(--canvas); display: grid; gap: 8px; }
+.about-facts > div { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 12px; font-size: 12.5px; }
+.about-facts dt { color: var(--muted); }
+.about-facts dd { margin: 0; color: var(--ink); }
+.about-foot { display: flex; flex-direction: column; gap: 16px; padding-top: 16px; border-top: 1px solid var(--line-2, var(--line)); }
+.about-links { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12px; }
+.about-links a { color: var(--muted); text-decoration: none; overflow-wrap: anywhere; }
+.about-links a:hover { color: var(--accent); text-decoration: underline; }
+.about-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+@keyframes about-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes about-in { from { opacity: 0; transform: translateY(10px) scale(.985); } to { opacity: 1; transform: none; } }
+@media (max-width: 640px) {
+  .about-backdrop { padding: 12px; place-items: end center; }
+  .about-card { padding: 22px 18px 18px; border-radius: 16px; max-height: 88vh; }
+  .about-facts > div { grid-template-columns: 1fr; gap: 2px; }
+  .about-actions .button { flex: 1 1 120px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .about-backdrop, .about-card { animation: none; }
+  .about-close:hover { transform: none; }
+}

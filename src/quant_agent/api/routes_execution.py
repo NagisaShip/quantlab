@@ -368,6 +368,13 @@ def radar(
     symbols: str = "",
     source: Literal["auto", "exchange", "synthetic"] = "auto",
 ) -> dict:
+    # 雷达每次都会取行情并重新计算，不属于冻结历史；停用时必须在取数之前拦截。
+    from ..platform.context import current
+    from ..workflows.agent import service
+    from ..workflows.plugins import require
+
+    if current().workspace_id:
+        require(service(), "execution")
     s = get_services()
     syms = [x.strip().upper() for x in symbols.split(",") if x.strip()] or list(
         UNIVERSES.get(universe, UNIVERSES["major10"])["symbols"]

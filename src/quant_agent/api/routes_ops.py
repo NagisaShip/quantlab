@@ -234,10 +234,21 @@ def overview() -> dict:
 
 @router.get("/healthz")
 def healthz() -> dict:
-    """容器探活：只检查数据库可用，不访问交易所（避免外网抖动导致容器被反复重启）。"""
+    """容器探活：只检查数据库可用，不访问交易所（避免外网抖动导致容器被反复重启）。
+
+    同时返回版本与构建标识，供桌面壳判断能否复用已在运行的后端进程：
+    `desktop_version` 是启动该进程的桌面壳版本，`build` 是完整构建号。
+    """
+    from ..platform import buildinfo
+
     s = get_services()
     s.db.scalar("SELECT 1 AS ok")
-    return {"status": "ok", "backend": s.db.dialect, "time": int(time.time() * 1000)}
+    return {
+        "status": "ok",
+        "backend": s.db.dialect,
+        "time": int(time.time() * 1000),
+        **buildinfo.info(),
+    }
 
 
 @router.get("/health")

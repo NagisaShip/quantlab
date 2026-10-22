@@ -5,6 +5,11 @@ export default defineConfig({
   plugins: [react()],
   server: {
     port: Number(process.env.QA_WEB_PORT || 5173),
+    // 编辑器/工具写文件时会生成 .xxx.tmpdir/ 临时文件；Windows 上文件句柄释放慢，
+    // 直接 watch 这些临时文件会抛 EBUSY 把 dev server 带崩，这里统一忽略。
+    watch: {
+      ignored: ['**/.*.tmpdir/**', '**/*.tmpdir/**', '**/*.tmp', '**/.tmp/**'],
+    },
     proxy: {
       // QA_API_TARGET 让第二个前端连到隔离的测试后端（不影响默认 8000）
       '/api': { target: process.env.QA_API_TARGET || 'http://127.0.0.1:8000', changeOrigin: true },
@@ -31,6 +36,9 @@ export default defineConfig({
           }
           // 研究页之间会互相引用卡片/终端组件。把这一组固定到同一个研究 chunk，
           // 避免 Rollup 为每页单独建 chunk 后形成 page-lab ↔ page-* 的循环。
+          if (/[/\\]src[/\\]http\.ts$/.test(id)) return 'http-client'
+          if (/[/\\](ArtifactPreview|ArtifactCenter|TaskResult|plugins|researchStudio)\.(tsx?|css)$/.test(id)) return 'research-artifacts'
+          if (/[\\/]src[\\/]features[\\/]workflows[\\/]/.test(id)) return 'page-workflows'
           const page = id.match(/[\\/]src[\\/]pages[\\/]([^\\/.]+)/)
           if (page) {
             const research = new Set(['lab', 'data', 'DataCenter', 'Factors', 'ModelLib', 'Portfolio', 'Execution', 'StrategyLab', 'Validation', 'LifecycleView', 'Assemble'])

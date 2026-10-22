@@ -90,3 +90,17 @@ _archive/
 .realperp-test-home/
 record-flow-*/
 $null
+
+# Research Studio local verification
+/.qa-studio-env/
+/.q?????/
+tests/.tmp/
+/.ui/
+
+# 鏈湴 sidecar 鏋勫缓浜х墿锛堢敱 scripts/build_sidecar.py 鐢熸垚锛屼笉杩涗粨搴擄級
+desktop/src-tauri/resources/backend/*
+!desktop/src-tauri/resources/backend/.gitkeep
+
+# PyInstaller/本地构建临时目录
+/.tmp/
+

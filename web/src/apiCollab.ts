@@ -1,7 +1,7 @@
 /**
  * 工作区协作（群组 / 任务 / 可见性 / 编辑标记与血缘）、通知中心与屏蔽、问题报告与上传、部署运维控制台。
  */
-import { ApiError, currentWorkspace, del, get, post, put } from './http'
+import { ApiError, del, get, post, put, targetWorkspace } from './http'
 import type { LimitRule, LimitStatus } from './api/research'
 
 /** report：AI 研究室调研报告（id = 对话/报告）；link：站内任意页面（id 是不带 #/ 的路由） */
@@ -314,7 +314,7 @@ export const issues = {
 /** 上传一个文件（原始字节）。返回文件 id 与访问地址。 */
 export async function uploadFile(file: File): Promise<Upload> {
   const headers: Record<string, string> = { 'Content-Type': file.type || 'application/octet-stream', 'X-Requested-With': 'quantlab' }
-  const ws = currentWorkspace()
+  const ws = targetWorkspace()
   if (ws) headers['X-Workspace-Id'] = ws
   const res = await fetch(`/api/uploads?filename=${encodeURIComponent(file.name)}`, { method: 'POST', credentials: 'same-origin', headers, body: file })
   if (!res.ok) {

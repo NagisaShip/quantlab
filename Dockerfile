@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.6
-# QuantLab v0.1.0-preview.1 —— 一个镜像，两种角色：api（控制面）与 worker（执行面），由 command 区分。
+# QuantLab v0.1.0-preview.2 —— 一个镜像，两种角色：api（控制面）与 worker（执行面），由 command 区分。
 
 # ---------- 前端构建 ----------
 FROM node:22-alpine AS web

@@ -430,7 +430,7 @@ class TeamRunner:
             return []
         from . import platform_tools as PT
 
-        return [name for name, tool in PT.registry().items() if tool.risk != "confirm"]
+        return [name for name, tool in PT.available_registry().items() if tool.risk != "confirm"]
 
     def _make_tool(self, name: str):
         from .base import Tool

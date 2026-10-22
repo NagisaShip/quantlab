@@ -13,6 +13,7 @@ import { HypothesisCard } from './lab/factor'
 import type { PageProps } from './types'
 import { appConfirm } from '../components/dialog'
 import { RecordPinButton } from '../components/RecordPin'
+import { READ_ONLY_REASON_ID, ReadOnlyRouteGate, useReadOnlyCapability } from '../features/workflows/ReadOnlyCapability'
 
 type Tab = 'list' | 'new' | 'trials' | 'syntax'
 const TABS: { value: Tab; label: string }[] = [
@@ -24,18 +25,24 @@ export default function FactorsPage({ arg, onNavigate, notify }: PageProps & { a
   const [meta, setMeta] = useState<FactorMeta | null>(null)
   const loadMeta = useCallback(() => { factors.meta().then(setMeta).catch((e: Error) => notify(e.message, true)) }, [notify])
   useEffect(loadMeta, [loadMeta])
+  const ro = useReadOnlyCapability('factor')
+  const readOnly = ro?.readOnly ?? false
   const tab: Tab | null = !arg ? 'list' : (['new', 'trials', 'syntax'] as string[]).includes(arg) ? (arg as Tab) : null
 
   return (
     <>
       <Heading title="因子" description="有经济学逻辑、通过样本外与多重检验的因子才进库。每次评估都记入试验台账，试得越多，显著性门槛越高。"
-        actions={<button className="button primary" onClick={() => openInLab({ idea: '', kind: 'factor' })}>✦ 让 AI 研究一个因子</button>} />
+        actions={<button className="button primary" disabled={readOnly} title={readOnly ? ro?.reason : undefined}
+          aria-describedby={readOnly ? READ_ONLY_REASON_ID : undefined}
+          onClick={() => { if (!readOnly) openInLab({ idea: '', kind: 'factor' }) }}>✦ 让 AI 研究一个因子</button>} />
       <div className="fx-tabs">
         <Segments value={tab ?? 'list'} options={TABS} onChange={(t) => onNavigate(t === 'list' ? 'factors' : `factors/${t}`)} ariaLabel="因子库视图" />
         {meta && <span className="hint">已入库或候选因子之外，累计试过 {meta.trials} 个表达式</span>}
       </div>
       {tab === 'list' && <FactorList meta={meta} onOpen={(id) => onNavigate(`factors/${id}`)} notify={notify} />}
-      {tab === 'new' && <Evaluator meta={meta} notify={notify} onSaved={(id) => onNavigate(`factors/${id}`)} onEvaluated={loadMeta} />}
+      {tab === 'new' && (readOnly
+        ? <ReadOnlyRouteGate title="因子评估器暂时不可用" historyLabel="因子库" historyRoute="factors" onNavigate={onNavigate} />
+        : <Evaluator meta={meta} notify={notify} onSaved={(id) => onNavigate(`factors/${id}`)} onEvaluated={loadMeta} />)}
       {tab === 'trials' && <Trials />}
       {tab === 'syntax' && <Syntax meta={meta} />}
       {tab === null && arg && <FactorDetail key={arg} id={arg} meta={meta} notify={notify} onDeleted={() => onNavigate('factors')} />}
@@ -103,6 +110,8 @@ function FactorDetail({ id, meta, notify, onDeleted }: { id: string; meta: Facto
   const [report, setReport] = useState<FactorReport | null>(null)
   const [busy, setBusy] = useState(false)
   const [missing, setMissing] = useState(false)
+  const ro = useReadOnlyCapability('factor')
+  const readOnly = ro?.readOnly ?? false
   const load = useCallback(async () => {
     try {
       const r = await factors.get(id)
@@ -118,6 +127,7 @@ function FactorDetail({ id, meta, notify, onDeleted }: { id: string; meta: Facto
   const health = (f.health || []).map((h) => h.rank_ic ?? 0)
 
   const refresh = async () => {
+    if (readOnly) return
     setBusy(true)
     try {
       const r = await factors.refresh(id)
@@ -128,17 +138,32 @@ function FactorDetail({ id, meta, notify, onDeleted }: { id: string; meta: Facto
   return (
     <>
       <Panel title={f.name} actions={<>
-        <select value={f.status} aria-label="状态" onChange={async (e) => { setF((await factors.setStatus(id, e.target.value as FactorStatus)).factor) }}>
+        <select value={f.status} aria-label="状态" disabled={readOnly} title={readOnly ? ro?.reason : undefined}
+          aria-describedby={readOnly ? READ_ONLY_REASON_ID : undefined}
+          onChange={async (e) => {
+            if (readOnly) return
+            try { setF((await factors.setStatus(id, e.target.value as FactorStatus)).factor) } catch (err) { notify((err as Error).message, true) }
+          }}>
           {(Object.entries(statuses) as [FactorStatus, string][]).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
         </select>
-        <button className="button small" disabled={busy} onClick={refresh}>{busy ? <><span className="spinner" /> 评估中</> : '用最新数据重新评估'}</button>
-        <button className="button small" onClick={() => openInLab({
-          kind: 'factor', idea: `改进因子「${f.name}」`, code: f.expression, title: `改进：${f.name}`, securities: f.universe, timeframe: f.timeframe,
-          attached: `因子 ${f.expression}`, pins: f.hypothesis?.rationale ? [{ kind: 'note', title: '原假设', text: `${f.hypothesis.rationale}\n预期：${f.hypothesis.direction ?? ''}\n证伪：${f.hypothesis.falsify ?? ''}` }] : [],
-        })}>在 AI 研究室中改进</button>
+        <button className="button small" disabled={busy || readOnly} title={readOnly ? ro?.reason : undefined}
+          aria-describedby={readOnly ? READ_ONLY_REASON_ID : undefined} onClick={refresh}>
+          {busy ? <><span className="spinner" /> 评估中</> : '用最新数据重新评估'}
+        </button>
+        <button className="button small" disabled={readOnly} title={readOnly ? ro?.reason : undefined}
+          aria-describedby={readOnly ? READ_ONLY_REASON_ID : undefined}
+          onClick={() => { if (!readOnly) openInLab({
+            kind: 'factor', idea: `改进因子「${f.name}」`, code: f.expression, title: `改进：${f.name}`, securities: f.universe, timeframe: f.timeframe,
+            attached: `因子 ${f.expression}`, pins: f.hypothesis?.rationale ? [{ kind: 'note', title: '原假设', text: `${f.hypothesis.rationale}\n预期：${f.hypothesis.direction ?? ''}\n证伪：${f.hypothesis.falsify ?? ''}` }] : [],
+          }) }}>在 AI 研究室中改进</button>
         <PythonCodeButton kind="factor" artifact={f.expression} name={f.name} />
         <RecordPinButton type="factor" id={f.id} pinned={f.pinned} notify={notify} />
-        <button className="button small danger" onClick={async () => { if (await appConfirm(`删除因子「${f.name}」？试验台账会保留。`)) { await factors.remove(id); onDeleted() } }}>删除</button>
+        <button className="button small danger" disabled={readOnly} title={readOnly ? ro?.reason : undefined}
+          aria-describedby={readOnly ? READ_ONLY_REASON_ID : undefined}
+          onClick={async () => {
+            if (readOnly) return
+            if (await appConfirm(`删除因子「${f.name}」？试验台账会保留。`)) { await factors.remove(id); onDeleted() }
+          }}>删除</button>
       </>}>
         <code className="fr-expr big">{f.expression}</code>
         <div className="fx-meta">
@@ -150,7 +175,7 @@ function FactorDetail({ id, meta, notify, onDeleted }: { id: string; meta: Facto
         {f.note && <div className="hint">{f.note}</div>}
       </Panel>
       <Panel title="评估报告" subtitle={report?.panel ? `评估于 ${day(f.evaluated_at)}` : undefined}>
-        {report ? <FullReport report={report} /> : <EmptyState glyph="ρ" title="还没有评估报告">点「用最新数据重新评估」生成。</EmptyState>}
+        {report ? <FullReport report={report} /> : <EmptyState glyph="ρ" title="还没有评估报告">{readOnly ? '当前无法重新生成，启用后可重新评估。' : '点「用最新数据重新评估」生成。'}</EmptyState>}
       </Panel>
     </>
   )

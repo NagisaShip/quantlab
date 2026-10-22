@@ -1,0 +1,27 @@
+import { expect, test } from '@playwright/test'
+import { newIsolatedSession, uiLogin } from './helpers'
+
+test('MCP 配置保存、编辑与刷新后保留', async ({ page, request }, testInfo) => {
+  const session = await newIsolatedSession(request, 'MCP settings')
+  await uiLogin(page, session)
+  await page.goto('/#/settings/mcp')
+  await expect(page.getByRole('heading', { name: 'MCP 服务', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '添加服务', exact: true }).click()
+  await page.getByLabel('名称', { exact: true }).fill('qa-tools')
+  await page.getByLabel('启动程序', { exact: true }).fill('python')
+  await page.getByLabel('启动参数（JSON 数组）', { exact: true }).fill('not json')
+  await page.getByRole('button', { name: '保存', exact: true }).click()
+  await expect(page.getByRole('alert')).toBeVisible()
+  await page.getByLabel('启动参数（JSON 数组）', { exact: true }).fill('["-m", "qa_tools"]')
+  await page.getByRole('button', { name: '保存', exact: true }).click()
+  await expect(page.locator('section.mcp-server')).toContainText('qa-tools')
+  await expect(page.getByRole('button', { name: '测试连接', exact: true })).toBeDisabled()
+  await page.reload()
+  await expect(page.locator('section.mcp-server')).toContainText('python -m qa_tools')
+  await page.getByRole('button', { name: '编辑', exact: true }).click()
+  await page.getByLabel('描述', { exact: true }).fill('用于研究的工具')
+  await page.screenshot({ path: testInfo.outputPath('mcp-edit.png'), animations: 'disabled' })
+  await page.getByRole('button', { name: '保存', exact: true }).click()
+  await expect(page.locator('section.mcp-server')).toContainText('用于研究的工具')
+  await page.screenshot({ path: testInfo.outputPath('mcp-saved.png'), animations: 'disabled' })
+})

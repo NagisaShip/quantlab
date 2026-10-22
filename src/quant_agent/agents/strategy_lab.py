@@ -29,11 +29,12 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..context.manager import _approx_tokens
-from ..llm.base import LLMError, Message, Tool
+from ..llm.base import LLMError, Message, Tool, explain_error, is_context_length_error
 from ..sdk import declared_params
 from ..strategies.params_util import ParamsError, rewrite_params
 from . import backtest_audit as BA
 from . import lab_goal as G
+from . import research_profile as RP
 from .blocks_protocol import BLOCKS_GUIDE
 from .copilot import SYSTEM as COPILOT_SYSTEM
 from .copilot import StrategyCopilot, extract_code, smoke_test, static_explain
@@ -618,6 +619,19 @@ def _trim_tool_outputs(messages: list[Message]) -> None:
             m.content = m.content[:400] + "…（较早的工具输出已截断）"
 
 
+def _shrink_context(messages: list[Message]) -> None:
+    """模型明确报「上下文/请求过大」时的急救：所有工具输出压到 800 字，只保留最近 4 条完整，
+    并丢掉历史思考内容。比直接降级成规则回答对研究者更有用。"""
+    tool_msgs = [m for m in messages if m.role == "tool"]
+    for m in tool_msgs:
+        if len(m.content or "") > 800:
+            m.content = m.content[:800] + "…（上下文超限，工具输出已压缩）"
+    for m in messages:
+        if m.role == "assistant":
+            m.reasoning = ""
+            m.provider_blocks = []
+
+
 #: 研究流程模板：对话框里「研究类型」滑块选中「完整流程」或「调研报告」时附加给模型的工作方式
 WORKFLOWS: dict[str, dict[str, str]] = {
     "auto": {
@@ -815,6 +829,17 @@ class StrategyLab:
     artifact_label = "当前代码"
     metrics_label = "最近一次回测成绩"
 
+    def system_prompt_for(self, project: dict[str, Any]) -> str:
+        """按 project.kind 选系统提示词：研究室沿用策略 SDK/回测规则，研究 / 工作流用通用研究 profile。"""
+        if RP.is_research_kind(project.get("kind")):
+            return RP.RESEARCH_SYSTEM
+        return self.system_prompt
+
+    def system_title_for(self, project: dict[str, Any]) -> str:
+        if RP.is_research_kind(project.get("kind")):
+            return "通用研究规则"
+        return self.system_title
+
     def goal_text(self, project: dict[str, Any]) -> str:
         return goal_line(project)
 
@@ -964,7 +989,10 @@ class StrategyLab:
         return self.store.append(pid, msg)
 
     def _router_for(self, project: dict[str, Any]) -> _PinnedRouter:
-        return _PinnedRouter(self.router, project.get("model") or "", project.get("effort") or "")
+        # 没单独选模型时用“默认”（当前模型清单第一个），不再跟随会被改动的全局路由
+        return _PinnedRouter(
+            self.router, project.get("model") or self.model_target(project), project.get("effort") or ""
+        )
 
     def _copilot(self, project: dict[str, Any]) -> StrategyCopilot:
         return StrategyCopilot(self._router_for(project))
@@ -1011,6 +1039,17 @@ class StrategyLab:
         self._phase(pid, label, " · ".join(f"{k} {v}" for k, v in args.items() if v not in (None, ""))[:160])
         t0 = time.perf_counter()
         try:
+            from . import hooks as hook_registry
+
+            hook_registry.run_hooks("before_tool", {"pid": pid, "tool": name, "args": args})
+        except Exception:  # hooks 不能阻断工具
+            pass
+        try:
+            if getattr(self, "kind", "strategy") in ("factor", "model", "portfolio", "execution"):
+                from ..workflows.agent import service
+                from ..workflows.plugins import require
+
+                require(service(), self.kind, agent=True)
             out = self._interruptible(pid, fn) if name in CANCELLABLE_TOOLS else fn()
             if name not in CANCELLABLE_TOOLS:
                 self._check_stop(pid)
@@ -1027,13 +1066,48 @@ class StrategyLab:
                 card["seq"],
                 data={"status": "error", "error": str(exc)[:400], "elapsed_ms": int((time.perf_counter() - t0) * 1000)},
             )
+            try:
+                hook_registry.run_hooks(
+                    "after_tool",
+                    {"pid": pid, "tool": name, "ok": False, "elapsed_ms": int((time.perf_counter() - t0) * 1000)},
+                )
+            except Exception:  # hooks 不能阻断错误路径
+                pass
             raise
         preview = out if isinstance(out, str) else json.dumps(out, ensure_ascii=False, default=str)
+        failed = isinstance(out, dict) and bool(out.get("error"))
         self.store.update(
             pid,
             card["seq"],
-            data={"status": "ok", "preview": preview[:1200], "elapsed_ms": int((time.perf_counter() - t0) * 1000)},
+            data={
+                "status": "error" if failed else "ok",
+                "preview": preview[:1200],
+                "error": str(out["error"])[:1500] if failed else "",
+                **(
+                    {"workflow_view": out["workflow_view"]}
+                    if isinstance(out, dict) and isinstance(out.get("workflow_view"), dict)
+                    else {}
+                ),
+                **(
+                    {"artifact_view": out["artifact_view"]}
+                    if isinstance(out, dict) and isinstance(out.get("artifact_view"), dict)
+                    else {}
+                ),
+                **(
+                    {"task_view": out["task_view"]}
+                    if isinstance(out, dict) and isinstance(out.get("task_view"), dict)
+                    else {}
+                ),
+                "elapsed_ms": int((time.perf_counter() - t0) * 1000),
+            },
         )
+        try:
+            hook_registry.run_hooks(
+                "after_tool",
+                {"pid": pid, "tool": name, "ok": not failed, "elapsed_ms": int((time.perf_counter() - t0) * 1000)},
+            )
+        except Exception:  # hooks 不能阻断返回
+            pass
         return out
 
     # ---------------- 平台回测 ----------------
@@ -1330,25 +1404,27 @@ class StrategyLab:
     def _chat_llm(self, pid: str, text: str, mode: str | None = None, images: list[str] | None = None) -> None:
         self._maybe_autocompact(pid)
         project = self.store.get(pid) or {}
+        research = RP.is_research_kind(project.get("kind"))
         mode = mode or project.get("permission") or "auto"
         router = self._router_for(project)
         messages = self.build_messages(project, exclude_last_user=True)
         extra_rules = []
-        if project.get("market_auto"):
+        if project.get("market_auto") and not research:
             extra_rules.append(
                 "研究者没有指定标的与周期（当前只是占位的默认值）：根据对话判断合适的标的和 K 线周期，"
                 "用 set_market 设置后再写代码或回测；如果对话里看不出来，就直接问。"
             )
         extra_rules.insert(0, IDENTITY.format(model=self.model_target(project) or "默认模型"))
-        extra_rules.append(TOOL_GUIDE)
+        extra_rules.append(RP.RESEARCH_TOOL_GUIDE if research else TOOL_GUIDE)
         extra_rules.append(BLOCKS_GUIDE)
         if self.tools.platform_tools:
             extra_rules.append(self._platform_prompt(project, mode))
         from . import platform_tools as PT
 
         extra_rules.append(PT.capability_note())
-        extra_rules.append(RIGOR_RULES)
-        if (wf := WORKFLOWS.get(project.get("workflow") or "")) is not None:
+        if not research:  # 策略 / 因子 / 模型 / 组合 / 执行研究室才追加回测与过拟合铁律
+            extra_rules.append(RIGOR_RULES)
+        if not research and (wf := WORKFLOWS.get(project.get("workflow") or "")) is not None:
             extra_rules.append(wf["rules"])
         if plan_text(project.get("plan")):
             extra_rules.append(plan_text(project.get("plan")))
@@ -1376,6 +1452,7 @@ class StrategyLab:
         who = (project.get("model") or "默认模型").split("/")[-1]
         max_calls = tool_call_limit(project)
         step = -1
+        context_retried = False
         while len(used) < max_calls:
             step += 1
             self._check_stop(pid)
@@ -1394,19 +1471,32 @@ class StrategyLab:
                     f"根据「{'、'.join(last)}」的结果继续推理" if last else "继续推理",
                     f"第 {step + 1} 步 · 本回合已调用 {len(used)} 个工具（上限 {max_calls}）",
                 )
-            result = self._interruptible(
-                pid,
-                lambda: router.chat(
-                    messages,
-                    role="code_gen",
-                    temperature=0.2,
-                    tools=list(tools.values()),
-                    max_tokens=8192,
-                    on_delta=stream,
-                    on_retry=lambda info: self._on_model_retry(pid, info),
-                ),
-                stream,
-            )
+            try:
+                result = self._interruptible(
+                    pid,
+                    lambda: router.chat(
+                        messages,
+                        role="code_gen",
+                        temperature=0.2,
+                        tools=list(tools.values()),
+                        max_tokens=8192,
+                        on_delta=stream,
+                        on_retry=lambda info: self._on_model_retry(pid, info),
+                    ),
+                    stream,
+                )
+            except LLMError as exc:
+                # 模型明确说上下文/请求过大：压缩工具输出后原地再试一次，而不是直接降级成规则回答。
+                if context_retried or not is_context_length_error(str(exc)):
+                    raise
+                context_retried = True
+                _shrink_context(messages)
+                self._phase(
+                    pid,
+                    "上下文超出模型窗口，压缩较早的工具输出后重试",
+                    f"{who} · 已保留最近一次工具结果与结论",
+                )
+                continue
             model = f"{result.provider}/{result.model}"
             raw_content = result.content or ""
             content = raw_content
@@ -1446,6 +1536,7 @@ class StrategyLab:
                     reasoning=getattr(result, "thinking", "") or "",
                 )
             )
+            document_images = []
             for call in result.tool_calls:
                 tool = tools.get(call.name)
                 used.append(TOOL_PHASE.get(call.name, call.name))
@@ -1463,14 +1554,33 @@ class StrategyLab:
                 else:
                     try:
                         out = tool.handler(**(call.arguments or {}))
+                        from ..local.documents import preview_images
+
+                        document_images.extend(preview_images(call.name, out))
                         output = out if isinstance(out, str) else json.dumps(out, ensure_ascii=False, default=str)
                     except StopRequested:
                         raise
                     except Exception as exc:
                         output = json.dumps({"error": str(exc)}, ensure_ascii=False)
-                messages.append(Message(role="tool", content=output[:6000], tool_call_id=call.id, name=call.name))
-                if call.name == "ask_user":
-                    asked = True
+                from ..workflows.transport import tool_text
+
+                try:
+                    structured = json.loads(output)
+                except (ValueError, TypeError):
+                    structured = output
+                messages.append(
+                    Message(role="tool", content=tool_text(call.name, structured), tool_call_id=call.id, name=call.name)
+                )
+            if document_images:
+                messages.append(
+                    Message(
+                        role="user",
+                        content="请检查这些真实页面截图的排版；发现问题先修正，再渲染复查。",
+                        images=document_images[:8],
+                    )
+                )
+            if any(call.name == "ask_user" for call in result.tool_calls):
+                asked = True
             if pending:
                 self._ask_approval(pid, pending)
                 return
@@ -1490,26 +1600,58 @@ class StrategyLab:
     # ---------------- 全部工具与审批 ----------------
     def _all_tools(self, pid: str) -> dict[str, Tool]:
         """本研究室的工具 + 斜杠命令工具 + 平台工具目录（重名时研究室自己的优先，平台的加 platform_ 前缀）。"""
+        project = self.store.get(pid) or {}
         own = {**self._slash_tools(pid), **self._chat_tools(pid)}
+        if RP.is_research_kind(project.get("kind")):
+            # 通用研究/工作流会话：不把“写策略代码 / 跑回测 / 分阶段流水线”作为默认工具，
+            # 否则模型会退回策略研发路径；需要时可用 platform_ 前缀的显式平台工具。
+            strategy_only = {
+                "write_strategy",
+                "write_factor",
+                "write_model_spec",
+                "write_portfolio",
+                "write_execution",
+                "run_backtest",
+                "run_stage",
+                "backtest_current",
+                "start_tuning",
+                "start_stress_drill",
+                "run_checkup",
+            }
+            own = {k: v for k, v in own.items() if k not in strategy_only}
         if self.tools.stage is not None and self.kind == "strategy":
             own["run_stage"] = self._stage_tool(pid)
         if not self.tools.platform_tools:
             return own
-        return {**self._platform_bridge(pid, set(own)), **own}
+        tools = {**self._platform_bridge(pid, set(own)), **own}
+        if RP.is_research_kind(project.get("kind")):
+            # 平台工具里也有回测/调参/体检入口；研究/工作流会话默认不暴露，避免模型偏离交付任务。
+            blocked = {
+                "run_backtest",
+                "start_tuning",
+                "start_stress_drill",
+                "run_checkup",
+                "promote_strategy",
+                "apply_calibration",
+                "start_session",
+                "stop_session",
+            }
+            tools = {k: v for k, v in tools.items() if k not in blocked}
+        return tools
 
     def _platform_bridge(self, pid: str, taken: set[str]) -> dict[str, Tool]:
         from . import platform_tools as PT
 
         out: dict[str, Tool] = {}
-        for name, t in PT.registry().items():
+        for name, t in PT.available_registry().items():
             alias = f"platform_{name}" if name in taken else name
 
             def handler(_t: Any = t, _alias: str = alias, **kw: Any) -> Any:
                 args = {k: v for k, v in kw.items() if k in _t.params}
-                missing = [k for k in _t.required if not args.get(k)]
+                missing = [k for k in _t.required if k not in args or args[k] is None]
                 if missing:
-                    return {"error": f"缺少参数：{'、'.join(missing)}"}
-                shown = {k: str(v)[:60] for k, v in args.items() if v not in (None, "")}
+                    return self._tool(pid, _alias, _t.title, {}, lambda: {"error": f"缺少参数：{'、'.join(missing)}"})
+                shown = {k: str(v)[:60] for k, v in args.items() if v is not None}
                 out = self._tool(pid, _alias, _t.title, shown, lambda: _t.handler(**args))
                 # 调参 / 压力演练 / 体检是后台任务：登记跟进，完成后 AI 自动回到这个对话汇报
                 from .followup import FOLLOWUPS
@@ -1534,9 +1676,10 @@ class StrategyLab:
         need = self._approval_set(project, mode)
         labels = "、".join(PT.APPROVAL_CATEGORIES[c]["label"] for c in PT.APPROVAL_CATEGORIES if c in need) or "无"
         groups: dict[str, list[str]] = {}
-        for name, t in PT.registry().items():
+        for name, t in PT.available_registry().items():
             groups.setdefault(PT.SCENES.get(t.scene, {}).get("label", t.scene), []).append(name)
         lines = [
+            "【研究产物展示】工作流运行后读取workflow_inspect，用workflow_artifact读取主要输出以在对话中显示表格、图表和文件；需要图表时用workflow_chart_preview。附上真实运行ID，不只报告本地文件路径。",
             "【平台功能全集】除了研究室工具，你还能直接调用平台各页面的功能（同名的加了 platform_ 前缀）：",
             *[f"- {g}：{'、'.join(ns)}" for g, ns in groups.items()],
             f"【审批】当前权限模式下，这些类别的操作会先弹审批卡片，研究者批准后才执行：{labels}。"
@@ -2466,11 +2609,20 @@ class StrategyLab:
             kind="text",
             mode="fallback",
             content=(
-                f"**规则降级**（{short}）：自由对话需要模型。现在可以直接用：\n\n"
-                "- 点「自动迭代」：按验收目标自动 生成 → 回测 → 调参改进\n"
+                f"**规则降级**（{short}）。\n\n"
+                + (
+                    "自由对话需要模型。现在可以直接用：\n\n"
+                    if "未配置" in short
+                    else "这次没有拿到模型回答，可以点这条消息上的「重试」再试一次；现在也能用：\n\n"
+                )
+                + "- 点「自动迭代」：按验收目标自动 生成 → 回测 → 调参改进\n"
                 "- `/回测` 跑平台回测　`/解释` 静态解释代码　`/团队` 召集团队评审\n"
-                "- 在右侧编辑器里直接改代码并保存为新版本\n\n在「AI 设置 → AI 模型」里填任意一个模型密钥后，"
-                "就能自由对话。"
+                "- 在右侧编辑器里直接改代码并保存为新版本\n\n"
+                + (
+                    "在「AI 设置 → AI 模型」里填任意一个模型密钥后，就能自由对话。"
+                    if "未配置" in short
+                    else "如果反复失败，打开「设置 → 模型」检查密钥、API 地址与路由。"
+                )
             ),
         )
 
@@ -2554,8 +2706,11 @@ class StrategyLab:
         return max(1, int(self.context_window(project) * self.auto_compact_ratio(project)))
 
     def _fixed_context_tokens(self, project: dict[str, Any]) -> int:
-        """系统提示与项目材料（含代码、钉住内容）的近似 token 数。"""
-        return _approx_tokens(self.system_prompt) + _approx_tokens(self._context_block(project))
+        """系统提示、项目规则与项目材料（含代码、钉住内容）的近似 token 数。"""
+        fixed = self.system_prompt_for(project) + self._context_block(project)
+        if rules := RP.instructions_block(project.get("instructions")):
+            fixed += rules
+        return _approx_tokens(fixed)
 
     def has_goal(self, project: dict[str, Any]) -> bool:
         """设过目标（研究者 /goal、AI set_goal、或建项目时给了目标）才能自动迭代；没有目标就正常对话。"""
@@ -2753,10 +2908,8 @@ class StrategyLab:
         """/report：按调研报告流程列计划、收集资料、分析，最后用 write_report 交付报告。"""
         project = self.store.get(pid) or {}
         what = (topic or project.get("idea") or project.get("title") or "当前研究").strip()
-        self.run_plan(
-            pid,
-            f"调研报告：{what}\n{WORKFLOWS['report']['rules']}\n计划的最后一步必须是调用 write_report 提交报告。",
-        )
+        rules = RP.RESEARCH_REPORT_RULES if RP.is_research_kind(project.get("kind")) else WORKFLOWS["report"]["rules"]
+        self.run_plan(pid, f"调研报告：{what}\n{rules}\n计划的最后一步必须是调用 write_report 提交报告。")
 
     # ---------------- 子 Agent：并行探究多个方向 ----------------
     def spawn_subagents(self, pid: str, *, topic: str, variants: list[str], max_tool_calls: int = 40) -> dict[str, Any]:
@@ -3035,11 +3188,12 @@ class StrategyLab:
         return item
 
     def build_messages(self, project: dict[str, Any], *, exclude_last_user: bool = False) -> list[Message]:
-        """系统提示 + 钉住的上下文 + 当前代码与最近成绩 + 预算内的对话历史（更早的压成摘要）。"""
-        msgs = [
-            Message(role="system", content=self.system_prompt),
-            Message(role="system", content=self._context_block(project)),
-        ]
+        """系统提示 + 项目规则 + 钉住的上下文 + 当前代码与最近成绩 + 预算内的对话历史（更早的压成摘要）。"""
+        msgs = [Message(role="system", content=self.system_prompt_for(project))]
+        if rules := RP.instructions_block(project.get("instructions")):
+            # 固定位置：紧跟系统提示、在项目上下文之前；文字里声明与安全规则的优先级
+            msgs.append(Message(role="system", content=rules))
+        msgs.append(Message(role="system", content=self._context_block(project)))
         history = self._history(project)
         if exclude_last_user and history and history[-1]["role"] == "user":
             history = history[:-1]
@@ -3076,6 +3230,9 @@ class StrategyLab:
     def model_target(self, project: dict[str, Any]) -> str:
         if project.get("model"):
             return project["model"]
+        default = getattr(self.router, "default_target", None)
+        if callable(default) and (first := default()):
+            return first
         current = getattr(self.router, "current_target", None)
         return current("code_gen") if callable(current) else ""
 
@@ -3133,6 +3290,9 @@ class StrategyLab:
         return {"ok": True, "pin": pin, "mode": mode}
 
     def _context_block(self, project: dict[str, Any]) -> str:
+        if RP.is_research_kind(project.get("kind")):
+            # 通用研究 / 工作流会话：研究问题、钉住材料与来源引用；不塞策略目标、代码与回测成绩
+            return RP.research_context_block(project)
         parts = [
             f"【项目】{project.get('title')}　标的 {','.join(project['securities'])}　周期 {project['timeframe']}",
             f"【想法】{project.get('idea') or '—'}",
@@ -3162,12 +3322,23 @@ class StrategyLab:
                 break
             kept_tokens += cost
             kept += 1
+        research = RP.is_research_kind(project.get("kind"))
+        brief_text = (
+            f"{project.get('title')}{project.get('idea')}"
+            if research
+            else f"{project.get('title')}{project.get('idea')}{self.goal_text(project)}"
+        )
         items = [
-            {"key": "system", "title": self.system_title, "tokens": _approx_tokens(self.system_prompt), "fixed": True},
+            {
+                "key": "system",
+                "title": self.system_title_for(project),
+                "tokens": _approx_tokens(self.system_prompt_for(project)),
+                "fixed": True,
+            },
             {
                 "key": "brief",
-                "title": "项目、想法与验收目标",
-                "tokens": _approx_tokens(f"{project.get('title')}{project.get('idea')}{self.goal_text(project)}"),
+                "title": "项目与研究问题" if research else "项目、想法与验收目标",
+                "tokens": _approx_tokens(brief_text),
                 "fixed": True,
             },
             *[
@@ -3182,6 +3353,29 @@ class StrategyLab:
                 for p in project.get("pins") or []
             ],
         ]
+        if rules := RP.instructions_block(project.get("instructions")):
+            # 项目级 instructions：让前端能看到「研究者设了哪些规则」，内容与注入提示词的一致
+            items.append(
+                {
+                    "key": "instructions",
+                    "title": "项目规则（研究者设定）",
+                    "text": RP.clamp_instructions(project.get("instructions")),
+                    "tokens": _approx_tokens(rules),
+                    "fixed": True,
+                }
+            )
+        if research:
+            sources = RP.context_sources_text(project.get("context"))
+            if sources:
+                items.append(
+                    {
+                        "key": "context",
+                        "title": "来源引用（只含标题与 ID）",
+                        "summary": sources,
+                        "tokens": _approx_tokens(sources),
+                        "fixed": True,
+                    }
+                )
         if project.get("code"):
             items.append(
                 {
@@ -3307,7 +3501,8 @@ def version_history_text(
 def research_brief(
     project: dict[str, Any], messages: list[dict[str, Any]] | None = None, *, code_chars: int = 5000
 ) -> str:
-    """交给团队评审 / 团队讨论的完整前情：和单 Agent 看到的是同一份状态（同一数据窗口、全部版本与成绩）。"""
+    """交给团队评审 / 团队讨论的完整前情：和单 Agent 看到的是同一份状态（同一数据窗口、全部版本与成绩）。
+    研究 / 工作流会话改用通用研究上下文（研究问题、来源引用），并在末尾注入项目 instructions。"""
     asks = [
         m["content"].strip()
         for m in messages or []
@@ -3315,18 +3510,24 @@ def research_brief(
     ]
     recent = "\n".join(f"- {t[:200]}" for t in asks[-4:]) or "（无）"
     symbols = ",".join(project.get("securities") or [])
-    return (
-        f"【项目】{project.get('title')}　标的 {symbols}　周期 {project.get('timeframe')}\n"
-        f"【数据窗口】{data_window_text(project)}；数据源 {project.get('data_source') or 'auto'}。"
-        "查看行情时请用同一标的、周期与 K 线根数，和回测看同一段数据。\n"
-        f"【初始想法】{project.get('idea') or '—'}\n"
-        f"【研究者最近的要求】\n{recent}\n"
-        f"【验收目标】{G.items_text(G.project_items(project))}\n"
-        f"【版本演进（按时间）】\n{version_history_text(project)}\n"
-        "说明：后续版本相对初始想法的改动，是研究过程中根据回测结果有意做的迭代（见每版的改动说明与成绩），"
-        "评审时请据此判断改动是否有效，不要把它当成「代码与想法不一致」的错误。\n\n"
-        f"【当前代码 v{project.get('current_v')}】\n```python\n{(project.get('code') or '（尚无）')[:code_chars]}\n```"
-    )
+    if RP.is_research_kind(project.get("kind")):
+        # 通用研究 / 工作流会话：团队看到的是研究问题、钉住材料与来源引用，而不是策略目标与代码
+        brief = f"{RP.research_context_block(project)}\n\n【研究者最近的要求】\n{recent}"
+    else:
+        brief = (
+            f"【项目】{project.get('title')}　标的 {symbols}　周期 {project.get('timeframe')}\n"
+            f"【数据窗口】{data_window_text(project)}；数据源 {project.get('data_source') or 'auto'}。"
+            "查看行情时请用同一标的、周期与 K 线根数，和回测看同一段数据。\n"
+            f"【初始想法】{project.get('idea') or '—'}\n"
+            f"【研究者最近的要求】\n{recent}\n"
+            f"【验收目标】{G.items_text(G.project_items(project))}\n"
+            f"【版本演进（按时间）】\n{version_history_text(project)}\n"
+            "说明：后续版本相对初始想法的改动，是研究过程中根据回测结果有意做的迭代（见每版的改动说明与成绩），"
+            "评审时请据此判断改动是否有效，不要把它当成「代码与想法不一致」的错误。\n\n"
+            f"【当前代码 v{project.get('current_v')}】\n```python\n{(project.get('code') or '（尚无）')[:code_chars]}\n```"
+        )
+    rules = RP.instructions_block(project.get("instructions"))
+    return f"{brief}\n\n{rules}" if rules else brief
 
 
 def project_has_goal(project: dict[str, Any]) -> bool:
@@ -3379,6 +3580,11 @@ def _latest_eval(project: dict[str, Any]) -> dict[str, Any] | None:
 
 
 SHARED_TOOLS = (
+    "workflow_catalog",
+    "workflow_inspect",
+    "workflow_validate",
+    "workflow_run",
+    "workflow_revise",
     "search_platform",
     "web_search",
     "fetch_page",
@@ -3513,9 +3719,8 @@ def tool_failure(out: Any) -> str:
 
 
 def _short(reason: str) -> str:
-    if "未配置 API Key" in reason:
-        return "未配置任何模型密钥"
-    return reason.splitlines()[-1][:120] if reason else "模型不可用"
+    """降级原因：只留用户能行动的一句中文（去掉 MDN 链接、堆栈和服务商原始状态行）。"""
+    return explain_error(reason)
 
 
 __all__ = [

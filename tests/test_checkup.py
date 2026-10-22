@@ -194,6 +194,42 @@ def handle_data(ctx):
     assert out["details"]["stressed"]["total_return"] < out["details"]["base"]["total_return"]
 
 
+@pytest.mark.parametrize("base_scale", [1.0, 1.5])
+@pytest.mark.parametrize("own_cost", [False, True])
+def test_checkup_cost_matches_engine_stress(bars, base_scale, own_cost):
+    from dataclasses import replace
+
+    from quant_agent.engine.research import execute
+
+    src = '''
+def initialize(ctx):
+    COST_SETUP
+    g.n = 0
+
+def handle_data(ctx):
+    g.n += 1
+    order_target_percent(ctx.securities[0], 0.5 if g.n % 2 else 0.0)
+'''.replace(
+        "COST_SETUP",
+        'set_order_cost({"taker_fee": 0.001, "slippage_bps": 5, "spread_bps": 2})'
+        if own_cost else "pass",
+    )
+    spec = replace(SPEC, cost_scale=base_scale)
+    run = C.make_runner(src, name="consistent_cost", spec=spec)
+    base = run(bars)
+    stressed = run(bars, cost_mult=2)
+    expected = execute(src, name="consistent_cost", bars=bars, spec=replace(spec, cost_scale=base_scale * 2))
+    assert stressed.metrics == expected.metrics
+    assert stressed.fills == expected.fills
+    assert stressed.cost_model == expected.cost_model
+    notional = sum(float(f["amount"]) * float(f["price"]) for f in stressed.fills)
+    assert notional > 0
+    fees = sum(float(f["fee"]) for f in stressed.fills)
+    assert fees / notional == pytest.approx(0.001 * base_scale * 2)
+    assert run(bars).metrics == base.metrics  # 压力测试不能修改复用的基准规格
+    assert spec.cost_scale == base_scale
+
+
 def test_plateau_neighbors():
     assert [n for _, n in C._neighbors(10)] == [8, 9, 11, 12]
     assert [n for _, n in C._neighbors(2)] == [0, 1, 3, 4] or 0 not in [n for _, n in C._neighbors(2)]

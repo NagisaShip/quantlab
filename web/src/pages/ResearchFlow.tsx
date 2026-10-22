@@ -90,6 +90,7 @@ export default function ResearchFlowPage({ onNavigate, notify, features }: PageP
           <h2>把“看起来不错”变成“可以被复核”。</h2>
           <p>每个阶段都有明确产物：数据质量报告、可检验信号、冻结版本、样本外结果、审查卡和可重放研究包。你可以逐页深入，也可以把阶段交给 AI 统筹。</p>
           <div className="rf-hero-actions">
+            <button className="button" onClick={() => onNavigate('workflows')}>打开函数工作流</button>
             <button className="button primary" onClick={() => openInLab({ idea: '/plan 从研究假设开始，先检查数据，再设计策略、验证并给出研究结论', kind: 'strategy', title: '从假设开始' })}>✦ 从假设开始</button>
             <button className="button" onClick={() => onNavigate('mentor')}>研究导师课程</button>
             <button className="button" onClick={() => onNavigate('backtests')}>查看验证记录</button>

@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -23,6 +24,7 @@ from ..platform.errors import STATUS_TO_CODE, AppError, ErrorCode, error_body
 from . import (
     routes_agents,
     routes_ai,
+    routes_approvals,
     routes_arena,
     routes_auth,
     routes_capabilities,
@@ -30,6 +32,7 @@ from . import (
     routes_config,
     routes_demo,
     routes_dsl,
+    routes_extensions,
     routes_freqtrade,
     routes_lab,
     routes_lifecycle,
@@ -48,14 +51,43 @@ from . import (
     routes_runs,
     routes_strategies,
     routes_studio,
+    routes_tasks,
+    routes_workflows,
     summaries,
 )
 
-WEB_DIST = Path(__file__).resolve().parents[3] / "web" / "dist"
+WEB_DIST = (
+    (Path(sys._MEIPASS) if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[3]) / "web" / "dist"
+)
+
+
+class _LocalRuntimeOnly:
+    """非本地部署：``GET /api/local/runtime`` 一律 404。
+
+    账号 / 云端部署没有「本机受管解释器」的概念；把判断放在最外层中间件，
+    是为了不先返回 401（避免暴露这个只读诊断接口是否存在）。本地模式仍交给
+    ``PlatformMiddleware._local`` 处理，行为不变。
+    """
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope.get("type") == "http" and scope.get("path", "").rstrip("/") == "/api/local/runtime":
+            from .deps import get_services
+
+            if get_services().local is None:
+                payload = error_body(ErrorCode.NOT_FOUND, "接口不存在", context.current().trace_id or "")
+                await JSONResponse(payload, status_code=404)(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
 
 
 def create_app(*, with_scheduler: bool = False) -> FastAPI:
+    from .routes_research_plugins import enforce
+
     app = FastAPI(
+        dependencies=[Depends(enforce)],
         lifespan=_background if with_scheduler else None,
         title="QuantLab v0.1.0-preview.1 API",
         description=(
@@ -68,6 +100,8 @@ def create_app(*, with_scheduler: bool = False) -> FastAPI:
     from .middleware import PlatformMiddleware
 
     app.add_middleware(PlatformMiddleware)
+    # 最后添加的中间件最外层：账号部署在鉴权之前就把 /api/local/runtime 归为 404
+    app.add_middleware(_LocalRuntimeOnly)
     _install_error_handlers(app)
 
     # 中文端点摘要必须在 include_router 之前挂上（之后 FastAPI 会把路由包一层）
@@ -85,6 +119,7 @@ def create_app(*, with_scheduler: bool = False) -> FastAPI:
         routes_public.router,
         routes_ops.router,
         routes_runs.router,
+        routes_tasks.router,
         routes_dsl.router,
         routes_live.router,
         routes_demo.router,
@@ -94,6 +129,16 @@ def create_app(*, with_scheduler: bool = False) -> FastAPI:
     app.include_router(routes_auth.router)
     app.include_router(routes_onboarding.router)
     app.include_router(routes_runs.router)
+    app.include_router(routes_tasks.router)
+    app.include_router(routes_approvals.router)
+    from . import routes_local
+
+    app.include_router(routes_local.router)
+    app.include_router(routes_local.envrouter)
+    app.include_router(routes_workflows.router)
+    from . import routes_research_plugins
+
+    app.include_router(routes_research_plugins.router)
     app.include_router(routes_dsl.router)
     app.include_router(routes_live.router)
     app.include_router(routes_config.router)
@@ -107,6 +152,7 @@ def create_app(*, with_scheduler: bool = False) -> FastAPI:
     app.include_router(routes_research.router)
     app.include_router(routes_ai.router)
     app.include_router(routes_lab.router)
+    app.include_router(routes_extensions.router)
     try:  # 因子库与信息源依赖 numpy；没装时其余功能照常
         from . import routes_datahub, routes_execution, routes_factors, routes_models, routes_portfolio, routes_rd
 
@@ -185,6 +231,12 @@ def _install_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(AppError)
     async def _app_error(_req: Request, exc: AppError):
         return respond(exc.status_code, exc.code, exc.message, exc.details)
+
+    from ..workflows.contracts import WorkflowError
+
+    @app.exception_handler(WorkflowError)
+    async def _workflow_error(_req: Request, exc: WorkflowError):
+        return respond(400, ErrorCode.INVALID_PARAMETER, str(exc))
 
     @app.exception_handler(StarletteHTTPException)
     async def _http_error(_req: Request, exc: StarletteHTTPException):

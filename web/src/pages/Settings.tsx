@@ -15,13 +15,19 @@ import NodeTab from './NodeTab'
 import QRCode from '../components/QRCode'
 import LabPrefsTab from './settings/LabPrefs'
 import PrivacyTab from './settings/Privacy'
+import PluginsTab from './settings/Plugins'
+import McpTab from './settings/Mcp'
 import type { PageProps } from './types'
+import LocalProjectPage from './LocalProject'
 import { appConfirm, appPrompt } from '../components/dialog'
 import { tData } from '../i18n'
 import { admin, memberDefaults, uploadFile } from '../apiCollab'
 import { useDebouncedValue } from '../useDebouncedValue'
 
-type Tab = 'workspace' | 'quota' | 'retention' | 'members' | 'runs' | 'node' | 'audit' | 'system' | 'account' | 'lab' | 'privacy'
+type Tab = 'mcp' | 'plugins' | 'workspace' | 'quota' | 'retention' | 'members' | 'runs' | 'node' | 'audit' | 'system' | 'account' | 'lab' | 'privacy'
+  | 'local' | 'local-env' | 'local-runtime' | 'local-library' | 'env'
+/** 本地项目页按设置分区渲染（tab: local / local-env / local-runtime / local-library / env）。 */
+const LocalProjectPanel = LocalProjectPage as unknown as (p: PageProps & { tab: string }) => JSX.Element
 // 从设置侧栏的单一导航定义派生页面标签，避免再次出现“页面已实现但入口没加”的漂移。
 const TABS: { key: Tab; label: string }[] = SETTINGS_GROUPS
   .flatMap((group) => group.items)
@@ -50,15 +56,26 @@ function inviteRemainingUses(i: Invite): string {
   return `${Math.max(0, i.remaining_uses ?? i.max_uses - i.invited_count)} 人`
 }
 
-export default function SettingsPage({ tab, me, onNavigate, notify, onMeChanged }: PageProps & { tab?: string; me: Me; onMeChanged: () => void }) {
-  const current = (TABS.find((t) => t.key === tab)?.key ?? 'workspace') as Tab
+export default function SettingsPage({ tab, me, onNavigate, notify, onMeChanged, setBusy, features }: PageProps & { tab?: string; me: Me; onMeChanged: () => void }) {
+  const localMode = me.mode === 'local'
+  // 本机模式没有工作区/账号设置：设置首页直接落到「本地项目」。
+  const requested = (TABS.some((t) => t.key === tab) ? tab : undefined) as Tab | undefined
+  const current = ((localMode && (!requested || requested === 'workspace')) ? 'local' : requested ?? 'workspace') as Tab
   const isAdmin = me.workspace?.role === 'admin'
+  const isLocalSection = current === 'local' || current === 'local-env' || current === 'local-runtime' || current === 'local-library'
+  const description = current === 'account' || current === 'mcp' || current === 'plugins' || localMode ? undefined
+    : current === 'lab' ? '只保存在这台设备的浏览器里，和对话框底栏里的开关同步'
+    : current === 'env' ? '检查实际执行环境；修复创建独立环境，不改动系统 Python。'
+    : isLocalSection ? '这一页只管理当前项目目录；数据、环境与运行证据都保存在本机。'
+    : <>工作区「{me.workspace?.name}」· 你的角色：{me.workspace?.is_primary_admin ? '主管理员' : ROLE_LABEL[me.workspace?.role ?? 'member']}。</>
   return (
     <div className="settings-page">
       <Heading
         title={TABS.find((t) => t.key === current)!.label}
-        description={current === 'account' ? undefined : current === 'lab' ? '只保存在这台设备的浏览器里，和对话框底栏里的开关同步' : <>工作区「{me.workspace?.name}」· 你的角色：{me.workspace?.is_primary_admin ? '主管理员' : ROLE_LABEL[me.workspace?.role ?? 'member']}。</>}
+        description={description}
       />
+      {isLocalSection && <LocalProjectPanel me={me} notify={notify} onNavigate={onNavigate} setBusy={setBusy} features={features} tab={current} />}
+      {current === 'env' && <LocalProjectPanel me={me} notify={notify} onNavigate={onNavigate} setBusy={setBusy} features={features} tab="env" />}
       {current === 'workspace' && <WorkspaceTab me={me} isAdmin={isAdmin} notify={notify} onSaved={onMeChanged} />}
       {current === 'quota' && <QuotaTab me={me} isAdmin={isAdmin} notify={notify} onSaved={onMeChanged} onNavigate={onNavigate} />}
       {current === 'retention' && <RecordRetentionTab isAdmin={isAdmin} notify={notify} />}
@@ -68,6 +85,8 @@ export default function SettingsPage({ tab, me, onNavigate, notify, onMeChanged 
       {current === 'audit' && (isAdmin ? <AuditTab notify={notify} /> : <Callout tone="warn">只有工作区管理员可以查看审计日志。</Callout>)}
       {current === 'system' && <SystemTab notify={notify} />}
       {current === 'account' && <AccountTab me={me} notify={notify} onSaved={onMeChanged} />}
+      {current === 'plugins' && <PluginsTab admin={isAdmin || localMode} notify={notify} />}
+      {current === 'mcp' && <McpTab admin={isAdmin || localMode} notify={notify} />}
       {current === 'lab' && <LabPrefsTab notify={notify} />}
       {current === 'privacy' && (isAdmin ? <PrivacyTab me={me} isAdmin={isAdmin} notify={notify} onSaved={onMeChanged} /> : <Callout tone="warn">只有工作区管理员可以查看隐私与存储设置。</Callout>)}
     </div>

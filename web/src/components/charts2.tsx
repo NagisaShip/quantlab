@@ -375,7 +375,7 @@ export function Scatter({
   )
 }
 
-/** 迷你曲线（卡片、列表用）。 */
+/** 迷你曲线（卡片、列表用）。颜色按整段首尾比较；调用方保证区间与旁边的涨跌幅口径一致。 */
 export function Sparkline({ values, width = 120, height = 34, benchmark }: { values: number[]; width?: number; height?: number; benchmark?: number[] }) {
   if (!values || values.length < 2) return <span className="muted">—</span>
   const all = [...values, ...(benchmark ?? [])]

@@ -407,8 +407,9 @@ class WorkspaceStore:
     而不是悄悄落到某个共享目录——这是工作区隔离的最后一道闸门。
     """
 
-    def __init__(self, home: str | Path) -> None:
+    def __init__(self, home: str | Path, *, local_workspace_id: str = "") -> None:
         self.home = Path(home)
+        self.local_workspace_id = local_workspace_id
         self._stores: dict[str, JsonStore] = {}
         self._lock = threading.RLock()
         self.initializer = None  # 新工作区第一次被访问时的初始化回调
@@ -422,7 +423,9 @@ class WorkspaceStore:
                 # 结果对象存储统一放在 `<数据目录>/results` 下（不是各工作区 store 里面），
                 # 路径是 `<数据目录>/results/<工作区>/<run>.<格式>`——T06 规定的落盘位置。
                 store = JsonStore(
-                    self.home / "workspaces" / workspace_id / "store",
+                    self.home / "store"
+                    if self.local_workspace_id == workspace_id
+                    else self.home / "workspaces" / workspace_id / "store",
                     results_root=self.home / "results",
                 )
                 self._stores[workspace_id] = store

@@ -49,7 +49,10 @@ for (const file of files) {
   visit(sf)
 }
 
-const en = JSON.parse(fs.readFileSync(path.join(SRC, 'i18n', 'en.json'), 'utf8'))
+const en = {
+  ...JSON.parse(fs.readFileSync(path.join(SRC, 'i18n', 'en.json'), 'utf8')),
+  ...JSON.parse(fs.readFileSync(path.join(SRC, 'i18n', 'landing.en.json'), 'utf8')),
+}
 const patSrc = fs.readFileSync(path.join(SRC, 'i18n.en.ts'), 'utf8')
 const known = [...patSrc.matchAll(/\['((?:[^'\\]|\\.)*)',\s*'(?:[^'\\]|\\.)*'\]/g)].map((m) => m[1].replace(/\\\\/g, '\\'))
 const regs = known.map((p) => { try { return new RegExp(`^${p}$`, 'u') } catch { return null } }).filter(Boolean)

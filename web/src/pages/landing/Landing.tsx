@@ -9,6 +9,7 @@ import { AssistantText, ToolLine } from '../../components/chat/Blocks'
 import { GoalCardView, PlanCard } from '../../components/lab/LabCards'
 import type { LabPlan } from '../../apiLab'
 import ApiDocsPage from '../ApiDocs'
+import AboutDialog from '../../components/AboutDialog'
 import { lang, setLang, t } from '../../i18n'
 
 /**
@@ -1043,6 +1044,7 @@ function ValidationDeck() {
 
 export default function Landing({ auth, autoOpen }: { auth: (close: () => void) => ReactNode; autoOpen?: boolean }) {
   const [open, setOpen] = useState(false)
+  const [about, setAbout] = useState(false)
   const [readmeOpen, setReadmeOpen] = useState(false)
   const [docsOpen, setDocsOpen] = useState(() => {
     try { return sessionStorage.getItem('qa.docsOverlay') === '1' } catch { return false }
@@ -1064,6 +1066,14 @@ export default function Landing({ auth, autoOpen }: { auth: (close: () => void) 
   const navRef = useRef<HTMLElement>(null)
   const progressRef = useRef<HTMLElement>(null)
   const deckRef = useRef<HTMLDivElement>(null)
+  /** 登录抽屉：根节点 / 遮罩 / 面板，用于滚动锁、inert 背景与焦点管理。 */
+  const rootRef = useRef<HTMLDivElement>(null)
+  const drawerWrapRef = useRef<HTMLDivElement>(null)
+  const drawerRef = useRef<HTMLElement>(null)
+  /** 打开抽屉前的触发元素，关闭后焦点回到它（可访问性）。 */
+  const restoreFocusRef = useRef<HTMLElement | null>(null)
+  /** 指针是否按在遮罩上：只有「按下 + 松开都在遮罩」才算点击遮罩，避免在输入框里拖选文本时误关抽屉。 */
+  const backdropDownRef = useRef(false)
   useReveal()
   useEffect(() => {
     const deck = deckRef.current
@@ -1147,7 +1157,106 @@ export default function Landing({ auth, autoOpen }: { auth: (close: () => void) 
       window.clearTimeout(wheelTimer.current)
     }
   }, [open])
-  const close = () => { setClosing(true); window.setTimeout(() => { setOpen(false); setClosing(false) }, 220) }
+  const close = () => { if (closing) return; setClosing(true); window.setTimeout(() => { setOpen(false); setClosing(false) }, 220) }
+  /** 打开抽屉：记录触发元素（Safari 点击按钮不会自动 focus，必须用 currentTarget），关闭后焦点回到它。 */
+  const openDrawer = (e?: { currentTarget: EventTarget | null }) => {
+    const trigger = e?.currentTarget
+    if (trigger instanceof HTMLElement) restoreFocusRef.current = trigger
+    else {
+      const active = document.activeElement
+      restoreFocusRef.current = active instanceof HTMLElement && active !== document.body ? active : null
+    }
+    setOpen(true)
+  }
+
+  /**
+   * 抽屉打开期间：锁背景滚动、把背景内容设为 inert（不可 tab）、焦点进入首个输入框；
+   * 关闭 / 卸载时恢复滚动、恢复 inert、焦点回到触发按钮。
+   * 注意：landing 的滚动发生在 .lp-deck 内部，锁 html/body 不会改动 deck 的 scrollTop；
+   * 这里仍记录一次并在关闭时做兜底恢复，避免某些 WebView 在 body overflow 变化时重置内部滚动。
+   */
+  useEffect(() => {
+    if (!open) return
+    const root = rootRef.current
+    const wrap = drawerWrapRef.current
+    const drawer = drawerRef.current
+    const deck = deckRef.current
+    const html = document.documentElement
+    const body = document.body
+    // 触发元素已在 openDrawer 里记录；autoOpen（邀请链接/首次部署）时退化为「记录当前焦点」
+    if (!restoreFocusRef.current) {
+      const active = document.activeElement
+      restoreFocusRef.current = active instanceof HTMLElement && active !== body && /^(BUTTON|A|INPUT|TEXTAREA|SELECT|SUMMARY)$/.test(active.tagName) ? active : null
+    }
+    const deckScroll = deck ? deck.scrollTop : 0
+    const prevHtmlOverflow = html.style.overflow
+    const prevBodyOverflow = body.style.overflow
+
+    html.classList.add('lp-scroll-lock')
+    body.classList.add('lp-scroll-lock')
+
+    // inert（Chrome 102+/WebView2 支持；旧内核忽略该属性，由下面的 Tab 焦点环兜底）
+    const inerted: HTMLElement[] = []
+    if (root) {
+      for (const child of Array.from(root.children)) {
+        if (!(child instanceof HTMLElement) || child === wrap) continue
+        if (!child.hasAttribute('inert')) { child.setAttribute('inert', ''); inerted.push(child) }
+      }
+    }
+
+    // 焦点进入首个输入框（登录/注册/两步验证都适用）；没有输入框时落到抽屉本身
+    const focusFrame = window.requestAnimationFrame(() => {
+      const firstInput = drawer?.querySelector<HTMLElement>('input:not([type="hidden"]):not([disabled]), textarea:not([disabled])')
+      ;(firstInput ?? drawer)?.focus({ preventScroll: false })
+    })
+
+    return () => {
+      window.cancelAnimationFrame(focusFrame)
+      html.classList.remove('lp-scroll-lock')
+      body.classList.remove('lp-scroll-lock')
+      html.style.overflow = prevHtmlOverflow
+      body.style.overflow = prevBodyOverflow
+      for (const el of inerted) el.removeAttribute('inert')
+      if (deck && Math.abs(deck.scrollTop - deckScroll) > 1) {
+        window.requestAnimationFrame(() => { deck.scrollTop = deckScroll })
+      }
+      const target = restoreFocusRef.current
+      restoreFocusRef.current = null
+      if (target && target.isConnected) target.focus({ preventScroll: true })
+    }
+  }, [open])
+
+  /** Escape 关闭 + Tab 焦点环（inert 不支持时的兼容兜底）。 */
+  useEffect(() => {
+    if (!open) return
+    const drawer = drawerRef.current
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        e.stopPropagation()
+        if (!closing) close()
+        return
+      }
+      if (e.key !== 'Tab' || !drawer) return
+      const items = Array.from(drawer.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href]'))
+        .filter((el) => el.getClientRects().length > 0)
+      if (!items.length) { e.preventDefault(); drawer.focus(); return }
+      const first = items[0]
+      const last = items[items.length - 1]
+      const current = document.activeElement
+      const inside = current instanceof Node && drawer.contains(current)
+      if (e.shiftKey && (!inside || current === first || current === drawer)) {
+        e.preventDefault()
+        last.focus()
+      } else if (!e.shiftKey && (!inside || current === last)) {
+        e.preventDefault()
+        first.focus()
+      }
+    }
+    document.addEventListener('keydown', onKey, true)
+    return () => document.removeEventListener('keydown', onKey, true)
+  }, [open, closing])
+
   const slideTo = (index: number) => {
     const deck = deckRef.current
     if (!deck) return
@@ -1163,10 +1272,10 @@ export default function Landing({ auth, autoOpen }: { auth: (close: () => void) 
   }
 
   return (
-    <div className="lp" data-i18n>
+    <div className="lp" data-i18n ref={rootRef}>
       <nav ref={navRef} className="lp-nav">
         <i ref={progressRef} className="lp-progress" aria-hidden />
-        <a className="lp-brand" href="#top" onClick={(e) => { e.preventDefault(); go('top') }}>
+        <a className="lp-brand" href="#top" title="关于 QuantLab" aria-haspopup="dialog" onClick={(e) => { e.preventDefault(); setAbout(true) }}>
           <QuantBot size={26} state="idle" title="QuantLab" /> <span className="lp-brand-copy"><b>QuantLab</b><em>v0.1.0-preview.1</em></span>
         </a>
         <span className="lp-grow" />
@@ -1179,7 +1288,7 @@ export default function Landing({ auth, autoOpen }: { auth: (close: () => void) 
           <button type="button" aria-pressed={lang === 'zh'} className={lang === 'zh' ? 'on' : ''} title={t('简体中文')} onClick={() => lang !== 'zh' && setLang('zh')}>ZH</button>
           <button type="button" aria-pressed={lang === 'en'} className={lang === 'en' ? 'on' : ''} title="English" onClick={() => lang !== 'en' && setLang('en')}>EN</button>
         </div>
-        <button type="button" className="button primary small" onClick={() => setOpen(true)}>登录 / 注册</button>
+        <button type="button" className="button primary small" onClick={(e) => openDrawer(e)}>登录 / 注册</button>
       </nav>
 
       <div className="lp-deck" ref={deckRef}>
@@ -1188,7 +1297,7 @@ export default function Landing({ auth, autoOpen }: { auth: (close: () => void) 
           <h1>先在纸面上<em>证明</em>，<br />再谈真金白银。</h1>
           <p>和 QuantLab Bot 一起，从一句想法到可回测、可审计、可复现的策略。每个结论都能追溯到原始数据。</p>
           <div className="lp-cta">
-            <button type="button" className="button primary" onClick={() => setOpen(true)}>开始研究</button>
+            <button type="button" className="button primary" onClick={(e) => openDrawer(e)}>开始研究</button>
             <button type="button" className="button ghost" onClick={() => go('demo')}>看看它怎么工作 ↓</button>
           </div>
           <div className="lp-hero-metrics">
@@ -1265,7 +1374,7 @@ export default function Landing({ auth, autoOpen }: { auth: (close: () => void) 
           <h2>把下一句想法，变成一条证据链。</h2>
           <p>从真实行情、策略代码到回测、验证和纸面模拟，QuantLab 把每一步都留在同一份研究记录里。</p>
           <div className="lp-cta lp-closing-cta">
-            <button type="button" className="button primary" onClick={() => setOpen(true)}>进入 QuantLab</button>
+            <button type="button" className="button primary" onClick={(e) => openDrawer(e)}>进入 QuantLab</button>
             <button type="button" className="button ghost" onClick={() => go('demo')}>再看一遍实际演示</button>
           </div>
           <div className="lp-closing-points"><span>不下真实订单</span><span>工作区隔离</span><span>结论可追溯</span><span>可私有部署</span></div>
@@ -1276,7 +1385,7 @@ export default function Landing({ auth, autoOpen }: { auth: (close: () => void) 
             <div className="lp-foot-links">
               <button type="button" className="lp-link" onClick={() => setDocsOpen(true)}>API 文档</button>
               <button type="button" className="lp-link" onClick={() => setReadmeOpen(true)}>项目 README</button>
-              <button type="button" className="lp-link" onClick={() => setOpen(true)}>登录 / 注册</button>
+              <button type="button" className="lp-link" onClick={(e) => openDrawer(e)}>登录 / 注册</button>
             </div>
           </div>
           <div className="lp-foot-dev">
@@ -1325,16 +1434,38 @@ export default function Landing({ auth, autoOpen }: { auth: (close: () => void) 
       )}
 
       {open && (
-        <div className={`lp-drawer-wrap${closing ? ' closing' : ''}`} onClick={(e) => { if (e.target === e.currentTarget) close() }}>
-          <aside className="lp-drawer" role="dialog" aria-modal="true" aria-label="登录或注册">
+        <div
+          ref={drawerWrapRef}
+          className={`lp-drawer-wrap${closing ? ' closing' : ''}`}
+          onPointerDown={(e) => { backdropDownRef.current = e.target === e.currentTarget }}
+          onClick={(e) => {
+            // 只有真正点在遮罩上才关闭；点在抽屉/输入框里（包括在输入框拖选文本后松开）绝不关闭
+            const onBackdrop = e.target === e.currentTarget && backdropDownRef.current
+            backdropDownRef.current = false
+            if (onBackdrop) close()
+          }}
+        >
+          <aside
+            ref={drawerRef}
+            className="lp-drawer"
+            role="dialog"
+            aria-modal="true"
+            aria-label="登录或注册"
+            tabIndex={-1}
+            onClick={(e) => e.stopPropagation()}
+          >
             <button type="button" className="lp-drawer-x" onClick={close} aria-label="关闭">✕</button>
-            <div className="lp-drawer-inner">
-              <div className="lp-drawer-bot"><QuantBot size={56} state="happy" title="QuantLab Bot" /></div>
-              {auth(close)}
+            <div className="lp-drawer-scroll">
+              <div className="lp-drawer-inner">
+                <div className="lp-drawer-bot"><QuantBot size={56} state="happy" title="QuantLab Bot" /></div>
+                {auth(close)}
+              </div>
             </div>
           </aside>
         </div>
       )}
+
+      <AboutDialog open={about} onClose={() => setAbout(false)} />
     </div>
   )
 }

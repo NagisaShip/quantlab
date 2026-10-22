@@ -23,6 +23,7 @@ from .calculator import calculate
 
 ACTIONS = "ai_actions"
 SCENES: dict[str, dict[str, str]] = {
+    "workflow": {"label": "研究工作流", "hint": "函数卡片、连接检查、版本、执行与证据"},
     "strategy": {"label": "策略与回测", "hint": "查策略、说明书、回测成绩、交易分解与保护规则；跑一次回测"},
     "data": {"label": "研究数据", "hint": "信息源数据集、事件流（公告、新闻、宏观）"},
     "trading": {"label": "模拟交易", "hint": "纸面模拟与交易所模拟盘：查看、启动、停止"},
@@ -36,6 +37,8 @@ SCENES: dict[str, dict[str, str]] = {
 }
 # 页面 → 默认加载的场景
 PAGE_SCENES: dict[str, list[str]] = {
+    "function": ["workflow"],
+    "workflows": ["workflow", "data"],
     "strategies": ["strategy"],
     "editor": ["strategy"],
     "backtests": ["strategy"],
@@ -1720,6 +1723,24 @@ def build() -> dict[str, PlatformTool]:
             required=["title"],
         ),
     ]
+    from ..workflows.agent import platform_tools as workflow_platform_tools
+
+    tools.extend(workflow_platform_tools(PlatformTool))
+    from functools import wraps
+
+    from ..workflows.plugins import tool_plugin
+    for tool in tools:
+        plugin = tool_plugin(tool.name) or ("data" if tool.scene == "data" else "")
+        if plugin:
+            def wrap(handler, plugin):
+                @wraps(handler)
+                def call(*args, **kwargs):
+                    from ..workflows.agent import service
+                    from ..workflows.plugins import require
+                    require(service(), plugin, agent=True)
+                    return handler(*args, **kwargs)
+                return call
+            tool.handler = wrap(tool.handler, plugin)
     return {t.name: t for t in tools}
 
 
@@ -1772,7 +1793,22 @@ def registry() -> dict[str, PlatformTool]:
     global _REGISTRY
     if _REGISTRY is None:
         _REGISTRY = build()
+    from ..local.profile import enabled as local_enabled
+
+    if local_enabled():
+        return {k: v for k, v in _REGISTRY.items() if v.scene != "collab"}
     return _REGISTRY
+
+
+def available_registry() -> dict[str, PlatformTool]:
+    result = registry()
+    from ..platform.context import current
+    if current().workspace_id:
+        from ..workflows.agent import service
+        from ..workflows.plugins import agent_tool_allowed, policy
+        states = {p["id"]: p for p in policy(service())}
+        result = {k: v for k, v in result.items() if agent_tool_allowed(v, states)}
+    return result
 
 
 def scenes_for(page: str, chosen: list[str] | None) -> list[str]:
@@ -1782,7 +1818,7 @@ def scenes_for(page: str, chosen: list[str] | None) -> list[str]:
 
 
 def tools_for(scenes: list[str]) -> list[PlatformTool]:
-    return [t for t in registry().values() if t.scene in scenes]
+    return [t for t in available_registry().values() if t.scene in scenes]
 
 
 def prompt_block(scenes: list[str]) -> str:
@@ -1793,6 +1829,7 @@ def prompt_block(scenes: list[str]) -> str:
     lines = [
         "【平台工具】本轮可以调用下列平台工具（场景：" + "、".join(SCENES[s]["label"] for s in scenes) + "）。",
         "用工具拿真实数据再回答，不要编造数字；需要 id 时先用列表类工具查。",
+        "研究产物使用workflow_artifact直接展示，matplotlib图使用workflow_chart_preview生成并展示。运行后先读取真实证据再解释。",
         "风险级别为「需要你确认」的工具不会立即执行：调用后会给用户一张确认卡片，你要在回答里说明要做什么、为什么，等用户确认。",
         "平台没有实盘下单能力，也不要建议绕过模拟盘。",
         capability_note(),
@@ -1813,7 +1850,7 @@ def invoke(name: str, args: dict[str, Any], *, user: str, conversation: str = ""
     args = {k: v for k, v in (args or {}).items() if k in tool.params}
     rec: dict[str, Any] = {"tool": name, "title": tool.title, "risk": tool.risk, "args": args}
     if tool.risk == "confirm":
-        missing = [k for k in tool.required if not args.get(k)]
+        missing = [k for k in tool.required if k not in args or args[k] is None]
         if missing:
             return {"result": {"error": f"缺少参数：{'、'.join(missing)}"}, "record": {**rec, "status": "error"}}
         action = {
@@ -1844,9 +1881,15 @@ def invoke(name: str, args: dict[str, Any], *, user: str, conversation: str = ""
     except TypeError as exc:
         out = {"error": f"参数不对：{exc}"}
     except Exception as exc:
-        out = {"error": f"{type(exc).__name__}: {exc}"[:300]}
+        out = {"error": f"{type(exc).__name__}: {exc}"[: 1500 if name.startswith("workflow_") else 300]}
     ok = not (isinstance(out, dict) and out.get("error"))
     rec.update(status="done" if ok else "error", ms=int((time.perf_counter() - t0) * 1000), preview=_preview(out))
+    if isinstance(out, dict) and isinstance(out.get("workflow_view"), dict):
+        rec["workflow_view"] = out["workflow_view"]
+    if isinstance(out, dict) and isinstance(out.get("artifact_view"), dict):
+        rec["artifact_view"] = out["artifact_view"]
+    if isinstance(out, dict) and isinstance(out.get("task_view"), dict):
+        rec["task_view"] = out["task_view"]
     return {"result": out, "record": rec}
 
 
@@ -1895,7 +1938,7 @@ def catalog() -> dict[str, Any]:
     return {
         "scenes": [{"id": k, **v} for k, v in SCENES.items()],
         "page_scenes": PAGE_SCENES,
-        "tools": [t.view() for t in registry().values()],
+        "tools": [t.view() for t in available_registry().values()],
         "risk_labels": RISK_LABEL,
     }
 

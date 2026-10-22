@@ -1,12 +1,22 @@
+import TaskResult from '../features/workflows/TaskResult'
+import ArtifactPreview from '../features/workflows/ArtifactPreview'
+import { isLocalDeployment } from '../deployment'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { PythonCodeButton, type PyKind } from '../components/PythonCode'
 import { useDraft } from '../components/draft'
 import { createPortal } from 'react-dom'
 import { lab, labPrefs, mergeBySeq, missions, type ContextView, type Effort, type Executor, type FactorSummary, type GoalSpec, type LabKind, type LabMessage, type LabMeta, type LabPlan, type LabProject, type Metrics, type Permission, APPROVAL_CATEGORIES, type ApprovalCategory } from '../apiLab'
+import { get } from '../http'
+import { AgentStatePill, MessageStateTag } from '../components/chat/LabStatus'
+import {
+  clearObservedFailure, deriveAgentStatus, evidenceProbes, messageTag, normalizeRunState, rememberObservedFailure,
+  type RunEvidenceState,
+} from '../components/chat/status'
 import { Avatar } from '../components/Avatar'
 import { store } from '../components/prefs'
 import { clearLabDraft, peekLabDraft, type LabDraft } from '../components/handoff'
 import { AssistantText, EventLine, ToolLine, UserBubble, Working } from '../components/chat/Blocks'
+import SessionWorkflows from '../components/chat/SessionWorkflows'
 import { Composer, ContextRing, ModelMenu, usePopover, type SlashCommand } from '../components/chat/Composer'
 import { ActionMenu, AutoIterateRow, ContextStats, Icons, PermissionMenu, useFilePicker, type ActionItem } from '../components/chat/LabControls'
 import { CodeEditor } from '../components/CodeEditor'
@@ -28,7 +38,9 @@ import { ExecutionPanel, ExecutionReportCard, ExecutionSpecCard, ExecutionVersio
 import { ExecStats } from '../components/executionReport'
 import { domainUI, kindOfType, libraryIdOf, pickExamples, RESEARCH_TYPES, WORKFLOW_LABEL, workflowOfType, type ResearchType } from './lab/domains'
 import { labChanged, onChatAsk, onNewChat, takeNewChat } from './lab/bus'
+import { addFolder, folderOptions, latestFolderOf, localProjectFolder, readFolders, readLastFolder, rememberFolder, resolveNewChatFolder } from './lab/folders'
 import { QuantBot, useBotFlash } from '../components/QuantBot'
+import { BOT_NAME, BOT_VOICE, upgradeFlashKey } from '../components/Brand'
 import { StepSlider } from '../components/StepSlider'
 import { ReportCard, SubagentsCard, DataCheckBadge, ExperimentNote, MarketSwitcher } from './lab/research'
 import { DiscussionCard } from '../components/chat/Discussion'
@@ -62,7 +74,14 @@ const TOOL_ICON: Record<string, string> = {
   write_model_spec: '◇', train_model: '∿', search_model_library: '⌕', list_features: '☰', set_model_goal: '◎', save_model: '⇩',
 }
 
-type PanelTab = 'code' | 'versions' | 'context' | 'goals' | 'plan'
+/** ＋菜单里的「项目文件夹」图标（不依赖 LabControls 的类型） */
+const FolderIcon = (
+  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" aria-hidden>
+    <path d="M2 4.5h4l1.2 1.3H14v6.7H2Z" /><path d="M10.5 8.2v3M9 9.7h3" strokeLinecap="round" />
+  </svg>
+)
+
+type PanelTab = 'code' | 'versions' | 'context' | 'goals' | 'plan' | 'workflow'
 
 const pct = (v: number | null | undefined, d = 1) => (v === null || v === undefined ? '—' : `${(v * 100).toFixed(d)}%`)
 const num = (v: number | null | undefined, d = 2) => (v === null || v === undefined ? '—' : v.toFixed(d))
@@ -71,7 +90,7 @@ export default function StrategyLabPage({ onNavigate, notify, arg, me }: PagePro
   const [meta, setMeta] = useState<LabMeta | null>(null)
   // 当前对话跟着网址 #/lab/<id> 走；左侧栏的对话列表在 App 里常驻（SidebarConversations）
   const activeId = arg || ''
-  const [newFolder, setNewFolder] = useState(() => takeNewChat() ?? '')
+  const [newFolder, setNewFolder] = useState('')
   const [newKey, setNewKey] = useState(0)
   const [slot, setSlot] = useState<HTMLElement | null>(null)
   useEffect(() => { setSlot(document.getElementById('sidebar-slot')) }, [])
@@ -80,8 +99,47 @@ export default function StrategyLabPage({ onNavigate, notify, arg, me }: PagePro
   useEffect(() => {
     lab.meta().then(setMeta).catch((e: Error) => notify(e.message, true))
   }, [notify])
-  // 已经在研究室里时，侧栏「新对话」也要清空欢迎页（换文件夹、清掉草稿）
-  useEffect(() => onNewChat(() => { setNewFolder(takeNewChat() ?? ''); setNewKey((k) => k + 1) }), [])
+
+  /*
+   * 新对话默认放进哪个项目文件夹，优先顺序：
+   * 侧栏显式传入（例：在某个项目文件夹里点 ＋）→ 最近用过（可能是明确的「未分类」）
+   * → 最近一次有项目文件的对话 → 本地模式下的项目名 → 未分类。
+   * 解析是异步的（要读最近对话的 folder），期间的选项变更用 seq 挡住，避免被覆盖。
+   */
+  const meRef = useRef(me)
+  meRef.current = me
+  const folderSeq = useRef(0)
+  const folderResolved = useRef(false)
+  // 侧栏点「新对话」时先派发事件、再改网址：旧页面（对话页）不能把 pending 文件夹吃掉，
+  // 要留给重挂载后的新对话页，否则「在某个项目文件夹里新对话」会丢文件夹
+  const activeRef = useRef(activeId)
+  activeRef.current = activeId
+  /** 用户在弹窗里手动选的：立刻生效，且压过还在路上的默认值解析 */
+  const chooseNewFolder = useCallback((folder: string) => { folderSeq.current += 1; setNewFolder(folder) }, [])
+  const resolveNewFolder = useCallback(async (explicit: string | null) => {
+    const seq = ++folderSeq.current
+    const last = readLastFolder()
+    if (explicit || last !== null) {
+      setNewFolder(resolveNewChatFolder({ explicit, lastFolder: last, localFolder: localProjectFolder(meRef.current) }))
+      return
+    }
+    const recent = await lab.projects().then((r) => latestFolderOf(r.projects)).catch(() => '')
+    if (seq !== folderSeq.current) return
+    setNewFolder(resolveNewChatFolder({ explicit, lastFolder: last, recentProjectFolder: recent, localFolder: localProjectFolder(meRef.current) }))
+  }, [])
+  useEffect(() => {
+    // StrictMode 下挂载 effect 会跑两次：第二次 takeNewChat() 已经是 null，
+    // 不能再解析一遍（否则会把侧栏显式传入的文件夹覆盖掉）
+    if (folderResolved.current) return
+    folderResolved.current = true
+    resolveNewFolder(takeNewChat())
+  }, [resolveNewFolder])
+  // 已经在研究室里时，侧栏「新对话」也要重置欢迎页（重新解析文件夹、清掉草稿）
+  useEffect(() => onNewChat(() => {
+    if (activeRef.current) return   // 在对话页：等路由切到 #/lab 重挂载后由新页面消费 pending 文件夹
+    setNewKey((k) => k + 1)
+    resolveNewFolder(takeNewChat())
+  }), [resolveNewFolder])
 
   const open = (id: string) => { window.location.hash = id ? `/lab/${id}` : '/lab' }
 
@@ -94,7 +152,7 @@ export default function StrategyLabPage({ onNavigate, notify, arg, me }: PagePro
           feedbackCfg={me?.workspace?.settings?.feedback}
           onChanged={refreshList} onDeleted={() => { open(''); refreshList() }} onOpenProject={(pid) => { refreshList(); open(pid) }} />
       ) : (
-        <Welcome key={`${newFolder}-${newKey}`} meta={meta} notify={notify} folder={newFolder}
+        <Welcome key={newKey} meta={meta} notify={notify} folder={newFolder} onFolder={chooseNewFolder}
           onCreated={(id) => { setNewFolder(''); refreshList(); open(id) }} />
       )}
     </div>
@@ -127,6 +185,9 @@ interface PlusOpts {
   onModels: () => void
   /** 引用其他对话或其中某条 AI 回答（新对话页面没有） */
   onQuote?: () => void
+  /** 项目文件夹：只有新对话页传，点了打开选择弹窗 */
+  onFolder?: () => void
+  folder?: string
   auto: ReactNode
 }
 
@@ -137,6 +198,12 @@ function labPlusItems(o: PlusOpts): ActionItem[] {
     ...(o.onQuote ? [{ label: '引用对话或消息', icon: Icons.pin, hint: '引用其他对话、或其中某条 AI 回答', onClick: o.onQuote }] : []),
     { label: '斜杠命令', icon: Icons.slash, hint: '/backtest、/goal、/plan、/discuss…', onClick: o.onSlash },
     { label: '分步计划', icon: Icons.loop, hint: '/plan：AI 列计划并一步步做完，达标前不停', onClick: o.onPlan, disabled: !!o.running },
+    ...(o.onFolder ? [{
+      label: o.folder ? `项目文件夹 · ${o.folder}` : '项目文件夹',
+      icon: FolderIcon, divider: true,
+      hint: o.folder ? `当前：${o.folder} · 点击更换或移出` : '未分类 · 选择一个已有的或新建',
+      onClick: o.onFolder,
+    }] : []),
     {
       label: '插件', icon: Icons.plugin, submenu: [
         ...(o.ui && o.onExecutor ? [{ label: '研究小组执行', icon: Icons.team, hint: o.ui.teamHint || '自动迭代时由小组讨论后再实现', checked: !!o.executorTeam, onClick: o.onExecutor, disabled: run }] : []),
@@ -240,8 +307,45 @@ async function startDiscussionIn(project: Pick<LabProject, 'id' | 'title' | 'ide
 /* ------------------------------------------------------------------ */
 /* 新对话                                                              */
 /* ------------------------------------------------------------------ */
-function Welcome({ meta, notify, onCreated, folder }: {
+/** 项目文件夹选择弹窗：已有文件夹 / 新建 / 移出（未分类）。 */
+function FolderPicker({ value, folders, onPick, onClose }: {
+  value: string; folders: string[]; onPick: (folder: string) => void; onClose: () => void
+}) {
+  const [name, setName] = useState('')
+  const create = () => {
+    const n = name.trim().slice(0, 40)
+    if (n) onPick(n)
+  }
+  return (
+    <Modal title="项目文件夹" onClose={onClose} width={430}>
+      <p className="folder-pick-hint">新对话会放进选中的项目文件夹，之后可以在左侧栏按「项目文件夹」分组查看、移动或解散。</p>
+      <div className="folder-pick-list" role="listbox" aria-label="项目文件夹">
+        <button type="button" role="option" aria-selected={!value} className={`folder-pick${value ? '' : ' on'}`} onClick={() => onPick('')}>
+          {FolderIcon}
+          <span className="folder-pick-name">未分类</span>
+          <span className="folder-pick-note">不放进任何项目文件夹</span>
+        </button>
+        {folders.map((f) => (
+          <button key={f} type="button" role="option" aria-selected={value === f} className={`folder-pick${value === f ? ' on' : ''}`} onClick={() => onPick(f)}>
+            {FolderIcon}
+            <span className="folder-pick-name">{f}</span>
+            {value === f && <span className="folder-pick-note">当前</span>}
+          </button>
+        ))}
+      </div>
+      {!folders.length && <div className="folder-pick-empty">还没有项目文件夹，下面输入名称就能新建。</div>}
+      <div className="folder-pick-new">
+        <input value={name} maxLength={40} placeholder="新建项目文件夹，例如：BTC 趋势研究" aria-label="新项目文件夹名称"
+          onChange={(e) => setName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') create() }} />
+        <button type="button" className="button small" disabled={!name.trim()} onClick={create}>新建并选择</button>
+      </div>
+    </Modal>
+  )
+}
+
+function Welcome({ meta, notify, onCreated, folder = '', onFolder }: {
   meta: LabMeta | null; notify: PageProps['notify']; onCreated: (id: string) => void; folder?: string
+  onFolder: (folder: string) => void
 }) {
   const [draft, setDraft] = useState<LabDraft | null>(peekLabDraft)   // 从别的页面带过来的想法 / 代码
   // 研究类型：五个研究室 + 完整流程 + 调研报告（流程类走策略对话）
@@ -284,6 +388,23 @@ function Welcome({ meta, notify, onCreated, folder }: {
   const market = usePopover()
   const metrics = metricsOf(dmeta)
   const botFx = useBotFlash()
+  // 项目文件夹：当前选择由页面级状态管（folder prop），这里只管弹窗与候选列表
+  const [folderOpen, setFolderOpen] = useState(false)
+  const [folders, setFolders] = useState<string[]>(readFolders)
+  const openFolderPicker = useCallback(() => {
+    setFolderOpen(true)
+    setFolders(folderOptions())
+    // 顺带把对话里已经用过的文件夹也列出来（本地列表可能还没收录）
+    lab.projects().then((r) => setFolders(folderOptions(r.projects.map((p) => p.folder)))).catch(() => undefined)
+  }, [])
+  const pickFolder = (name: string) => {
+    const n = name.trim().slice(0, 40)
+    if (n && !folders.includes(n)) setFolders(addFolder(n))
+    onFolder(n)
+    rememberFolder(n)   // 下次新对话默认沿用
+    setFolderOpen(false)
+    labChanged()        // 左侧栏立刻出现新文件夹
+  }
 
   useEffect(() => {
     setSpec(draft?.securities?.length || draft?.timeframe
@@ -412,6 +533,7 @@ function Welcome({ meta, notify, onCreated, folder }: {
     onDiscuss: () => setIdea(`/discuss ${stripCmd(idea)}`), onTeam: () => setIdea(`/team ${stripCmd(idea)}`), onNight: () => setIdea(`/schedule ${stripCmd(idea)}`),
     onPin: () => { addNote() }, onSave: undefined, saveLabel: ui ? `存入${ui.libraryName}` : '保存为平台策略', saveHint: '有代码后可用 · /save',
     onModels: () => { window.location.hash = '#/models' },
+    folder, onFolder: openFolderPicker,
     auto: <AutoIterateRow rounds={spec.max_rounds} needsGoal={!goalSet} onSetGoal={() => setGoalOpen({ initial: spec })}
       onRounds={(n) => setSpec({ ...spec, max_rounds: n })} onStart={(n) => { setSpec({ ...spec, max_rounds: n }); setAuto(true) }} />,
   })
@@ -420,7 +542,6 @@ function Welcome({ meta, notify, onCreated, folder }: {
 
   return (
     <section className="lab2-main">
-      <header className="lab2-head">{folder && <span className="lab2-sub">新对话将放进项目「{folder}」</span>}</header>
       {/* 和对话中同一个布局：上面是内容区，输入框停靠在底部，「+」菜单、斜杠命令都向上展开 */}
       <div className="lab2-scroll lab2-welcome-scroll">
         <div className="lab2-welcome">
@@ -448,7 +569,7 @@ function Welcome({ meta, notify, onCreated, folder }: {
         <Composer value={idea} onChange={setIdea} onSend={() => create()} disabled={busy} autoFocus commands={welcomeCommands} onLongText={(f) => onFiles([f])} hasAttachments={files.length > 0}
           placeholder={ui ? ui.placeholder : '描述一个想法，例如：BTC 4 小时突破 55 根新高做多，ATR 止损'}
           sendLabel={auto && goalSet ? '开始自动迭代' : '发送'}
-          above={(draft?.attached || files.length || goalSet || (auto && goalSet)) ? <>
+          above={<>
             {draft?.attached && (
               <div className="cmp-attached">
                 <span>已附带：{draft.attached}</span>
@@ -468,7 +589,7 @@ function Welcome({ meta, notify, onCreated, folder }: {
                 <button type="button" aria-label="取消自动迭代" onClick={() => setAuto(false)}>×</button>
               </div>
             )}
-          </> : undefined}
+          </>}
           left={<>
             <ActionMenu items={plusItems} />
             <PermissionMenu value={permission} onChange={setPermission} approvals={approvals} onApprovals={setApprovals} />
@@ -540,6 +661,11 @@ function Welcome({ meta, notify, onCreated, folder }: {
             )}
           </>} />
       </div>
+      {folderOpen && (
+        <FolderPicker value={folder}
+          folders={folder && !folders.includes(folder) ? [folder, ...folders] : folders}
+          onPick={pickFolder} onClose={() => setFolderOpen(false)} />
+      )}
     </section>
   )
 }
@@ -557,6 +683,7 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
   const [context, setContext] = useState<ContextView | null>(null)
   const [input, setInput] = useDraft(`lab:${id}`)
   const [panel, setPanel] = useState<PanelTab | null>(null)
+  const [activeWorkflow,setActiveWorkflow]=useState('')
   const [compacting, setCompacting] = useState(false)
   const [density, setDensity] = useState<'detailed' | 'concise'>(() => store.get('qa.lab.density', 'detailed') === 'concise' ? 'concise' : 'detailed')
   const [goalOpen, setGoalOpen] = useState<{ initial: GoalSpec; unparsed?: string } | null>(null)
@@ -599,6 +726,33 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
   const panelInit = useRef(false)
   const knownSubagents = useRef(new Set<string>())
   const [ratingPrompt, setRatingPrompt] = useState<number | null>(null)
+  // 从临时问答升级过来：读取一次性提示（Ask 面板写入），展示后清掉，8 秒自动收起
+  const [upgradeFlash, setUpgradeFlash] = useState('')
+  useEffect(() => {
+    try {
+      const key = upgradeFlashKey(id)
+      const v = sessionStorage.getItem(key)
+      if (v) { setUpgradeFlash(v); sessionStorage.removeItem(key) }
+    } catch { /* 存储不可用 */ }
+  }, [id])
+  useEffect(() => {
+    if (!upgradeFlash) return
+    const t = window.setTimeout(() => setUpgradeFlash(''), 8000)
+    return () => window.clearTimeout(t)
+  }, [upgradeFlash])
+  // P4：后台 run 的实时状态（用现有只读接口探测），刷新 / 切回页面后也能恢复未完成状态
+  const [liveEvidence, setLiveEvidence] = useState<Record<string, RunEvidenceState>>({})
+  const agentStatus = useMemo(
+    () => deriveAgentStatus({ project, messages, projectId: id, domain: project?.kind, live: liveEvidence, queueCount: sendQueue.length }),
+    [project, messages, id, liveEvidence, sendQueue.length],
+  )
+  // 用签名字符串做依赖，避免每次渲染都重开探测轮询
+  const probeSignature = agentStatus.evidence
+    .filter((e) => e.probe && (e.state === 'queued' || e.state === 'running'))
+    .map((e) => e.key)
+    .join('|')
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const probes = useMemo(() => evidenceProbes(agentStatus.evidence), [probeSignature])
 
   const apply = useCallback((v: { project: LabProject; messages: LabMessage[]; server_time: number; context?: ContextView }, full = false) => {
     setProject(v.project)
@@ -651,6 +805,52 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
     pull(true).then((v) => { if (v.project.status === 'running') follow() }).catch((e: Error) => notify(e.message, true))
     return () => { following.current?.abort(); following.current = null }
   }, [pull, follow, notify])
+
+  // 长任务恢复：后台 run 还在排队 / 运行时，用现有只读接口轮询到终态（刷新、切会话、离开再回来都适用）
+  useEffect(() => {
+    if (!probes.length) return
+    let alive = true
+    const read = () => {
+      for (const probe of probes) {
+        get<Record<string, any>>(probe.url).then((v) => {
+          if (!alive) return
+          const next = normalizeRunState(probe.kind === 'workflow' ? v?.state : (v?.run?.state ?? v?.state))
+          setLiveEvidence((prev) => (prev[probe.key] === next ? prev : { ...prev, [probe.key]: next }))
+          if (next === 'done' || next === 'failed') { pull().catch(() => undefined); onChanged() }
+        }).catch(() => undefined)
+      }
+    }
+    read()
+    const timer = window.setInterval(read, 4000)
+    return () => { alive = false; window.clearInterval(timer) }
+  }, [probes, pull, onChanged])
+
+  // 切回页面 / 窗口重新聚焦：补一次增量，仍在跑就继续跟 SSE（离开期间流可能已经关闭）
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.hidden) return
+      pull().then((v) => { if (v.project.status === 'running') follow() }).catch(() => undefined)
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    window.addEventListener('focus', onVisible)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible)
+      window.removeEventListener('focus', onVisible)
+    }
+  }, [pull, follow])
+
+  // 把「这一轮失败了」带到侧栏列表（只在后端 updated_at 没有变化时有效，重试后会自然消失）
+  useEffect(() => {
+    if (!project?.id) return
+    if (agentStatus.state === 'failed') rememberObservedFailure(project, agentStatus.failure || '上一轮执行失败')
+    else clearObservedFailure(project.id)
+    if (agentStatus.state === 'failed' || agentStatus.state === 'queued') onChanged()
+  }, [project?.id, project?.updated_at, agentStatus.state, agentStatus.failure, onChanged])
+
+  // 打开 / 切换已有对话时记住它的项目文件夹：下一次新对话默认沿用（含明确的「未分类」）
+  useEffect(() => {
+    if (project) rememberFolder(project.folder || '')
+  }, [project?.id, project?.folder])
 
   // 有代码且屏幕够宽时，第一次打开项目默认展开右侧代码面板
   useEffect(() => {
@@ -833,6 +1033,8 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
   if (!project || !panelSpec) return <section className="lab2-main"><Loading label="正在打开项目" /></section>
 
   const running = project.status === 'running'
+  // 失败 / 排队横幅里的「查看运行」入口：只跳真实存在的运行证据
+  const evidenceLink = [...agentStatus.evidence].reverse().find((e) => e.href)
 
   const ui = domainUI(project.kind)
   const isFactor = !!ui
@@ -904,7 +1106,7 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
     mode: (a) => (PERMISSION_ALIAS[a.toLowerCase()] ? setPermission(PERMISSION_ALIAS[a.toLowerCase()]) : notify('用法：/mode auto | manual | edits | plan | bypass', true)),
     report: (a) => { stick.current = true; act(() => lab.report(id, a)) },
     parallel: (a) => send(`/parallel ${a}`.trim()),
-    share: () => setSharing(true),
+    share: isLocalDeployment() ? undefined : () => setSharing(true),
     quote: () => setQuotePicking(true),
   })
   const plusItems = labPlusItems({
@@ -958,8 +1160,6 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
   const hiddenMessages = messages.length - visibleMessages.length
   const lastAsk = [...messages].reverse().find((m) => m.kind === 'ask')
   const streamingNow = messages.some((m) => m.data?.streaming)
-  const lastMsg = messages[messages.length - 1]
-  const finishOk = !(lastMsg && (lastMsg.kind === 'error' || (lastMsg.kind === 'tool' && lastMsg.data?.status === 'error')))
   const finishRating = (seq: number) => {
     try { localStorage.setItem(`qa.lab.rating.${id}`, String(seq)) } catch { /* 私密模式 */ }
     setRatingPrompt(null)
@@ -969,10 +1169,15 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
     <>
       <section className="lab2-main">
         <header className="lab2-head">
+          <span className="lab2-bot" title={BOT_NAME}>
+            <QuantBot size={18} state={project.status === 'running' ? 'thinking' : agentStatus.state === 'failed' ? 'error' : 'idle'} />
+          </span>
           <div className="lab2-title-row">
             <input className="lab2-title" defaultValue={project.title} aria-label="项目名称"
               onBlur={(e) => e.target.value.trim() && e.target.value !== project.title && patch({ title: e.target.value.trim() })} />
             {project.workflow && <span className="cb-badge lab2-head-tag">{WORKFLOW_LABEL[project.workflow] || project.workflow}</span>}
+            {project.origin === 'ask_upgrade' && <span className="cb-badge lab2-head-tag lab2-origin" title={BOT_VOICE.upgraded}>{BOT_VOICE.upgradedTag}</span>}
+            <AgentStatePill status={agentStatus} />
           </div>
           <span className="lab2-sub">
             {isFactor
@@ -1008,6 +1213,41 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
             saveLabel={ui ? `${libId ? '更新' : '存入'}${ui.libraryName}` : undefined} />
         </header>
 
+        {/* 从临时问答升级过来的一次性提示：说明这段会话的来源与已保存状态 */}
+        {upgradeFlash && (
+          <div className="lab-upgrade-flash" role="status">
+            <QuantBot size={16} state="happy" title={BOT_NAME} />
+            <span>{upgradeFlash}</span>
+            <button type="button" onClick={() => setUpgradeFlash('')} aria-label="收起提示" title="收起">×</button>
+          </div>
+        )}
+
+        {/* P4：五态里需要用户动作的两种（失败 / 排队、后台仍在跑）在页头下方给出一条任务横幅 */}
+        {agentStatus.state === 'failed' && (
+          <div className="lab-task-banner failed" role="alert">
+            <b>执行失败</b>
+            <span className="lab-task-banner-detail" title={agentStatus.failure}>{agentStatus.failure || '上一轮没有完成'}</span>
+            {evidenceLink && <a className="button small" href={evidenceLink.href}>查看运行</a>}
+            <div className="lab-task-banner-actions">
+              <button type="button" className="button small primary" disabled={running}
+                onClick={() => { stick.current = true; send('继续') }}>继续</button>
+              <button type="button" className="button small" disabled={running}
+                onClick={() => { stick.current = true; send('重试上一轮：修复刚才失败的原因，继续完成原目标') }}>重试上一轮</button>
+            </div>
+          </div>
+        )}
+        {agentStatus.state !== 'failed' && (agentStatus.state === 'queued' || (agentStatus.state === 'generating' && !running)) && (
+          <div className={`lab-task-banner${agentStatus.state === 'queued' ? ' queued' : ''}`} role="status">
+            <b>{agentStatus.label}</b>
+            <span className="lab-task-banner-detail" title={agentStatus.detail}>{agentStatus.detail}</span>
+            {evidenceLink && <a className="button small" href={evidenceLink.href}>查看运行</a>}
+            <div className="lab-task-banner-actions">
+              <button type="button" className="button small" disabled={running}
+                onClick={() => { stick.current = true; send('继续') }}>继续</button>
+            </div>
+          </div>
+        )}
+
         <div className="lab2-scroll" ref={scroller}
           onScroll={(e) => { const el = e.currentTarget; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80 }}>
           <div className="lab2-thread">
@@ -1016,6 +1256,8 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
             )}
             {visibleMessages.map((m) => (
               <MessageView key={m.seq} m={m} project={project} meta={dmeta} active={m === lastAsk && project.status === 'awaiting_user'} actions={msgActions}
+                liveEvidence={liveEvidence}
+                onOpenWorkflow={(wid)=>{setActiveWorkflow(wid);openPanel('workflow')}}
                 concise={density === 'concise'}
                 onDecide={(choice, note) => act(() => lab.decide(id, choice, note))}
                 onOpenBacktest={(btId) => onNavigate(`backtest/${btId}`)} onOpenEditor={(slug) => onNavigate(`editor/${slug}`)}
@@ -1024,11 +1266,21 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
             {running && !streamingNow && <Working phase={project.job?.phase} detail={project.job?.detail} startedAt={project.job?.started_at} />}
             {!running && finishedAt > 0 && (
               <div className="cb-finish" key={finishedAt}>
-                <QuantBot size={22} state={finishOk ? 'happy' : 'error'} />
-                <span>{finishOk ? (project.status === 'awaiting_user' ? '等你回答' : '这一轮完成了') : '这一轮出了问题，见上方说明'}</span>
+                <QuantBot size={22} state={agentStatus.state === 'failed' ? 'error' : 'happy'} />
+                <span>
+                  {agentStatus.state === 'failed' ? '这一轮出了问题，见上方说明'
+                    : project.status === 'awaiting_user' ? '等你回答'
+                      : agentStatus.artifacts ? '这一轮完成了，运行证据见上方标签'
+                        : '这一轮已结束（只有文字回复）'}
+                </span>
               </div>
             )}
-            {!messages.length && !running && <div className="lab2-empty">输入 / 查看快捷指令</div>}
+            {!messages.length && !running && (
+              <div className="lab2-empty lab2-empty-bot">
+                <QuantBot size={26} state="idle" title={BOT_NAME} />
+                <span>{BOT_VOICE.emptyLab}</span>
+              </div>
+            )}
           </div>
         </div>
 
@@ -1087,6 +1339,7 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
             </button>
           </div>
           <div className="lab2-panel-body side-cards">
+            <SideCard id="workflow" focus={panel} title="工作流编排" meta="当前会话"><SessionWorkflows messages={messages} requested={activeWorkflow}/></SideCard>
             <SideCard id="code" focus={panel} title="更改" meta={project.code ? `v${project.current_v}` : ''}>
               <ChangesCard project={project} stats={changes} fileName={fileNameOf(project.kind)} onOpen={openEditor} />
             </SideCard>
@@ -1427,17 +1680,26 @@ function UserMessage({ m, actions, projectId }: { m: LabMessage; actions: Messag
   )
 }
 
-function MessageView({ m, project, meta, active, actions, concise, onDecide, onOpenBacktest, onOpenEditor, onOpenCode, onOpenLibrary }: {
+function MessageView({ m, project, meta, active, actions, concise, onDecide, onOpenBacktest, onOpenEditor, onOpenCode, onOpenLibrary, onOpenWorkflow, liveEvidence }: {
   m: LabMessage; project: LabProject; meta: LabMeta | null; active: boolean; actions: MessageActions; concise?: boolean
   onOpenLibrary: (route: string) => void
+  onOpenWorkflow:(wid:string)=>void
   onDecide: (choice: string, note: string) => Promise<unknown> | void
   onOpenBacktest: (id: string) => void
   onOpenEditor: (slug: string) => void
   onOpenCode: () => void
+  liveEvidence?: Record<string, RunEvidenceState>
 }) {
   if (m.role === 'user' && m.kind === 'text') return <UserMessage m={m} actions={actions} projectId={project.id} />
   if (m.role === 'user' && m.kind === 'code') return <UserBubble>手动保存为 v{m.data.v}：{m.content}</UserBubble>
   const d = m.data || {}
+  // P4：气泡状态标签 + 运行证据。已生成只在有 run / 工件证据时出现，纯文字回复标「已回复」。
+  const tag = messageTag(m, { projectId: project.id, domain: project.kind })
+  const stateLine = tag && m.kind !== 'text' && m.kind !== 'error' &&
+    tag.tone !== 'generating' && tag.tone !== 'failed' && tag.tone !== 'stopped'
+    ? <MessageStateTag tag={tag} live={liveEvidence} />
+    : null
+  const view = (() => {
   switch (m.kind) {
     case 'text':
       if (m.role === 'event') return <EventLine>{m.content}{typeof d.link === 'string' && <> · <a href={`#/${d.link}`}>打开</a></>}</EventLine>
@@ -1450,6 +1712,7 @@ function MessageView({ m, project, meta, active, actions, concise, onDecide, onO
             <AssistantText content={m.content} thinking={concise ? undefined : d.thinking} thinkingMs={concise ? undefined : d.thinking_ms} streaming={!!d.streaming}
               model={m.model} fallback={m.mode === 'fallback'} />
           </RenderRepair>
+          {tag && <MessageStateTag tag={tag} live={liveEvidence} />}
           {!d.streaming && m.seq === actions.lastSeq && !actions.running && Array.isArray(d.suggestions) && d.suggestions.length > 0 && (
             <div className="msg-suggest anim-in">
               {(d.suggestions as string[]).map((x) => <button key={x} type="button" className="chip" onClick={() => actions.onSuggest(x)}>{x}</button>)}
@@ -1470,8 +1733,8 @@ function MessageView({ m, project, meta, active, actions, concise, onDecide, onO
     case 'error':
       return <EventLine tone="error">{m.content}</EventLine>
     case 'tool':
-      return <ToolLine icon={TOOL_ICON[d.name]} label={d.label} args={d.args} status={d.status} elapsedMs={d.elapsed_ms}
-        detail={d.error || (d.preview ? prettyJson(d.preview) : undefined)} />
+      return <><ToolLine icon={TOOL_ICON[d.name]} label={d.label} args={d.args} status={d.status} elapsedMs={d.elapsed_ms}
+        detail={d.error || (d.preview ? prettyJson(d.preview) : undefined)} />{d.artifact_view&&<ArtifactPreview initial={d.artifact_view}/>}{d.task_view&&<TaskResult value={d.task_view}/>}{d.workflow_view&&<button type="button" className="button small" onClick={()=>onOpenWorkflow(d.workflow_view.workflow_id)}>查看右侧编排 · {d.workflow_view.title}</button>}</>
     case 'code':
       return <CodeCard m={m} onOpenCode={onOpenCode} />
     case 'factor_code':
@@ -1533,6 +1796,8 @@ function MessageView({ m, project, meta, active, actions, concise, onDecide, onO
     default:
       return <EventLine>{m.content || project.title}</EventLine>
   }
+  })()
+  return <>{view}{stateLine}</>
 }
 
 function prettyJson(s: string) {

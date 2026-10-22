@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "quant-agent"
-version = "0.1.0rc1"
-description = "QuantLab v0.1.0-preview.1 — cryptocurrency quantitative research and simulation platform (AI Agent layer)"
+version = "0.1.0rc2"
+description = "QuantLab v0.1.0-preview.2 — cryptocurrency quantitative research and simulation platform (AI Agent layer)"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -14,6 +14,7 @@ dependencies = [
     "uvicorn[standard]>=0.30",
     "pydantic>=2.7",
     "cryptography>=42",
+    "packaging>=24",  # 工作流依赖版本约束检查
     "numpy>=1.26",  # 因子研究：面板计算与评估
     "Pillow>=10",  # 图片上传缩略图生成
     "optuna>=3.6",  # 智能调参（贝叶斯 / 多目标搜索）：Agent 的 start_tuning 依赖它
@@ -21,6 +22,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+research = ["pandas>=2.2,<4", "scipy>=1.13,<2", "matplotlib>=3.8,<4", "networkx>=3,<4", "scikit-learn>=1.5,<2", "joblib>=1,<2"]
+neural = ["torch>=2.8,<3"]
+desktop = ["pywebview>=5,<7", "psutil>=5.9", "pystray>=0.19", "openpyxl>=3.1", "pyarrow>=16"]
+# 本地 Agent 交付物导出（Markdown→Word / 汇报 PPT）；缺失时工具会给出可执行的安装提示
+deliverables = ["python-docx>=1.1,<2", "python-pptx>=1.0,<2", "Pillow>=10,<12", "PyMuPDF>=1.24,<2"]
 dev = ["pytest>=8.0", "ruff>=0.5", "httpx>=0.27"]
 # 生产部署：PostgreSQL + Redis + Parquet（单机开发不装也能跑：SQLite + 本地唤醒 + JSON 缓存）
 postgres = ["psycopg[binary]>=3.2"]

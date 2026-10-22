@@ -1,0 +1,74 @@
+name: desktop-release
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v0.1.0-preview.*']
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Validate release tag version
+        if: startsWith(github.ref, 'refs/tags/v0.1.0-preview.')
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: pwsh
+        run: |
+          $version = (Get-Content desktop/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          if ($env:RELEASE_TAG -ne "v$version") { throw 'Release tag must match tauri.conf.json version' }
+      - name: Install backend and packaging dependencies
+        run: python -m pip install -e '.[research,deliverables]' 'pyinstaller>=6,<7'
+      - name: Build frontend
+        working-directory: web
+        run: |
+          npm ci
+          npm run build:windows
+      - name: Build and verify sidecar
+        run: |
+          python scripts/build_sidecar.py --clean
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/smoke_sidecar.py desktop/src-tauri/resources/backend/quantlab-backend/quantlab-backend.exe
+      - name: Package desktop installer
+        working-directory: desktop
+        run: |
+          npx --yes @tauri-apps/cli@2 build --ci --bundles nsis
+      - name: Generate checksums
+        shell: pwsh
+        run: |
+          Get-ChildItem desktop/src-tauri/target/release/bundle/nsis/*.exe | ForEach-Object {
+            $digest = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLower()
+            "$digest  $($_.Name)" | Set-Content -LiteralPath ($_.FullName + '.sha256') -Encoding ascii
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: quantlab-windows-installer
+          path: desktop/src-tauri/target/release/bundle/nsis/*
+          if-no-files-found: error
+          retention-days: 30
+      - name: Create draft release with installer and checksums
+        if: startsWith(github.ref, 'refs/tags/v0.1.0-preview.')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: pwsh
+        run: |
+          gh release view $env:RELEASE_TAG *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $env:RELEASE_TAG --draft --prerelease --title "QuantLab $env:RELEASE_TAG" --generate-notes
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          $draft = gh release view $env:RELEASE_TAG --json isDraft --jq '.isDraft'
+          if ($draft -ne 'true') { throw 'Refusing to replace assets in a published release' }
+          $assets = Get-ChildItem desktop/src-tauri/target/release/bundle/nsis/* -File | Select-Object -ExpandProperty FullName
+          gh release upload $env:RELEASE_TAG @assets --clobber

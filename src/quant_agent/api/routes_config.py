@@ -414,7 +414,8 @@ def discover_models(payload: DiscoverIn) -> dict:
         headers = {"x-api-key": key, "anthropic-version": "2023-06-01"}
     else:
         url = base + "/models"
-        headers = openai_headers(base, key) if key else {}
+        # OpenCode 等网关要求 x-opencode-session 头，传一条占位消息即可；否则会发现模型时被 400 拒绝。
+        headers = openai_headers(base, key, [Message(role="user", content="quantlab model discovery")]) if key else {}
     try:
         params = {"limit": 1000} if payload.type == "anthropic" else None
         resp = httpx.get(url, headers=headers, params=params, timeout=10.0)

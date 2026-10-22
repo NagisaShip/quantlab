@@ -14,9 +14,10 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..agents.copilot import CopilotResult, StrategyCopilot
+from ..platform import context
 from ..store import Collections
 from ..strategies.repo import StrategyRepository
 from .deps import get_services
@@ -41,6 +42,9 @@ def _log(result: CopilotResult, summary: str) -> dict[str, Any]:
         "summary": summary[:200],
         "elapsed_ms": result.elapsed_ms,
         "created_at": time.time(),
+        # 会话级 ACL：记录发起人；历史查询默认只看自己的记录。
+        "user_id": context.current().user_id or "",
+        "workspace_id": context.current().workspace_id or "",
     }
     get_services().store.upsert(Collections.AI_SESSIONS, row)
     return result.to_dict()
@@ -136,8 +140,22 @@ def ai_chat(payload: AiChatIn) -> dict:
 
 
 @router.get("/history")
-def ai_history(limit: int = Query(30, ge=1, le=200)) -> dict:
-    return {"items": get_services().store.list(Collections.AI_SESSIONS, limit=limit)}
+def ai_history(
+    limit: int = Query(30, ge=1, le=200),
+    scope: Literal["mine", "workspace"] = Query("mine", description="mine=只看自己的 AI 会话；workspace=管理员看全工作区"),
+) -> dict:
+    """AI 会话历史：默认按发起人过滤；只有管理员可显式查看工作区全部。"""
+    rows = get_services().store.list(Collections.AI_SESSIONS, limit=limit * 3 if scope == "workspace" else limit)
+    me = context.current().user_id or ""
+    if scope == "workspace":
+        if not context.current().is_admin:
+            raise HTTPException(status_code=403, detail="只有工作区管理员可以查看全部 AI 会话")
+        picked = rows
+    else:
+        # 兼容早期没有 user_id 的记录：只在本地单用户模式显示；账号模式按私有处理。
+        local = bool(getattr(get_services(), "local", None))
+        picked = [r for r in rows if r.get("user_id") == me or (local and not r.get("user_id"))]
+    return {"items": picked[:limit], "scope": scope}
 
 
 # ---------------------------------------------------------------------------
@@ -151,6 +169,65 @@ class AskContextItem(BaseModel):
     text: str = Field("", max_length=200_000)
 
 
+class AskResearchWorkflow(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field("", max_length=100)
+    title: str = Field("", max_length=200)
+    revision: int | None = Field(None, ge=0, le=1_000_000)
+    saved: bool = True
+    unsaved: bool = False
+
+
+class AskResearchNode(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(..., min_length=1, max_length=100)
+    title: str = Field("", max_length=200)
+    kind: str = Field("", max_length=80)
+    status: str = Field("", max_length=40)
+
+
+class AskResearchRun(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(..., min_length=1, max_length=100)
+    mode: str = Field("", max_length=40)
+    status: str = Field("", max_length=40)
+    revision: int | None = Field(None, ge=0, le=1_000_000)
+    # Display intent, not a security claim. The server uses it only together with
+    # the real latest-run lookup; `current=true` alone is never trusted.
+    current: bool = False
+    historical: bool = False
+    follows_latest: bool | None = None
+    view_mode: Literal["latest", "frozen"] | None = None
+
+
+class AskResearchOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    port: str = Field(..., min_length=1, max_length=80)
+    type: str = Field(..., min_length=1, max_length=40)
+    hash: str = Field(..., min_length=1, max_length=128)
+    run_id: str = Field(..., min_length=1, max_length=100)
+    node_id: str = Field(..., min_length=1, max_length=100)
+
+
+class AskResearchContext(BaseModel):
+    """Versioned optional envelope. No graph, dataset, binary or base64 fields are accepted."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: Literal[1]
+    workspace_id: str = Field("", max_length=100)
+    project_name: str = Field("", max_length=200)
+    draft_id: str = Field("", max_length=100)
+    workflow: AskResearchWorkflow
+    selected_node: AskResearchNode | None = None
+    run: AskResearchRun | None = None
+    outputs: list[AskResearchOutput] = Field(default_factory=list, max_length=6)
+
+
 class AskIn(BaseModel):
     question: str = Field(..., min_length=1, max_length=8000)
     history: list[ChatTurn] = Field(default_factory=list, max_length=40)
@@ -159,12 +236,31 @@ class AskIn(BaseModel):
     effort: Literal["", "low", "medium", "high", "max"] = ""
     page: str = Field("", max_length=40)  # 当前页面：决定默认加载哪些平台工具
     scenes: list[str] | None = Field(None, max_length=8)  # 用户在「更多」菜单里勾选的工具场景；None = 按页面默认
+    research: AskResearchContext | None = None
 
 
 def _scenes(payload: AskIn) -> list[str]:
     from ..agents import platform_tools as PT
 
     return PT.scenes_for(payload.page, payload.scenes)
+
+
+def _research(payload: AskIn) -> dict[str, Any] | None:
+    """Resolve the optional envelope against the authenticated request workspace."""
+    from ..platform import context as reqctx
+    from ..workflows import research_context as RC
+    from ..workflows.service import WorkflowService
+
+    if payload.research is None:
+        return None
+    try:
+        return RC.resolve(
+            WorkflowService(get_services()),
+            payload.research.model_dump(),
+            workspace_id=reqctx.current().workspace_id,
+        )
+    except RC.ResearchContextError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 def _ask_view(result: CopilotResult) -> dict[str, Any]:
@@ -178,7 +274,55 @@ def _ask_view(result: CopilotResult) -> dict[str, Any]:
         "notes": result.notes,
         "elapsed_ms": result.elapsed_ms,
         "tool_calls": result.tool_calls,
+        "research_context": result.research_context or None,
     }
+
+
+# 多步研究意图：只在请求已带 research 上下文时才提示「升级成研究会话」；普通事实问答不打扰。
+SESSION_INTENT_HINTS = (
+    "完整研究",
+    "帮我做",
+    "帮我研究",
+    "研究报告",
+    "写一份",
+    "出一份",
+    "报告",
+    "回测",
+    "实验",
+    "分析整个",
+    "从数据到结论",
+    "任务",
+    "多步",
+    "完整分析",
+    "深入分析",
+    "系统研究",
+    "研究一下",
+    "验证假设",
+    "假设检验",
+    "流程",
+)
+
+
+def session_suggestion(question: str, has_research: bool) -> tuple[bool, str]:
+    """会话升级建议：仅当本轮带研究上下文、且问题呈现多步研究意图时返回 True。
+
+    只给建议，不自动创建项目：前端据此展示「升级成研究会话」入口。
+    """
+    if not has_research:
+        return False, ""
+    text = (question or "").strip().lower()
+    hit = next((h for h in SESSION_INTENT_HINTS if h in text), "")
+    if not hit:
+        return False, ""
+    return True, (
+        f"这个问题包含多步研究意图（命中「{hit}」），建议升级为研究会话："
+        "可以把问题、来源资料与运行结果保存到一起，分步骤推进并在之后复用。"
+    )
+
+
+def _suggestion(payload: AskIn) -> dict[str, Any]:
+    suggest, reason = session_suggestion(payload.question, payload.research is not None)
+    return {"suggest_session": suggest, "reason": reason}
 
 
 @router.get("/ask/meta", summary="问 AI 面板元信息：可选模型、默认模型、思考努力程度、模型是否就绪")
@@ -211,9 +355,10 @@ def ask(payload: AskIn) -> dict:
         effort=payload.effort,
         scenes=_scenes(payload),
         user_id=reqctx.current().user_id,
+        research_context=_research(payload),
     )
     _log(result, payload.question)
-    return _ask_view(result)
+    return {**_ask_view(result), **_suggestion(payload)}
 
 
 @router.post("/ask/stream", summary="页面内问 AI（流式 SSE）：逐段推送思考与正文，最后推送定稿")
@@ -233,6 +378,7 @@ def ask_stream(payload: AskIn) -> StreamingResponse:
     items = [c.model_dump() for c in payload.context]
     history = _history(payload.history)
     scenes = _scenes(payload)
+    research_context = _research(payload)  # verify in request thread before streaming starts
 
     def on_tool(rec: dict[str, Any]) -> None:
         q.put({"type": "tool", **rec})
@@ -256,12 +402,13 @@ def ask_stream(payload: AskIn) -> StreamingResponse:
                 scenes=scenes,
                 user_id=ctx.user_id,
                 on_tool=on_tool,
+                research_context=research_context,
             )
             try:
                 _log(result, question)
             except Exception:  # 留痕失败不影响回答
                 pass
-            q.put({"type": "final", **_ask_view(result)})
+            q.put({"type": "final", **_ask_view(result), **_suggestion(payload)})
         except Exception as exc:  # 任何异常都要告诉前端，而不是让流悬空
             q.put({"type": "error", "message": str(exc)[:300] or "生成失败"})
         finally:

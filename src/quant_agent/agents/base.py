@@ -128,8 +128,15 @@ class Agent:
                 run.ended_at = int(time.time() * 1000)
                 return run
 
+            document_images = []
             for call in result.tool_calls:
                 output = self._execute_tool(call)
+                from ..local.documents import preview_images
+
+                try:
+                    document_images.extend(preview_images(call.name, json.loads(output)))
+                except (ValueError, KeyError, OSError):
+                    pass
                 run.steps.append(
                     AgentStep(
                         index=i,
@@ -140,6 +147,10 @@ class Agent:
                     )
                 )
                 messages.append(Message(role="tool", content=output, tool_call_id=call.id, name=call.name))
+            if document_images:
+                messages.append(
+                    Message(role="user", content="检查文档页面的排版，修正问题后重新预览。", images=document_images[:8])
+                )
 
         run.status = "done"  # 达到步数上限：最后一步多半是工具调用、没有文字，再要一次不带工具的最终答复
         run.final = run.steps[-1].content if run.steps else ""

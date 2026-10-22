@@ -155,6 +155,9 @@ def _graduated_strategy(c, name="微实盘策略"):
 def test_microlive_end_to_end(env, monkeypatch):
     c, holder, clock, step = env
     slug = _graduated_strategy(c)
+    # 真实资金能力默认关闭：验证微实盘流程前，先由工作区管理员显式开启。
+    enabled = c.put("/api/workspace/features", json={"features": {"execution.real_spot": True}})
+    assert enabled.status_code == 200, enabled.text
     st = c.get("/api/microlive").json()["status"]
     assert not st["ready"] and any("QAGENT_MICROLIVE" in b for b in st["blockers"])
     assert "real money" in st["notice_en"] and st["ack_phrase_en"] == MI.ACK_PHRASE_EN

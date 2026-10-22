@@ -40,6 +40,15 @@ class SecretBox:
         return self.data_home.parent / f"{self.data_home.name}-keys" / "secret.key"
 
     def _load_key(self) -> bytes:
+        if (
+            os.environ.get("QUANTLAB_MODE") == "local"
+            and os.name == "nt"
+            and not os.environ.get("QAGENT_SECRET_KEY")
+            and not os.environ.get("QAGENT_SECRET_KEY_FILE")
+        ):
+            from ..local.credentials import master_key
+
+            return master_key(self.data_home)
         env = os.environ.get("QAGENT_SECRET_KEY", "").strip()
         if env:
             try:

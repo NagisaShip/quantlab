@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import threading
 import time
@@ -37,6 +38,20 @@ AUTO_COMPACT_MIN_RATIO = 0.5
 AUTO_COMPACT_MAX_RATIO = 0.95
 DEFAULT_BYPASS_APPROVALS = ("delete",)
 DEFAULT_MAX_TOOL_CALLS = 1000
+
+# 会话类型：前 5 种是「研究室」项目（写代码 / 目标 / 回测），后 2 种是轻会话
+# （研究 / 工作流升级而来，只有想法、来源引用与对话，不生成策略代码与验收目标）。
+PROJECT_KINDS = ("strategy", "factor", "model", "portfolio", "execution", "research", "workflow")
+LIGHT_PROJECT_KINDS = ("research", "workflow")
+# 项目来源：普通创建 / 从「问 AI」升级 / 工作流升级
+PROJECT_ORIGINS = ("created", "ask_upgrade", "workflow_escalation")
+# 来源引用（context）只做有上限的原样保存：单条字符串、条目数、总字节都封顶，避免一次请求写爆存储
+MAX_CONTEXT_BYTES = 20_000
+MAX_CONTEXT_DEPTH = 6
+MAX_CONTEXT_ITEMS = 50
+MAX_CONTEXT_STR = 2_000
+#: 项目级 instructions（研究规则 / 偏好 / 边界，类似 AGENTS.md）最大长度
+MAX_INSTRUCTIONS_CHARS = 20_000
 
 _LOCKS: dict[str, threading.Lock] = {}
 _LOCKS_GUARD = threading.Lock()
@@ -168,10 +183,60 @@ class LabStore:
             self.store.put_blob(THREADS, pid, data)
 
 
+def _clip_context_value(value: Any, depth: int = 0) -> Any:
+    """把来源引用裁成「可 JSON 化、有长度上限」的结构：字符串截断、容器限条目、深度封顶。"""
+    if depth > MAX_CONTEXT_DEPTH:
+        return None
+    if isinstance(value, str):
+        return value[:MAX_CONTEXT_STR]
+    if isinstance(value, bool) or isinstance(value, (int, float)):
+        return value
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for key, item in list(value.items())[:MAX_CONTEXT_ITEMS]:
+            if not isinstance(key, str):
+                continue
+            out[key[:80]] = _clip_context_value(item, depth + 1)
+        return out
+    if isinstance(value, (list, tuple)):
+        return [_clip_context_value(item, depth + 1) for item in list(value)[:MAX_CONTEXT_ITEMS]]
+    return None
+
+
+def normalize_context(value: Any) -> dict[str, Any]:
+    """来源引用（工作流 / 运行 / 节点 / 页面资料）原样限长保存；非字典一律丢弃。"""
+    if not isinstance(value, dict) or not value:
+        return {}
+    out = _clip_context_value(value)
+    if not isinstance(out, dict):  # pragma: no cover - _clip_context_value 对 dict 一定返回 dict
+        return {}
+    text = json.dumps(out, ensure_ascii=False, default=str)
+    if len(text) > MAX_CONTEXT_BYTES:
+        # 超长：保留键名索引，明确标注被截断，而不是静默丢掉整份来源
+        return {
+            "_truncated": True,
+            "_bytes": len(text),
+            "_keys": sorted(str(k)[:80] for k in out)[:MAX_CONTEXT_ITEMS],
+        }
+    return out
+
+
 def new_project(payload: dict[str, Any]) -> dict[str, Any]:
-    goals = {**DEFAULT_GOALS, **{k: v for k, v in (payload.get("goals") or {}).items() if k in DEFAULT_GOALS}}
+    kind = str(payload.get("kind") or "strategy").strip().lower()
+    if kind not in PROJECT_KINDS:
+        kind = "strategy"
+    light = kind in LIGHT_PROJECT_KINDS  # 研究 / 工作流升级：轻会话，不生成策略代码与验收目标
+    origin = str(payload.get("origin") or "created").strip().lower()
+    if origin not in PROJECT_ORIGINS:
+        origin = "created"
+    goals = (
+        {}
+        if light
+        else {**DEFAULT_GOALS, **{k: v for k, v in (payload.get("goals") or {}).items() if k in DEFAULT_GOALS}}
+    )
     idea = (payload.get("idea") or "").strip()
-    title = (payload.get("title") or "").strip() or (re.sub(r"\s+", " ", idea)[:24] if idea else "未命名策略项目")
+    default_title = "未命名研究项目" if light else "未命名策略项目"
+    title = (payload.get("title") or "").strip() or (re.sub(r"\s+", " ", idea)[:24] if idea else default_title)
     title_auto = not (payload.get("title") or "").strip()
     raw_symbols = [s.strip().upper() for s in payload.get("securities") or [] if s.strip()]
     # 标的默认交给 AI：只有调用方明确给了标的（或 market_auto=false）才固定下来。
@@ -180,6 +245,13 @@ def new_project(payload: dict[str, Any]) -> dict[str, Any]:
     symbols = [] if market_auto else raw_symbols
     return {
         "id": uuid.uuid4().hex[:12],
+        # 会话类型与来源：策略 / 因子 / 模型 / 组合 / 执行是研究室项目，研究 / 工作流是轻会话
+        "kind": kind,
+        "origin": origin,
+        # 来源引用（工作流、运行、节点、引用资料等）；只做有上限的原样保存，不参与策略执行
+        "context": normalize_context(payload.get("context")),
+        # 项目级规则：研究者设定的研究规则 / 偏好 / 边界，注入聊天、计划与团队提示词
+        "instructions": str(payload.get("instructions") or "").strip()[:MAX_INSTRUCTIONS_CHARS],
         "title": title[:60],
         "title_auto": title_auto,  # 标题由 AI 在首轮回答后总结；研究者改过标题后不再自动改
         "idea": idea,
@@ -189,7 +261,8 @@ def new_project(payload: dict[str, Any]) -> dict[str, Any]:
         "effort": payload.get("effort") or "medium",  # 思考努力程度：low | medium | high | max
         "goals": goals,
         "goal": None,  # 结构化目标（/goal）；为空时按旧字段 goals 评估
-        "goal_set": bool(payload.get("goals")),  # 研究者或 AI 设过目标后才能自动迭代
+        # 研究者或 AI 设过目标后才能自动迭代；轻会话（研究 / 工作流）没有验收目标
+        "goal_set": bool(payload.get("goals")) and not light,
         # 对话管理：置顶、所属项目（文件夹）、分叉来源；上下文超出原文预算时自动压缩
         "pinned": False,
         "folder": (payload.get("folder") or "").strip()[:40],

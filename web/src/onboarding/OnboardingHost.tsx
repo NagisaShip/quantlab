@@ -8,12 +8,12 @@ import OnboardingSpotlight from './OnboardingSpotlight'
 import OnboardingTutor from './OnboardingTutor'
 import { BUILTIN_GROUP_NAME, DEFAULT_GOAL_PROMPT, TEAM_PROMPT, nextStep, stepsFor, type TourStepId } from './steps'
 
-export default function OnboardingHost({ me, page, go, notify, onMeChanged }: {
+export default function OnboardingHost({ me, page, go, notify, onStateChanged }: {
   me: Me
   page: string
   go: (key: string) => void
   notify: (message: string, error?: boolean) => void
-  onMeChanged?: () => void | Promise<void>
+  onStateChanged: (state: OnboardingState) => void
 }) {
   const fallbackOnboarding: OnboardingState = {
     version: 1,
@@ -80,6 +80,7 @@ export default function OnboardingHost({ me, page, go, notify, onMeChanged }: {
     try {
       const r = await v4.updateOnboarding(patch)
       setState(r.onboarding)
+      onStateChanged(r.onboarding)
       return r.onboarding
     } catch (e) {
       notify((e as Error).message, true)
@@ -120,9 +121,7 @@ export default function OnboardingHost({ me, page, go, notify, onMeChanged }: {
   const configureModels = async () => {
     const next = await save({ status: 'skipped' })
     if (next.status !== 'skipped') return
-    // 模型配置页属于设置分支，会重挂载引导宿主；先刷新 me.onboarding，
-    // 避免它用登录时的旧状态把欢迎层重新显示出来。
-    await onMeChanged?.()
+    // 每次成功保存已同步到父级账号状态，跨设置分支重挂载不会恢复旧进度。
     go('models')
     notify('已打开模型 API 配置页；配置完成后可在首页继续新手任务')
   }
@@ -132,6 +131,7 @@ export default function OnboardingHost({ me, page, go, notify, onMeChanged }: {
     try {
       const r = await v4.resetOnboarding()
       setState(r.onboarding)
+      onStateChanged(r.onboarding)
       prefilled.current = ''
       go('home')
     } catch (e) { notify((e as Error).message, true) } finally { setBusy(false) }

@@ -1,0 +1,218 @@
+/* P4 · Agent 五态 / 运行证据 / 全局任务条。只在 AI 研究室、侧栏对话列表使用。 */
+
+/* ---------- 页头五态药丸 ---------- */
+.lab-state-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--sunken);
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1;
+  white-space: nowrap;
+  max-width: 180px;
+  min-width: 0;
+}
+.lab-state-pill.compact { height: 18px; padding: 0 6px; font-size: 10.5px; }
+.lab-state-pill .lab-state-dot { width: 6px; height: 6px; border-radius: 50%; flex: none; background: currentColor; }
+.lab-state-pill .lab-state-text { overflow: hidden; text-overflow: ellipsis; }
+.lab-state-pill .lab-state-count {
+  font-style: normal;
+  font-size: 10px;
+  line-height: 1;
+  padding: 1px 4px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.lab-state-pill.generating { border-color: var(--accent-line); background: var(--accent-soft); color: var(--accent); }
+.lab-state-pill.generating .lab-state-dot { animation: lab-state-blink 1.2s ease-in-out infinite; }
+.lab-state-pill.queued { border-color: var(--amber-line); background: var(--amber-soft); color: var(--amber); }
+.lab-state-pill.queued .lab-state-dot { animation: lab-state-blink 1.6s ease-in-out infinite; }
+.lab-state-pill.generated { border-color: var(--line); background: var(--sheet); color: var(--ink-2); }
+.lab-state-pill.generated .lab-state-dot { background: var(--accent); }
+.lab-state-pill.failed { border-color: var(--danger-line); background: var(--danger-soft); color: var(--danger); }
+.lab-state-pill.failed .lab-state-dot { background: var(--danger); }
+.lab-state-pill.waiting { color: var(--muted); }
+
+@keyframes lab-state-blink { 50% { opacity: .28; } }
+
+/* ---------- 运行证据标签 ---------- */
+.lab-evidence { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; min-width: 0; max-width: 100%; }
+.lab-evidence-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  height: 19px;
+  padding: 0 6px;
+  border: 1px solid var(--line-2);
+  border-radius: 5px;
+  background: var(--sunken);
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1;
+  text-decoration: none;
+  font-variant-numeric: tabular-nums;
+}
+.lab-evidence-chip::before { content: ""; width: 5px; height: 5px; border-radius: 50%; flex: none; background: currentColor; opacity: .65; }
+.lab-evidence-chip.done { color: var(--ink-2); border-color: var(--accent-line); background: var(--accent-soft); }
+.lab-evidence-chip.running { color: var(--accent); border-color: var(--accent-line); }
+.lab-evidence-chip.queued { color: var(--amber); border-color: var(--amber-line); background: var(--amber-soft); }
+.lab-evidence-chip.failed { color: var(--danger); border-color: var(--danger-line); background: var(--danger-soft); }
+a.lab-evidence-chip:hover { border-color: var(--accent); color: var(--accent); }
+.lab-evidence-more { font-size: 10.5px; color: var(--faint); }
+
+.lab-evidence-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 2px 0 4px; min-width: 0; }
+.lab-evidence-line-label { font-size: 10.5px; color: var(--faint); flex: none; }
+
+/* ---------- 消息气泡状态标签 ---------- */
+.lab-msg-state {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 3px 0 2px;
+  min-width: 0;
+  max-width: 100%;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--faint);
+}
+.lab-msg-state-label { flex: none; font-weight: 500; }
+.lab-msg-state-hint { flex: none; color: var(--faint); }
+.lab-msg-state.generated .lab-msg-state-label { color: var(--accent); }
+.lab-msg-state.submitted .lab-msg-state-label { color: var(--amber); }
+.lab-msg-state.generating .lab-msg-state-label { color: var(--accent); }
+.lab-msg-state.failed .lab-msg-state-label { color: var(--danger); }
+.lab-msg-state.stopped .lab-msg-state-label { color: var(--amber); }
+
+/* ---------- 页面内的任务横幅（失败 / 排队 / 后台运行） ---------- */
+.lab-task-banner {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  flex: none;
+  margin: 0 14px 6px;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--sunken);
+  color: var(--ink-2);
+  font-size: 12px;
+  min-width: 0;
+}
+.lab-task-banner > b { flex: none; font-size: 12px; }
+.lab-task-banner-detail {
+  flex: 1 1 140px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+.lab-task-banner-actions { display: flex; align-items: center; gap: 6px; flex: none; }
+.lab-task-banner.failed { border-color: var(--danger-line); background: var(--danger-soft); }
+.lab-task-banner.failed > b { color: var(--danger); }
+.lab-task-banner.queued { border-color: var(--amber-line); background: var(--amber-soft); }
+.lab-task-banner.queued > b { color: var(--amber); }
+
+/* ---------- 侧栏全局任务条 ---------- */
+.lab-taskbar {
+  flex: none;
+  margin: 0 4px 6px;
+  padding: 5px 4px 4px;
+  border: 1px solid var(--line-2);
+  border-radius: 9px;
+  background: var(--sunken);
+  min-width: 0;
+  max-height: 140px;
+  overflow-y: auto;
+}
+.lab-taskbar-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 4px 3px;
+  font-size: 10.5px;
+  color: var(--faint);
+}
+.lab-taskbar-head em { font-style: normal; margin-left: auto; }
+.lab-taskbar-row { display: flex; align-items: center; gap: 2px; min-width: 0; border-radius: 7px; }
+.lab-taskbar-row:hover { background: var(--hover); }
+.lab-taskbar-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 4px;
+  border: 0;
+  background: none;
+  color: var(--ink-2);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.lab-taskbar-main:hover .lab-taskbar-title { color: var(--accent); }
+.lab-taskbar-dot { width: 6px; height: 6px; border-radius: 50%; flex: none; background: currentColor; color: var(--accent); }
+.lab-taskbar-dot.generating { animation: lab-state-blink 1.2s ease-in-out infinite; }
+.lab-taskbar-dot.queued { color: var(--amber); animation: lab-state-blink 1.6s ease-in-out infinite; }
+.lab-taskbar-dot.failed { color: var(--danger); }
+.lab-taskbar-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lab-taskbar-state { flex: none; font-size: 10.5px; color: var(--muted); }
+.lab-taskbar-row.generating .lab-taskbar-state { color: var(--accent); }
+.lab-taskbar-row.queued .lab-taskbar-state { color: var(--amber); }
+.lab-taskbar-row.failed .lab-taskbar-state { color: var(--danger); }
+.lab-taskbar-act {
+  flex: none;
+  height: 20px;
+  padding: 0 6px;
+  border: 1px solid var(--danger-line);
+  border-radius: 5px;
+  background: var(--sheet);
+  color: var(--danger);
+  font-size: 10.5px;
+  line-height: 1;
+  cursor: pointer;
+}
+.lab-taskbar-act:hover { background: var(--danger-soft); }
+.lab-taskbar-more { padding: 2px 4px 0; font-size: 10.5px; color: var(--faint); }
+
+/* ---------- 侧栏会话行徽标 ---------- */
+.conv-state {
+  flex: none;
+  max-width: 72px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 5px;
+  font-size: 10.5px;
+  line-height: 18px;
+  border: 1px solid transparent;
+}
+.conv-state.generating { color: var(--accent); background: var(--accent-soft); border-color: var(--accent-line); }
+.conv-state.queued { color: var(--amber); background: var(--amber-soft); border-color: var(--amber-line); }
+.conv-state.failed { color: var(--danger); background: var(--danger-soft); border-color: var(--danger-line); }
+
+/* 窄屏：状态药丸不挤占标题，任务条保持单行省略，避免 390px 横向溢出 */
+@media (max-width: 560px) {
+  .lab-state-pill { max-width: 112px; }
+  .lab-state-pill .lab-state-text { max-width: 72px; overflow: hidden; text-overflow: ellipsis; }
+  .lab-task-banner { margin: 0 10px 6px; padding: 6px 8px; }
+  .lab-task-banner-detail { flex-basis: 100%; }
+  .lab-evidence-chip { max-width: 140px; }
+}

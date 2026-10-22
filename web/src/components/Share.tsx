@@ -1,3 +1,4 @@
+import { isLocalDeployment } from '../deployment'
 /**
  * 可见性与编辑人员标记：
  * - ShareButton：策略 / 研究项目「仅自己 / 工作区内公开 / 指定群组内公开」的切换（作者或工作区管理员可改）；
@@ -34,7 +35,7 @@ export function VisibilityChip({ v, onClick }: { v: Visibility; onClick?: () => 
   )
 }
 
-export function ShareButton({ type, id, notify, onChanged, compact }: {
+function AccountShareButton({ type, id, notify, onChanged, compact }: {
   type: 'strategy' | 'project'; id: string; notify: (m: string, e?: boolean) => void; onChanged?: (v: Visibility) => void; compact?: boolean
 }) {
   const [open, setOpen] = useState(false)
@@ -130,7 +131,7 @@ export function EditorStack({ editors, max = 4 }: { editors: EditorMark[] | unde
 
 const ACTION_LABEL: Record<string, string> = { create: '创建', edit: '修改', clone: '克隆', backtest: '回测', approve: '批准', share: '共享' }
 
-export function EditHistory({ type, id }: { type: string; id: string }) {
+function AccountEditHistory({ type, id }: { type: string; id: string }) {
   const [rows, setRows] = useState<EditRow[] | null>(null)
   useEffect(() => { collab.edits(type, id).then((r) => setRows(r.edits)).catch(() => setRows([])) }, [type, id])
   if (!rows) return <div className="hint">加载中…</div>
@@ -152,3 +153,7 @@ export function EditHistory({ type, id }: { type: string; id: string }) {
     </ol>
   )
 }
+
+export function ShareButton(props: Parameters<typeof AccountShareButton>[0]) { return isLocalDeployment() ? null : <AccountShareButton {...props}/> }
+
+export function EditHistory(props: Parameters<typeof AccountEditHistory>[0]) { return isLocalDeployment() ? null : <AccountEditHistory {...props}/> }

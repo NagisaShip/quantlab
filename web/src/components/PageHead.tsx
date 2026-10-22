@@ -1,3 +1,4 @@
+import { isLocalDeployment } from '../deployment'
 import { useEffect, useState } from 'react'
 import { v3 } from '../api/research'
 import { validation } from '../apiValidation'
@@ -12,6 +13,7 @@ type Step = { text: string; go: string }
 function useNextStep(page: string): Step | null {
   const [step, setStep] = useState<Step | null>(null)
   useEffect(() => {
+    if (isLocalDeployment()) return
     let alive = true
     Promise.all([
       validation.board().catch(() => null),

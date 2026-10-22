@@ -1,9 +1,9 @@
 {
  "openapi": "3.1.0",
  "info": {
-  "title": "QuantLab v0.1.0-preview.1 API",
+  "title": "QuantLab v0.1.0-preview.2 API",
   "description": "交易所行情接入、策略管理、回测与仿真、Agent 团队调研、长期 Agent 与通知。\n\n仅为研究结果，非投资建议。",
-  "version": "0.1.0-preview.1"
+  "version": "0.1.0-preview.2"
  },
  "paths": {
   "/api/auth/status": {
@@ -2131,6 +2131,3322 @@
          "additionalProperties": true,
          "title": "Response Send Command Api Runs  Run Id  Commands Post"
         }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/tasks/overview": {
+   "get": {
+    "tags": [
+     "统一任务中心"
+    ],
+    "summary": "统一任务中心：运行、AI 研究室与定时任务的活动读模型",
+    "description": "聚合当前工作区可见的活动任务。只读，不触发任何执行或恢复。",
+    "operationId": "overview_api_tasks_overview_get",
+    "parameters": [
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "maximum": 200,
+       "minimum": 1,
+       "description": "返回条目上限",
+       "default": 50,
+       "title": "Limit"
+      },
+      "description": "返回条目上限"
+     },
+     {
+      "name": "source",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "description": "逗号分隔的来源：run,lab,scheduler；省略表示全部",
+       "title": "Source"
+      },
+      "description": "逗号分隔的来源：run,lab,scheduler；省略表示全部"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "additionalProperties": true,
+         "title": "Response Overview Api Tasks Overview Get"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/approvals": {
+   "get": {
+    "tags": [
+     "统一审批"
+    ],
+    "summary": "统一审批收件箱：AI 行动 + AI 研究室审批卡片",
+    "operationId": "list_approvals_api_approvals_get",
+    "parameters": [
+     {
+      "name": "source",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "description": "ai / lab，逗号分隔；默认全部",
+       "title": "Source"
+      },
+      "description": "ai / lab，逗号分隔；默认全部"
+     },
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "maximum": 200,
+       "minimum": 1,
+       "default": 50,
+       "title": "Limit"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "additionalProperties": true,
+         "title": "Response List Approvals Api Approvals Get"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/approvals/{approval_id}": {
+   "post": {
+    "tags": [
+     "统一审批"
+    ],
+    "summary": "批准/拒绝一条统一审批项",
+    "operationId": "decide_api_approvals__approval_id__post",
+    "parameters": [
+     {
+      "name": "approval_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Approval Id"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/ApprovalDecisionIn"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "additionalProperties": true,
+         "title": "Response Decide Api Approvals  Approval Id  Post"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/local/preferences": {
+   "get": {
+    "tags": [
+     "本地项目"
+    ],
+    "summary": "Read Preferences",
+    "operationId": "read_preferences_api_local_preferences_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     }
+    }
+   },
+   "post": {
+    "tags": [
+     "本地项目"
+    ],
+    "summary": "Preferences",
+    "operationId": "preferences_api_local_preferences_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/PreferencesIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/local/shutdown": {
+   "post": {
+    "tags": [
+     "本地项目"
+    ],
+    "summary": "Shutdown",
+    "description": "请求停止本机项目服务。\n\n有任务在跑时返回结构化 409（``code=tasks_running`` + tasks），桌面端据此给出\n「隐藏到托盘 / 完成后退出 / 取消」；无任务时仍然返回 200 并延迟关闭。",
+    "operationId": "shutdown_api_local_shutdown_post",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/local/info": {
+   "get": {
+    "tags": [
+     "本地项目"
+    ],
+    "summary": "Info",
+    "operationId": "info_api_local_info_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/local/runtime": {
+   "get": {
+    "tags": [
+     "本地项目"
+    ],
+    "summary": "受管 Python 运行时探测（仅本地模式，只读诊断）",
+    "description": "当前后端进程真实使用的解释器与受管依赖诊断。\n\n只读：不安装依赖、不创建虚拟环境；``refresh=1`` 跳过缓存重新探测。\n非本地部署由 app 层统一 404（不暴露该接口是否存在）。",
+    "operationId": "runtime_api_local_runtime_get",
+    "parameters": [
+     {
+      "name": "refresh",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean",
+       "default": false,
+       "title": "Refresh"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/local/files": {
+   "get": {
+    "tags": [
+     "本地项目"
+    ],
+    "summary": "Browse",
+    "operationId": "browse_api_local_files_get",
+    "parameters": [
+     {
+      "name": "path",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "default": "",
+       "title": "Path"
+      }
+     },
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 100,
+       "title": "Limit"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/local/permissions": {
+   "post": {
+    "tags": [
+     "本地项目"
+    ],
+    "summary": "Grant",
+    "operationId": "grant_api_local_permissions_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/PathIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/local/permissions/revoke": {
+   "post": {
+    "tags": [
+     "本地项目"
+    ],
+    "summary": "Revoke",
+    "operationId": "revoke_api_local_permissions_revoke_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/PathIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/local/files/image": {
+   "get": {
+    "tags": [
+     "本地项目"
+    ],
+    "summary": "Image",
+    "description": "在对话/报告中内联展示项目内图片（仅本地模式，只读授权目录）。",
+    "operationId": "image_api_local_files_image_get",
+    "parameters": [
+     {
+      "name": "path",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Path"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/local/files/preview": {
+   "get": {
+    "tags": [
+     "本地项目"
+    ],
+    "summary": "Preview",
+    "description": "本地文件预览：文本按文本读、表格按表格预览，二进制/办公文件给出可行动说明。",
+    "operationId": "preview_api_local_files_preview_get",
+    "parameters": [
+     {
+      "name": "path",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Path"
+      }
+     },
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 20,
+       "title": "Limit"
+      }
+     },
+     {
+      "name": "offset",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 0,
+       "title": "Offset"
+      }
+     },
+     {
+      "name": "encoding",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "default": "utf-8-sig",
+       "title": "Encoding"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/local/files/document-preview": {
+   "post": {
+    "tags": [
+     "本地项目"
+    ],
+    "summary": "Document Preview",
+    "operationId": "document_preview_api_local_files_document_preview_post",
+    "parameters": [
+     {
+      "name": "start",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 1,
+       "title": "Start"
+      }
+     },
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 4,
+       "title": "Limit"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/PathIn"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/local/files/download": {
+   "get": {
+    "tags": [
+     "本地项目"
+    ],
+    "summary": "Download Document",
+    "operationId": "download_document_api_local_files_download_get",
+    "parameters": [
+     {
+      "name": "path",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Path"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/local/files/import": {
+   "post": {
+    "tags": [
+     "本地项目"
+    ],
+    "summary": "Import File",
+    "operationId": "import_file_api_local_files_import_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/PathIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/local/files/relocate": {
+   "post": {
+    "tags": [
+     "本地项目"
+    ],
+    "summary": "Relocate",
+    "operationId": "relocate_api_local_files_relocate_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/PathIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/local/artifacts/{hash}/path": {
+   "get": {
+    "tags": [
+     "本地项目"
+    ],
+    "summary": "解析本地项目中工件文件的真实路径，供桌面端打开文件夹",
+    "description": "Tauri 的 native_reveal_path / native_open_path 只接受真实本机路径。\n\n账号模式没有“本机项目目录”的概念，直接 404（前端隐藏入口）；工件不存在同样是 404，\n非法 hash 是 400。返回的路径必须同时位于工件目录与所选项目目录内。",
+    "operationId": "artifact_path_api_local_artifacts__hash__path_get",
+    "parameters": [
+     {
+      "name": "hash",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Hash"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/local/project/open": {
+   "post": {
+    "tags": [
+     "本地项目"
+    ],
+    "summary": "Open Project",
+    "operationId": "open_project_api_local_project_open_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/PathIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/local/resources": {
+   "get": {
+    "tags": [
+     "本地项目"
+    ],
+    "summary": "Resources",
+    "operationId": "resources_api_local_resources_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/local/tasks": {
+   "get": {
+    "tags": [
+     "本地项目"
+    ],
+    "summary": "Tasks",
+    "operationId": "tasks_api_local_tasks_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/local/cache": {
+   "get": {
+    "tags": [
+     "本地项目"
+    ],
+    "summary": "Cache",
+    "operationId": "cache_api_local_cache_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/local/cache/clear": {
+   "post": {
+    "tags": [
+     "本地项目"
+    ],
+    "summary": "Clear Cache",
+    "operationId": "clear_cache_api_local_cache_clear_post",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/local/project/export": {
+   "post": {
+    "tags": [
+     "本地项目"
+    ],
+    "summary": "Export Project",
+    "operationId": "export_project_api_local_project_export_post",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/local/project/download/{name}": {
+   "get": {
+    "tags": [
+     "本地项目"
+    ],
+    "summary": "Download Project",
+    "operationId": "download_project_api_local_project_download__name__get",
+    "parameters": [
+     {
+      "name": "name",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Name"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/local/library": {
+   "get": {
+    "tags": [
+     "本地项目"
+    ],
+    "summary": "Library",
+    "operationId": "library_api_local_library_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/local/library/publish": {
+   "post": {
+    "tags": [
+     "本地项目"
+    ],
+    "summary": "Publish Module",
+    "operationId": "publish_module_api_local_library_publish_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/ModuleIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/local/library/import": {
+   "post": {
+    "tags": [
+     "本地项目"
+    ],
+    "summary": "Import Module",
+    "operationId": "import_module_api_local_library_import_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/ModuleIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/workflows/environment": {
+   "get": {
+    "tags": [
+     "研究执行环境"
+    ],
+    "summary": "Environment",
+    "operationId": "environment_api_workflows_environment_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/workflows/environment/discover": {
+   "get": {
+    "tags": [
+     "研究执行环境"
+    ],
+    "summary": "Environments",
+    "operationId": "environments_api_workflows_environment_discover_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/workflows/environment/select": {
+   "post": {
+    "tags": [
+     "研究执行环境"
+    ],
+    "summary": "Select Environment",
+    "operationId": "select_environment_api_workflows_environment_select_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/EnvironmentIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/workflows/environment/repair": {
+   "post": {
+    "tags": [
+     "研究执行环境"
+    ],
+    "summary": "Repair Environment",
+    "operationId": "repair_environment_api_workflows_environment_repair_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/EnvironmentIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/workflows/environment/jobs/{job_id}": {
+   "get": {
+    "tags": [
+     "研究执行环境"
+    ],
+    "summary": "Job",
+    "operationId": "job_api_workflows_environment_jobs__job_id__get",
+    "parameters": [
+     {
+      "name": "job_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Job Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/workflows/{wid}/notes": {
+   "get": {
+    "tags": [
+     "研究工作流"
+    ],
+    "summary": "研究结论、笔记与冻结运行引用",
+    "operationId": "read_notes_api_workflows__wid__notes_get",
+    "parameters": [
+     {
+      "name": "wid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Wid"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   },
+   "put": {
+    "tags": [
+     "研究工作流"
+    ],
+    "summary": "保存带版本检查的研究笔记",
+    "operationId": "save_notes_api_workflows__wid__notes_put",
+    "parameters": [
+     {
+      "name": "wid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Wid"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/NotesIn"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/workflows/{wid}/activity": {
+   "get": {
+    "tags": [
+     "研究工作流"
+    ],
+    "summary": "GUI与Agent共用的最近运行与进行中任务",
+    "operationId": "workflow_activity_api_workflows__wid__activity_get",
+    "parameters": [
+     {
+      "name": "wid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Wid"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/workflows/recent-result": {
+   "get": {
+    "tags": [
+     "研究工作流"
+    ],
+    "summary": "当前工作区最近一次有工件证据的已完成研究",
+    "operationId": "recent_result_api_workflows_recent_result_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/workflows/experiments/compare": {
+   "post": {
+    "tags": [
+     "研究工作流"
+    ],
+    "summary": "读取实验指标并保留失败和未完成结果",
+    "operationId": "compare_experiments_api_workflows_experiments_compare_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/quant_agent__api__routes_workflows__CompareIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/workflows/assets": {
+   "get": {
+    "tags": [
+     "研究工作流"
+    ],
+    "summary": "浏览同一工作区的策略、因子、模型与组合执行资产",
+    "operationId": "assets_api_workflows_assets_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/workflows/assets/snapshot": {
+   "post": {
+    "tags": [
+     "研究工作流"
+    ],
+    "summary": "以冻结定义创建已有资产的研究模块",
+    "operationId": "asset_snapshot_api_workflows_assets_snapshot_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/AssetIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/workflows/network/inspect": {
+   "post": {
+    "tags": [
+     "研究工作流"
+    ],
+    "summary": "验证神经组件图并返回形状、参数量与代码",
+    "operationId": "network_inspect_api_workflows_network_inspect_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/NetworkIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/workflows/charts/preview": {
+   "post": {
+    "tags": [
+     "研究工作流"
+    ],
+    "summary": "使用已冻结数据预览图表，不重跑上游研究",
+    "operationId": "chart_preview_api_workflows_charts_preview_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/ChartIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/workflows/catalog": {
+   "get": {
+    "tags": [
+     "研究工作流"
+    ],
+    "summary": "函数卡片、完整代码与研究模板",
+    "operationId": "catalog_api_workflows_catalog_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/workflows/guide": {
+   "get": {
+    "tags": [
+     "研究工作流"
+    ],
+    "summary": "查询工作流、组件图和运行工件规范",
+    "operationId": "workflow_guide_api_workflows_guide_get",
+    "parameters": [
+     {
+      "name": "topic",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "default": "workflow",
+       "title": "Topic"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/workflows/{wid}/view": {
+   "get": {
+    "tags": [
+     "研究工作流"
+    ],
+    "summary": "对话侧只读编排图与真实运行状态",
+    "operationId": "chat_view_api_workflows__wid__view_get",
+    "parameters": [
+     {
+      "name": "wid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Wid"
+      }
+     },
+     {
+      "name": "run_id",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "default": "",
+       "title": "Run Id"
+      }
+     },
+     {
+      "name": "revision",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "integer"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Revision"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/workflows/files": {
+   "get": {
+    "tags": [
+     "研究工作流"
+    ],
+    "summary": "工作区已导入的不可覆盖输入文件",
+    "operationId": "files_api_workflows_files_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     }
+    }
+   },
+   "post": {
+    "tags": [
+     "研究工作流"
+    ],
+    "summary": "流式导入研究文件，不加载整个文件到内存",
+    "operationId": "upload_api_workflows_files_post",
+    "parameters": [
+     {
+      "name": "name",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Name"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/workflows/files/preview": {
+   "get": {
+    "tags": [
+     "研究工作流"
+    ],
+    "summary": "分页预览生成的数据文件或文本内容",
+    "operationId": "preview_generated_file_api_workflows_files_preview_get",
+    "parameters": [
+     {
+      "name": "name",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Name"
+      }
+     },
+     {
+      "name": "offset",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 0,
+       "title": "Offset"
+      }
+     },
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 20,
+       "title": "Limit"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/workflows/definitions/preview": {
+   "post": {
+    "tags": [
+     "研究工作流"
+    ],
+    "summary": "静态检查代码并展示端口、参数及代码差异",
+    "operationId": "preview_api_workflows_definitions_preview_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/DefinitionIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/workflows/definitions": {
+   "post": {
+    "tags": [
+     "研究工作流"
+    ],
+    "summary": "发布不可覆盖的自定义函数卡片版本",
+    "operationId": "publish_api_workflows_definitions_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/DefinitionIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/workflows/definitions/{kind}/{version}/sources": {
+   "get": {
+    "tags": [
+     "研究工作流"
+    ],
+    "summary": "查看真实实现包源码或指定运行的冻结源码",
+    "operationId": "implementation_sources_api_workflows_definitions__kind___version__sources_get",
+    "parameters": [
+     {
+      "name": "kind",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Kind"
+      }
+     },
+     {
+      "name": "version",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Version"
+      }
+     },
+     {
+      "name": "run_id",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "default": "",
+       "title": "Run Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/workflows/subflows/encapsulate": {
+   "post": {
+    "tags": [
+     "研究工作流"
+    ],
+    "summary": "将选中卡片封装为具名输入输出的复用子流程",
+    "operationId": "group_api_workflows_subflows_encapsulate_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/quant_agent__api__routes_workflows__GroupIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/workflows/subflows/expand": {
+   "post": {
+    "tags": [
+     "研究工作流"
+    ],
+    "summary": "展开子流程为可编辑卡片，保持输入输出连接",
+    "operationId": "ungroup_api_workflows_subflows_expand_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/quant_agent__api__routes_workflows__GroupIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/workflows/experiments": {
+   "get": {
+    "tags": [
+     "研究工作流"
+    ],
+    "summary": "工作流实验与来源记录",
+    "operationId": "experiments_api_workflows_experiments_get",
+    "parameters": [
+     {
+      "name": "workflow_id",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "default": "",
+       "title": "Workflow Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/workflows/runs/{run_id}": {
+   "get": {
+    "tags": [
+     "研究工作流"
+    ],
+    "summary": "查询运行状态、节点输入输出与日志",
+    "operationId": "run_status_api_workflows_runs__run_id__get",
+    "parameters": [
+     {
+      "name": "run_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Run Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/workflows/runs/{run_id}/export": {
+   "post": {
+    "tags": [
+     "研究工作流"
+    ],
+    "summary": "以运行时冻结的工作流、版本和实现包构建离线复现包",
+    "operationId": "export_run_api_workflows_runs__run_id__export_post",
+    "parameters": [
+     {
+      "name": "run_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Run Id"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/ExportIn"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/workflows/runs/{run_id}/children/{child_id}": {
+   "get": {
+    "tags": [
+     "研究工作流"
+    ],
+    "summary": "读取本次实验内的子模块运行证据",
+    "operationId": "child_evidence_api_workflows_runs__run_id__children__child_id__get",
+    "parameters": [
+     {
+      "name": "run_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Run Id"
+      }
+     },
+     {
+      "name": "child_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Child Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/workflows/files/download": {
+   "get": {
+    "tags": [
+     "研究工作流"
+    ],
+    "summary": "下载本工作区数据或二进制研究工件",
+    "operationId": "file_download_api_workflows_files_download_get",
+    "parameters": [
+     {
+      "name": "name",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Name"
+      }
+     },
+     {
+      "name": "preview",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean",
+       "default": false,
+       "title": "Preview"
+      }
+     },
+     {
+      "name": "filename",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "default": "",
+       "title": "Filename"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/workflows/artifacts/pins": {
+   "post": {
+    "tags": [
+     "研究工作流"
+    ],
+    "summary": "固定本工作区的一个真实运行产物",
+    "operationId": "pin_artifact_api_workflows_artifacts_pins_post",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/quant_agent__api__routes_workflows__PinIn"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   },
+   "get": {
+    "tags": [
+     "研究工作流"
+    ],
+    "summary": "列出当前工作区的固定成果",
+    "operationId": "artifact_pins_api_workflows_artifacts_pins_get",
+    "parameters": [
+     {
+      "name": "workflow_id",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "default": "",
+       "title": "Workflow Id"
+      }
+     },
+     {
+      "name": "version_key",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "default": "",
+       "title": "Version Key"
+      }
+     },
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 100,
+       "title": "Limit"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/workflows/artifacts/pins/{pin_id}": {
+   "delete": {
+    "tags": [
+     "研究工作流"
+    ],
+    "summary": "取消固定成果",
+    "operationId": "unpin_artifact_api_workflows_artifacts_pins__pin_id__delete",
+    "parameters": [
+     {
+      "name": "pin_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Pin Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/workflows/artifacts/versions": {
+   "get": {
+    "tags": [
+     "研究工作流"
+    ],
+    "summary": "按版本键读取同一节点端口的历史产物",
+    "operationId": "artifact_versions_api_workflows_artifacts_versions_get",
+    "parameters": [
+     {
+      "name": "version_key",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "default": "",
+       "title": "Version Key"
+      }
+     },
+     {
+      "name": "hash",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "default": "",
+       "title": "Hash"
+      }
+     },
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 100,
+       "title": "Limit"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/workflows/artifacts/{digest}": {
+   "get": {
+    "tags": [
+     "研究工作流"
+    ],
+    "summary": "读取本工作区工件的原始JSON内容",
+    "operationId": "artifact_api_workflows_artifacts__digest__get",
+    "parameters": [
+     {
+      "name": "digest",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Digest"
+      }
+     },
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 100,
+       "title": "Limit"
+      }
+     },
+     {
+      "name": "offset",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 0,
+       "title": "Offset"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/workflows/artifacts/{digest}/download": {
+   "get": {
+    "tags": [
+     "研究工作流"
+    ],
+    "summary": "下载经完整性验证的工件JSON或表格CSV",
+    "operationId": "artifact_download_api_workflows_artifacts__digest__download_get",
+    "parameters": [
+     {
+      "name": "digest",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Digest"
+      }
+     },
+     {
+      "name": "format",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "default": "json",
+       "title": "Format"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/workflows/artifacts/{digest}/versions": {
+   "get": {
+    "tags": [
+     "研究工作流"
+    ],
+    "summary": "由工件hash反查同节点端口的历史版本",
+    "operationId": "artifact_versions_by_hash_api_workflows_artifacts__digest__versions_get",
+    "parameters": [
+     {
+      "name": "digest",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Digest"
+      }
+     },
+     {
+      "name": "version_key",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "default": "",
+       "title": "Version Key"
+      }
+     },
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 100,
+       "title": "Limit"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/workflows/artifacts": {
+   "get": {
+    "tags": [
+     "研究工作流"
+    ],
+    "summary": "按研究、运行和关键词检索真实产物",
+    "operationId": "artifact_center_api_workflows_artifacts_get",
+    "parameters": [
+     {
+      "name": "workflow_id",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "default": "",
+       "title": "Workflow Id"
+      }
+     },
+     {
+      "name": "run_id",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "default": "",
+       "title": "Run Id"
+      }
+     },
+     {
+      "name": "query",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "default": "",
+       "title": "Query"
+      }
+     },
+     {
+      "name": "offset",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 0,
+       "title": "Offset"
+      }
+     },
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 40,
+       "title": "Limit"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/workflows/exports/{name}": {
+   "get": {
+    "tags": [
+     "研究工作流"
+    ],
+    "summary": "下载含依赖安装包的独立运行研究包",
+    "operationId": "download_api_workflows_exports__name__get",
+    "parameters": [
+     {
+      "name": "name",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Name"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/workflows": {
+   "get": {
+    "tags": [
+     "研究工作流"
+    ],
+    "summary": "工作流列表与当前版本",
+    "operationId": "listing_api_workflows_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     }
+    }
+   },
+   "post": {
+    "tags": [
+     "研究工作流"
+    ],
+    "summary": "保存可继续编辑的工作流草稿",
+    "operationId": "create_api_workflows_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/quant_agent__api__routes_workflows__SaveIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/workflows/{wid}": {
+   "get": {
+    "tags": [
+     "研究工作流"
+    ],
+    "summary": "读取工作流及历史快照",
+    "operationId": "get_api_workflows__wid__get",
+    "parameters": [
+     {
+      "name": "wid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Wid"
+      }
+     },
+     {
+      "name": "revision",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "integer"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Revision"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   },
+   "put": {
+    "tags": [
+     "研究工作流"
+    ],
+    "summary": "校验修订号并创建新工作流版本",
+    "operationId": "save_api_workflows__wid__put",
+    "parameters": [
+     {
+      "name": "wid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Wid"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/quant_agent__api__routes_workflows__SaveIn"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/workflows/{wid}/validate": {
+   "post": {
+    "tags": [
+     "研究工作流"
+    ],
+    "summary": "运行前自检，不执行卡片代码",
+    "operationId": "validate_api_workflows__wid__validate_post",
+    "parameters": [
+     {
+      "name": "wid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Wid"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/RunIn"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/workflows/{wid}/run": {
+   "post": {
+    "tags": [
+     "研究工作流"
+    ],
+    "summary": "使用现有Worker执行完整或局部工作流",
+    "operationId": "run_api_workflows__wid__run_post",
+    "parameters": [
+     {
+      "name": "wid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Wid"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/RunIn"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/workflows/{wid}/export": {
+   "post": {
+    "tags": [
+     "研究工作流"
+    ],
+    "summary": "后台构建含代码、数据及依赖wheel的完整离线包",
+    "operationId": "export_api_workflows__wid__export_post",
+    "parameters": [
+     {
+      "name": "wid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Wid"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/ExportIn"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/workflows/{wid}/experiments/plan": {
+   "post": {
+    "tags": [
+     "研究工作流"
+    ],
+    "summary": "预览参数网格或滚动时间窗口，不执行研究",
+    "operationId": "plan_experiments_api_workflows__wid__experiments_plan_post",
+    "parameters": [
+     {
+      "name": "wid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Wid"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/BatchIn"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/workflows/{wid}/experiments/submit": {
+   "post": {
+    "tags": [
+     "研究工作流"
+    ],
+    "summary": "按冻结修订提交独立实验，不修改画布",
+    "operationId": "submit_experiments_api_workflows__wid__experiments_submit_post",
+    "parameters": [
+     {
+      "name": "wid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Wid"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/BatchIn"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/workflows/{workflow_id}/module-view": {
+   "get": {
+    "tags": [
+     "研究工作流"
+    ],
+    "summary": "逐层查看模块内部函数、参数和运行证据",
+    "operationId": "module_view_api_workflows__workflow_id__module_view_get",
+    "parameters": [
+     {
+      "name": "workflow_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Workflow Id"
+      }
+     },
+     {
+      "name": "node_path",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Node Path"
+      }
+     },
+     {
+      "name": "revision",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "integer"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Revision"
+      }
+     },
+     {
+      "name": "run_id",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "default": "",
+       "title": "Run Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/auth/research-plugins": {
+   "get": {
+    "tags": [
+     "研究插件"
+    ],
+    "summary": "Listing",
+    "operationId": "listing_api_auth_research_plugins_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/auth/research-plugins/{plugin}/impact": {
+   "get": {
+    "tags": [
+     "研究插件"
+    ],
+    "summary": "Affected",
+    "operationId": "affected_api_auth_research_plugins__plugin__impact_get",
+    "parameters": [
+     {
+      "name": "plugin",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Plugin"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/auth/research-plugins/{plugin}": {
+   "put": {
+    "tags": [
+     "研究插件"
+    ],
+    "summary": "Save",
+    "operationId": "save_api_auth_research_plugins__plugin__put",
+    "parameters": [
+     {
+      "name": "plugin",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Plugin"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/Patch"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
        }
       }
      },
@@ -11030,6 +14346,7 @@
      "AI 策略助手"
     ],
     "summary": "AI 调用记录（模式、模型、提示词哈希）",
+    "description": "AI 会话历史：默认按发起人过滤；只有管理员可显式查看工作区全部。",
     "operationId": "ai_history_api_ai_history_get",
     "parameters": [
      {
@@ -11043,6 +14360,22 @@
        "default": 30,
        "title": "Limit"
       }
+     },
+     {
+      "name": "scope",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "enum": [
+        "mine",
+        "workspace"
+       ],
+       "type": "string",
+       "description": "mine=只看自己的 AI 会话；workspace=管理员看全工作区",
+       "default": "mine",
+       "title": "Scope"
+      },
+      "description": "mine=只看自己的 AI 会话；workspace=管理员看全工作区"
      }
     ],
     "responses": {
@@ -11296,6 +14629,51 @@
     }
    }
   },
+  "/api/lab/projects/{pid}/context-pack": {
+   "get": {
+    "tags": [
+     "AI 策略室"
+    ],
+    "summary": "统一上下文包：系统规则、项目规则、来源引用与预算",
+    "description": "把“本轮会进入模型的内容”收成一个稳定结构，供前端/导出/调试共用。\n\n只读投影，不改变提示词；items 仍是 ``context_view`` 的真实明细，sources 只含标题/ID。",
+    "operationId": "context_pack_api_lab_projects__pid__context_pack_get",
+    "parameters": [
+     {
+      "name": "pid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Pid"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "additionalProperties": true,
+         "title": "Response Context Pack Api Lab Projects  Pid  Context Pack Get"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
   "/api/lab/meta": {
    "get": {
     "tags": [
@@ -11388,6 +14766,49 @@
          "type": "object",
          "additionalProperties": true,
          "title": "Response Create Project Api Lab Projects Post"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/lab/projects/from-ask": {
+   "post": {
+    "tags": [
+     "AI 策略室"
+    ],
+    "summary": "把「问 AI」升级成研究会话：写入种子消息，默认私有归当前用户",
+    "operationId": "create_project_from_ask_api_lab_projects_from_ask_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/FromAskIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "type": "object",
+         "title": "Response Create Project From Ask Api Lab Projects From Ask Post"
         }
        }
       }
@@ -12928,7 +16349,7 @@
      "content": {
       "application/json": {
        "schema": {
-        "$ref": "#/components/schemas/PinIn"
+        "$ref": "#/components/schemas/quant_agent__api__routes_lab__PinIn"
        }
       }
      }
@@ -13039,6 +16460,410 @@
          "type": "object",
          "additionalProperties": true,
          "title": "Response Save As Strategy Api Lab Projects  Pid  Save Post"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/skills": {
+   "get": {
+    "tags": [
+     "扩展：技能 / 钩子 / MCP"
+    ],
+    "summary": "列出项目 / 工作区技能（只读 .quantlab/skills/*.md）",
+    "operationId": "list_skills_api_skills_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "type": "object",
+         "title": "Response List Skills Api Skills Get"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/skills/{name}": {
+   "get": {
+    "tags": [
+     "扩展：技能 / 钩子 / MCP"
+    ],
+    "summary": "查看一个技能的内容（只读）",
+    "operationId": "get_skill_api_skills__name__get",
+    "parameters": [
+     {
+      "name": "name",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Name"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "additionalProperties": true,
+         "title": "Response Get Skill Api Skills  Name  Get"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/skills/{name}/attach": {
+   "post": {
+    "tags": [
+     "扩展：技能 / 钩子 / MCP"
+    ],
+    "summary": "把一个技能追加到 Lab 项目的 instructions（可选注入）",
+    "operationId": "attach_skill_api_skills__name__attach_post",
+    "parameters": [
+     {
+      "name": "name",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Name"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/SkillAttachIn"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "additionalProperties": true,
+         "title": "Response Attach Skill Api Skills  Name  Attach Post"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/hooks": {
+   "get": {
+    "tags": [
+     "扩展：技能 / 钩子 / MCP"
+    ],
+    "summary": "列出已注册 hooks 与触发点（只读；默认不启用、不执行外部命令）",
+    "operationId": "list_hooks_api_hooks_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "type": "object",
+         "title": "Response List Hooks Api Hooks Get"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/hooks/{hook_id}/toggle": {
+   "post": {
+    "tags": [
+     "扩展：技能 / 钩子 / MCP"
+    ],
+    "summary": "启用/停用进程内 hook（仅本地项目或管理员；不能注册任意代码）",
+    "operationId": "toggle_hook_api_hooks__hook_id__toggle_post",
+    "parameters": [
+     {
+      "name": "hook_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Hook Id"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/HookToggleIn"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "additionalProperties": true,
+         "title": "Response Toggle Hook Api Hooks  Hook Id  Toggle Post"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/mcp/servers": {
+   "get": {
+    "tags": [
+     "扩展：技能 / 钩子 / MCP"
+    ],
+    "summary": "MCP server 目录与健康检查（不启动进程、不建立连接）",
+    "operationId": "list_mcp_servers_api_mcp_servers_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "type": "object",
+         "title": "Response List Mcp Servers Api Mcp Servers Get"
+        }
+       }
+      }
+     }
+    }
+   },
+   "post": {
+    "tags": [
+     "扩展：技能 / 钩子 / MCP"
+    ],
+    "summary": "保存一个 MCP server 配置（只存本地，不启动进程）",
+    "operationId": "save_mcp_server_api_mcp_servers_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/McpServerIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "type": "object",
+         "title": "Response Save Mcp Server Api Mcp Servers Post"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/mcp/servers/{name}": {
+   "delete": {
+    "tags": [
+     "扩展：技能 / 钩子 / MCP"
+    ],
+    "summary": "删除 MCP 配置",
+    "operationId": "delete_mcp_server_api_mcp_servers__name__delete",
+    "parameters": [
+     {
+      "name": "name",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Name"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "additionalProperties": true,
+         "title": "Response Delete Mcp Server Api Mcp Servers  Name  Delete"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/mcp/servers/{name}/probe": {
+   "post": {
+    "tags": [
+     "扩展：技能 / 钩子 / MCP"
+    ],
+    "summary": "探测 stdio MCP server：initialize + tools/list（仅本地、显式开启）",
+    "operationId": "probe_mcp_server_api_mcp_servers__name__probe_post",
+    "parameters": [
+     {
+      "name": "name",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Name"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "additionalProperties": true,
+         "title": "Response Probe Mcp Server Api Mcp Servers  Name  Probe Post"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/mcp/servers/{name}/call": {
+   "post": {
+    "tags": [
+     "扩展：技能 / 钩子 / MCP"
+    ],
+    "summary": "调用 stdio MCP server 的一个工具（仅本地、显式开启）",
+    "operationId": "call_mcp_tool_api_mcp_servers__name__call_post",
+    "parameters": [
+     {
+      "name": "name",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Name"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/McpCallIn"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "additionalProperties": true,
+         "title": "Response Call Mcp Tool Api Mcp Servers  Name  Call Post"
         }
        }
       }
@@ -20572,7 +24397,7 @@
      "content": {
       "application/json": {
        "schema": {
-        "$ref": "#/components/schemas/GroupIn"
+        "$ref": "#/components/schemas/quant_agent__api__routes_collab__GroupIn"
        }
       }
      },
@@ -24065,7 +27890,7 @@
      "长期 Agent 与总览"
     ],
     "summary": "容器探活（仅检查数据库）",
-    "description": "容器探活：只检查数据库可用，不访问交易所（避免外网抖动导致容器被反复重启）。",
+    "description": "容器探活：只检查数据库可用，不访问交易所（避免外网抖动导致容器被反复重启）。\n\n同时返回版本与构建标识，供桌面壳判断能否复用已在运行的后端进程：\n`desktop_version` 是启动该进程的桌面壳版本，`build` 是完整构建号。",
     "operationId": "healthz_api_healthz_get",
     "responses": {
      "200": {
@@ -27144,6 +30969,25 @@
     ],
     "title": "ApplyParamsIn"
    },
+   "ApprovalDecisionIn": {
+    "properties": {
+     "approve": {
+      "type": "boolean",
+      "title": "Approve"
+     },
+     "note": {
+      "type": "string",
+      "maxLength": 400,
+      "title": "Note",
+      "default": ""
+     }
+    },
+    "type": "object",
+    "required": [
+     "approve"
+    ],
+    "title": "ApprovalDecisionIn"
+   },
    "ArchiveIn": {
     "properties": {
      "retention_days": {
@@ -27308,6 +31152,16 @@
        }
       ],
       "title": "Scenes"
+     },
+     "research": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/AskResearchContext"
+       },
+       {
+        "type": "null"
+       }
+      ]
      }
     },
     "type": "object",
@@ -27315,6 +31169,269 @@
      "question"
     ],
     "title": "AskIn"
+   },
+   "AskResearchContext": {
+    "properties": {
+     "version": {
+      "type": "integer",
+      "const": 1,
+      "title": "Version"
+     },
+     "workspace_id": {
+      "type": "string",
+      "maxLength": 100,
+      "title": "Workspace Id",
+      "default": ""
+     },
+     "project_name": {
+      "type": "string",
+      "maxLength": 200,
+      "title": "Project Name",
+      "default": ""
+     },
+     "draft_id": {
+      "type": "string",
+      "maxLength": 100,
+      "title": "Draft Id",
+      "default": ""
+     },
+     "workflow": {
+      "$ref": "#/components/schemas/AskResearchWorkflow"
+     },
+     "selected_node": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/AskResearchNode"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "run": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/AskResearchRun"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "outputs": {
+      "items": {
+       "$ref": "#/components/schemas/AskResearchOutput"
+      },
+      "type": "array",
+      "maxItems": 6,
+      "title": "Outputs"
+     }
+    },
+    "additionalProperties": false,
+    "type": "object",
+    "required": [
+     "version",
+     "workflow"
+    ],
+    "title": "AskResearchContext",
+    "description": "Versioned optional envelope. No graph, dataset, binary or base64 fields are accepted."
+   },
+   "AskResearchNode": {
+    "properties": {
+     "id": {
+      "type": "string",
+      "maxLength": 100,
+      "minLength": 1,
+      "title": "Id"
+     },
+     "title": {
+      "type": "string",
+      "maxLength": 200,
+      "title": "Title",
+      "default": ""
+     },
+     "kind": {
+      "type": "string",
+      "maxLength": 80,
+      "title": "Kind",
+      "default": ""
+     },
+     "status": {
+      "type": "string",
+      "maxLength": 40,
+      "title": "Status",
+      "default": ""
+     }
+    },
+    "additionalProperties": false,
+    "type": "object",
+    "required": [
+     "id"
+    ],
+    "title": "AskResearchNode"
+   },
+   "AskResearchOutput": {
+    "properties": {
+     "port": {
+      "type": "string",
+      "maxLength": 80,
+      "minLength": 1,
+      "title": "Port"
+     },
+     "type": {
+      "type": "string",
+      "maxLength": 40,
+      "minLength": 1,
+      "title": "Type"
+     },
+     "hash": {
+      "type": "string",
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Hash"
+     },
+     "run_id": {
+      "type": "string",
+      "maxLength": 100,
+      "minLength": 1,
+      "title": "Run Id"
+     },
+     "node_id": {
+      "type": "string",
+      "maxLength": 100,
+      "minLength": 1,
+      "title": "Node Id"
+     }
+    },
+    "additionalProperties": false,
+    "type": "object",
+    "required": [
+     "port",
+     "type",
+     "hash",
+     "run_id",
+     "node_id"
+    ],
+    "title": "AskResearchOutput"
+   },
+   "AskResearchRun": {
+    "properties": {
+     "id": {
+      "type": "string",
+      "maxLength": 100,
+      "minLength": 1,
+      "title": "Id"
+     },
+     "mode": {
+      "type": "string",
+      "maxLength": 40,
+      "title": "Mode",
+      "default": ""
+     },
+     "status": {
+      "type": "string",
+      "maxLength": 40,
+      "title": "Status",
+      "default": ""
+     },
+     "revision": {
+      "anyOf": [
+       {
+        "type": "integer",
+        "maximum": 1000000.0,
+        "minimum": 0.0
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Revision"
+     },
+     "current": {
+      "type": "boolean",
+      "title": "Current",
+      "default": false
+     },
+     "historical": {
+      "type": "boolean",
+      "title": "Historical",
+      "default": false
+     },
+     "follows_latest": {
+      "anyOf": [
+       {
+        "type": "boolean"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Follows Latest"
+     },
+     "view_mode": {
+      "anyOf": [
+       {
+        "type": "string",
+        "enum": [
+         "latest",
+         "frozen"
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "View Mode"
+     }
+    },
+    "additionalProperties": false,
+    "type": "object",
+    "required": [
+     "id"
+    ],
+    "title": "AskResearchRun"
+   },
+   "AskResearchWorkflow": {
+    "properties": {
+     "id": {
+      "type": "string",
+      "maxLength": 100,
+      "title": "Id",
+      "default": ""
+     },
+     "title": {
+      "type": "string",
+      "maxLength": 200,
+      "title": "Title",
+      "default": ""
+     },
+     "revision": {
+      "anyOf": [
+       {
+        "type": "integer",
+        "maximum": 1000000.0,
+        "minimum": 0.0
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Revision"
+     },
+     "saved": {
+      "type": "boolean",
+      "title": "Saved",
+      "default": true
+     },
+     "unsaved": {
+      "type": "boolean",
+      "title": "Unsaved",
+      "default": false
+     }
+    },
+    "additionalProperties": false,
+    "type": "object",
+    "title": "AskResearchWorkflow"
    },
    "AssembleIn": {
     "properties": {
@@ -27334,6 +31451,24 @@
      "blocks"
     ],
     "title": "AssembleIn"
+   },
+   "AssetIn": {
+    "properties": {
+     "domain": {
+      "type": "string",
+      "title": "Domain"
+     },
+     "asset_id": {
+      "type": "string",
+      "title": "Asset Id"
+     }
+    },
+    "type": "object",
+    "required": [
+     "domain",
+     "asset_id"
+    ],
+    "title": "AssetIn"
    },
    "AutoSyncIn": {
     "properties": {
@@ -27535,6 +31670,31 @@
     },
     "type": "object",
     "title": "BatchDeleteIn"
+   },
+   "BatchIn": {
+    "properties": {
+     "plan": {
+      "additionalProperties": true,
+      "type": "object",
+      "title": "Plan"
+     },
+     "revision": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Revision"
+     }
+    },
+    "type": "object",
+    "required": [
+     "plan"
+    ],
+    "title": "BatchIn"
    },
    "BatchRecordsIn": {
     "properties": {
@@ -27739,6 +31899,41 @@
      "amount"
     ],
     "title": "CashFlowIn"
+   },
+   "ChartIn": {
+    "properties": {
+     "config": {
+      "additionalProperties": true,
+      "type": "object",
+      "title": "Config"
+     },
+     "artifact_hash": {
+      "type": "string",
+      "title": "Artifact Hash",
+      "default": ""
+     },
+     "data": {
+      "anyOf": [
+       {
+        "items": {
+         "additionalProperties": true,
+         "type": "object"
+        },
+        "type": "array",
+        "maxItems": 5000
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Data"
+     }
+    },
+    "type": "object",
+    "required": [
+     "config"
+    ],
+    "title": "ChartIn"
    },
    "ChatTurn": {
     "properties": {
@@ -28282,6 +32477,30 @@
     "type": "object",
     "title": "DefaultLimitsIn"
    },
+   "DefinitionIn": {
+    "properties": {
+     "code": {
+      "type": "string",
+      "maxLength": 150000,
+      "title": "Code"
+     },
+     "old_kind": {
+      "type": "string",
+      "title": "Old Kind",
+      "default": ""
+     },
+     "old_version": {
+      "type": "string",
+      "title": "Old Version",
+      "default": ""
+     }
+    },
+    "type": "object",
+    "required": [
+     "code"
+    ],
+    "title": "DefinitionIn"
+   },
    "DemoConnectIn": {
     "properties": {
      "exchange": {
@@ -28738,6 +32957,49 @@
     ],
     "title": "EnvelopeCheckIn"
    },
+   "EnvironmentIn": {
+    "properties": {
+     "python": {
+      "type": "string",
+      "title": "Python",
+      "default": ""
+     },
+     "wheelhouse": {
+      "type": "string",
+      "title": "Wheelhouse",
+      "default": ""
+     },
+     "neural": {
+      "type": "boolean",
+      "title": "Neural",
+      "default": false
+     }
+    },
+    "type": "object",
+    "title": "EnvironmentIn"
+   },
+   "ExportIn": {
+    "properties": {
+     "revision": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Revision"
+     },
+     "include_wheels": {
+      "type": "boolean",
+      "title": "Include Wheels",
+      "default": true
+     }
+    },
+    "type": "object",
+    "title": "ExportIn"
+   },
    "ExprIn": {
     "properties": {
      "expression": {
@@ -29029,6 +33291,69 @@
     },
     "type": "object",
     "title": "ForkIn"
+   },
+   "FromAskIn": {
+    "properties": {
+     "kind": {
+      "type": "string",
+      "enum": [
+       "research",
+       "workflow"
+      ],
+      "title": "Kind",
+      "description": "研究会话 / 工作流会话",
+      "default": "research"
+     },
+     "title": {
+      "type": "string",
+      "maxLength": 60,
+      "title": "Title",
+      "default": ""
+     },
+     "idea": {
+      "type": "string",
+      "maxLength": 20000,
+      "title": "Idea",
+      "default": ""
+     },
+     "context": {
+      "additionalProperties": true,
+      "type": "object",
+      "title": "Context",
+      "description": "来源引用：工作流 / 运行 / 节点 / 页面资料"
+     },
+     "messages": {
+      "items": {
+       "$ref": "#/components/schemas/SeedMessageIn"
+      },
+      "type": "array",
+      "maxItems": 200,
+      "title": "Messages"
+     },
+     "research": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Research",
+      "description": "Ask 的研究上下文信封：只取工作流 / 运行 / 节点引用"
+     },
+     "instructions": {
+      "type": "string",
+      "maxLength": 200000,
+      "title": "Instructions",
+      "description": "研究者设定的项目规则（≤20k 字符）",
+      "default": ""
+     }
+    },
+    "type": "object",
+    "title": "FromAskIn",
+    "description": "把一次「问 AI」升级成研究会话（默认私有，归当前用户）。"
    },
    "GoalCheckIn": {
     "properties": {
@@ -29512,44 +33837,6 @@
     "type": "object",
     "title": "GroupBotIn"
    },
-   "GroupIn": {
-    "properties": {
-     "name": {
-      "type": "string",
-      "maxLength": 40,
-      "minLength": 1,
-      "title": "Name"
-     },
-     "description": {
-      "type": "string",
-      "maxLength": 500,
-      "title": "Description",
-      "default": ""
-     },
-     "visibility": {
-      "type": "string",
-      "enum": [
-       "open",
-       "private"
-      ],
-      "title": "Visibility",
-      "default": "open"
-     },
-     "members": {
-      "items": {
-       "type": "string"
-      },
-      "type": "array",
-      "maxItems": 200,
-      "title": "Members"
-     }
-    },
-    "type": "object",
-    "required": [
-     "name"
-    ],
-    "title": "GroupIn"
-   },
    "GroupPatch": {
     "properties": {
      "name": {
@@ -29658,6 +33945,19 @@
     },
     "type": "object",
     "title": "HTTPValidationError"
+   },
+   "HookToggleIn": {
+    "properties": {
+     "enabled": {
+      "type": "boolean",
+      "title": "Enabled"
+     }
+    },
+    "type": "object",
+    "required": [
+     "enabled"
+    ],
+    "title": "HookToggleIn"
    },
    "ImageIn": {
     "properties": {
@@ -30020,6 +34320,85 @@
     "type": "object",
     "title": "MaintainerRunIn"
    },
+   "McpCallIn": {
+    "properties": {
+     "tool": {
+      "type": "string",
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Tool"
+     },
+     "arguments": {
+      "additionalProperties": true,
+      "type": "object",
+      "title": "Arguments"
+     }
+    },
+    "type": "object",
+    "required": [
+     "tool"
+    ],
+    "title": "McpCallIn"
+   },
+   "McpServerIn": {
+    "properties": {
+     "name": {
+      "type": "string",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+      "title": "Name"
+     },
+     "transport": {
+      "type": "string",
+      "enum": [
+       "stdio",
+       "http"
+      ],
+      "title": "Transport",
+      "default": "stdio"
+     },
+     "command": {
+      "type": "string",
+      "maxLength": 500,
+      "title": "Command",
+      "description": "stdio 启动命令（仅保存配置，绝不执行）",
+      "default": ""
+     },
+     "args": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array",
+      "maxItems": 32,
+      "title": "Args"
+     },
+     "url": {
+      "type": "string",
+      "maxLength": 1000,
+      "title": "Url",
+      "description": "http 传输的服务地址（仅保存配置，不连接）",
+      "default": ""
+     },
+     "description": {
+      "type": "string",
+      "maxLength": 500,
+      "title": "Description",
+      "default": ""
+     },
+     "enabled": {
+      "type": "boolean",
+      "title": "Enabled",
+      "description": "是否启用（当前仅影响健康状态展示，不会启动）",
+      "default": false
+     }
+    },
+    "type": "object",
+    "required": [
+     "name"
+    ],
+    "title": "McpServerIn"
+   },
    "MemberPolicyIn": {
     "properties": {
      "use_workspace_models": {
@@ -30360,6 +34739,27 @@
     "type": "object",
     "title": "ModelSettingIn"
    },
+   "ModuleIn": {
+    "properties": {
+     "kind": {
+      "type": "string",
+      "title": "Kind",
+      "default": ""
+     },
+     "version": {
+      "type": "string",
+      "title": "Version",
+      "default": "1"
+     },
+     "id": {
+      "type": "string",
+      "title": "Id",
+      "default": ""
+     }
+    },
+    "type": "object",
+    "title": "ModuleIn"
+   },
    "MuteIn": {
     "properties": {
      "target_type": {
@@ -30391,6 +34791,20 @@
      "target_id"
     ],
     "title": "MuteIn"
+   },
+   "NetworkIn": {
+    "properties": {
+     "graph": {
+      "additionalProperties": true,
+      "type": "object",
+      "title": "Graph"
+     }
+    },
+    "type": "object",
+    "required": [
+     "graph"
+    ],
+    "title": "NetworkIn"
    },
    "NewStrategyIn": {
     "properties": {
@@ -30672,6 +35086,34 @@
      "idea"
     ],
     "title": "NightTaskIn"
+   },
+   "NotesIn": {
+    "properties": {
+     "text": {
+      "type": "string",
+      "maxLength": 100000,
+      "title": "Text"
+     },
+     "run_ids": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array",
+      "maxItems": 30,
+      "title": "Run Ids"
+     },
+     "expected_version": {
+      "type": "integer",
+      "minimum": 0.0,
+      "title": "Expected Version"
+     }
+    },
+    "type": "object",
+    "required": [
+     "text",
+     "expected_version"
+    ],
+    "title": "NotesIn"
    },
    "OnboardingIn": {
     "properties": {
@@ -31451,6 +35893,68 @@
     ],
     "title": "PasswordIn"
    },
+   "Patch": {
+    "properties": {
+     "enabled": {
+      "anyOf": [
+       {
+        "type": "boolean"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Enabled"
+     },
+     "agent": {
+      "anyOf": [
+       {
+        "type": "boolean"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Agent"
+     },
+     "visible": {
+      "anyOf": [
+       {
+        "type": "boolean"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Visible"
+     }
+    },
+    "type": "object",
+    "title": "Patch"
+   },
+   "PathIn": {
+    "properties": {
+     "path": {
+      "type": "string",
+      "title": "Path"
+     },
+     "mode": {
+      "type": "string",
+      "title": "Mode",
+      "default": "read"
+     },
+     "name": {
+      "type": "string",
+      "title": "Name",
+      "default": ""
+     }
+    },
+    "type": "object",
+    "required": [
+     "path"
+    ],
+    "title": "PathIn"
+   },
    "PboIn": {
     "properties": {
      "project_id": {
@@ -31496,33 +36000,6 @@
     },
     "type": "object",
     "title": "PhraseIn"
-   },
-   "PinIn": {
-    "properties": {
-     "kind": {
-      "type": "string",
-      "title": "Kind",
-      "default": "note"
-     },
-     "title": {
-      "type": "string",
-      "maxLength": 60,
-      "minLength": 1,
-      "title": "Title"
-     },
-     "text": {
-      "type": "string",
-      "maxLength": 400000,
-      "minLength": 1,
-      "title": "Text"
-     }
-    },
-    "type": "object",
-    "required": [
-     "title",
-     "text"
-    ],
-    "title": "PinIn"
    },
    "PipelineIn": {
     "properties": {
@@ -31756,6 +36233,34 @@
     "type": "object",
     "title": "PostUpdateIn"
    },
+   "PreferencesIn": {
+    "properties": {
+     "close_action": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Close Action"
+     },
+     "last_workflow_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Last Workflow Id"
+     }
+    },
+    "type": "object",
+    "title": "PreferencesIn"
+   },
    "PresenceIn": {
     "properties": {
      "object_type": {
@@ -31888,7 +36393,9 @@
        "factor",
        "model",
        "portfolio",
-       "execution"
+       "execution",
+       "research",
+       "workflow"
       ],
       "title": "Kind",
       "default": "strategy"
@@ -31986,7 +36493,7 @@
      },
      "pins": {
       "items": {
-       "$ref": "#/components/schemas/PinIn"
+       "$ref": "#/components/schemas/quant_agent__api__routes_lab__PinIn"
       },
       "type": "array",
       "title": "Pins"
@@ -32041,6 +36548,19 @@
        }
       ],
       "title": "Hypothesis"
+     },
+     "context": {
+      "additionalProperties": true,
+      "type": "object",
+      "title": "Context",
+      "description": "来源引用：工作流 / 运行 / 节点 / 页面资料"
+     },
+     "instructions": {
+      "type": "string",
+      "maxLength": 200000,
+      "title": "Instructions",
+      "description": "研究者设定的项目规则（≤20k 字符）",
+      "default": ""
      },
      "permission": {
       "type": "string",
@@ -32449,6 +36969,19 @@
        }
       ],
       "title": "Auto Team Context"
+     },
+     "instructions": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 200000
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Instructions",
+      "description": "研究者设定的项目规则（≤20k 字符，超出截断）"
      },
      "approvals": {
       "anyOf": [
@@ -33697,6 +38230,64 @@
     "title": "RuleStrategyIn",
     "description": "规则策略提交。字段与 RULE_TEMPLATE 对齐，给默认值便于最小化提交。"
    },
+   "RunIn": {
+    "properties": {
+     "target": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Target"
+     },
+     "mode": {
+      "type": "string",
+      "title": "Mode",
+      "default": "research"
+     },
+     "pins": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Pins"
+     },
+     "revision": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Revision"
+     },
+     "seed": {
+      "anyOf": [
+       {
+        "type": "integer",
+        "maximum": 4294967295.0,
+        "minimum": 0.0
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Seed"
+     }
+    },
+    "type": "object",
+    "title": "RunIn"
+   },
    "RunNowIn": {
     "properties": {
      "wait": {
@@ -33844,6 +38435,37 @@
      "url"
     ],
     "title": "SearchSourceIn"
+   },
+   "SeedMessageIn": {
+    "properties": {
+     "role": {
+      "type": "string",
+      "maxLength": 40,
+      "title": "Role",
+      "default": "user"
+     },
+     "content": {
+      "type": "string",
+      "maxLength": 20000,
+      "title": "Content",
+      "default": ""
+     },
+     "data": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Data"
+     }
+    },
+    "type": "object",
+    "title": "SeedMessageIn",
+    "description": "升级时带回的对话种子消息；未知角色 / 空内容由服务端过滤，不写入。"
    },
    "ShadowIn": {
     "properties": {
@@ -34054,6 +38676,21 @@
     },
     "type": "object",
     "title": "SimIn"
+   },
+   "SkillAttachIn": {
+    "properties": {
+     "project_id": {
+      "type": "string",
+      "maxLength": 40,
+      "minLength": 1,
+      "title": "Project Id"
+     }
+    },
+    "type": "object",
+    "required": [
+     "project_id"
+    ],
+    "title": "SkillAttachIn"
    },
    "SourceIn": {
     "properties": {
@@ -35691,6 +40328,44 @@
     "type": "object",
     "title": "SettingsIn"
    },
+   "quant_agent__api__routes_collab__GroupIn": {
+    "properties": {
+     "name": {
+      "type": "string",
+      "maxLength": 40,
+      "minLength": 1,
+      "title": "Name"
+     },
+     "description": {
+      "type": "string",
+      "maxLength": 500,
+      "title": "Description",
+      "default": ""
+     },
+     "visibility": {
+      "type": "string",
+      "enum": [
+       "open",
+       "private"
+      ],
+      "title": "Visibility",
+      "default": "open"
+     },
+     "members": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array",
+      "maxItems": 200,
+      "title": "Members"
+     }
+    },
+    "type": "object",
+    "required": [
+     "name"
+    ],
+    "title": "GroupIn"
+   },
    "quant_agent__api__routes_collab__MessageIn": {
     "properties": {
      "body": {
@@ -36142,6 +40817,33 @@
     },
     "type": "object",
     "title": "MessageIn"
+   },
+   "quant_agent__api__routes_lab__PinIn": {
+    "properties": {
+     "kind": {
+      "type": "string",
+      "title": "Kind",
+      "default": "note"
+     },
+     "title": {
+      "type": "string",
+      "maxLength": 60,
+      "minLength": 1,
+      "title": "Title"
+     },
+     "text": {
+      "type": "string",
+      "maxLength": 400000,
+      "minLength": 1,
+      "title": "Text"
+     }
+    },
+    "type": "object",
+    "required": [
+     "title",
+     "text"
+    ],
+    "title": "PinIn"
    },
    "quant_agent__api__routes_lab__PlanIn": {
     "properties": {
@@ -37061,6 +41763,145 @@
     },
     "type": "object",
     "title": "PromoteIn"
+   },
+   "quant_agent__api__routes_workflows__CompareIn": {
+    "properties": {
+     "run_ids": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array",
+      "maxItems": 8,
+      "minItems": 1,
+      "title": "Run Ids"
+     }
+    },
+    "type": "object",
+    "required": [
+     "run_ids"
+    ],
+    "title": "CompareIn"
+   },
+   "quant_agent__api__routes_workflows__GroupIn": {
+    "properties": {
+     "workflow": {
+      "additionalProperties": true,
+      "type": "object",
+      "title": "Workflow"
+     },
+     "selected": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array",
+      "title": "Selected"
+     },
+     "kind": {
+      "type": "string",
+      "title": "Kind",
+      "default": "user.subflow"
+     },
+     "title": {
+      "type": "string",
+      "title": "Title",
+      "default": "复用子流程"
+     },
+     "node_id": {
+      "type": "string",
+      "title": "Node Id",
+      "default": ""
+     },
+     "exposed": {
+      "items": {
+       "additionalProperties": true,
+       "type": "object"
+      },
+      "type": "array",
+      "maxItems": 100,
+      "title": "Exposed"
+     }
+    },
+    "type": "object",
+    "required": [
+     "workflow"
+    ],
+    "title": "GroupIn"
+   },
+   "quant_agent__api__routes_workflows__PinIn": {
+    "properties": {
+     "hash": {
+      "type": "string",
+      "title": "Hash"
+     },
+     "run_id": {
+      "type": "string",
+      "title": "Run Id"
+     },
+     "workflow_id": {
+      "type": "string",
+      "title": "Workflow Id"
+     },
+     "node_id": {
+      "type": "string",
+      "title": "Node Id"
+     },
+     "port": {
+      "type": "string",
+      "title": "Port"
+     },
+     "title": {
+      "type": "string",
+      "maxLength": 200,
+      "title": "Title",
+      "default": ""
+     },
+     "type": {
+      "type": "string",
+      "maxLength": 40,
+      "title": "Type",
+      "default": ""
+     },
+     "note": {
+      "type": "string",
+      "maxLength": 2000,
+      "title": "Note",
+      "default": ""
+     }
+    },
+    "type": "object",
+    "required": [
+     "hash",
+     "run_id",
+     "workflow_id",
+     "node_id",
+     "port"
+    ],
+    "title": "PinIn"
+   },
+   "quant_agent__api__routes_workflows__SaveIn": {
+    "properties": {
+     "workflow": {
+      "additionalProperties": true,
+      "type": "object",
+      "title": "Workflow"
+     },
+     "expected_revision": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Expected Revision"
+     }
+    },
+    "type": "object",
+    "required": [
+     "workflow"
+    ],
+    "title": "SaveIn"
    },
    "quant_agent__api__schemas__CompareIn": {
     "properties": {

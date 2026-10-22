@@ -1,0 +1,501 @@
+/* 设置 · 本地项目 / 研究执行环境（内嵌面板）
+ * 这些样式只作用于 .local-project 内部：设置框架的左侧导航、页头和关闭按钮
+ * 由 SettingsShell 提供。颜色全部走 styles.css 的设计 token，深色主题自动适配。
+ */
+
+.local-project {
+  --lp-pass: #2c7a5b;
+  --lp-pass-soft: #e9f4ee;
+  --lp-pass-line: #c3e0d0;
+  min-width: 0;
+  display: grid;
+  gap: 16px;
+  color: var(--ink-2);
+  font-size: 13px;
+}
+
+:root[data-theme="dark"] .local-project {
+  --lp-pass: #63cb9b;
+  --lp-pass-soft: #143025;
+  --lp-pass-line: #2b5541;
+}
+
+.local-project * { box-sizing: border-box; }
+/* 全局 input 规则把 [hidden] 的 display:none 覆盖掉了；文件选择器必须真正隐藏。 */
+.local-project input[hidden] { display: none !important; }
+.local-project .hint { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.local-project input:not([type="checkbox"]),
+.local-project select { min-width: 0; max-width: 100%; }
+
+/* ---------- 栅格与卡片 ---------- */
+.lp-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
+  gap: 16px;
+  align-items: start;
+  min-width: 0;
+}
+
+.lp-stack { display: grid; gap: 16px; min-width: 0; }
+.lp-stack.tight { gap: 12px; }
+
+.lp-card {
+  min-width: 0;
+  padding: 18px 20px 20px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--sheet);
+}
+
+.lp-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  margin-bottom: 4px;
+}
+.lp-card-head h3 { margin: 0; font-size: 15px; font-weight: 600; color: var(--ink); letter-spacing: -.1px; }
+.lp-card-actions { display: flex; align-items: center; gap: 8px; flex: none; }
+.lp-card-head + .lp-card-sub { margin: 2px 0 12px; }
+.lp-card-head + *:not(.lp-card-sub) { margin-top: 12px; }
+.lp-card-sub { margin: 2px 0 12px; color: var(--muted); font-size: 12.5px; line-height: 1.6; }
+
+/* ---------- 区块 / 表单 ---------- */
+.lp-block { display: grid; gap: 10px; min-width: 0; }
+.lp-block + .lp-block { padding-top: 14px; margin-top: 2px; border-top: 1px solid var(--line-2); }
+/* 并排的两个块各自是栅格列，不要再画横向分隔线、也不要错位。 */
+.lp-grid > .lp-block + .lp-block { padding-top: 0; margin-top: 0; border-top: 0; }
+.lp-block-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+.lp-block-head b { font-size: 13px; font-weight: 600; color: var(--ink); }
+
+.lp-field { display: grid; gap: 6px; min-width: 0; font-size: 12.5px; color: var(--ink-2); }
+.lp-field > span { font-weight: 500; color: var(--ink); }
+.lp-field input:not([type="checkbox"]), .lp-field select { width: 100%; min-width: 0; }
+.lp-field small { color: var(--faint); font-size: 11.5px; line-height: 1.55; overflow-wrap: anywhere; }
+
+.lp-inline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.lp-inline > input:not([type="checkbox"]) { flex: 1 1 220px; min-width: 0; }
+.lp-inline > select { flex: 1 1 220px; min-width: 0; }
+.lp-inline-center { justify-content: center; }
+.lp-mini-field { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); white-space: nowrap; }
+.lp-mini-field input { width: 120px; }
+.lp-checkline { display: inline-flex; align-items: center; gap: 8px; min-height: 28px; font-size: 13px; color: var(--ink-2); cursor: pointer; }
+.lp-checkline input { width: auto; margin: 0; }
+
+/* ---------- 项目信息 ---------- */
+.lp-identity {
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--line-2);
+  border-radius: 10px;
+  background: var(--sunken);
+}
+.lp-identity-main { display: grid; gap: 2px; min-width: 0; }
+.lp-identity-main b { color: var(--ink); font-size: 14.5px; overflow-wrap: anywhere; }
+.lp-identity-main small { color: var(--faint); font-size: 11.5px; }
+
+.lp-path-line { display: grid; gap: 4px; min-width: 0; }
+.lp-path-line > span { color: var(--faint); font-size: 11.5px; }
+.lp-path {
+  display: block;
+  max-width: 100%;
+  margin: 0;
+  padding: 7px 10px;
+  border: 1px solid var(--line-2);
+  border-radius: 8px;
+  background: var(--sunken);
+  color: var(--ink-2);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+.lp-code-inline {
+  padding: 1px 5px;
+  border: 1px solid var(--line-2);
+  border-radius: 4px;
+  background: var(--sunken);
+  font-family: var(--mono);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+
+/* ---------- 指标 / 徽标 ---------- */
+.lp-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; }
+.lp-stats.tight { gap: 8px; }
+.lp-stats.resource { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+.lp-stat {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 11px 12px;
+  border: 1px solid var(--line-2);
+  border-radius: 10px;
+  background: var(--sunken);
+}
+.lp-stat small { color: var(--faint); font-size: 11px; }
+.lp-stat b { color: var(--ink); font-family: var(--num); font-size: 18px; font-weight: 600; line-height: 1.2; overflow-wrap: anywhere; }
+.lp-stat span { color: var(--muted); font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
+
+.lp-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  padding: 1px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--sunken);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 18px;
+  white-space: nowrap;
+}
+.lp-pill.ok { color: var(--lp-pass); background: var(--lp-pass-soft); border-color: var(--lp-pass-line); }
+.lp-pill.warn { color: var(--amber); background: var(--amber-soft); border-color: var(--amber-line); }
+.lp-pill.fail { color: var(--danger); background: var(--danger-soft); border-color: var(--danger-line); }
+
+/* ---------- 环境 ---------- */
+.lp-env-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--line-2);
+  border-radius: 10px;
+  background: var(--sunken);
+}
+.lp-env-status > div { display: grid; gap: 2px; min-width: 0; flex: 1; }
+.lp-env-status b { color: var(--ink); font-size: 13.5px; }
+.lp-env-status small { color: var(--muted); font-size: 11.5px; line-height: 1.5; }
+.lp-env-status .lp-pill { margin-left: auto; }
+.lp-status-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--faint); flex: none; }
+.lp-status-dot.ok { background: var(--lp-pass); box-shadow: 0 0 0 3px var(--lp-pass-soft); }
+.lp-status-dot.warn { background: var(--amber); box-shadow: 0 0 0 3px var(--amber-soft); }
+
+.lp-checks { display: flex; flex-wrap: wrap; gap: 6px; }
+.lp-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--sheet);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+.lp-check.ok { color: var(--lp-pass); border-color: var(--lp-pass-line); background: var(--lp-pass-soft); }
+.lp-check.fail { color: var(--danger); border-color: var(--danger-line); background: var(--danger-soft); }
+
+.lp-envs { display: grid; gap: 6px; max-height: 240px; overflow: auto; padding-right: 2px; }
+.lp-env-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  padding: 7px 10px;
+  border: 1px solid var(--line-2);
+  border-radius: 8px;
+  background: var(--canvas);
+  color: var(--ink-2);
+  text-align: left;
+  cursor: pointer;
+}
+.lp-env-row:hover:not(:disabled) { border-color: var(--accent-line); background: var(--hover); }
+.lp-env-row.active { border-color: var(--accent); background: var(--accent-soft); }
+.lp-env-row:disabled { opacity: .62; cursor: not-allowed; }
+.lp-env-path { flex: 1; min-width: 0; font-family: var(--mono); font-size: 11.5px; overflow-wrap: anywhere; word-break: break-all; }
+
+/* ---------- 文件导入 ---------- */
+.lp-drop {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  padding: 18px 16px;
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+  background: var(--sunken);
+  text-align: center;
+  transition: border-color .15s ease, background .15s ease;
+}
+.lp-drop.dragging { border-color: var(--accent); background: var(--accent-soft); }
+.lp-drop-icon {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--sheet);
+  color: var(--accent);
+  font-size: 18px;
+  line-height: 1;
+}
+.lp-drop b { color: var(--ink); font-size: 13.5px; }
+.lp-drop p { margin: 0; color: var(--muted); font-size: 11.5px; line-height: 1.5; }
+.lp-drop .lp-inline { margin-top: 4px; }
+
+.lp-browser { display: grid; gap: 8px; min-width: 0; }
+.lp-browser-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.lp-browser-title { flex: none; color: var(--ink); font-size: 13px; font-weight: 600; }
+.lp-browser-path {
+  flex: 1 1 220px;
+  min-width: 0;
+  padding: 4px 8px;
+  border: 1px solid var(--line-2);
+  border-radius: 6px;
+  background: var(--sunken);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+.lp-filelist {
+  display: grid;
+  gap: 1px;
+  max-height: 280px;
+  overflow: auto;
+  padding: 4px;
+  border: 1px solid var(--line-2);
+  border-radius: 10px;
+  background: var(--canvas);
+}
+.lp-file {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  min-width: 0;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ink-2);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.lp-file:hover { background: var(--hover); }
+.lp-file.active { background: var(--accent-soft); color: var(--ink); }
+.lp-file-name { flex: 1; min-width: 0; overflow-wrap: anywhere; word-break: break-all; }
+.lp-file small { flex: none; color: var(--faint); font-size: 11px; white-space: nowrap; }
+
+.lp-reference {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--accent-line);
+  border-radius: 10px;
+  background: var(--accent-soft);
+}
+.lp-reference .lp-block-head b { color: var(--accent); }
+.lp-reference small { color: var(--muted); font-size: 11.5px; line-height: 1.5; }
+.lp-reference input { flex: 1 1 220px; }
+
+.lp-perms { display: grid; gap: 6px; }
+.lp-perm {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--line-2);
+  border-radius: 8px;
+  background: var(--sheet);
+}
+.lp-perm .lp-path { flex: 1; min-width: 0; padding: 4px 8px; font-size: 11px; }
+
+/* ---------- 预览 ---------- */
+.lp-preview { display: grid; gap: 0; border: 1px solid var(--line); border-radius: 10px; background: var(--sheet); overflow: hidden; }
+.lp-preview-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line-2);
+  background: var(--sunken);
+}
+.lp-preview-head b { min-width: 0; color: var(--ink); font-size: 12.5px; overflow-wrap: anywhere; }
+.lp-preview-head small { flex: 1; color: var(--faint); font-size: 11px; }
+.lp-x {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  flex: none;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+.lp-x:hover { background: var(--hover); color: var(--ink); }
+.lp-table-wrap { max-width: 100%; max-height: 280px; overflow: auto; }
+.lp-preview-table { min-width: 100%; border-collapse: collapse; font-size: 11.5px; }
+.lp-preview-table th,
+.lp-preview-table td {
+  max-width: 260px;
+  padding: 5px 9px;
+  border-bottom: 1px solid var(--line-2);
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.lp-preview-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--canvas);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+.lp-preview-table td { color: var(--ink-2); font-family: var(--mono); }
+.lp-preview-table tbody tr:nth-child(even) { background: var(--sunken); }
+.lp-preview > .lp-pre { border: 0; border-radius: 0; }
+
+.lp-pre {
+  max-height: 280px;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line-2);
+  border-radius: 8px;
+  background: var(--sunken);
+  color: var(--ink-2);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  overflow: auto;
+}
+
+/* ---------- 折叠 / 任务 ---------- */
+.lp-more { border: 1px solid var(--line-2); border-radius: 10px; background: var(--canvas); overflow: hidden; }
+.lp-more > summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  list-style: none;
+}
+.lp-more > summary::-webkit-details-marker { display: none; }
+.lp-more > summary::before { content: "▸"; font-size: 10px; transition: transform .15s ease; }
+.lp-more[open] > summary::before { transform: rotate(90deg); }
+.lp-more[open] > summary { border-bottom: 1px solid var(--line-2); color: var(--ink-2); }
+.lp-more > *:not(summary) { margin: 10px 12px; }
+.lp-more .lp-pre { background: var(--sheet); }
+
+.lp-job {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  background: var(--sunken);
+}
+.lp-job.fail { border-left-color: var(--danger); background: var(--danger-soft); }
+.lp-job-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.lp-job-head b { color: var(--ink); font-size: 12.5px; }
+.lp-job p { margin: 0; }
+.lp-job .lp-more { background: var(--sheet); }
+
+.lp-list { display: grid; gap: 6px; min-width: 0; }
+.lp-list-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line-2);
+  border-radius: 9px;
+  background: var(--canvas);
+}
+.lp-list-main { display: grid; gap: 1px; flex: 1; min-width: 0; }
+.lp-list-main b { color: var(--ink); font-size: 12.5px; font-weight: 500; overflow-wrap: anywhere; }
+.lp-list-main small { color: var(--faint); font-size: 11px; overflow-wrap: anywhere; word-break: break-all; }
+.lp-list-row .button { flex: none; }
+
+/* ---------- 状态 / 空状态 ---------- */
+.lp-alert {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--danger-line);
+  border-radius: 10px;
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+.lp-alert > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.lp-alert .lp-x { color: var(--danger); }
+/* 人话错误块：标题 / 说明 / 修复动作竖排，技术详情折叠在下面。 */
+.lp-alert-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; overflow-wrap: anywhere; }
+.lp-alert-main > small { color: var(--danger); opacity: .85; }
+.lp-alert-main .lp-more { margin-top: 6px; border-color: var(--danger-line); background: var(--sheet); }
+.lp-alert-main .lp-more > summary { color: var(--ink-2); }
+.lp-busy { margin: 0; padding: 0 2px; color: var(--muted); font-size: 12px; }
+.lp-loading { margin: 0; color: var(--faint); font-size: 12px; }
+.lp-empty {
+  margin: 0;
+  padding: 14px 10px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  color: var(--faint);
+  font-size: 12px;
+  line-height: 1.6;
+  text-align: center;
+}
+.lp-err { margin: 0; color: var(--danger); font-size: 12px; overflow-wrap: anywhere; }
+
+.lp-locked { display: grid; gap: 14px; max-width: 720px; }
+.lp-locked p { margin: 0; color: var(--ink-2); line-height: 1.75; }
+
+/* ---------- 窄屏 ---------- */
+@media (max-width: 1000px) {
+  .lp-stats.resource { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 900px) {
+  .lp-card { padding: 16px; }
+}
+
+@media (max-width: 720px) {
+  .local-project { gap: 12px; }
+  .lp-card { padding: 14px; border-radius: 10px; }
+  .lp-card-head { flex-wrap: wrap; }
+  .lp-card-actions { width: 100%; justify-content: flex-start; }
+  .lp-inline > input:not([type="checkbox"]),
+  .lp-inline > select { flex-basis: 100%; }
+  .lp-inline .lp-mini-field { flex: 1 1 100%; }
+  .lp-drop { padding: 14px 12px; }
+  .lp-filelist { max-height: 240px; }
+  .lp-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .lp-env-status { flex-wrap: wrap; }
+  .lp-env-status .lp-pill { margin-left: 0; }
+  .lp-list-row { flex-wrap: wrap; }
+  .lp-list-row .button { margin-left: auto; }
+  .lp-preview-table th,
+  .lp-preview-table td { max-width: 180px; }
+}

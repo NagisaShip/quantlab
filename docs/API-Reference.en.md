@@ -1,4 +1,4 @@
-# QuantLab v0.1.0-preview.1 · API Reference
+# QuantLab v0.1.0-preview.2 · API Reference
 
 > The machine-readable contract is [`openapi.json`](openapi.json). The complete operation-by-operation reference is generated in Chinese at [`API参考.md`](API参考.md). A running instance exposes interactive Swagger UI at `/docs` and ReDoc at `/redoc`.
 

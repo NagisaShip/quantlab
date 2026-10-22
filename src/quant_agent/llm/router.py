@@ -305,6 +305,9 @@ class ModelRouter:
                                 }
                             )
                         self.sleep(delay)
+        if not errors:
+            # 一个候选都没有（服务商 / 路由没配）：不要抛「所有模型均失败:」后面跟空行这种谜语
+            raise LLMError("没有可用的模型：请在 设置 → 模型 里添加服务商，并在 路由 里选择默认模型")
         raise LLMError("所有模型均失败:\n" + "\n".join(errors))
 
     #: 单次重试最长等待；服务端要求等更久（Retry-After）时不等，直接换下一个模型
@@ -371,6 +374,25 @@ class ModelRouter:
     def current_target(self, role: str = "default") -> str:
         primary = self.config.routing.get(role) or self.config.routing.get("default") or ""
         return primary if isinstance(primary, str) else ""
+
+    def default_target(self) -> str:
+        """默认模型：当前模型清单里顺序第一个（优先已配置密钥的），没有就返回清单第一个。
+
+        AI 研究室等“没显式选模型”的入口用它作为默认，而不是跟随会被改动的全局路由；
+        这样设置页里的模型顺序就是默认顺序，行为可预期。完全没有模型时返回空串。
+        """
+        cfg = self.config
+        fallback = ""
+        for name, pc in cfg.providers.items():
+            for model in pc.models:
+                if not model:
+                    continue
+                target = f"{name}/{model}"
+                if not fallback:
+                    fallback = target
+                if self._has_credentials(name, cfg):
+                    return target
+        return fallback
 
     def available_models(self) -> list[dict[str, Any]]:
         """给前端模型下拉框用的清单。"""

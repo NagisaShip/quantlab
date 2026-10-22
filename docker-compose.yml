@@ -1,4 +1,4 @@
-# QuantLab v0.1.0-preview.1 —— PostgreSQL + Redis + API（控制面）+ Worker（执行面）
+# QuantLab v0.1.0-preview.2 —— PostgreSQL + Redis + API（控制面）+ Worker（执行面）
 #
 #   1) 生成凭证主密钥：  mkdir -p secrets && docker run --rm python:3.13-slim \
 #        sh -c "pip -q install cryptography && python -c 'from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())'" > secrets/secret.key
@@ -11,7 +11,7 @@ name: quant-agent
 
 x-app: &app
   build: .
-  image: quantlab:0.1.0-preview.1
+  image: quantlab:0.1.0-preview.2
   restart: unless-stopped
   env_file: .env
   environment:

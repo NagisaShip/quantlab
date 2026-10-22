@@ -374,3 +374,24 @@ pre, code, .code-editor, .code-view, .cm-editor, .qb-math-src,
   .backtest-detail .editor-toolbar { gap: 8px; }
   .backtest-detail .toolbar-title { flex: 1 1 100%; white-space: normal; }
 }
+
+/* ---------- 品牌按钮 / 本地模式侧栏 / 设置页脚 ---------- */
+.side-brand { background: none; border: 0; padding: 0; font: inherit; color: inherit; text-align: left; cursor: pointer; }
+.side-brand:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 8px; }
+.topbar-settings { color: var(--muted); }
+.topbar-settings:hover { color: var(--accent); background: var(--hover); }
+.acct-local { padding: 12px 14px 16px; border-top: 1px solid var(--line-2, var(--line)); display: grid; gap: 10px; }
+.acct-local-head { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.acct-local-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); flex: none; }
+.acct-local-head > div { display: grid; min-width: 0; gap: 2px; }
+.acct-local-head b { font-size: 12.5px; font-weight: 600; color: var(--ink); }
+.acct-local-head small { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acct-local-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.acct-local-actions .button { height: 30px; padding: 0 10px; font-size: 12px; display: inline-flex; align-items: center; gap: 5px; }
+.set-nav-foot { margin-top: 18px; padding: 14px 8px 4px; border-top: 1px solid var(--line-2, var(--line)); display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.set-nav-foot small { font-size: 10.5px; color: var(--faint, var(--muted)); line-height: 1.5; }
+.set-about { border: 0; background: none; padding: 0; font: inherit; font-size: 11.5px; color: var(--muted); cursor: pointer; }
+.set-about:hover { color: var(--accent); text-decoration: underline; }
+@media (max-width: 900px) {
+  .set-nav-foot { display: none; }
+}

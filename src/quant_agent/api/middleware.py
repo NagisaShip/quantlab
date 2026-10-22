@@ -97,6 +97,10 @@ class PlatformMiddleware:
         token = context.set_context(ctx)
         try:
             path = scope.get("path", "")
+            from .deps import get_services
+
+            if scope["type"] == "http" and get_services().local is not None:
+                return await self._local(scope, receive, send, headers, ctx)
             if (
                 scope["type"] == "websocket"
                 or not path.startswith("/api/")
@@ -162,7 +166,19 @@ class PlatformMiddleware:
             )
 
         # ---------- 幂等 ----------
-        if method in UNSAFE and ctx.workspace_id and not path.startswith("/api/auth/"):
+        streaming_upload = method == "POST" and path == "/api/workflows/files"
+        if streaming_upload and headers.get("idempotency-key"):
+            return await _send_json(
+                send,
+                400,
+                error_body(
+                    ErrorCode.INVALID_PARAMETER,
+                    "流式文件导入不支持Idempotency-Key，请使用返回的资源名和sha256",
+                    trace_id,
+                ),
+                trace_id,
+            )
+        if method in UNSAFE and ctx.workspace_id and not path.startswith("/api/auth/") and not streaming_upload:
             body, receive = await _read_body(receive)
             if body is None:
                 return await _send_json(
@@ -180,6 +196,73 @@ class PlatformMiddleware:
                 return await self._idempotent(scope, receive, send, ctx, key[:128], method, path, body)
 
         return await self.app(scope, receive, _with_trace(send, trace_id))
+
+    async def _local(self, scope, receive, send, headers, ctx):
+        import ipaddress
+        from urllib.parse import urlsplit
+
+        from ..local.profile import DISABLED_PREFIXES
+        from .deps import get_services
+
+        s = get_services()
+        profile = s.local
+        path = scope.get("path", "")
+        method = scope.get("method", "GET")
+        client = (scope.get("client") or ("", 0))[0]
+        host = urlsplit("http://" + headers.get("host", "")).hostname
+        try:
+            loopback = ipaddress.ip_address(client).is_loopback
+        except ValueError:
+            loopback = client == "testclient"
+        if not loopback or host not in ("127.0.0.1", "localhost", "::1", "testserver"):
+            return await _send_json(
+                send, 403, error_body(ErrorCode.PERMISSION_DENIED, "本地模式只接受回环访问", ctx.trace_id), ctx.trace_id
+            )
+        origin = headers.get("origin", "")
+        if origin and origin.rstrip("/") not in (
+            "http://" + headers.get("host", ""),
+            "https://" + headers.get("host", ""),
+        ):
+            return await _send_json(
+                send, 403, error_body(ErrorCode.PERMISSION_DENIED, "本地接口仅允许同源请求", ctx.trace_id), ctx.trace_id
+            )
+        if method in UNSAFE and not headers.get("x-requested-with"):
+            return await _send_json(
+                send,
+                403,
+                error_body(ErrorCode.PERMISSION_DENIED, "缺少本地写请求标识X-Requested-With", ctx.trace_id),
+                ctx.trace_id,
+            )
+        plugin_settings = path == "/api/auth/research-plugins" or path.startswith("/api/auth/research-plugins/")
+        blocked = path.startswith(DISABLED_PREFIXES) or (
+            path.startswith("/api/auth/") and path not in ("/api/auth/me", "/api/auth/status") and not plugin_settings
+        )
+        blocked = blocked or (path.startswith("/api/workspaces") and method in UNSAFE)
+        if blocked:
+            return await _send_json(
+                send, 404, error_body(ErrorCode.NOT_FOUND, "该账号/协作功能在本地模式停用", ctx.trace_id), ctx.trace_id
+            )
+        ctx.user_id = profile.manifest["user_id"]
+        ctx.user_name = "本地研究者"
+        ctx.is_admin = True
+        ctx.workspace_id = profile.manifest["workspace_id"]
+        ctx.role = "admin"
+        requested = headers.get("x-workspace-id") or _query_param(scope, "ws")
+        if requested and requested != ctx.workspace_id and path != "/api/auth/me":
+            return await _send_json(
+                send,
+                403,
+                error_body(ErrorCode.PERMISSION_DENIED, "该工作区不属于当前本地项目", ctx.trace_id),
+                ctx.trace_id,
+            )
+        if path == "/api/auth/status":
+            return await _send_json(
+                send,
+                200,
+                {"mode": "local", "has_users": True, "registration_open": False, "authentication_required": False},
+                ctx.trace_id,
+            )
+        return await self.app(scope, receive, _with_trace(send, ctx.trace_id))
 
     async def _idempotent(self, scope, receive, send, ctx, key, method, path, body):
         from .deps import get_services

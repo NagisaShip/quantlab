@@ -74,6 +74,26 @@ export const APPROVAL_CATEGORIES: { id: ApprovalCategory; label: string; hint: s
 /** 因子假设卡 */
 export interface Hypothesis { category?: string; rationale?: string; direction?: string; falsify?: string }
 
+/** 统一会话类型：五个研究室 + 从问答/工作流升级的研究或流程会话。 */
+export type SessionKind = LabKind | 'research' | 'workflow' | 'ask'
+/** 会话来源：普通新建、从临时问答升级、从工作流升级。 */
+export type SessionOrigin = 'created' | 'ask_upgrade' | 'workflow_escalation'
+
+/**
+ * 列表/页头里的统一会话类型：
+ * - 完整流程 → 工作流；调研报告 → 研究；
+ * - 因子 / 模型 / 组合 / 执行 → 各自研究室；
+ * - 其余（含问答升级后的 research 会话）按 kind，未知按策略。
+ */
+export function sessionKindOf(p: { kind?: string; workflow?: string }): SessionKind {
+  if (p.workflow === 'pipeline') return 'workflow'
+  if (p.workflow === 'report') return 'research'
+  const k = p.kind
+  if (k === 'factor' || k === 'model' || k === 'portfolio' || k === 'execution') return k
+  if (k === 'research' || k === 'workflow' || k === 'ask') return k
+  return 'strategy'
+}
+
 export interface LabProject {
   id: string
   kind?: LabKind
@@ -91,6 +111,10 @@ export interface LabProject {
   library_id?: string | null
   title: string
   idea: string
+  /** 会话来源：从临时问答升级的会话带 origin=ask_upgrade，页头显示「从问答升级」。 */
+  origin?: SessionOrigin
+  /** 创建来源引用（工作流/研究身份），由服务端写入，前端只读。 */
+  context?: Record<string, unknown>
   securities: string[]
   timeframe: string
   model: string
@@ -141,6 +165,36 @@ export interface LabProjectBrief extends Omit<LabProject, 'versions' | 'code' | 
   versions_count: number
   metrics: (Metrics & Partial<FactorSummary>) | null
   passed: boolean | null
+}
+
+/** 统一上下文包（GET /api/lab/projects/{pid}/context-pack）：本轮会进入模型的只读投影。 */
+export interface ContextPackItem {
+  key: string
+  title: string
+  tokens: number
+  fixed?: boolean
+  /** 项目规则条目的全文；其余条目只有标题与 token。 */
+  text?: string
+  /** 来源引用条目的汇总（只有标题与 ID）。 */
+  summary?: string
+  pin_id?: string
+  kind?: string
+}
+
+export interface ContextPack {
+  format: string
+  project_id: string
+  kind: string
+  title: string
+  instructions: string
+  context: Record<string, unknown>
+  sources: string
+  items: ContextPackItem[]
+  total: number
+  budget: number
+  history_budget: number
+  auto_compact_tokens: number
+  model: string
 }
 
 export type PlanStepStatus = 'pending' | 'doing' | 'done' | 'skipped' | 'failed'
@@ -237,6 +291,8 @@ export const lab = {
   create: (p: Partial<Omit<LabProject, 'goals' | 'pins' | 'versions'>> & { goals?: Partial<Goals>; template_id?: string; pins?: { kind?: string; title: string; text: string }[] }) =>
     post<LabView>('/api/lab/projects', p),
   view: (id: string, after = 0, since = 0) => get<LabView>(`/api/lab/projects/${id}?after=${after}&since=${since}`),
+  /** 统一上下文包：系统规则、项目规则、来源引用与预算（只读，不改变提示词）。 */
+  contextPack: (id: string) => get<ContextPack>(`/api/lab/projects/${encodeURIComponent(id)}/context-pack`),
   update: (id: string, p: Partial<Omit<LabProject, 'goals'>> & { goals?: Partial<Goals> }) => patch<{ project: LabProject }>(`/api/lab/projects/${id}`, p),
   /** cascade：连同它的全部分叉一起删除 */
   remove: (id: string, cascade = false) => del<{ ok: boolean; deleted?: string[] }>(`/api/lab/projects/${id}${cascade ? '?cascade=true' : ''}`),

@@ -6,8 +6,9 @@ import { useState } from 'react'
 import { LAB_PREF_KEYS, type Effort, type Permission } from '../../apiLab'
 import { StepSlider } from '../../components/StepSlider'
 import { getTheme, getUpDown, setTheme, setUpDown, store, type ThemePref, type UpDown } from '../../components/prefs'
+import { lang as uiLang, setLang } from '../../i18n'
 import { RESEARCH_TYPES, type ResearchType } from '../lab/domains'
-import { MarketSwitcher } from '../lab/research'
+import { WatchSettings, storedWatchRange, watchRange, WATCH_RANGE_KEY } from '../home/WatchSettings'
 import type { PageProps } from '../types'
 
 const PERMISSIONS: { id: Permission; label: string; hint: string }[] = [
@@ -35,7 +36,7 @@ export default function LabPrefsTab({ notify }: Pick<PageProps, 'notify'>) {
   const [theme, setThemeState] = useState<ThemePref>(getTheme())
   const [updown, setUpDownState] = useState<UpDown>(getUpDown())
   const [watch, setWatch] = useState<string[]>(() => { try { const v = JSON.parse(store.get('qa.home.watch', '[]')); return Array.isArray(v) && v.length ? v : ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT'] } catch { return ['BTC/USDT'] } })
-  const [watchTf, setWatchTf] = useState(() => store.get('qa.home.watchTf', '1h'))
+  const [watchRangeKey, setWatchRangeKey] = useState(() => storedWatchRange((k, fallback) => store.get(k, fallback)))
   const saved = (msg: string) => notify(`已保存：${msg}`)
 
   return (
@@ -86,7 +87,7 @@ export default function LabPrefsTab({ notify }: Pick<PageProps, 'notify'>) {
         <div className="set-section-head"><h3>外观</h3></div>
         <div className="set-row">
           <div><b>涨跌配色</b><small>影响行情、收益与 Bot 的看涨 / 看跌颜色</small></div>
-          <div className="cmp-seg" role="group" aria-label="涨跌配色" style={{ gridTemplateColumns: 'repeat(2, 1fr)', width: 200 }}>
+          <div className="cmp-seg" role="group" aria-label="涨跌配色" style={{ gridTemplateColumns: 'repeat(2, 1fr)', width: 280 }}>
             {(['red', 'green'] as UpDown[]).map((v) => (
               <button key={v} type="button" className={updown === v ? 'on' : ''} aria-pressed={updown === v}
                 onClick={() => { setUpDown(v); setUpDownState(v); saved(v === 'red' ? '红涨绿跌' : '绿涨红跌') }}>{v === 'red' ? '红涨绿跌' : '绿涨红跌'}</button>
@@ -106,11 +107,24 @@ export default function LabPrefsTab({ notify }: Pick<PageProps, 'notify'>) {
       </section>
 
       <section className="set-section">
+        <div className="set-section-head"><h3>界面语言</h3></div>
+        <div className="set-row">
+          <div><b>界面语言</b><small>切换后整页刷新并立即生效；中文是源语言，英文覆盖设置、研究流程与常用面板</small></div>
+          <div className="cmp-seg" role="group" aria-label="界面语言" data-no-i18n style={{ gridTemplateColumns: 'repeat(2, 1fr)', width: 200 }}>
+            <button type="button" className={uiLang === 'zh' ? 'on' : ''} aria-pressed={uiLang === 'zh'}
+              onClick={() => { if (uiLang !== 'zh') setLang('zh') }}>简体中文</button>
+            <button type="button" className={uiLang === 'en' ? 'on' : ''} aria-pressed={uiLang === 'en'}
+              onClick={() => { if (uiLang !== 'en') setLang('en') }}>English</button>
+          </div>
+        </div>
+      </section>
+
+      <section className="set-section">
         <div className="set-section-head"><h3>首页关注列表</h3></div>
         <div className="set-row">
-          <div><b>关注的标的与周期</b><small>{watch.join('、')} · {watchTf}。首页右侧显示，没有真实行情的标的会提示同步</small></div>
-          <MarketSwitcher symbols={watch} timeframe={watchTf} multi notify={notify}
-            onChange={(s, t) => { setWatch(s); setWatchTf(t); store.set('qa.home.watch', JSON.stringify(s)); store.set('qa.home.watchTf', t); saved('首页关注列表') }} />
+          <div><b>关注的标的与时间区间</b><small>{watch.join('、')} · {watchRange(watchRangeKey).label}。首页右侧按这个区间画折线、算涨跌幅；没有真实行情的标的会提示同步</small></div>
+          <WatchSettings symbols={watch} range={watchRangeKey} notify={notify}
+            onChange={(s, r) => { setWatch(s); setWatchRangeKey(r); store.set('qa.home.watch', JSON.stringify(s)); store.set(WATCH_RANGE_KEY, r); saved('首页关注列表') }} />
         </div>
       </section>
       <DirectMarketRow saved={saved} />

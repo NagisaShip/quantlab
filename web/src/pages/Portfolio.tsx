@@ -17,6 +17,7 @@ import { EmptyState, Field, Heading, Loading, Panel, Segments, Tag } from '../co
 import type { PageProps } from './types'
 import { appConfirm } from '../components/dialog'
 import { RecordPinButton } from '../components/RecordPin'
+import { READ_ONLY_REASON_ID, ReadOnlyRouteGate, useReadOnlyCapability } from '../features/workflows/ReadOnlyCapability'
 
 type Tab = 'list' | 'design' | 'risk' | 'runs'
 const TABS: { value: Tab; label: string }[] = [
@@ -28,20 +29,28 @@ const when = (ms?: number | null) => (ms ? new Date(ms * (ms < 1e11 ? 1000 : 1))
 export default function PortfolioPage({ arg, onNavigate, notify }: PageProps & { arg?: string }) {
   const [meta, setMeta] = useState<PortfolioMeta | null>(null)
   useEffect(() => { portfolio.meta().then(setMeta).catch((e: Error) => notify(e.message, true)) }, [notify])
+  const ro = useReadOnlyCapability('portfolio')
+  const readOnly = ro?.readOnly ?? false
   const runId = arg?.startsWith('run/') ? arg.slice(4) : null
   const tab: Tab | null = !arg ? 'list' : (['design', 'risk', 'runs'] as string[]).includes(arg) ? (arg as Tab) : null
   const optLabel = (id: string) => meta?.optimizers.find((o) => o.id === id)?.label ?? id
   return (
     <>
       <Heading title="组合与风控" description="把预期收益和风险变成权重，并把风控规则写进方案。每个方案都做滚动组合回测，和等权比较，附带风险分解、压力测试与有效前沿。"
-        actions={<button className="button primary" onClick={() => openInLab({ idea: '', kind: 'portfolio' })}>✦ 让 AI 设计一个组合</button>} />
+        actions={<button className="button primary" disabled={readOnly} title={readOnly ? ro?.reason : undefined}
+          aria-describedby={readOnly ? READ_ONLY_REASON_ID : undefined}
+          onClick={() => { if (!readOnly) openInLab({ idea: '', kind: 'portfolio' }) }}>✦ 让 AI 设计一个组合</button>} />
       <div className="fx-tabs">
         <Segments value={tab ?? (runId ? 'runs' : 'list')} options={TABS} onChange={(t) => onNavigate(t === 'list' ? 'portfolio' : `portfolio/${t}`)} ariaLabel="组合与风控视图" />
         {meta && <span className="hint">累计试过 {meta.trials} 种配置</span>}
       </div>
       {tab === 'list' && <SchemeList meta={meta} optLabel={optLabel} onOpen={(id) => onNavigate(`portfolio/${id}`)} notify={notify} />}
-      {tab === 'design' && <Designer meta={meta} notify={notify} onSaved={(id) => onNavigate(`portfolio/${id}`)} />}
-      {tab === 'risk' && <RiskCheckView notify={notify} />}
+      {tab === 'design' && (readOnly
+        ? <ReadOnlyRouteGate title="方案设计暂时不可用" historyLabel="组合方案" historyRoute="portfolio" onNavigate={onNavigate} />
+        : <Designer meta={meta} notify={notify} onSaved={(id) => onNavigate(`portfolio/${id}`)} />)}
+      {tab === 'risk' && (readOnly
+        ? <ReadOnlyRouteGate title="风险体检暂时不可用" historyLabel="组合方案" historyRoute="portfolio" onNavigate={onNavigate} />
+        : <RiskCheckView notify={notify} />)}
       {tab === 'runs' && <Runs optLabel={optLabel} onOpen={(id) => onNavigate(`portfolio/run/${id}`)} notify={notify} />}
       {runId && <RunDetail key={runId} id={runId} optLabel={optLabel} notify={notify} onSaved={(id) => onNavigate(`portfolio/${id}`)} />}
       {tab === null && !runId && arg && <SchemeDetail key={arg} id={arg} meta={meta} optLabel={optLabel} notify={notify} onDeleted={() => onNavigate('portfolio')} />}
@@ -97,6 +106,8 @@ function SchemeDetail({ id, meta, optLabel, notify, onDeleted }: { id: string; m
   const [s, setS] = useState<Scheme | null>(null)
   const [report, setReport] = useState<PortfolioReport | null>(null)
   const [missing, setMissing] = useState(false)
+  const ro = useReadOnlyCapability('portfolio')
+  const readOnly = ro?.readOnly ?? false
   useEffect(() => {
     portfolio.get(id).then((r) => { setS(r.scheme); portfolio.report(id).then((x) => setReport(x.report)).catch(() => undefined) }).catch(() => setMissing(true))
   }, [id])
@@ -110,14 +121,28 @@ function SchemeDetail({ id, meta, optLabel, notify, onDeleted }: { id: string; m
   return (
     <>
       <Panel title={s.name} actions={<>
-        <select value={s.status} aria-label="状态" onChange={async (e) => { try { setS((await portfolio.update(id, { status: e.target.value as SchemeStatus })).scheme) } catch (err) { notify((err as Error).message, true) } }}>
+        <select value={s.status} aria-label="状态" disabled={readOnly} title={readOnly ? ro?.reason : undefined}
+          aria-describedby={readOnly ? READ_ONLY_REASON_ID : undefined}
+          onChange={async (e) => {
+            if (readOnly) return
+            try { setS((await portfolio.update(id, { status: e.target.value as SchemeStatus })).scheme) } catch (err) { notify((err as Error).message, true) }
+          }}>
           {(Object.entries(statuses) as [SchemeStatus, string][]).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
         </select>
-        <button className="button small" onClick={() => toLab(`改进组合方案「${s.name}」：在不增加回撤的前提下提高夏普`)}>交给 AI 改进</button>
-        <button className="button small" onClick={() => toLab(`召集组合小组评审「${s.name}」：风险估计、约束、压力情景`)}>召集团队评审</button>
+        <button className="button small" disabled={readOnly} title={readOnly ? ro?.reason : undefined}
+          aria-describedby={readOnly ? READ_ONLY_REASON_ID : undefined}
+          onClick={() => { if (!readOnly) toLab(`改进组合方案「${s.name}」：在不增加回撤的前提下提高夏普`) }}>交给 AI 改进</button>
+        <button className="button small" disabled={readOnly} title={readOnly ? ro?.reason : undefined}
+          aria-describedby={readOnly ? READ_ONLY_REASON_ID : undefined}
+          onClick={() => { if (!readOnly) toLab(`召集组合小组评审「${s.name}」：风险估计、约束、压力情景`) }}>召集团队评审</button>
         <PythonCodeButton kind="portfolio" artifact={{ ...s.config, symbols: s.symbols, timeframe: s.timeframe }} name={s.name} />
         <RecordPinButton type="portfolio" id={s.id} pinned={s.pinned} notify={notify} />
-        <button className="button small danger" onClick={async () => { if (await appConfirm(`删除方案「${s.name}」？试验记录会保留。`)) { await portfolio.remove(id); onDeleted() } }}>删除</button>
+        <button className="button small danger" disabled={readOnly} title={readOnly ? ro?.reason : undefined}
+          aria-describedby={readOnly ? READ_ONLY_REASON_ID : undefined}
+          onClick={async () => {
+            if (readOnly) return
+            if (await appConfirm(`删除方案「${s.name}」？试验记录会保留。`)) { await portfolio.remove(id); onDeleted() }
+          }}>删除</button>
       </>}>
         <div className="fx-meta">
           <span>{optLabel(s.config.optimizer)} · {meta?.risk_models.find((r) => r.id === s.config.risk_model)?.label ?? s.config.risk_model} · {s.symbols.length} 个标的 · {s.timeframe}</span>
@@ -335,18 +360,25 @@ function RunDetail({ id, optLabel, notify, onSaved }: { id: string; optLabel: (i
   const [data, setData] = useState<{ run: PortfolioRun; report: PortfolioReport } | null>(null)
   const [missing, setMissing] = useState(false)
   const [name, setName] = useState('')
+  const ro = useReadOnlyCapability('portfolio')
+  const readOnly = ro?.readOnly ?? false
   useEffect(() => { portfolio.run(id).then(setData).catch(() => setMissing(true)) }, [id])
   if (missing) return <EmptyState glyph="☰" title="试验不存在" />
   if (!data) return <Loading label="正在打开试验" />
   const save = async (status: SchemeStatus) => {
+    if (readOnly) return
     try { const r = await portfolio.save({ run_id: id, name: name || undefined, status }); notify(`已存入方案库「${r.scheme.name}」`); onSaved(r.scheme.id) } catch (e) { notify((e as Error).message, true) }
   }
   return (
     <Panel title={optLabel(data.run.optimizer)} subtitle={`${when(data.run.created_at)} · ${data.run.symbols.length} 个标的 · ${data.run.timeframe}`} actions={<>
-      <input className="fx-search" placeholder="方案名称" value={name} onChange={(e) => setName(e.target.value)} aria-label="方案名称" />
+      <input className="fx-search" placeholder="方案名称" value={name} disabled={readOnly} title={readOnly ? ro?.reason : undefined}
+        aria-describedby={readOnly ? READ_ONLY_REASON_ID : undefined}
+        onChange={(e) => setName(e.target.value)} aria-label="方案名称" />
       <RecordPinButton type="portfolio_run" id={id} pinned={data.run.pinned} notify={notify} />
-      <button className="button small" onClick={() => save('candidate')}>存为候选</button>
-      <button className="button small primary" disabled={!data.report.admitted} onClick={() => save('active')}>启用</button>
+      <button className="button small" disabled={readOnly} title={readOnly ? ro?.reason : undefined}
+        aria-describedby={readOnly ? READ_ONLY_REASON_ID : undefined} onClick={() => save('candidate')}>存为候选</button>
+      <button className="button small primary" disabled={!data.report.admitted || readOnly} title={readOnly ? ro?.reason : undefined}
+        aria-describedby={readOnly ? READ_ONLY_REASON_ID : undefined} onClick={() => save('active')}>启用</button>
     </>}>
       {data.run.project_id && <div className="hint">来自 <a href={`#/lab/${data.run.project_id}`}>AI 研究室的项目</a></div>}
       <PortfolioFullReport report={data.report} />

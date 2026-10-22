@@ -39,6 +39,9 @@ const serverEnv: Record<string, string> = {
   QAGENT_BACKGROUND: '0',
   // 实时模拟：让 worker 的常驻驱动推进得快一点，但仍然是真实的 bar 收盘驱动。
   QAGENT_PAPER_TICK_SECONDS: process.env.QAGENT_PAPER_TICK_SECONDS || '2',
+  // Round 4 历史阅读用例需要在离线环境里用真实研究引擎生成报告（不是伪造结果）。
+  // 合成行情只是确定性的后端输入，报告仍由 factor/model/portfolio/execution 引擎计算。
+  QAGENT_ALLOW_SYNTHETIC: '1',
 }
 
 // 行情口径：不引入新开关。`MarketDataService.get_bars(source="auto")`（默认）会先试真实行情，

@@ -241,6 +241,12 @@ def _spawn_worker(slots: int):
 
 
 def cmd_serve(args) -> int:
+    if getattr(args, "local", False):
+        if args.host not in ("127.0.0.1", "localhost", "::1"):
+            raise SystemExit("本地模式必须绑定回环地址")
+        from .local.launcher import configure
+
+        configure(args.project or str(__import__("pathlib").Path.cwd()))
     import threading
 
     import uvicorn
@@ -355,6 +361,11 @@ def cmd_config(args) -> int:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="qagent", description="量化仿真平台 AI Agent CLI")
     sub = p.add_subparsers(dest="cmd", required=True)
+    desktop = sub.add_parser("desktop", help="启动本地研究桌面（文件夹项目、无账号界面）")
+    desktop.add_argument("--project", default="")
+    desktop.set_defaults(
+        func=lambda args: __import__("quant_agent.local.launcher", fromlist=["desktop"]).desktop(args.project or None)
+    )
 
     sub.add_parser("init").set_defaults(func=cmd_init)
 
@@ -401,6 +412,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("gen-key", help="生成凭证加密主密钥").set_defaults(func=cmd_gen_key)
 
     sv = sub.add_parser("serve")
+    sv.add_argument("--local", action="store_true", help="本地个人模式：无账号界面，仅回环访问")
+    sv.add_argument("--project", default="", help="本地模式的项目文件夹")
     sv.add_argument("--host", default="127.0.0.1")
     sv.add_argument("--port", type=int, default=8000)
     sv.add_argument(

@@ -24,6 +24,7 @@ from ..platform.sandbox_exec import bars_to_wire
 from ..platform.worker import ResidentDriver, TaskCtl, Worker
 from ..sdk.runtimes import RuntimeCost
 from ..store import Collections
+from ..workflows.service import handle_export, handle_workflow
 
 PAPER_TICK_SECONDS = float(os.environ.get("QAGENT_PAPER_TICK_SECONDS", "30"))
 
@@ -1335,6 +1336,8 @@ def handle_model_retrain(ctl: TaskCtl) -> dict[str, Any]:
 
 
 BATCH = {
+    "workflow": handle_workflow,
+    "workflow_export": handle_export,
     "backtest": handle_backtest,
     "optimize": handle_optimize,
     "template_backtest": handle_template_backtest,

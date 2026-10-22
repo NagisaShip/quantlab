@@ -27,7 +27,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from ..llm.base import LLMError, Message
+from ..llm.base import LLMError, Message, explain_error
 from ..llm.router import ModelRouter
 from ..sdk import check_source, declared_params, load_source, run_backtest
 from ..strategies.params_util import ParamsError, rewrite_params
@@ -230,6 +230,7 @@ class CopilotResult:
     name: str = ""
     thinking: str = ""  # 模型提供的思考摘要（问 AI 面板折叠显示）
     tool_calls: list[dict[str, Any]] = field(default_factory=list)  # 本轮调用的平台工具（含待确认动作）
+    research_context: dict[str, Any] = field(default_factory=dict)  # 服务端验证后的研究工作区/运行身份
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -709,9 +710,24 @@ class StrategyCopilot:
         scenes: list[str] | None = None,
         user_id: str = "",
         on_tool: Callable[[dict[str, Any]], None] | None = None,
+        research_context: dict[str, Any] | None = None,
     ) -> CopilotResult:
         """页面内问答：页面附带的资料只作为参考数据放进本轮提问，模型与思考努力程度可选，支持流式回调。"""
-        items = clamp_context(context or [])
+        research = research_context if isinstance(research_context, dict) and research_context else None
+        raw_items = list(context or [])
+        if research:
+            from ..workflows import research_context as RC
+
+            # Insert first so the bounded context clamp cannot drop the verified identity.
+            raw_items.insert(
+                0,
+                {
+                    "kind": "research",
+                    "title": "研究上下文 · " + str((research.get("workflow") or {}).get("title") or "当前研究"),
+                    "text": RC.context_text(research),
+                },
+            )
+        items = clamp_context(raw_items)
         user = question.strip()
         block = context_block(items)
         if block:
@@ -720,6 +736,10 @@ class StrategyCopilot:
 
         ptools = PT.tools_for(scenes or [])
         system = ASK_SYSTEM + ("\n\n" + PT.prompt_block(scenes or []) if ptools else "") + "\n\n" + BLOCKS_GUIDE
+        if research:
+            from ..workflows import research_context as RC
+
+            system += "\n\n" + RC.system_hint(research, [t.name for t in ptools])
         messages = [Message(role="system", content=system)]
         for h in (history or [])[-ASK_MAX_TURNS:]:
             if h.get("role") in ("user", "assistant") and h.get("content"):
@@ -751,6 +771,7 @@ class StrategyCopilot:
                 notes=[f"降级原因：{_short_reason(str(exc))}"],
                 prompt_hash=phash,
                 elapsed_ms=int((time.perf_counter() - t0) * 1000),
+                research_context=research or {},
             )
         text = result.content or ""
         new_code = extract_code(text)
@@ -766,6 +787,7 @@ class StrategyCopilot:
             thinking=(getattr(result, "thinking", "") or "")[-6000:],
             elapsed_ms=int((time.perf_counter() - t0) * 1000),
             tool_calls=records,
+            research_context=research or {},
         )
 
     def _ask_with_tools(
@@ -779,8 +801,6 @@ class StrategyCopilot:
         on_tool: Callable[[dict[str, Any]], None] | None,
     ) -> Any:
         """工具循环：模型调平台工具 → 结果回填 → 继续，最多 6 轮。需要确认的动作只登记，不执行。"""
-        import json as _json
-
         from ..llm.base import Tool
         from . import platform_tools as PT
 
@@ -804,6 +824,7 @@ class StrategyCopilot:
                     reasoning=getattr(result, "thinking", "") or "",
                 )
             )
+            document_images = []
             for call in result.tool_calls:
                 got = PT.invoke(call.name, call.arguments or {}, user=user)
                 rec = got["record"]
@@ -811,8 +832,18 @@ class StrategyCopilot:
                 if on_tool:
                     on_tool(rec)
                 out = got["result"]
-                text = out if isinstance(out, str) else _json.dumps(out, ensure_ascii=False, default=str)
-                messages.append(Message(role="tool", content=text[:6000], tool_call_id=call.id, name=call.name))
+                from ..local.documents import preview_images
+
+                document_images.extend(preview_images(call.name, out))
+                from ..workflows.transport import tool_text
+
+                messages.append(
+                    Message(role="tool", content=tool_text(call.name, out), tool_call_id=call.id, name=call.name)
+                )
+            if document_images:
+                messages.append(
+                    Message(role="user", content="检查文档页面的排版，修正问题后重新预览。", images=document_images[:8])
+                )
         kw2 = {k: v for k, v in kw.items() if k != "on_delta"}
         messages.append(Message(role="user", content="工具调用次数已到上限。请根据已经拿到的结果直接回答。"))
         return self.router.chat(messages, **kw2) if result is not None else self.router.chat(messages, **kw)
@@ -1021,9 +1052,8 @@ def _fmt_params(params: dict[str, Any]) -> str:
 
 
 def _short_reason(reason: str) -> str:
-    if "未配置 API Key" in reason:
-        return "未配置任何模型密钥"
-    return reason.splitlines()[-1][:160] if reason else "模型不可用"
+    """模板降级原因：整理成一句中文（去掉 MDN 链接与服务商原始状态行）。"""
+    return explain_error(reason)
 
 
 def _guess_name(description: str, family: str) -> str:

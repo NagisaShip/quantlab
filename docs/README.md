@@ -1,4 +1,4 @@
-# QuantLab v0.1.0-preview.1 · 文档索引
+# QuantLab v0.1.0-preview.2 · 文档索引
 
 > 当前为预览版，接口、数据口径与功能边界仍可能调整。功能边界以代码、测试和 `src/quant_agent/platform/features.py` 的能力注册表为准。
 

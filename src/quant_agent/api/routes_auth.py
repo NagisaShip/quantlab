@@ -324,6 +324,41 @@ def logout(request: Request, response: Response) -> dict:
 def me() -> dict:
     ctx = context.current()
     s = get_services()
+    if s.local:
+        ws = s.auth.workspace(ctx.workspace_id)
+        return {
+            "mode": "local",
+            "local": s.local.info(),
+            "user": {
+                "id": ctx.user_id,
+                "name": "本地研究者",
+                "email": "",
+                "username": "local",
+                "is_admin": True,
+                "is_primary_admin": True,
+            },
+            "workspace": {
+                "id": ctx.workspace_id,
+                "name": ws["name"],
+                "role": "admin",
+                "is_demo": False,
+                "owner_id": ctx.user_id,
+                "is_primary_admin": True,
+                "settings": {**ws["settings"], "feedback": {"enabled": False}},
+            },
+            "workspaces": [{"id": ctx.workspace_id, "name": ws["name"], "role": "admin"}],
+            "onboarding": {
+                "version": 1,
+                "status": "skipped",
+                "current_step": "finish",
+                "track": "owner",
+                "completed_steps": [],
+                "updated_at": 0,
+                "started_at": None,
+                "completed_at": None,
+            },
+            "live_enabled": False,
+        }
     workspaces = s.auth.memberships(ctx.user_id)
     current = s.auth.workspace(ctx.workspace_id) if ctx.workspace_id else None
     acc = s.auth.account(ctx.user_id)

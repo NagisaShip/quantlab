@@ -18,6 +18,7 @@ import { QuantBot, QuantEyes, viewFromSignal } from '../components/QuantBot'
 import type { PageProps } from './types'
 import { appConfirm } from '../components/dialog'
 import { RecordPinButton } from '../components/RecordPin'
+import { READ_ONLY_REASON_ID, ReadOnlyRouteGate, useReadOnlyCapability } from '../features/workflows/ReadOnlyCapability'
 
 type Tab = 'list' | 'train' | 'runs'
 const TABS: { value: Tab; label: string }[] = [
@@ -31,19 +32,25 @@ export default function ModelLibPage({ arg, onNavigate, notify }: PageProps & { 
   const [meta, setMeta] = useState<ModelMeta | null>(null)
   const loadMeta = useCallback(() => models.meta().then(setMeta).catch((e: Error) => notify(e.message, true)), [notify])
   useEffect(() => { loadMeta() }, [loadMeta])
+  const ro = useReadOnlyCapability('model')
+  const readOnly = ro?.readOnly ?? false
   const runId = arg?.startsWith('run/') ? arg.slice(4) : null
   const tab: Tab | null = !arg ? 'list' : arg === 'train' || arg === 'runs' ? arg : null
 
   return (
     <>
       <Heading title="预测模型" description="用因子和特征训练预测模型。每次训练都是滚动样本外评估，和线性基线比较，并做泄漏检查；通过检查的模型可以在策略里用 predict() 调用。"
-        actions={<button className="button primary" onClick={() => openInLab({ idea: '', kind: 'model' })}>✦ 让 AI 研究一个模型</button>} />
+        actions={<button className="button primary" disabled={readOnly} title={readOnly ? ro?.reason : undefined}
+          aria-describedby={readOnly ? READ_ONLY_REASON_ID : undefined}
+          onClick={() => { if (!readOnly) openInLab({ idea: '', kind: 'model' }) }}>✦ 让 AI 研究一个模型</button>} />
       <div className="fx-tabs">
         <Segments value={tab ?? (runId ? 'runs' : 'list')} options={TABS} onChange={(t) => onNavigate(t === 'list' ? 'modellib' : `modellib/${t}`)} ariaLabel="模型库视图" />
         {meta && <span className="hint">累计 {meta.runs} 种训练配置{meta.backends.torch ? '' : ' · 未安装 PyTorch，序列模型不可用'}{meta.backends.lightgbm ? '' : ' · 未安装 LightGBM，梯度提升树用内置实现'}</span>}
       </div>
       {tab === 'list' && <ModelList meta={meta} onOpen={(id) => onNavigate(`modellib/${id}`)} notify={notify} />}
-      {tab === 'train' && <TrainBench meta={meta} notify={notify} onSaved={(id) => { loadMeta(); onNavigate(`modellib/${id}`) }} />}
+      {tab === 'train' && (readOnly
+        ? <TrainReadOnly onNavigate={onNavigate} notify={notify} />
+        : <TrainBench meta={meta} notify={notify} onSaved={(id) => { loadMeta(); onNavigate(`modellib/${id}`) }} />)}
       {tab === 'runs' && <Runs onOpen={(rid) => onNavigate(`modellib/run/${rid}`)} notify={notify} />}
       {runId && <RunDetail key={runId} id={runId} meta={meta} notify={notify} onSaved={(id) => onNavigate(`modellib/${id}`)} />}
       {tab === null && !runId && arg && <ModelDetail key={arg} id={arg} meta={meta} notify={notify} onDeleted={() => onNavigate('modellib')} />}
@@ -105,6 +112,8 @@ function ModelDetail({ id, meta, notify, onDeleted }: { id: string; meta: ModelM
   const [missing, setMissing] = useState(false)
   const [busy, setBusy] = useState(false)
   const [latest, setLatest] = useState<{ t: number; values: Record<string, number | null> } | null>(null)
+  const ro = useReadOnlyCapability('model')
+  const readOnly = ro?.readOnly ?? false
   useEffect(() => {
     models.get(id).then((r) => {
       setM(r.model)
@@ -116,9 +125,11 @@ function ModelDetail({ id, meta, notify, onDeleted }: { id: string; meta: ModelM
   const statuses = meta?.statuses ?? STATUS_FALLBACK
   const health = m.health || []
   const update = async (p: Parameters<typeof models.update>[1]) => {
+    if (readOnly) return
     try { setM((await models.update(id, p)).model) } catch (e) { notify((e as Error).message, true) }
   }
   const refresh = async () => {
+    if (readOnly) return
     setBusy(true)
     try {
       const r = await models.refresh(id)
@@ -135,16 +146,32 @@ function ModelDetail({ id, meta, notify, onDeleted }: { id: string; meta: ModelM
   return (
     <>
       <Panel title={m.name} actions={<>
-        <select value={m.status} aria-label="状态" onChange={(e) => update({ status: e.target.value as ModelStatus })}>
+        <select value={m.status} aria-label="状态" disabled={readOnly} title={readOnly ? ro?.reason : undefined}
+          aria-describedby={readOnly ? READ_ONLY_REASON_ID : undefined}
+          onChange={(e) => update({ status: e.target.value as ModelStatus })}>
           {(Object.entries(statuses) as [ModelStatus, string][]).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
         </select>
-        <button className="button small" onClick={() => update({ frozen: !m.frozen })} title="冻结后，再次保存同名模型会另存一个新模型，不会覆盖">{m.frozen ? '取消冻结' : '冻结'}</button>
-        <button className="button small" disabled={busy} onClick={refresh}>{busy ? <><span className="spinner" /> 检查中</> : '检查健康度'}</button>
-        <button className="button small" onClick={() => toLab(`改进模型「${m.name}」：针对已知弱点调整特征或结构，必须跑赢基线`)}>交给 AI 改进</button>
+        <button className="button small" disabled={readOnly} title={readOnly ? ro?.reason : '冻结后，再次保存同名模型会另存一个新模型，不会覆盖'}
+          aria-describedby={readOnly ? READ_ONLY_REASON_ID : undefined}
+          onClick={() => update({ frozen: !m.frozen })}>{m.frozen ? '取消冻结' : '冻结'}</button>
+        <button className="button small" disabled={busy || readOnly} title={readOnly ? ro?.reason : undefined}
+          aria-describedby={readOnly ? READ_ONLY_REASON_ID : undefined} onClick={refresh}>
+          {busy ? <><span className="spinner" /> 检查中</> : '检查健康度'}
+        </button>
+        <button className="button small" disabled={readOnly} title={readOnly ? ro?.reason : undefined}
+          aria-describedby={readOnly ? READ_ONLY_REASON_ID : undefined}
+          onClick={() => { if (!readOnly) toLab(`改进模型「${m.name}」：针对已知弱点调整特征或结构，必须跑赢基线`) }}>交给 AI 改进</button>
         <PythonCodeButton kind="model" artifact={m.spec} name={m.name} />
         <RecordPinButton type="model" id={m.id} pinned={m.pinned} notify={notify} />
-        <button className="button small" onClick={() => toLab(`召集模型小组评审「${m.name}」：检查泄漏、过拟合和上线风险`)}>召集团队评审</button>
-        <button className="button small danger" onClick={async () => { if (await appConfirm(`删除模型「${m.name}」？实验记录会保留。`)) { await models.remove(id); onDeleted() } }}>删除</button>
+        <button className="button small" disabled={readOnly} title={readOnly ? ro?.reason : undefined}
+          aria-describedby={readOnly ? READ_ONLY_REASON_ID : undefined}
+          onClick={() => { if (!readOnly) toLab(`召集模型小组评审「${m.name}」：检查泄漏、过拟合和上线风险`) }}>召集团队评审</button>
+        <button className="button small danger" disabled={readOnly} title={readOnly ? ro?.reason : undefined}
+          aria-describedby={readOnly ? READ_ONLY_REASON_ID : undefined}
+          onClick={async () => {
+            if (readOnly) return
+            if (await appConfirm(`删除模型「${m.name}」？实验记录会保留。`)) { await models.remove(id); onDeleted() }
+          }}>删除</button>
       </>}>
         <div className="fx-meta">
           <span>{m.spec.symbols.length} 个标的 · {m.spec.timeframe} · 预测 {m.spec.horizon} 期 · 训练至 {day(m.train_end)}</span>
@@ -201,6 +228,64 @@ function ModelDetail({ id, meta, notify, onDeleted }: { id: string; meta: ModelM
 }
 
 /* ------------------------------------------------------------------ */
+const RUNNING_KEY = 'qa.model.running'
+
+/** 只记住本浏览器会话里启动过的训练 id，避免只读页显示/取消其它工作区的进程内任务。 */
+function rememberedJobs(): string[] {
+  try {
+    const raw = sessionStorage.getItem(RUNNING_KEY)
+    const ids: unknown = raw ? JSON.parse(raw) : []
+    return Array.isArray(ids) ? ids.filter((x): x is string => typeof x === 'string') : []
+  } catch { return [] }
+}
+function rememberJob(id: string) {
+  try { sessionStorage.setItem(RUNNING_KEY, JSON.stringify([...rememberedJobs().filter((x) => x !== id), id].slice(-8))) } catch { /* 私密模式 */ }
+}
+function forgetJob(id: string) {
+  try { sessionStorage.setItem(RUNNING_KEY, JSON.stringify(rememberedJobs().filter((x) => x !== id))) } catch { /* 私密模式 */ }
+}
+
+/** 训练台在能力停用时只保留说明；停用前在本会话启动的训练仍可取消（运行时操作）。 */
+function TrainReadOnly({ onNavigate, notify }: { onNavigate: (key: string) => void; notify: PageProps['notify'] }) {
+  const [running, setRunning] = useState<TrainJob[] | null>(null)
+  const [canceling, setCanceling] = useState('')
+  useEffect(() => {
+    let active = true
+    Promise.all(rememberedJobs().map((id) => models.job(id).then((r) => r.job).catch(() => null)))
+      .then((rows) => { if (active) setRunning(rows.filter((j): j is TrainJob => !!j && j.status === 'running')) })
+      .catch(() => { if (active) setRunning([]) })
+    return () => { active = false }
+  }, [])
+  const cancel = async (id: string) => {
+    setCanceling(id)
+    try {
+      await models.cancel(id)
+      forgetJob(id)
+      setRunning((rows) => rows?.filter((j) => j.id !== id) ?? [])
+      notify('已请求取消训练')
+    } catch (e) { notify((e as Error).message, true) } finally { setCanceling('') }
+  }
+  return (
+    <>
+      <ReadOnlyRouteGate title="训练台暂时不可用" historyLabel="模型" historyRoute="modellib" onNavigate={onNavigate} />
+      {running && running.length > 0 && (
+        <Panel title="运行中的训练" subtitle="停用前已启动的训练仍可在这里取消。">
+          <div className="ml-running">
+            {running.map((j) => (
+              <span key={j.id}>
+                <span className="spinner" /> {j.model} · {j.phase}
+                <button className="button small" disabled={canceling === j.id} onClick={() => void cancel(j.id)}>
+                  {canceling === j.id ? '取消中' : '取消'}
+                </button>
+              </span>
+            ))}
+          </div>
+        </Panel>
+      )}
+    </>
+  )
+}
+
 type FeatRow = FeatureSpec & { on: boolean }
 
 function TrainBench({ meta, notify, onSaved }: { meta: ModelMeta | null; notify: PageProps['notify']; onSaved: (id: string) => void }) {
@@ -228,6 +313,7 @@ function TrainBench({ meta, notify, onSaved }: { meta: ModelMeta | null; notify:
         const r = await models.job(id)
         setJob(r.job)
         if (r.job.status === 'running') { poll(id); return }
+        forgetJob(id)
         if (r.job.status === 'done' && r.job.run_id) setResult(await models.run(r.job.run_id))
         if (r.job.status === 'failed') notify(r.job.error || '训练失败', true)
       } catch (e) { notify((e as Error).message, true) }
@@ -243,6 +329,7 @@ function TrainBench({ meta, notify, onSaved }: { meta: ModelMeta | null; notify:
       const features = volOnly && p.model === 'har' ? [] : feats.filter((f) => f.on).map(({ name: n, expression, factor_id }) => (factor_id ? { factor_id } : { name: n, expression }))
       const r = await models.train({ ...p, params, features })
       setJob(r.job)
+      rememberJob(r.job.id)
       poll(r.job.id)
     } catch (e) { notify((e as Error).message, true) }
   }
@@ -445,6 +532,8 @@ function RunDetail({ id, meta, notify, onSaved }: { id: string; meta: ModelMeta 
   const [data, setData] = useState<{ run: ModelRun; report: ModelReport } | null>(null)
   const [missing, setMissing] = useState(false)
   const [name, setName] = useState('')
+  const ro = useReadOnlyCapability('model')
+  const readOnly = ro?.readOnly ?? false
   useEffect(() => { models.run(id).then(setData).catch(() => setMissing(true)) }, [id])
   const title = useMemo(() => {
     if (!data) return ''
@@ -454,6 +543,7 @@ function RunDetail({ id, meta, notify, onSaved }: { id: string; meta: ModelMeta 
   if (missing) return <EmptyState glyph="☰" title="实验不存在">可能已被删除。</EmptyState>
   if (!data) return <Loading label="正在打开实验" />
   const save = async (status: ModelStatus) => {
+    if (readOnly) return
     try {
       const r = await models.save({ run_id: id, name: name || undefined, status })
       notify(`已存入模型库「${r.model.name}」`); onSaved(r.model.id)
@@ -461,10 +551,14 @@ function RunDetail({ id, meta, notify, onSaved }: { id: string; meta: ModelMeta 
   }
   return (
     <Panel title={title} subtitle={`${when(data.run.created_at)} · ${data.run.source === 'lab' ? 'AI 研究室' : '训练台'}`} actions={<>
-      <input className="fx-search" placeholder="模型名称" value={name} onChange={(e) => setName(e.target.value)} aria-label="模型名称" />
+      <input className="fx-search" placeholder="模型名称" value={name} disabled={readOnly} title={readOnly ? ro?.reason : undefined}
+        aria-describedby={readOnly ? READ_ONLY_REASON_ID : undefined}
+        onChange={(e) => setName(e.target.value)} aria-label="模型名称" />
       <RecordPinButton type="model_run" id={id} pinned={data.run.pinned} notify={notify} />
-      <button className="button small" onClick={() => save('candidate')}>存为候选</button>
-      <button className="button small primary" disabled={!data.report.admitted} onClick={() => save('active')}>上线</button>
+      <button className="button small" disabled={readOnly} title={readOnly ? ro?.reason : undefined}
+        aria-describedby={readOnly ? READ_ONLY_REASON_ID : undefined} onClick={() => save('candidate')}>存为候选</button>
+      <button className="button small primary" disabled={!data.report.admitted || readOnly} title={readOnly ? ro?.reason : undefined}
+        aria-describedby={readOnly ? READ_ONLY_REASON_ID : undefined} onClick={() => save('active')}>上线</button>
     </>}>
       {data.run.project_id && <div className="hint">来自 <a href={`#/lab/${data.run.project_id}`}>AI 研究室的项目</a></div>}
       <ModelFullReport report={data.report} />

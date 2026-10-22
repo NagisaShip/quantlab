@@ -409,12 +409,8 @@ def make_runner(
         if warmup is not None:
             s = replace(s, warmup_bars=int(warmup))
         if cost_mult != 1.0:
-            s = replace(
-                s,
-                taker_fee=s.taker_fee * cost_mult,
-                slippage_bps=s.slippage_bps * cost_mult,
-                spread_bps=s.spread_bps * cost_mult,
-            )
+            # 撮合时统一放大最终成本；预先改默认费率会被策略 set_order_cost 覆盖。
+            s = replace(s, cost_scale=s.cost_scale * cost_mult)
         return execute(
             source, name=name, bars=bars, spec=s, params=params, time_limit=time_limit, lang=lang, research=research
         )

@@ -556,13 +556,71 @@
 /* 登录抽屉 */
 @keyframes lp-drawer-in { from { transform: translateX(40px); opacity: 0; } to { transform: none; opacity: 1; } }
 @keyframes lp-drawer-out { to { transform: translateX(40px); opacity: 0; } }
-.lp-drawer-wrap { position: fixed; inset: 0; z-index: 50; background: rgba(10, 14, 28, .38); backdrop-filter: blur(3px); display: flex; justify-content: flex-end; animation: m-fade var(--dur-3) var(--ease-out); }
-.lp-drawer-wrap.closing { animation: iv-out var(--dur-2) var(--ease-out) forwards; }
-.lp-drawer { position: relative; width: min(440px, 100vw); height: 100%; overflow-y: auto; background: var(--canvas); box-shadow: -30px 0 60px rgba(10, 14, 28, .25); display: flex; align-items: center; justify-content: center; padding: 40px 28px; animation: lp-drawer-in var(--dur-4) var(--ease-out); }
+
+/* 打开抽屉时锁背景滚动：landing 的滚动发生在 .lp-deck 内部，这里同时兜住 html/body（WebView / 移动端） */
+html.lp-scroll-lock, html.lp-scroll-lock body { overflow: hidden; overscroll-behavior: none; }
+
+.lp-drawer-wrap {
+  position: fixed; inset: 0; z-index: 50;
+  display: flex; justify-content: flex-end; align-items: stretch;
+  background: rgba(10, 14, 28, .38); backdrop-filter: blur(3px);
+  overscroll-behavior: contain;
+  animation: m-fade var(--dur-3) var(--ease-out);
+}
+.lp-drawer-wrap.closing { animation: iv-out var(--dur-2) var(--ease-out) forwards; pointer-events: none; }
+.lp-drawer {
+  position: relative; flex: none;
+  width: min(440px, 100vw);
+  height: 100vh; height: 100dvh; max-height: 100dvh;
+  display: flex; flex-direction: column; overflow: hidden;
+  background: var(--canvas); box-shadow: -30px 0 60px rgba(10, 14, 28, .25);
+  overscroll-behavior: contain;
+  animation: lp-drawer-in var(--dur-4) var(--ease-out);
+}
 .lp-drawer-wrap.closing .lp-drawer { animation: lp-drawer-out var(--dur-2) var(--ease-out) forwards; }
-.lp-drawer .auth-card { width: 100%; max-width: 380px; }
-.lp-drawer-x { position: absolute; top: 14px; right: 14px; width: 32px; height: 32px; border-radius: 50%; border: 1px solid var(--line); background: var(--sheet); cursor: pointer; color: var(--ink-2); transition: transform var(--dur-1) var(--ease-out), background var(--dur-1) var(--ease-out); }
+
+/* 滚动容器：宽度不随滚动条出现/消失变化（gutter 常驻），并且不让滚动链传到背景 */
+.lp-drawer-scroll {
+  flex: 1 1 auto; min-height: 0; width: 100%;
+  overflow-y: auto; overflow-x: hidden;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable both-edges;
+  scroll-padding-block: clamp(20px, 6vh, 48px);
+  -webkit-overflow-scrolling: touch;
+}
+/* 安全居中：内层 min-height:100% + flex 居中 + margin auto。
+   内容比视口矮时垂直居中；比视口高时内层整体增高、从顶部完整可滚动，不会像 align-items:center 那样裁掉顶部。 */
+.lp-drawer-inner {
+  width: 100%; max-width: 428px; min-height: 100%;
+  margin: auto; padding: clamp(16px, 5vh, 40px) clamp(16px, 4vw, 24px);
+  display: flex; flex-direction: column; justify-content: center; gap: 14px;
+}
+.lp-drawer .auth-card { width: 100%; max-width: 380px; margin-inline: auto; }
+/* 抽屉内输入框统一 16px（避免移动端聚焦自动放大）+ 触控友好的高度，并给聚焦滚动留出安全边距 */
+.lp-drawer .auth-card input:not([type="checkbox"]):not([type="radio"]) {
+  height: 44px; font-size: 16px; margin-top: 6px; padding: 8px 12px;
+  scroll-margin-block: clamp(16px, 5vh, 40px);
+}
+.lp-drawer .auth-card .button.primary { height: 44px; font-size: 15px; }
+.lp-drawer .auth-card label { font-size: 13px; }
+.lp-drawer-x {
+  position: absolute; top: 14px; right: 14px; z-index: 2;
+  width: 32px; height: 32px; border-radius: 50%; border: 1px solid var(--line);
+  background: var(--sheet); cursor: pointer; color: var(--ink-2);
+  transition: transform var(--dur-1) var(--ease-out), background var(--dur-1) var(--ease-out);
+}
 .lp-drawer-x:hover { background: var(--hover); transform: rotate(90deg); }
+.lp-drawer-bot { display: flex; justify-content: center; animation: lp-drop .9s var(--ease-out) .1s backwards; transform-origin: 50% 100%; }
+
+/* 短视口（桌面 WebView 小窗 / 横屏手机）：收起装饰 bot、收紧留白，
+   让登录卡片完整放下，聚焦密码框时无需滚动、X 按钮也不会压住标题与说明。 */
+@media (max-height: 560px) {
+  .lp-drawer-bot { display: none; }
+  .lp-drawer-inner { gap: 10px; padding-block: 12px; }
+  .lp-drawer .auth-card > p { margin-bottom: 14px; }
+  .lp-drawer .auth-card form { gap: 10px; }
+  .lp-drawer .auth-card input:not([type="checkbox"]):not([type="radio"]) { margin-top: 4px; }
+}
 
 /* ---------------------------------------------------------------- 窄屏 */
 @media (max-width: 960px) {
@@ -653,8 +711,6 @@
   .lp *, .lp *::before, .lp *::after { animation: none !important; transition: none !important; }
   [data-reveal] { opacity: 1; transform: none; }
 }
-.lp-drawer-inner { width: 100%; max-width: 380px; display: grid; gap: 14px; }
-.lp-drawer-bot { animation: lp-drop .9s var(--ease-out) .1s backwards; transform-origin: 50% 100%; }
 
 /* Let each screen grow with its content, including short laptop viewports. */
 .lp-deck { scroll-snap-type: y proximity; scrollbar-width: thin; }

@@ -272,6 +272,46 @@ class Database:
             return t.scalar(sql, params)
 
     # ---------------- 迁移 ----------------
+    def _backup_before_migrations(self, versions: list[str]) -> Path | None:
+        """SQLite 升级前做一份一致性快照；尽量只保留最近 3 份，避免无限占空间。
+
+        PostgreSQL 部署由运维在发布流程里做数据库备份，这里不擅自复制数据目录。
+        """
+        if not versions or self.dialect != "sqlite" or self.path == ":memory:":
+            return None
+        source = Path(self.path)
+        if not source.is_file() or source.stat().st_size == 0:
+            return None
+        stamp = time.strftime("%Y%m%d-%H%M%S") + f"-{time.time_ns() % 1_000_000:06d}"
+        target = source.with_name(f"{source.name}.bak-{stamp}")
+        # 先清理旧备份再创建新备份：Windows 上刚关闭的 sqlite 句柄可能仍短暂占用文件，
+        # 在创建后删除容易静默失败，导致备份无限累积。
+        existing = [
+            p
+            for p in source.parent.glob(f"{source.name}.bak-*")
+            if not p.name.endswith(("-wal", "-shm"))
+        ]
+        existing.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        for old in existing[2:]:
+            try:
+                old.unlink()
+            except OSError:
+                pass
+
+        try:
+            with sqlite3.connect(source) as src, sqlite3.connect(target) as dst:
+                src.backup(dst)
+                # 备份文件用单文件 journal，避免留下 -wal/-shm 让备份看起来像多份。
+                dst.execute("PRAGMA journal_mode=DELETE")
+        except (OSError, sqlite3.Error):
+            return None
+        for suffix in ("-wal", "-shm"):
+            try:
+                Path(str(target) + suffix).unlink()
+            except OSError:
+                pass
+        return target
+
     def migrate(self) -> list[str]:
         """按文件名顺序执行 migrations/*.sql 中尚未执行的脚本。返回本次执行的版本号。"""
         applied: list[str] = []
@@ -280,6 +320,10 @@ class Database:
                 "CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at BIGINT NOT NULL)"
             )
             done = {r["version"] for r in t.fetchall("SELECT version FROM schema_migrations")}
+        pending = [p.stem for p in sorted(MIGRATIONS_DIR.glob("*.sql")) if p.stem not in done]
+        # 只在已有数据、且确实要升级时备份；首次建库不产生无意义副本。
+        if pending and done:
+            self._backup_before_migrations(pending)
         for path in sorted(MIGRATIONS_DIR.glob("*.sql")):
             version = path.stem
             if version in done:

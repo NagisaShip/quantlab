@@ -20,6 +20,8 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from ..agents import lab_goal as G
+from ..agents.lab_state import MAX_INSTRUCTIONS_CHARS, normalize_context
+from ..agents.research_profile import clamp_instructions
 from ..agents.strategy_lab import DEFAULT_GOALS, LabStore, LabTools, StrategyLab, new_project
 from ..agents.team import LAB_REVIEW_TEAM
 from ..engine.research import summarize_metrics
@@ -85,7 +87,7 @@ class PinIn(BaseModel):
     text: str = Field(..., min_length=1, max_length=400_000)
 
 
-LabKind = Literal["strategy", "factor", "model", "portfolio", "execution"]
+LabKind = Literal["strategy", "factor", "model", "portfolio", "execution", "research", "workflow"]
 DomainKey = Literal["strategy", "factor", "model", "portfolio", "execution"]
 
 
@@ -111,6 +113,11 @@ class ProjectIn(BaseModel):
     team_id: str | None = None
     cost_bps: float = Field(10.0, ge=0, le=200)
     hypothesis: dict[str, Any] | None = None
+    # 通用会话（研究 / 工作流升级）：只保存来源引用，不生成策略代码与验收目标
+    context: dict[str, Any] = Field(default_factory=dict, description="来源引用：工作流 / 运行 / 节点 / 页面资料")
+    # 项目级规则（研究规则 / 偏好 / 边界）：注入聊天、计划与团队提示词；存储时截断到 20k
+    # 请求体上限放宽到 10 倍，落库时统一截断到 MAX_INSTRUCTIONS_CHARS（20k），避免一次超长就 422
+    instructions: str = Field("", max_length=MAX_INSTRUCTIONS_CHARS * 10, description="研究者设定的项目规则（≤20k 字符）")
     permission: Literal["auto", "manual", "accept_edits", "plan", "bypass"] = "auto"
     folder: str = Field("", max_length=40)
     market_auto: bool | None = Field(None, description="标的与周期交给 AI 根据对话决定；省略时按是否提供了标的自动判断")
@@ -151,6 +158,9 @@ class ProjectPatch(BaseModel):
     max_tool_calls: int | None = Field(None, ge=1, le=5000)
     workflow: Literal["", "auto", "pipeline", "report"] | None = None
     auto_team_context: bool | None = None
+    instructions: str | None = Field(
+        None, max_length=MAX_INSTRUCTIONS_CHARS * 10, description="研究者设定的项目规则（≤20k 字符，超出截断）"
+    )
     approvals: list[Literal["delete", "trading", "config", "save", "edit", "run"]] | None = Field(
         None, description="完全权限下仍要先审批的操作类别"
     )
@@ -649,8 +659,11 @@ def _project_or_404(lab: StrategyLab, pid: str) -> dict[str, Any]:
 def _brief(p: dict[str, Any]) -> dict[str, Any]:
     versions = p.get("versions") or []
     cur = next((v for v in versions if v["v"] == p.get("current_v")), None)
+    # 列表只需要摘要：context/instructions 可能很大，只在详情里返回，避免会话列表响应膨胀。
+    context = p.get("context") or {}
     return {
-        **{k: v for k, v in p.items() if k not in ("versions", "code", "pins")},
+        **{k: v for k, v in p.items() if k not in ("versions", "code", "pins", "context", "instructions")},
+        "context_keys": sorted(str(k) for k in context)[:20] if isinstance(context, dict) else [],
         "versions_count": len(versions),
         "metrics": (cur or {}).get("metrics"),
         "passed": ((cur or {}).get("evaluation") or {}).get("passed"),
@@ -694,6 +707,32 @@ def _view(lab: StrategyLab, p: dict[str, Any], after: int = 0, since: float = 0.
     }
 
 
+@router.get("/projects/{pid}/context-pack", summary="统一上下文包：系统规则、项目规则、来源引用与预算")
+def context_pack(pid: str) -> dict:
+    """把“本轮会进入模型的内容”收成一个稳定结构，供前端/导出/调试共用。
+
+    只读投影，不改变提示词；items 仍是 ``context_view`` 的真实明细，sources 只含标题/ID。
+    """
+    lab = _lab_for(pid)
+    project = _project_or_404(lab, pid)
+    view = lab.context_view(project)
+    return {
+        "format": "quantlab.context-pack/1",
+        "project_id": pid,
+        "kind": project.get("kind") or "strategy",
+        "title": project.get("title") or "",
+        "instructions": clamp_instructions(project.get("instructions")),
+        "context": project.get("context") or {},
+        "sources": next((i.get("summary") or "" for i in view.get("items") or [] if i.get("key") == "context"), ""),
+        "items": view.get("items") or [],
+        "total": view.get("total") or 0,
+        "budget": view.get("budget") or 0,
+        "history_budget": view.get("history_budget") or 0,
+        "auto_compact_tokens": view.get("auto_compact_tokens") or 0,
+        "model": view.get("model") or "",
+    }
+
+
 def _start(lab: StrategyLab, pid: str, kind: str, fn, wait: bool) -> dict:
     # 要调用模型的回合：工作区当日 LLM 配额用完就直接拒绝，不再降级成模板回复「假装还能对话」
     if kind not in ("backtest", "walkforward"):
@@ -716,10 +755,12 @@ def lab_meta() -> dict:
     cfg = s.router.config
     ready = any(s.router._has_credentials(p, cfg) for p in cfg.providers)
     current = getattr(s.router, "current_target", None)
+    default_target = getattr(s.router, "default_target", None)
     return {
         "models": s.router.available_models(),
         "routing": cfg.routing,
-        "default_model": current("code_gen") if callable(current) else "",
+        # 默认 = 当前模型清单里的第一个（优先已配置密钥的）；没有模型时才回落到全局路由
+        "default_model": default_target() if callable(default_target) else (current("code_gen") if callable(current) else ""),
         "efforts": [
             {"id": "low", "label": "低", "hint": "快速回答，少想"},
             {"id": "medium", "label": "中", "hint": "大多数任务"},
@@ -827,6 +868,23 @@ def _create_project(payload: ProjectIn) -> dict:
                 raise HTTPException(400, f"规格有误：{exc}") from exc
             dlab.add_version(p["id"], dumps_spec(art), source="user", note="初始规格")
         return _view(dlab, _project_or_404(dlab, p["id"]))
+    if payload.kind in ("research", "workflow"):
+        # 轻项目：研究 / 工作流升级只保留想法与来源引用，不生成策略代码、版本与验收目标
+        data.update(kind=payload.kind, origin="created")
+        p = lab.store.save(new_project(data))
+        for pin in payload.pins:
+            lab.pin(p["id"], kind=pin.kind, title=pin.title, text=pin.text)
+        label = "研究工作流" if payload.kind == "workflow" else "研究会话"
+        lab.store.append(
+            p["id"],
+            {
+                "role": "event",
+                "kind": "text",
+                "content": f"{label}已创建。"
+                + (f"想法：{payload.idea[:200]}" if payload.idea else "可以在这里继续描述研究问题。"),
+            },
+        )
+        return _view(lab, _project_or_404(lab, p["id"]))
     data["goals"] = {k: v for k, v in (payload.goals.model_dump() if payload.goals else {}).items() if v is not None}
     p = lab.store.save(new_project(data))
     code = payload.code
@@ -849,6 +907,106 @@ def _create_project(payload: ProjectIn) -> dict:
             p["id"], {"role": "event", "kind": "text", "content": f"项目已创建。想法：{payload.idea[:200]}"}
         )
     return _view(lab, _project_or_404(lab, p["id"]))
+
+
+# ---------------------------------------------------------------------------
+# 从「问 AI」升级为研究会话
+# ---------------------------------------------------------------------------
+MAX_SEED_MESSAGES = 40
+MAX_SEED_INPUT = 200  # 请求上限（防止超大 body），实际只保留最近 40 条可用的种子消息
+MAX_SEED_CONTENT = 8_000
+SEED_ROLES = ("user", "assistant", "event")
+
+
+class SeedMessageIn(BaseModel):
+    """升级时带回的对话种子消息；未知角色 / 空内容由服务端过滤，不写入。"""
+
+    role: str = Field("user", max_length=40)
+    content: str = Field("", max_length=20_000)
+    data: dict[str, Any] | None = None
+
+
+class FromAskIn(BaseModel):
+    """把一次「问 AI」升级成研究会话（默认私有，归当前用户）。"""
+
+    kind: Literal["research", "workflow"] = Field("research", description="研究会话 / 工作流会话")
+    title: str = Field("", max_length=60)
+    idea: str = Field("", max_length=20_000)
+    context: dict[str, Any] = Field(default_factory=dict, description="来源引用：工作流 / 运行 / 节点 / 页面资料")
+    messages: list[SeedMessageIn] = Field(default_factory=list, max_length=MAX_SEED_INPUT)
+    research: dict[str, Any] | None = Field(None, description="Ask 的研究上下文信封：只取工作流 / 运行 / 节点引用")
+    # 请求体上限放宽到 10 倍，落库时统一截断到 MAX_INSTRUCTIONS_CHARS（20k），避免一次超长就 422
+    instructions: str = Field("", max_length=MAX_INSTRUCTIONS_CHARS * 10, description="研究者设定的项目规则（≤20k 字符）")
+
+
+def _research_refs(research: Any) -> dict[str, Any]:
+    """从 Ask 的研究上下文信封里提炼引用（工作流 / 运行 / 节点 / 输出），不搬运正文与图。"""
+    if not isinstance(research, dict):
+        return {}
+    refs: dict[str, Any] = {}
+    wf = research.get("workflow")
+    if isinstance(wf, dict):
+        picked = {k: wf.get(k) for k in ("id", "title", "revision", "saved", "unsaved") if wf.get(k) is not None}
+        if picked.get("id") or picked.get("title"):
+            refs["workflow"] = picked
+    run = research.get("run")
+    if isinstance(run, dict) and run.get("id"):
+        refs["run"] = {
+            k: run.get(k) for k in ("id", "mode", "status", "revision", "view_mode") if run.get(k) is not None
+        }
+    node = research.get("selected_node")
+    if isinstance(node, dict) and node.get("id"):
+        refs["node"] = {k: node.get(k) for k in ("id", "title", "kind", "status") if node.get(k) is not None}
+    outputs = research.get("outputs")
+    if isinstance(outputs, list):
+        kept = [
+            {k: item.get(k) for k in ("port", "type", "hash", "run_id", "node_id") if item.get(k)}
+            for item in outputs[:6]
+            if isinstance(item, dict)
+        ]
+        if kept:
+            refs["outputs"] = kept
+    for key in ("project_name", "draft_id"):
+        if research.get(key):
+            refs[key] = research[key]
+    return refs
+
+
+@router.post("/projects/from-ask", summary="把「问 AI」升级成研究会话：写入种子消息，默认私有归当前用户")
+def create_project_from_ask(payload: FromAskIn) -> dict:
+    from .routes_collab import claim_new
+
+    lab = _lab()
+    context = normalize_context(payload.context)
+    for key, value in _research_refs(payload.research).items():
+        context.setdefault(key, value)  # 显式传入的 context 优先，研究信封只补缺失的引用
+    p = lab.store.save(
+        new_project(
+            {
+                "kind": payload.kind,
+                "origin": "ask_upgrade",
+                "title": payload.title,
+                "idea": payload.idea,
+                "context": context,
+                "instructions": payload.instructions,
+            }
+        )
+    )
+    pid = p["id"]
+    claim_new("project", pid)  # 归属当前用户；可见性沿用现有默认设置（默认私有），不另造一套
+    seeds = []
+    for msg in payload.messages:
+        role = (msg.role or "").strip().lower()
+        if role not in SEED_ROLES:  # 未知角色直接过滤，绝不把 tool/system 消息塞进对话
+            continue
+        content = (msg.content or "").strip()
+        if not content:
+            continue
+        data = normalize_context(msg.data) if isinstance(msg.data, dict) else {}
+        seeds.append({"role": role, "kind": "text", "content": content[:MAX_SEED_CONTENT], "data": data})
+    for msg in seeds[-MAX_SEED_MESSAGES:]:  # 超过 40 条时保留最近的对话，而不是让升级请求失败
+        lab.store.append(pid, msg)
+    return _view(lab, _project_or_404(lab, pid))
 
 
 @router.get("/projects/{pid}", summary="项目详情与增量消息（after=已收到的最大序号，since=上次的 server_time）")
@@ -874,6 +1032,9 @@ def patch_project(pid: str, payload: ProjectPatch) -> dict:
         changes["securities"] = []
     if "title" in changes:
         changes["title_auto"] = False  # 研究者自己改过标题，AI 不再改
+    if "instructions" in changes:
+        # 统一去空白并截断到 20k：PATCH 允许先提交长文本，落库口径与 new_project 一致
+        changes["instructions"] = clamp_instructions(changes["instructions"])
     lab.store.patch(pid, **changes)
     return {"project": _project_or_404(lab, pid)}
 

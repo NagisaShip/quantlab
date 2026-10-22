@@ -19,6 +19,7 @@ import { EmptyState, Field, Heading, Loading, Panel, Segments, Tag } from '../co
 import type { PageProps } from './types'
 import { appConfirm } from '../components/dialog'
 import { RecordPinButton } from '../components/RecordPin'
+import { READ_ONLY_REASON_ID, ReadOnlyRouteGate, useReadOnlyCapability } from '../features/workflows/ReadOnlyCapability'
 
 type Tab = 'list' | 'design' | 'replay' | 'radar' | 'costs' | 'record' | 'runs'
 const TABS: { value: Tab; label: string }[] = [
@@ -37,21 +38,31 @@ const beatTone = (v?: number | null) => (v === null || v === undefined || Math.a
 export default function ExecutionPage({ arg, onNavigate, notify }: PageProps & { arg?: string }) {
   const [meta, setMeta] = useState<ExecMeta | null>(null)
   useEffect(() => { execution.meta().then(setMeta).catch((e: Error) => notify(e.message, true)) }, [notify])
+  const ro = useReadOnlyCapability('execution')
+  const readOnly = ro?.readOnly ?? false
   const runId = arg?.startsWith('run/') ? arg.slice(4) : null
   const tab: Tab | null = !arg ? 'list' : (TABS.map((t) => t.value) as string[]).includes(arg) ? (arg as Tab) : null
   const algoLabel = (id: string) => meta?.algos.find((o) => o.id === id)?.label ?? id
   return (
     <>
       <Heading title="下单执行" description="把目标仓位变成一串子单：在盘口回放里仿真拆单算法，按交易成本分析（TCA）验收；感知市场状态、监控成交进度，并用真实成交校准成本。全部是仿真，不会下真实委托。"
-        actions={<button className="button primary" onClick={() => openInLab({ idea: '', kind: 'execution' })}>✦ 让 AI 设计执行方案</button>} />
+        actions={<button className="button primary" disabled={readOnly} title={readOnly ? ro?.reason : undefined}
+          aria-describedby={readOnly ? READ_ONLY_REASON_ID : undefined}
+          onClick={() => { if (!readOnly) openInLab({ idea: '', kind: 'execution' }) }}>✦ 让 AI 设计执行方案</button>} />
       <div className="fx-tabs">
         <Segments value={tab ?? (runId ? 'runs' : 'list')} options={TABS} onChange={(t) => onNavigate(t === 'list' ? 'execution' : `execution/${t}`)} ariaLabel="下单执行视图" />
         {meta && <span className="hint">累计试过 {meta.trials} 种执行方案</span>}
       </div>
       {tab === 'list' && <SchemeList meta={meta} algoLabel={algoLabel} onOpen={(id) => onNavigate(`execution/${id}`)} notify={notify} />}
-      {tab === 'design' && <Designer meta={meta} notify={notify} onSaved={(id) => onNavigate(`execution/${id}`)} />}
-      {tab === 'replay' && <ReplayView meta={meta} notify={notify} />}
-      {tab === 'radar' && <Radar meta={meta} notify={notify} />}
+      {tab === 'design' && (readOnly
+        ? <ReadOnlyRouteGate title="仿真设计暂时不可用" historyLabel="执行方案" historyRoute="execution" onNavigate={onNavigate} />
+        : <Designer meta={meta} notify={notify} onSaved={(id) => onNavigate(`execution/${id}`)} />)}
+      {tab === 'replay' && (readOnly
+        ? <ReadOnlyRouteGate title="回放监控暂时不可用" historyLabel="执行方案" historyRoute="execution" onNavigate={onNavigate} />
+        : <ReplayView meta={meta} notify={notify} />)}
+      {tab === 'radar' && (readOnly
+        ? <ReadOnlyRouteGate title="市场雷达暂时不可用" historyLabel="执行方案" historyRoute="execution" onNavigate={onNavigate} />
+        : <Radar meta={meta} notify={notify} />)}
       {tab === 'costs' && <Costs notify={notify} />}
       {tab === 'record' && <Recorder notify={notify} onUse={(id) => { try { sessionStorage.setItem(REC_KEY, id) } catch { /* 忽略 */ } onNavigate('execution/design') }} />}
       {tab === 'runs' && <Runs algoLabel={algoLabel} onOpen={(id) => onNavigate(`execution/run/${id}`)} notify={notify} />}
@@ -102,6 +113,8 @@ function SchemeDetail({ id, meta, algoLabel, notify, onDeleted }: { id: string; 
   const [s, setS] = useState<ExecScheme | null>(null)
   const [report, setReport] = useState<ExecReport | null>(null)
   const [missing, setMissing] = useState(false)
+  const ro = useReadOnlyCapability('execution')
+  const readOnly = ro?.readOnly ?? false
   useEffect(() => {
     execution.get(id).then((r) => { setS(r.scheme); execution.report(id).then((x) => setReport(x.report)).catch(() => undefined) }).catch(() => setMissing(true))
   }, [id])
@@ -114,13 +127,27 @@ function SchemeDetail({ id, meta, algoLabel, notify, onDeleted }: { id: string; 
   return (
     <>
       <Panel title={s.name} actions={<>
-        <select value={s.status} aria-label="状态" onChange={async (e) => { try { setS((await execution.update(id, { status: e.target.value as ExecStatus })).scheme) } catch (err) { notify((err as Error).message, true) } }}>
+        <select value={s.status} aria-label="状态" disabled={readOnly} title={readOnly ? ro?.reason : undefined}
+          aria-describedby={readOnly ? READ_ONLY_REASON_ID : undefined}
+          onChange={async (e) => {
+            if (readOnly) return
+            try { setS((await execution.update(id, { status: e.target.value as ExecStatus })).scheme) } catch (err) { notify((err as Error).message, true) }
+          }}>
           {(Object.entries(statuses) as [ExecStatus, string][]).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
         </select>
-        <button className="button small" onClick={() => toLab(`改进执行方案「${s.name}」：在完成率不降的前提下降低成本`)}>交给 AI 改进</button>
-        <button className="button small" onClick={() => toLab(`召集执行小组评审「${s.name}」：成本分解、逆向选择、不同市场状态下的表现`)}>召集团队评审</button>
+        <button className="button small" disabled={readOnly} title={readOnly ? ro?.reason : undefined}
+          aria-describedby={readOnly ? READ_ONLY_REASON_ID : undefined}
+          onClick={() => { if (!readOnly) toLab(`改进执行方案「${s.name}」：在完成率不降的前提下降低成本`) }}>交给 AI 改进</button>
+        <button className="button small" disabled={readOnly} title={readOnly ? ro?.reason : undefined}
+          aria-describedby={readOnly ? READ_ONLY_REASON_ID : undefined}
+          onClick={() => { if (!readOnly) toLab(`召集执行小组评审「${s.name}」：成本分解、逆向选择、不同市场状态下的表现`) }}>召集团队评审</button>
         <PythonCodeButton kind="execution" artifact={s.config} name={s.name} />
-        <button className="button small danger" onClick={async () => { if (await appConfirm(`删除执行方案「${s.name}」？试验记录会保留。`)) { await execution.remove(id); onDeleted() } }}>删除</button>
+        <button className="button small danger" disabled={readOnly} title={readOnly ? ro?.reason : undefined}
+          aria-describedby={readOnly ? READ_ONLY_REASON_ID : undefined}
+          onClick={async () => {
+            if (readOnly) return
+            if (await appConfirm(`删除执行方案「${s.name}」？试验记录会保留。`)) { await execution.remove(id); onDeleted() }
+          }}>删除</button>
       </>}>
         <div className="fx-meta">
           <span>{algoLabel(c.algo)} · {meta?.styles.find((x) => x.id === c.style)?.label ?? c.style} · {s.symbols.join(', ')}</span>
@@ -400,6 +427,8 @@ function Radar({ meta, notify }: { meta: ExecMeta | null; notify: PageProps['not
 
 /* ------------------------------------------------------------------ */
 function Costs({ notify }: { notify: PageProps['notify'] }) {
+  const ro = useReadOnlyCapability('execution')
+  const readOnly = ro?.readOnly ?? false
   const [models, setModels] = useState<{ models: CostModel[]; active: CostModel } | null>(null)
   const [imports, setImports] = useState<ImportItem[]>([])
   const [imp, setImp] = useState('')
@@ -413,6 +442,7 @@ function Costs({ notify }: { notify: PageProps['notify'] }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
   const calibrate = async () => {
+    if (readOnly) return
     setBusy(true)
     try { const r = await execution.calibrate({ import_id: imp, name }); setDetail(r.model); notify(`已校准「${r.model.name}」：Y = ${r.model.Y.toFixed(2)}`); reload() } catch (e) { notify((e as Error).message, true) } finally { setBusy(false) }
   }
@@ -424,9 +454,22 @@ function Costs({ notify }: { notify: PageProps['notify'] }) {
             <EmptyState glyph="⇄" title="还没有导入成交记录">在「实盘对照 → 导入」里上传交易所导出的成交 CSV，再回来校准。</EmptyState>
           ) : (
             <div className="ml-run">
-              <Field label="成交记录"><select value={imp} onChange={(e) => setImp(e.target.value)}>{imports.map((i) => <option key={i.id} value={i.id}>{i.filename} · {i.rows} 行</option>)}</select></Field>
-              <Field label="名称"><input value={name} placeholder="例如 我的 Binance 成交" onChange={(e) => setName(e.target.value)} /></Field>
-              <button className="button primary" disabled={busy || !imp} onClick={calibrate}>{busy ? <><span className="spinner" /> 校准中</> : '校准'}</button>
+              <Field label="成交记录">
+                <select value={imp} disabled={readOnly} title={readOnly ? ro?.reason : undefined}
+                  aria-describedby={readOnly ? READ_ONLY_REASON_ID : undefined}
+                  onChange={(e) => setImp(e.target.value)}>
+                  {imports.map((i) => <option key={i.id} value={i.id}>{i.filename} · {i.rows} 行</option>)}
+                </select>
+              </Field>
+              <Field label="名称">
+                <input value={name} placeholder="例如 我的 Binance 成交" disabled={readOnly} title={readOnly ? ro?.reason : undefined}
+                  aria-describedby={readOnly ? READ_ONLY_REASON_ID : undefined}
+                  onChange={(e) => setName(e.target.value)} />
+              </Field>
+              <button className="button primary" disabled={busy || !imp || readOnly} title={readOnly ? ro?.reason : undefined}
+                aria-describedby={readOnly ? READ_ONLY_REASON_ID : undefined} onClick={calibrate}>
+                {busy ? <><span className="spinner" /> 校准中</> : '校准'}
+              </button>
             </div>
           )}
           {detail && <CalibrationView m={detail} />}
@@ -443,8 +486,12 @@ function Costs({ notify }: { notify: PageProps['notify'] }) {
                       <td><button className="link" onClick={async () => setDetail((await execution.cost(m.id!)).model)}>{m.name}</button><span className="ml-sub">{(m.symbols ?? []).join(', ')} · {when(m.created_at)}</span></td>
                       <td className="right num">{bp(m.a_bps)}</td><td className="right num">{m.Y.toFixed(2)}</td><td className="right num">{(m.r2 ?? 0).toFixed(2)}</td><td className="right num">{m.n}</td>
                       <td className="right">{m.active ? <Tag tone="ok">使用中</Tag> : <>
-                        <button className="button small" onClick={async () => { await execution.activateCost(m.id!); reload() }}>启用</button>
-                        <button className="button small danger" onClick={async () => { await execution.deleteCost(m.id!); reload() }}>删除</button></>}</td>
+                        <button className="button small" disabled={readOnly} title={readOnly ? ro?.reason : undefined}
+                          aria-describedby={readOnly ? READ_ONLY_REASON_ID : undefined}
+                          onClick={async () => { if (!readOnly) { await execution.activateCost(m.id!); reload() } }}>启用</button>
+                        <button className="button small danger" disabled={readOnly} title={readOnly ? ro?.reason : undefined}
+                          aria-describedby={readOnly ? READ_ONLY_REASON_ID : undefined}
+                          onClick={async () => { if (!readOnly) { await execution.deleteCost(m.id!); reload() } }}>删除</button></>}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -484,10 +531,13 @@ function CalibrationView({ m }: { m: CostModel }) {
 }
 
 function CapacityView({ active, notify }: { active: CostModel | null; notify: PageProps['notify'] }) {
+  const ro = useReadOnlyCapability('execution')
+  const readOnly = ro?.readOnly ?? false
   const [form, setForm] = useState({ symbols: 'BTC/USDT, ETH/USDT, SOL/USDT', turnover: 30, alpha: 30, rebalances: 365, fee_bps: 5 })
   const [res, setRes] = useState<Capacity | null>(null)
   const [busy, setBusy] = useState(false)
   const run = async () => {
+    if (readOnly) return
     setBusy(true)
     try {
       setRes(await execution.capacity({ symbols: form.symbols.split(/[,，\s]+/).filter(Boolean).map((s) => s.toUpperCase()), turnover: form.turnover, alpha: form.alpha / 100, rebalances: form.rebalances, fee_bps: form.fee_bps }))
@@ -515,7 +565,12 @@ function CapacityView({ active, notify }: { active: CostModel | null; notify: Pa
         <Field label="每年调仓次数"><input type="number" min={1} max={100000} value={form.rebalances} onChange={(e) => setForm({ ...form, rebalances: Number(e.target.value) })} /></Field>
         <Field label="手续费 bp"><input type="number" min={0} max={100} value={form.fee_bps} onChange={(e) => setForm({ ...form, fee_bps: Number(e.target.value) })} /></Field>
       </div>
-      <div className="ml-run"><button className="button primary" disabled={busy} onClick={run}>{busy ? <><span className="spinner" /> 计算中</> : '估计容量'}</button></div>
+      <div className="ml-run">
+        <button className="button primary" disabled={busy || readOnly} title={readOnly ? ro?.reason : undefined}
+          aria-describedby={readOnly ? READ_ONLY_REASON_ID : undefined} onClick={run}>
+          {busy ? <><span className="spinner" /> 计算中</> : '估计容量'}
+        </button>
+      </div>
       {res && chart && (
         <>
           <div className="ex-monitor">
@@ -543,6 +598,8 @@ function CapacityView({ active, notify }: { active: CostModel | null; notify: Pa
 
 /* ------------------------------------------------------------------ */
 function Recorder({ notify, onUse }: { notify: PageProps['notify']; onUse: (id: string) => void }) {
+  const ro = useReadOnlyCapability('execution')
+  const readOnly = ro?.readOnly ?? false
   const [rows, setRows] = useState<Recording[] | null>(null)
   const [form, setForm] = useState({ exchange: 'binance', symbol: 'BTC/USDT', minutes: 30, interval: 2 })
   const reload = () => execution.recordings().then((r) => setRows(r.recordings)).catch((e: Error) => notify(e.message, true))
@@ -555,6 +612,7 @@ function Recorder({ notify, onUse }: { notify: PageProps['notify']; onUse: (id: 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows])
   const start = async () => {
+    if (readOnly) return
     try { await execution.record({ exchange: form.exchange, symbol: form.symbol.toUpperCase(), seconds: form.minutes * 60, interval: form.interval }); notify('开始录制'); reload() } catch (e) { notify((e as Error).message, true) }
   }
   const STATUS: Record<string, [string, string]> = { recording: ['录制中', 'warn'], done: ['完成', 'ok'], stopped: ['已停止', ''], error: ['出错', 'bad'] }
@@ -562,13 +620,32 @@ function Recorder({ notify, onUse }: { notify: PageProps['notify']; onUse: (id: 
     <>
       <Panel title="录制真实盘口" subtitle="按固定间隔抓交易所的公开盘口快照与逐笔成交（只读行情，不需要密钥）。录完可以在仿真里回放，被动成交与排队的结论比 K 线推算可靠得多。">
         <div className="config-bar">
-          <Field label="交易所"><select value={form.exchange} onChange={(e) => setForm({ ...form, exchange: e.target.value })}><option value="binance">Binance</option><option value="okx">OKX</option></select></Field>
-          <Field label="标的"><input value={form.symbol} onChange={(e) => setForm({ ...form, symbol: e.target.value })} /></Field>
-          <Field label="时长（分钟）"><input type="number" min={1} max={240} value={form.minutes} onChange={(e) => setForm({ ...form, minutes: Number(e.target.value) })} /></Field>
-          <Field label="间隔（秒）"><input type="number" min={0.5} max={60} step={0.5} value={form.interval} onChange={(e) => setForm({ ...form, interval: Number(e.target.value) })} /></Field>
+          <Field label="交易所">
+            <select value={form.exchange} disabled={readOnly} title={readOnly ? ro?.reason : undefined}
+              aria-describedby={readOnly ? READ_ONLY_REASON_ID : undefined}
+              onChange={(e) => setForm({ ...form, exchange: e.target.value })}><option value="binance">Binance</option><option value="okx">OKX</option></select>
+          </Field>
+          <Field label="标的">
+            <input value={form.symbol} disabled={readOnly} title={readOnly ? ro?.reason : undefined}
+              aria-describedby={readOnly ? READ_ONLY_REASON_ID : undefined}
+              onChange={(e) => setForm({ ...form, symbol: e.target.value })} />
+          </Field>
+          <Field label="时长（分钟）">
+            <input type="number" min={1} max={240} value={form.minutes} disabled={readOnly} title={readOnly ? ro?.reason : undefined}
+              aria-describedby={readOnly ? READ_ONLY_REASON_ID : undefined}
+              onChange={(e) => setForm({ ...form, minutes: Number(e.target.value) })} />
+          </Field>
+          <Field label="间隔（秒）">
+            <input type="number" min={0.5} max={60} step={0.5} value={form.interval} disabled={readOnly} title={readOnly ? ro?.reason : undefined}
+              aria-describedby={readOnly ? READ_ONLY_REASON_ID : undefined}
+              onChange={(e) => setForm({ ...form, interval: Number(e.target.value) })} />
+          </Field>
         </div>
-        <div className="ml-run"><button className="button primary" onClick={start}>● 开始录制</button>
-          <span className="hint">录制在服务器后台进行，关掉页面不影响；服务重启会中断。</span></div>
+        <div className="ml-run">
+          <button className="button primary" disabled={readOnly} title={readOnly ? ro?.reason : undefined}
+            aria-describedby={readOnly ? READ_ONLY_REASON_ID : undefined} onClick={start}>● 开始录制</button>
+          <span className="hint">录制在服务器后台进行，关掉页面不影响；服务重启会中断。</span>
+        </div>
       </Panel>
       <Panel flush title="录制记录">
         {rows === null ? <Loading /> : rows.length === 0 ? <EmptyState glyph="●" title="还没有录制" /> : (
@@ -584,8 +661,17 @@ function Recorder({ notify, onUse }: { notify: PageProps['notify']; onUse: (id: 
                   <td className="muted">{when(r.created_at)}</td>
                   <td className="right">
                     {r.status === 'recording' && <button className="button small" onClick={async () => { await execution.stopRecording(r.id); reload() }}>停止</button>}
-                    {r.status !== 'recording' && r.snapshots >= 20 && <button className="button small" onClick={() => onUse(r.id)}>用于仿真</button>}
-                    <button className="button small danger" onClick={async () => { if (await appConfirm('删除这段录制？')) { await execution.deleteRecording(r.id); reload() } }}>删除</button>
+                    {r.status !== 'recording' && r.snapshots >= 20 && (
+                      <button className="button small" disabled={readOnly} title={readOnly ? ro?.reason : undefined}
+                        aria-describedby={readOnly ? READ_ONLY_REASON_ID : undefined}
+                        onClick={() => { if (!readOnly) onUse(r.id) }}>用于仿真</button>
+                    )}
+                    <button className="button small danger" disabled={readOnly} title={readOnly ? ro?.reason : undefined}
+                      aria-describedby={readOnly ? READ_ONLY_REASON_ID : undefined}
+                      onClick={async () => {
+                        if (readOnly) return
+                        if (await appConfirm('删除这段录制？')) { await execution.deleteRecording(r.id); reload() }
+                      }}>删除</button>
                   </td>
                 </tr>
               ))}</tbody>
@@ -632,18 +718,25 @@ function RunDetail({ id, meta, algoLabel, notify, onSaved }: { id: string; meta:
   const [data, setData] = useState<{ run: ExecRun; report: ExecReport } | null>(null)
   const [missing, setMissing] = useState(false)
   const [name, setName] = useState('')
+  const ro = useReadOnlyCapability('execution')
+  const readOnly = ro?.readOnly ?? false
   useEffect(() => { execution.run(id).then(setData).catch(() => setMissing(true)) }, [id])
   if (missing) return <EmptyState glyph="☰" title="试验不存在" />
   if (!data) return <Loading label="正在打开试验" />
   const save = async (status: ExecStatus) => {
+    if (readOnly) return
     try { const r = await execution.save({ run_id: id, name: name || undefined, status }); notify(`已存入执行方案库「${r.scheme.name}」`); onSaved(r.scheme.id) } catch (e) { notify((e as Error).message, true) }
   }
   return (
     <Panel title={algoLabel(data.run.algo)} subtitle={`${when(data.run.created_at)} · ${data.run.horizon} 步 · ${data.run.symbols.join(', ')}`} actions={<>
-      <input className="fx-search" placeholder="方案名称" value={name} onChange={(e) => setName(e.target.value)} aria-label="方案名称" />
+      <input className="fx-search" placeholder="方案名称" value={name} disabled={readOnly} title={readOnly ? ro?.reason : undefined}
+        aria-describedby={readOnly ? READ_ONLY_REASON_ID : undefined}
+        onChange={(e) => setName(e.target.value)} aria-label="方案名称" />
       <RecordPinButton type="execution_run" id={id} pinned={data.run.pinned} notify={notify} />
-      <button className="button small" onClick={() => save('candidate')}>存为候选</button>
-      <button className="button small primary" disabled={!data.report.admitted} onClick={() => save('active')}>启用</button>
+      <button className="button small" disabled={readOnly} title={readOnly ? ro?.reason : undefined}
+        aria-describedby={readOnly ? READ_ONLY_REASON_ID : undefined} onClick={() => save('candidate')}>存为候选</button>
+      <button className="button small primary" disabled={!data.report.admitted || readOnly} title={readOnly ? ro?.reason : undefined}
+        aria-describedby={readOnly ? READ_ONLY_REASON_ID : undefined} onClick={() => save('active')}>启用</button>
     </>}>
       {data.run.project_id && <div className="hint">来自 <a href={`#/lab/${data.run.project_id}`}>AI 研究室的项目</a></div>}
       <ExecutionFullReport report={data.report} states={meta?.states ?? []} />

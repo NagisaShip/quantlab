@@ -1,0 +1,136 @@
+/* Round 4：停用研究能力的只读状态条与新建路由落点。暖色令牌沿用 QuantLab 的警告色。 */
+
+.ro-banner {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex-wrap: wrap;
+  margin: 0 0 14px;
+  padding: 8px 12px;
+  border: 1px solid var(--amber-line);
+  border-left: 3px solid var(--amber);
+  border-radius: var(--r);
+  background: var(--amber-soft);
+  color: var(--ink-2);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.ro-banner-mark {
+  flex: none;
+  width: 17px;
+  height: 17px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid var(--amber-line);
+  border-radius: 50%;
+  color: var(--amber);
+  font: 600 11px/1 var(--num);
+}
+
+.ro-banner-copy {
+  flex: 1 1 420px;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
+.ro-banner-copy strong {
+  flex: none;
+  color: var(--amber);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.ro-banner-copy span {
+  min-width: 0;
+  color: var(--ink-2);
+}
+
+.ro-banner .button {
+  flex: none;
+  margin-left: auto;
+}
+
+.ro-banner .button + .button {
+  margin-left: 0;
+}
+
+.ro-gate {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  max-width: 660px;
+  margin: 16px 0;
+  padding: 14px 16px;
+  border: 1px solid var(--amber-line);
+  border-radius: var(--r);
+  background: var(--amber-soft);
+}
+
+.ro-gate-mark {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid var(--amber-line);
+  border-radius: var(--r-sm);
+  color: var(--amber);
+  font-size: 14px;
+  line-height: 1;
+}
+
+.ro-gate-body { min-width: 0; }
+
+.ro-gate h2 {
+  margin: 0 0 3px;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.ro-gate p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+
+.ro-gate-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+@media (max-width: 720px) {
+  .ro-banner {
+    align-items: flex-start;
+    gap: 7px;
+    padding: 8px 10px;
+  }
+
+  .ro-banner-copy {
+    flex-basis: calc(100% - 26px);
+    display: block;
+  }
+
+  .ro-banner-copy strong {
+    display: block;
+    margin-bottom: 1px;
+  }
+
+  .ro-banner .button {
+    margin-left: 24px;
+  }
+
+  .ro-gate {
+    gap: 9px;
+    padding: 11px 12px;
+  }
+}

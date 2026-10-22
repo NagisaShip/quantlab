@@ -3,6 +3,7 @@ import { QuantBot } from './QuantBot'
 
 /** 16px 线性图标。stroke 跟随 currentColor，深浅主题自动适配。 */
 const P: Record<string, ReactNode> = {
+  workflows: <><rect x="1" y="2" width="5" height="4" rx="1" /><rect x="10" y="10" width="5" height="4" rx="1" /><path d="M6 4h3v8h1" /></>,
   home: <><path d="M2.5 7.2 8 2.8l5.5 4.4" /><path d="M4 6.2V13h3V9.5h2V13h3V6.2" /></>,
   strategies: <><path d="M5.5 4 2.5 8l3 4" /><path d="M10.5 4l3 4-3 4" /><path d="M9 2.8 7 13.2" /></>,
   backtests: <><path d="M2.5 13.5h11" /><path d="M3 11l3-3.5 2.5 2 4.5-5.5" /><path d="M10.5 4h2.5v2.5" /></>,

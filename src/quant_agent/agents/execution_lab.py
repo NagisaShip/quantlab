@@ -467,7 +467,7 @@ class ExecutionLab(DomainLab):
             kind="text",
             mode="fallback",
             content=(
-                f"**规则降级**（{_short(reason)}）：自由对话需要模型。现在可以直接用：\n\n"
+                f"**规则降级**（{_short(reason)}）。这次没有拿到模型回答，可以点这条消息上的「重试」再试一次；现在也能用：\n\n"
                 "- 粘贴一份 JSON 执行方案，平台会立即在盘口回放里仿真\n"
                 "- 点「自动迭代」：TWAP → 自适应 → VWAP → 被动 TWAP → AC → POV → 冰山，每一版都和 TWAP、市价比\n"
                 "- `/评估` 重新仿真　`/团队` 召集执行小组　`/启用` 存进执行方案库"

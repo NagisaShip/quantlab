@@ -15,13 +15,14 @@ import hashlib
 import json
 import os
 import re
+import uuid
 from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlparse
 
 import httpx
 
-from .base import ChatResult, LLMError, Message, Tool, ToolCall, http_error, split_data_url
+from .base import ChatResult, LLMError, Message, Tool, ToolCall, http_error, is_opencode_session_error, split_data_url
 
 
 def _resolve_env(value: str) -> str:
@@ -67,6 +68,11 @@ def _opencode_session(messages: list[Message]) -> str:
     # Stable per-conversation routing id. Do not hash the whole history: it grows every turn.
     seed = next((m.content for m in messages if m.role == "user" and m.content), "default")
     return "quantlab-" + hashlib.sha256(seed.encode("utf-8")).hexdigest()[:32]
+
+
+def _new_opencode_session() -> str:
+    """网关偶发 400 MissingSessionID 时，换一个全新的会话标识再试一次。"""
+    return "quantlab-" + uuid.uuid4().hex
 
 
 def openai_headers(base_url: str, api_key: str, messages: list[Message] | None = None) -> dict[str, str]:
@@ -147,12 +153,17 @@ class OpenAICompatibleProvider:
         self._client = httpx.Client(timeout=timeout, transport=transport)
         self._deepseek = "deepseek" in (name + base_url).lower()
 
-    def _messages(self, messages: list[Message]) -> list[dict[str, Any]]:
+    def _thinking_requires_reasoning(self, model: str | None) -> bool:
+        """思考模式（DeepSeek V4 / OpenCode 网关转发）在带工具的回合要求把 reasoning_content 传回。"""
+        return self._deepseek or "deepseek" in (model or "").lower() or _is_opencode(self.base_url)
+
+    def _messages(self, messages: list[Message], model: str | None = None) -> list[dict[str, Any]]:
         out = []
         for m in messages:
             d = m.to_dict()
-            if self._deepseek and m.reasoning and m.role == "assistant":
-                d["reasoning_content"] = m.reasoning  # DeepSeek 思考模式的工具回合需要原样带回
+            if m.role == "assistant" and m.tool_calls and self._thinking_requires_reasoning(model):
+                # DeepSeek 思考模式的工具回合需要原样带回；即使没有摘要也要把字段带上
+                d["reasoning_content"] = m.reasoning or ""
             out.append(d)
         return out
 
@@ -171,7 +182,7 @@ class OpenAICompatibleProvider:
         effort: str | None = None,
         on_delta: Callable[[str, str], None] | None = None,
     ) -> ChatResult:
-        payload: dict[str, Any] = {"model": model, "messages": self._messages(messages)}
+        payload: dict[str, Any] = {"model": model, "messages": self._messages(messages, model)}
         mode = openai_effort_mode(model, self.base_url)
         # DeepSeek 等「换模型调思考」的服务商：网关上的混合思考模型（如 v4 系列）也可能认 reasoning_effort，同样先试
         if mode == "switch":
@@ -191,12 +202,20 @@ class OpenAICompatibleProvider:
         try:
             return self._send(payload, model, stream, on_delta, self._headers(messages))
         except LLMError as exc:
+            # OpenCode 网关偶发 400 MissingSessionID（会话头丢失/过期）：换一个全新会话标识重试一次。
+            # 这类错误换模型没用，但换会话头通常立刻恢复。
+            if is_opencode_session_error(str(exc)):
+                headers = {**self._headers(messages), "x-opencode-session": _new_opencode_session()}
+                try:
+                    return self._send(payload, model, stream, on_delta, headers)
+                except LLMError as retry_exc:
+                    exc = retry_exc
             # 认不出的模型带了 reasoning_effort 被拒：去掉重发一次，并记住这个模型不支持
             if mode == "auto" and "reasoning_effort" in payload and getattr(exc, "rejects_effort", False):
                 _NO_EFFORT.add((self.name, model))
                 payload.pop("reasoning_effort", None)
                 return self._send(payload, model, stream, on_delta, self._headers(messages))
-            raise
+            raise exc
 
     def _send(
         self,
@@ -363,6 +382,22 @@ class OpenAIResponsesProvider(OpenAICompatibleProvider):
                 items.append({"role": "user", "content": parts})
             elif m.content:
                 items.append({"role": m.role, "content": m.content})
+            if m.role == "assistant":
+                # 思考模型的工具回合：把上一轮的 reasoning 传回去（OpenAI Responses 用 reasoning item）。
+                # 缺了这个，OpenCode 网关转 DeepSeek 后会报
+                # "The reasoning_content in the thinking mode must be passed back to the API."
+                raw = [b for b in (m.provider_blocks or []) if isinstance(b, dict) and b.get("type") == "reasoning"]
+                if raw and m.tool_calls:
+                    items.extend(raw)
+                elif m.tool_calls and self._thinking_requires_reasoning(model):
+                    items.append(
+                        {
+                            "type": "reasoning",
+                            "summary": [
+                                {"type": "summary_text", "text": m.reasoning or "（模型未返回思考摘要）"}
+                            ],
+                        }
+                    )
             for tc in m.tool_calls:
                 items.append(
                     {
@@ -407,26 +442,36 @@ class OpenAIResponsesProvider(OpenAICompatibleProvider):
         )
         headers = self._headers(messages)
         url = f"{self.base_url}/responses"
-        try:
-            if on_delta or stream:
-                payload["stream"] = True
-                with self._client.stream("POST", url, headers=headers, json=payload) as resp:
-                    if resp.status_code >= 400:
+
+        def attempt(request_headers: dict[str, str]) -> ChatResult:
+            try:
+                if on_delta or stream:
+                    body = {**payload, "stream": True}
+                    with self._client.stream("POST", url, headers=request_headers, json=body) as resp:
+                        if resp.status_code >= 400:
+                            resp.read()
+                            resp.raise_for_status()
+                        if _is_event_stream(resp):
+                            return self._collect_events(resp, model, on_delta)
                         resp.read()
-                        resp.raise_for_status()
-                    if _is_event_stream(resp):
-                        return self._collect_events(resp, model, on_delta)
-                    resp.read()
-                    return self._parse_response(resp.json(), model, on_delta)
-            resp = self._client.post(url, headers=headers, json=payload)
-            resp.raise_for_status()
-        except httpx.HTTPError as e:
-            raise http_error(self.name, e) from e
+                        return self._parse_response(resp.json(), model, on_delta)
+                resp = self._client.post(url, headers=request_headers, json=payload)
+                resp.raise_for_status()
+            except httpx.HTTPError as e:
+                raise http_error(self.name, e) from e
+            try:
+                data = resp.json()
+            except ValueError as e:
+                raise LLMError(f"[{self.name}] 返回格式无法解析：{resp.text[:200]}") from e
+            return self._parse_response(data, model, None)
+
         try:
-            data = resp.json()
-        except ValueError as e:
-            raise LLMError(f"[{self.name}] 返回格式无法解析：{resp.text[:200]}") from e
-        return self._parse_response(data, model, None)
+            return attempt(headers)
+        except LLMError as exc:
+            if is_opencode_session_error(str(exc)):
+                # 与 chat/completions 相同：网关会话头异常时换新会话标识重试一次。
+                return attempt({**headers, "x-opencode-session": _new_opencode_session()})
+            raise
 
     def _parse_response(self, data: dict[str, Any], model: str, on_delta) -> ChatResult:
         if not isinstance(data, dict) or not isinstance(data.get("output"), list):
@@ -451,6 +496,7 @@ class OpenAIResponsesProvider(OpenAICompatibleProvider):
                     )
                 )
         content, reasoning = "".join(text), "\n".join(t for t in thinking if t)
+        blocks = [item for item in data["output"] if isinstance(item, dict) and item.get("type") == "reasoning"]
         if on_delta:
             if reasoning:
                 on_delta("thinking", reasoning)
@@ -467,6 +513,7 @@ class OpenAIResponsesProvider(OpenAICompatibleProvider):
             usage=data.get("usage") or {},
             raw=data,
             thinking=reasoning,
+            provider_blocks=blocks,
             stop_reason=stop,
         )
 

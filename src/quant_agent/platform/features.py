@@ -56,11 +56,12 @@ FEATURES: dict[str, dict[str, Any]] = {
         "note": "独立多空腿、position_side 成交归属、逐腿资金费与强平",
     },
     "execution.real_spot": {
-        "default": True,
+        # 真实资金默认关闭：必须由本地管理员/服务器管理员显式开启，开启前先过二次确认与风险说明。
+        "default": False,
         "label": "真实资金现货",
         "implementation": "partial",
         "group": "真实资金",
-        "note": "仅微实盘：Binance / OKX 现货、已毕业策略、部署开关与逐次确认",
+        "note": "仅微实盘：Binance / OKX 现货、已毕业策略、部署开关与逐次确认；默认关闭，需管理员显式开启",
     },
     "execution.real_perp": {
         "default": False,

@@ -20,6 +20,37 @@ async function invitedMember(request: APIRequestContext) {
 }
 
 test.describe('09 · 首次注册新手引导', () => {
+
+  test('收起引导后跨设置分支切换不会复活欢迎页，主动重播仍然有效', async ({ page, request }) => {
+    const session = await invitedMember(request)
+    await uiLogin(page, session, { onboarding: true })
+    await expect(page.locator('.onboarding-welcome-card')).toBeVisible()
+    await page.getByRole('button', { name: '先自己看看' }).click()
+    await expect(page.locator('.onboarding-welcome-card')).toHaveCount(0)
+    // Hash navigation preserves App state and exercises both independently mounted hosts.
+    for (const route of ['models', 'settings/account', 'home', 'models', 'home']) {
+      await page.evaluate((route) => { window.location.hash = '/' + route }, route)
+      await expect(page).toHaveURL(new RegExp('#/' + route + '$'))
+      await expect(page.locator('.onboarding-welcome-card')).toHaveCount(0)
+      await expect(page.locator('.onboarding-tutor')).toHaveCount(0)
+    }
+    await page.getByRole('button', { name: '继续', exact: true }).click()
+    await expect(page.locator('.onboarding-welcome-card')).toBeVisible()
+    await page.getByRole('button', { name: '开始全链路引导' }).click()
+    await expect(page.locator('.onboarding-bubble h3')).toHaveText('先认识研究闭环')
+    for (const route of ['models', 'home']) {
+      await page.evaluate((route) => { window.location.hash = '/' + route }, route)
+      await expect(page).toHaveURL(new RegExp('#/' + route + '$'))
+      await expect(page.locator('.onboarding-bubble h3')).toHaveText('先认识研究闭环')
+      await expect(page.locator('.onboarding-welcome-card')).toHaveCount(0)
+    }
+    await page.getByRole('button', { name: '跳过引导', exact: true }).click()
+    const persisted = await api(request, '/api/onboarding', { workspaceId: session.workspaceId })
+    expect(persisted.body.onboarding.status).toBe('skipped')
+    await page.reload()
+    await expect(page.locator('.onboarding-welcome-card')).toHaveCount(0)
+  })
+
   test('邀请成员首次登录：与管理员一致的完整页面链路、完成与持久化', async ({ page, request }) => {
     const session = await invitedMember(request)
     await uiLogin(page, session, { onboarding: true })

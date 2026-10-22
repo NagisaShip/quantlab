@@ -2,6 +2,7 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { ImageViewerHost } from './components/ImageViewer'
 import App from './App'
+import DesktopTitleBar from './components/DesktopTitleBar'
 import { loadLang, startDomTranslator } from './i18n'
 import { startMobileTableCards } from './mobileTables'
 import { applyPrefs, watchSystemTheme } from './components/prefs'
@@ -28,6 +29,7 @@ import './stylesMotion.css'
 import './stylesPublic.css'
 import './stylesResponsiveTables.css'
 import './stylesOnboarding.css'
+import './stylesDesktop.css'
 
 applyPrefs()
 watchSystemTheme()
@@ -43,6 +45,7 @@ loadLang().catch(() => undefined).finally(() => {
   startMobileTableCards()
   createRoot(document.getElementById('root')!).render(
     <StrictMode>
+      <DesktopTitleBar />
       <App />
       <ImageViewerHost />
     </StrictMode>,

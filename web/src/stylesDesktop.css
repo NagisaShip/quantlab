@@ -1,0 +1,187 @@
+/* 无边框桌面窗口：自绘标题栏 + 布局让位。仅在 Tauri 桌面壳里生效（html[data-desktop-frame="tauri"]）。 */
+
+html[data-desktop-frame="tauri"] {
+  --dtb-h: 38px;
+}
+
+html[data-desktop-frame="tauri"] body {
+  padding-top: var(--dtb-h);
+}
+
+/* 固定/吸顶元素让出标题栏高度 */
+html[data-desktop-frame="tauri"] .sidebar {
+  top: var(--dtb-h);
+}
+
+html[data-desktop-frame="tauri"] .topbar {
+  top: var(--dtb-h);
+}
+
+html[data-desktop-frame="tauri"] .tape {
+  top: var(--dtb-h);
+}
+
+/* 右侧问 AI 面板不能钻进自绘标题栏，标题和关闭按钮必须始终可点。 */
+html[data-desktop-frame="tauri"] .ask-panel {
+  top: var(--dtb-h, 38px);
+}
+
+/* 标题栏已经显示品牌，侧栏不再重复一行 logo + 版本号 */
+html[data-desktop-frame="tauri"] .side-brand {
+  display: none;
+}
+
+html[data-desktop-frame="tauri"] .side-top {
+  padding-top: 2px;
+}
+
+.dtb {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--dtb-h, 38px);
+  z-index: 3000;
+  display: flex;
+  align-items: center;
+  background: var(--canvas);
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.dtb-brand {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 14px;
+  color: var(--accent);
+}
+
+.dtb-name {
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.dtb-spacer {
+  flex: 1;
+  height: 100%;
+}
+
+/* 项目级最近结果：只占窗口按钮左侧一小段，不进入拖动区。 */
+.dtb-recent {
+  flex: 0 1 auto;
+  max-width: 220px;
+  height: 26px;
+  margin: 0 8px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--sunken);
+  color: var(--ink-2);
+  font: 11.5px var(--sans);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--dur-1, 120ms) ease, border-color var(--dur-1, 120ms) ease, color var(--dur-1, 120ms) ease;
+}
+
+.dtb-recent:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--ink);
+  border-color: var(--line-2);
+}
+
+.dtb-recent:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -3px;
+}
+
+.dtb-recent:disabled {
+  opacity: .68;
+  cursor: default;
+}
+
+.dtb-recent[data-state="ready"],
+.dtb-recent[data-state="active"] {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.dtb-recent[data-state="stale"],
+.dtb-recent[data-state="failed"] {
+  border-color: var(--amber-line);
+  background: var(--amber-soft);
+  color: var(--amber);
+}
+
+.dtb-recent[data-state="error"] {
+  border-color: var(--danger-line);
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.dtb-recent[data-state="unavailable"] {
+  border-color: var(--line-2);
+  background: var(--sunken);
+  color: var(--muted);
+}
+
+.dtb-recent-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.dtb-recent-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 1080px) {
+  .dtb-recent { max-width: 170px; }
+  .dtb-recent-label { max-width: 138px; }
+}
+
+.dtb-actions {
+  height: 100%;
+  display: flex;
+  align-items: stretch;
+}
+
+.dtb-btn {
+  width: 44px;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: default;
+  transition: background var(--dur-1, 120ms) ease, color var(--dur-1, 120ms) ease;
+}
+
+.dtb-btn:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+
+.dtb-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -3px;
+}
+
+.dtb-close:hover {
+  background: #d13438;
+  color: #fff;
+}

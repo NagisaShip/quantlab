@@ -15,7 +15,8 @@ import { QuantBot, QuantEyes, useBotFlash, viewFromSignal, type BotView } from '
 import { store } from '../../components/prefs'
 import { t } from '../../i18n'
 import { pickExamples, RESEARCH_TYPES, type ResearchType } from '../lab/domains'
-import { MarketSwitcher, syncData } from '../lab/research'
+import { syncData } from '../lab/research'
+import { WatchSettings, storedWatchRange, watchRange, WATCH_RANGE_KEY } from './WatchSettings'
 import { labChanged } from '../lab/bus'
 
 /** 斜杠命令 → 研究类型。中英文都认。 */
@@ -237,19 +238,20 @@ export function Watchlist({ notify, onNavigate }: { notify: (m: string, e?: bool
   const [symbols, setSymbols] = useState<string[]>(() => {
     try { const v = JSON.parse(store.get(WATCH_KEY, '[]')); return Array.isArray(v) && v.length ? v : DEFAULT_WATCH } catch { return DEFAULT_WATCH }
   })
-  const [tf, setTf] = useState(() => store.get('qa.home.watchTf', '1h'))
+  const [rangeKey, setRangeKey] = useState(() => storedWatchRange((k, fallback) => store.get(k, fallback)))
+  const range = watchRange(rangeKey)
   const [quotes, setQuotes] = useState<Quote[] | null>(null)
   const [syncing, setSyncing] = useState('')
   const views = useModelViews()
   const load = async () => {
-    const limit = tf === '1d' ? 90 : 168
+    const limit = range.bars
     // 关注列表：浏览器直连交易所取行情；直连失败的标的再交给服务器（服务器有本地缓存与「未接入数据」说明）
-    const direct = await Promise.all(symbols.map((s) => directBars(s, tf, limit)))
+    const direct = await Promise.all(symbols.map((s) => directBars(s, range.tf, limit)))
     const missing = symbols.filter((_, i) => !direct[i])
     let server: Quote[] = []
     if (missing.length) {
       try {
-        server = (await get<{ quotes: Quote[] }>(`/api/market/quotes?symbols=${encodeURIComponent(missing.join(','))}&timeframe=${tf}&limit=${limit}`)).quotes
+        server = (await get<{ quotes: Quote[] }>(`/api/market/quotes?symbols=${encodeURIComponent(missing.join(','))}&timeframe=${range.tf}&limit=${limit}`)).quotes
       } catch (e) {
         notify((e as Error).message, true)
       }
@@ -260,51 +262,66 @@ export function Watchlist({ notify, onNavigate }: { notify: (m: string, e?: bool
       return server.find((q) => q.symbol === s.toUpperCase()) ?? { symbol: s, connected: false, error: '未接入数据' }
     }))
   }
-  useEffect(() => { setQuotes(null); load() }, [symbols.join(','), tf]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { setQuotes(null); load() }, [symbols.join(','), rangeKey]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const sync = async (sym: string) => {
     setSyncing(sym)
     try {
-      const r = await syncData([sym], tf, 30)
+      const r = await syncData([sym], range.tf, range.days)
       const res = r.results[0]
-      notify(res?.ok ? `${sym} 已同步 ${res.bars} 根 ${tf} 行情` : `${sym} 同步失败：${res?.errors?.[0] ?? res?.error ?? '交易所没有返回数据'}`, !res?.ok)
+      notify(res?.ok ? `${sym} 已同步 ${res.bars} 根 ${range.tf} 行情` : `${sym} 同步失败：${res?.errors?.[0] ?? res?.error ?? '交易所没有返回数据'}`, !res?.ok)
       load()
     } catch (e) { notify((e as Error).message, true) } finally { setSyncing('') }
   }
-  const span = tf === '1d' ? '90 天' : tf === '4h' ? '28 天' : tf === '1h' ? '7 天' : `${168} 根`
+  // 点关注卡片：跳到行情与数据，并默认选中这张卡的标的、K 线周期与时间段（否则会落回默认的 BTC/USDT）
+  const openData = (q: Quote) => onNavigate(`data/${q.symbol}/${range.tf}/range:${range.dataRange}`)
   return (
     <div className="watch">
       <div className="watch-head">
         <b>关注</b>
-        <span className="muted small">{span} · 真实行情</span>
+        <span className="muted small">{range.label} · 真实行情</span>
         <span className="lab2-card-gap" />
-        <MarketSwitcher symbols={symbols} timeframe={tf} multi compact notify={notify}
-          onChange={(s, t) => { setSymbols(s); setTf(t); store.set(WATCH_KEY, JSON.stringify(s)); store.set('qa.home.watchTf', t) }} />
+        <WatchSettings symbols={symbols} range={rangeKey} notify={notify}
+          onChange={(s, r) => { setSymbols(s); setRangeKey(r); store.set(WATCH_KEY, JSON.stringify(s)); store.set(WATCH_RANGE_KEY, r) }} />
       </div>
       <div className="watch-grid stagger">
         {(quotes ?? symbols.map((s) => ({ symbol: s, connected: true } as Quote))).map((q) => {
           const c = q.c ?? []
           const last = c[c.length - 1]
-          const back = tf === '1h' ? 24 : tf === '4h' ? 6 : tf === '1d' ? 1 : 24
-          const chg = c.length > back ? last / c[c.length - 1 - back] - 1 : null
+          // 涨跌幅与折线用同一个区间（所选时间区间），颜色与数字自然一致
+          const chg = c.length > 1 ? last / c[0] - 1 : null
           const mv = views[q.symbol]
+          // 能点开（已接入数据、且已经加载完）才把整张卡做成按钮；否则保留「同步」按钮，避免嵌套交互
+          const openable = q.connected && quotes !== null
           return (
-            <div key={q.symbol} className={`watch-card${!q.connected ? ' off' : ''}${quotes === null ? ' loading' : ''}`}>
+            <div key={q.symbol}
+              className={`watch-card${!q.connected ? ' off' : ''}${quotes === null ? ' loading' : ''}${openable ? ' openable' : ''}`}
+              role={openable ? 'button' : undefined}
+              tabIndex={openable ? 0 : undefined}
+              aria-label={openable ? `打开 ${q.symbol} 的行情与数据` : undefined}
+              title={openable ? `在行情与数据中查看 ${q.symbol} · ${range.tf}` : undefined}
+              onClick={openable ? () => openData(q) : undefined}
+              onKeyDown={openable ? (e) => {
+                if (e.target !== e.currentTarget) return
+                if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openData(q) }
+              } : undefined}>
               <div className="watch-top">
                 <QuantEyes size={16} state={quotes === null ? 'thinking' : !q.connected ? 'confused' : 'idle'} view={mv?.view ?? 'unknown'}
                   title={mv ? `模型「${mv.model}」的观点` : '还没有模型信号'} />
                 <b>{q.symbol.replace('/USDT', '')}<small>/USDT</small></b>
-                {chg !== null && <span className={`watch-chg ${chg >= 0 ? 'positive' : 'negative'}`} title={tf === '1d' ? '最近 1 天涨跌' : '最近 24 小时涨跌'}>{chg >= 0 ? '+' : ''}{(chg * 100).toFixed(2)}%<small>{tf === '1d' ? '1d' : '24h'}</small></span>}
+                {chg !== null && <span className={`watch-chg ${chg >= 0 ? 'positive' : 'negative'}`} title={`所选区间（${range.label}）涨跌`}>{chg >= 0 ? '+' : ''}{(chg * 100).toFixed(2)}%<small>{range.short}</small></span>}
               </div>
               {quotes === null ? <div className="watch-skel" /> : q.connected && c.length > 1 ? (
                 <>
                   <div className="watch-price num">{last.toLocaleString('en-US', { maximumFractionDigits: last < 1 ? 5 : 2 })}</div>
-                  <button type="button" className="watch-spark" onClick={() => onNavigate('data')} title="打开行情与数据"><Sparkline values={c} width={150} height={34} /></button>
+                  <div className="watch-spark" aria-hidden="true">
+                    <Sparkline values={c} width={150} height={34} />
+                  </div>
                 </>
               ) : (
                 <div className="watch-off">
                   <span>未接入数据</span>
-                  <button type="button" className="link" disabled={syncing === q.symbol} onClick={() => sync(q.symbol)}>{syncing === q.symbol ? '同步中…' : '同步'}</button>
+                  <button type="button" className="link" disabled={syncing === q.symbol} onClick={(e) => { e.stopPropagation(); sync(q.symbol) }}>{syncing === q.symbol ? '同步中…' : '同步'}</button>
                 </div>
               )}
             </div>

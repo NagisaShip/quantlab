@@ -1,3 +1,4 @@
+import { setDeploymentMode } from './deployment'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, type ConfigView, type Health } from './api/core'
 import { BusyOverlay, Callout, PageErrorBoundary, Toast } from './components/ui'
@@ -47,11 +48,13 @@ import AskAIPanel from './components/AskAI'
 import OnboardingHost from './onboarding/OnboardingHost'
 import GroupsPage from './pages/Groups'
 import InboxPage from './pages/Inbox'
+import ApprovalsPage from './pages/Approvals'
+import ContextPackPage from './pages/ContextPack'
 import IssuesPage, { NewIssueModal } from './pages/Issues'
 import AdminPage from './pages/Admin'
 import LineagePage from './pages/LineagePage'
 import { InboxBell, MessageToasts, PlatformBanner, UnreadDot } from './components/Inbox'
-import { v4, type Me } from './api/platform'
+import { v4, type Me, type OnboardingState } from './api/platform'
 import { ApiError, currentWorkspace, setWorkspace } from './http'
 import { Loading } from './components/ui'
 import { PageHead } from './components/PageHead'
@@ -61,12 +64,18 @@ import { SettingsShell, settingsKeyOf } from './components/SettingsShell'
 import { SidebarConversations } from './pages/lab/Conversations'
 import PrivacyPage from './pages/Privacy'
 import ResearchFlowPage from './pages/ResearchFlow'
+import WorkflowPage from './features/workflows/WorkflowPage'
+import { useResearchPluginState } from './features/workflows/plugins'
+import { ReadOnlyCapabilityBanner, ResearchCapabilityProvider, type ResearchCapabilityId, type ResearchCapabilityState } from './features/workflows/ReadOnlyCapability'
+import FunctionPage from './features/workflows/FunctionPage'
 import PublicSharePage from './pages/PublicShare'
 import MentorPage from './pages/Mentor'
 import { SideToggle, SideResizer, useSidebar } from './components/sidebar'
+import AboutDialog from './components/AboutDialog'
 import { lang, setLang, t } from './i18n'
 
 type PageKey =
+  | 'local'
   | 'home'
   | 'board'
   | 'strategies'
@@ -79,6 +88,8 @@ type PageKey =
   | 'validation'
   | 'lab'
   | 'flow'
+  | 'workflows'
+  | 'function'
   | 'mentor'
   | 'backtests'
   | 'paper'
@@ -99,6 +110,8 @@ type PageKey =
   | 'settings'
   | 'groups'
   | 'inbox'
+  | 'approvals'
+  | 'context-pack'
   | 'issues'
   | 'admin'
   | 'lineage'
@@ -118,6 +131,19 @@ const SETTINGS_PAGES = new Set<PageKey>(['settings', 'models', 'roles', 'prompts
 
 /** 对话类页面铺满主区域，不要页边距与页脚。 */
 const FULL_BLEED = new Set<PageKey>(['lab', 'teams', 'groups'])
+/** 只有这四个内置研究领域采用「停用后仍可读历史」的页面级只读策略。 */
+const DOMAIN_PAGE: Partial<Record<PageKey, ResearchCapabilityId>> = {
+  factors: 'factor',
+  modellib: 'model',
+  portfolio: 'portfolio',
+  execution: 'execution',
+}
+const DOMAIN_LABEL: Record<ResearchCapabilityId, string> = {
+  factor: '因子研究',
+  model: '模型研究',
+  portfolio: '组合研究',
+  execution: '执行研究',
+}
 
 /**
  * 导航按使用顺序排：先研究素材，再做策略，再验证，最后运行。
@@ -130,6 +156,7 @@ const NAV: { group: string; step?: number; items: { key: PageKey; label: string 
       { key: 'home', label: '首页' },
       { key: 'lab', label: 'AI 研究室' },
       { key: 'flow', label: '研究流程' },
+      { key: 'workflows', label: '研究工作流' },
     ],
   },
   {
@@ -169,6 +196,8 @@ const NAV: { group: string; step?: number; items: { key: PageKey; label: string 
     group: '自动化',
     items: [
       { key: 'long-running', label: '定时任务' },
+      { key: 'approvals', label: '待审批' },
+      { key: 'context-pack', label: '上下文包' },
     ],
   },
   {
@@ -196,6 +225,7 @@ const HUB_OF: Partial<Record<PageKey, PageKey>> = Object.fromEntries(
 ) as Partial<Record<PageKey, PageKey>>
 
 const PAGE_TITLES: Record<PageKey, string> = {
+  local: '本地项目与执行环境',
   home: '首页',
   board: '手机看板',
   strategies: '我的策略',
@@ -208,6 +238,8 @@ const PAGE_TITLES: Record<PageKey, string> = {
   validation: '上线验证',
   lab: 'AI 研究室',
   flow: '研究流程',
+  workflows: '研究工作流',
+  function: '研究函数代码',
   mentor: '研究导师',
   backtests: '回测',
   paper: '纸面模拟',
@@ -223,6 +255,8 @@ const PAGE_TITLES: Record<PageKey, string> = {
   teams: '团队讨论',
   roles: '角色与团队',
   'long-running': '定时任务',
+  approvals: '待审批',
+  'context-pack': '上下文包',
   prompts: '提示词',
   models: '模型',
   docs: 'API 文档',
@@ -278,6 +312,7 @@ function HubTabs({ tabs, page }: { tabs: { key: PageKey; label: string }[]; page
 
 /** 每个页面一句话说明它是做什么的，显示在页头标题下面。 */
 const PURPOSE: Partial<Record<PageKey, string>> = {
+  workflows: '连接真实函数、检查数据与方法，并导出脱离平台可运行的研究',
   flow: '把数据、因子、策略、模型、组合、执行、验证与运行串成一条可操作的研究流程',
   mentor: '用课程、检查项和红旗理解一笔研究为什么可信',
   data: '看行情、查数据质量、导入自己的 K 线',
@@ -307,6 +342,7 @@ const PURPOSE: Partial<Record<PageKey, string>> = {
   models: '配置 AI 研究室用的大模型',
   prompts: '各角色的提示词，可以改写',
   'long-running': '每天按设定时间自动执行研究队列，结果写入晨报',
+  'context-pack': '查看这一轮会进入模型的系统规则、项目规则、来源引用与预算',
   settings: '工作区、成员、额度和运行节点',
   docs: '策略 SDK 的完整参考',
   brand: 'QuantLab Bot 的造型、表情语法与使用边界',
@@ -322,13 +358,20 @@ const LEGACY: Record<string, string> = {
 function routeFromHash(): { page: PageKey; arg: string } {
   const head0 = window.location.hash.replace(/^#\/?/, '').split('/')[0]
   if (LEGACY[head0]) window.history.replaceState(null, '', `#/${LEGACY[head0]}`)
+  // 旧入口 #/local 在解析路由的同一帧归一到设置内的本地项目页（replaceState，不新增历史）。
+  // 原生启动由壳层直接给 #/local / #/workflows；这里同步归一，避免先渲染一帧空页再跳设置页。
+  if (head0 === 'local') window.history.replaceState(null, '', '#/settings/local')
   const raw = window.location.hash.replace(/^#\/?/, '')
   const [head, ...rest] = raw.split('/')
   const page = VALID_PAGES.has(head as PageKey) ? (head as PageKey) : 'home'
   return { page, arg: decodeURIComponent(rest.join('/')) }
 }
 
-function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
+function Workbench({ me, onMeChanged, onOnboardingChanged }: {
+  me: Me
+  onMeChanged: () => void
+  onOnboardingChanged: (userId: string, state: OnboardingState) => void
+}) {
   const [route, setRoute] = useState(() => routeFromHash())
   const page = route.page
   const [health, setHealth] = useState<Health | null>(null)
@@ -363,7 +406,9 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
 
   const lastMain = useRef('home')
   useEffect(() => {
-    if (!SETTINGS_PAGES.has(page)) lastMain.current = window.location.hash.replace(/^#\/?/, '') || 'home'
+    // #/local 只是旧入口，会被重定向到设置页（本地项目）。不要把 'local' 记成「上一个主页面」，
+    // 否则本地模式下点设置页的关闭会跳回 #/local 又被弹回设置，首页永远进不去。
+    if (!SETTINGS_PAGES.has(page) && page !== 'local') lastMain.current = window.location.hash.replace(/^#\/?/, '') || 'home'
   }, [page, route.arg])
 
   const go = useCallback((key: string) => {
@@ -408,11 +453,29 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
   const flowPref = flowPrefState
   const setFlowPref = (v: boolean) => { setFlowPrefState(v); try { localStorage.setItem('qa.nav.flow', v ? '1' : '0') } catch { /* 私密模式等 */ } }
   const pageProps = { onNavigate: go, notify, setBusy, features, me }
-  const navItems = (items: { key: PageKey; label: string }[]) => items.filter((i) => !(i.key === 'microlive' && features['execution.real_spot'] === false) && !(i.key === 'realperp' && features['execution.real_perp'] === false))
-  const showHead = page !== 'home' && !FULL_BLEED.has(page) && !PARENT[page]
+  const { plugins: researchPlugins, status: researchPluginsStatus, retry: retryResearchPlugins } = useResearchPluginState()
+  const navItems = (items: { key: PageKey; label: string }[]) => items.filter((i) => !researchPlugins.some(p=>p.pages.includes(i.key)&&(!p.visible||!p.enabled)) && !(i.key === 'local') && !(me.mode==='local' && ['square','groups','issues','inbox','favorites'].includes(i.key)) && !(i.key === 'microlive' && features['execution.real_spot'] === false) && !(i.key === 'realperp' && features['execution.real_perp'] === false))
+  const showHead = page !== 'home' && page !== 'workflows' && !FULL_BLEED.has(page) && !PARENT[page]
   const hub = PARENT[page] ? undefined : HUBS[HUB_OF[page] ?? page]
   const nav = navOf(page)
   const crumb = nav !== page ? nav : null
+  // 领域页（含详情 / 子页签）绑定自己的停用状态；停用/读取中/读取失败都只提供只读上下文。
+  const domainId = DOMAIN_PAGE[page]
+  const capabilityPlugin = domainId
+    ? researchPlugins.find((p) => p.id === domainId && (p.pages.includes(page) || p.pages.includes(nav)))
+    : undefined
+  const policy: ResearchCapabilityState['policy'] = researchPluginsStatus === 'ready'
+    ? (capabilityPlugin ? 'ready' : 'error')
+    : researchPluginsStatus
+  const capability: ResearchCapabilityState | null = domainId
+    ? {
+        id: domainId,
+        name: capabilityPlugin?.name ?? DOMAIN_LABEL[domainId],
+        enabled: policy === 'ready' ? !!capabilityPlugin?.enabled : false,
+        policy,
+        onRetry: retryResearchPlugins,
+      }
+    : null
   // 研究四阶段合并成一个可折叠的「研究流程」：默认收起，给常驻的对话列表让位置；手动展开 / 收起会记住。
   // 每个页面同一个默认值，进出 AI 研究室时侧栏不变形
   const stageOf = NAV.find((g) => g.step && g.items.some((i) => i.key === nav))
@@ -420,6 +483,14 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
   const side = useSidebar()
   // 手机：侧栏变成从左侧拉出的抽屉（顶栏「≡」按钮或从屏幕左缘右滑打开），换页自动收起
   const [drawer, setDrawer] = useState(false)
+  // 左上角 QuantLab 品牌 / 设置页底部的「关于 QuantLab」打开同一扇关于窗口
+  const [about, setAbout] = useState(false)
+  useEffect(() => {
+    const open = () => setAbout(true)
+    window.addEventListener('qa:about', open)
+    return () => window.removeEventListener('qa:about', open)
+  }, [])
+  // 本地项目已并入设置页：旧链接 #/local 由 routeFromHash 同步归一，无需再二次跳转。
   useEffect(() => { setDrawer(false) }, [page, route.arg])
   useEffect(() => {
     document.documentElement.classList.toggle('drawer-open', drawer)
@@ -449,6 +520,9 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
   const render = () => {
     const arg = route.arg
     switch (page) {
+      case 'local':
+        // 旧链接由上面的 effect 重定向到设置页
+        return null
       case 'home':
         return <HomePage {...pageProps} />
       case 'board':
@@ -459,6 +533,10 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
         return <StrategyLabPage key={arg || 'new'} arg={arg || undefined} {...pageProps} />
       case 'flow':
         return <ResearchFlowPage {...pageProps} />
+      case 'function':
+        return <FunctionPage key={arg} arg={arg} {...pageProps} />
+      case 'workflows':
+        return <WorkflowPage key={arg || 'main'} arg={arg} {...pageProps} />
       case 'mentor':
         return <MentorPage {...pageProps} />
       case 'strategies':
@@ -515,7 +593,7 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
       case 'brand':
         return <BrandPage {...pageProps} />
       case 'data':
-        return <DataCenterPage arg={arg || undefined} {...pageProps} />
+        return <DataCenterPage key={arg || 'bars'} arg={arg || undefined} {...pageProps} />
       case 'teams':
         // 团队讨论已并入 AI 研究室（/discuss）；旧链接只读查看那次讨论
         if (!arg) { window.setTimeout(() => go('lab')); return null }
@@ -530,6 +608,10 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
         return <RoleLibraryPage {...pageProps} />
       case 'long-running':
         return <LongRunningPage key={arg || 'night'} arg={arg || undefined} {...pageProps} />
+      case 'approvals':
+        return <ApprovalsPage {...pageProps} />
+      case 'context-pack':
+        return <ContextPackPage key={arg || 'picker'} arg={arg || undefined} {...pageProps} />
       case 'prompts':
         return <PromptLibraryPage {...pageProps} />
       case 'models':
@@ -558,15 +640,16 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
   if (SETTINGS_PAGES.has(page)) {
     return (
       <>
-        <SettingsShell current={settingsKeyOf(page, route.arg)} onNavigate={go} onClose={() => go(lastMain.current)} badges={llmReady ? undefined : { models: '未配置' }} isAdmin={me.user.is_admin}>
+        <SettingsShell current={settingsKeyOf(page, route.arg)} onNavigate={go} onClose={() => go(lastMain.current)} badges={llmReady ? undefined : { models: '未配置' }} isAdmin={me.user.is_admin} localMode={me.mode==='local'}>
           {render()}
         </SettingsShell>
         {busy && <BusyOverlay title={busy.title} note={busy.note} />}
         <RoleDrawer notify={notify} />
         <DialogHost />
-        <OnboardingHost me={me} page={page} go={go} notify={notify} onMeChanged={onMeChanged} />
-        <MessageToasts meName={me.user.name || me.user.username || ''} onNavigate={go} />
+        {me.mode!=='local'&&<OnboardingHost me={me} page={page} go={go} notify={notify} onStateChanged={(state) => onOnboardingChanged(me.user.id, state)} />}
+        {me.mode!=='local'&&<MessageToasts meName={me.user.name || me.user.username || ''} onNavigate={go} />}
         {toast && <Toast message={toast.message} error={toast.error} onDone={() => setToast(null)} />}
+        <AboutDialog open={about} onClose={() => setAbout(false)} onNavigate={go} />
       </>
     )
   }
@@ -576,7 +659,9 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
       {drawer && <div className="drawer-backdrop" onClick={() => setDrawer(false)} aria-hidden />}
       <aside className={`sidebar${drawer ? ' open' : ''}`} aria-hidden={side.collapsed || undefined}>
         <div className="side-top">
-          <a className="side-brand" href="#/home"><LogoMark size={20} /><span className="side-brand-copy"><span>QuantLab</span><small>v0.1.0-preview.1</small></span></a>
+          <button type="button" className="side-brand" onClick={() => setAbout(true)} title="关于 QuantLab" aria-label="关于 QuantLab">
+            <LogoMark size={20} /><span className="side-brand-copy"><span>QuantLab</span><small>v0.1.0-preview.1</small></span>
+          </button>
           <SearchButton onNavigate={go} />
           <SideToggle collapsed={false} onToggle={side.toggle} />
           <button type="button" className="drawer-close" onClick={() => setDrawer(false)} aria-label={t('关闭导航')}>
@@ -596,8 +681,8 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
             </div>
           ))}
           <div className={`nav-flow${flowOpen ? ' open' : ''}`}>
-            <button type="button" className="nav-flow-head" aria-expanded={flowOpen} onClick={() => setFlowPref(!flowOpen)}>
-              <span>研究流程</span>
+            <button type="button" className="nav-flow-head" aria-expanded={flowOpen} onClick={() => setFlowPref(!flowOpen)} title={flowOpen ? '收起研究阶段' : '展开研究阶段'}>
+              <span>研究阶段</span>
               {!flowOpen && stageOf && <em>{stageOf.step} · {stageOf.group}</em>}
               <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden><path d="m3.5 2 3 3-3 3" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" /></svg>
             </button>
@@ -617,7 +702,7 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
               )
             })}
           </div>
-          {NAV.filter((g) => !g.step).slice(1).map((group) => (
+          {NAV.filter((g) => !g.step).slice(1).filter(g=>navItems(g.items).length>0).map((group) => (
             <div key={group.group || 'more'}>
               {group.group && <div className="nav-label">{group.group}</div>}
               {navItems(group.items).map((item) => (
@@ -634,7 +719,18 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
           <div id="sidebar-slot" className="sidebar-slot-extra" />
         </div>
 
-        <AccountMenu me={me} reachable={reachable} llmReady={llmReady} onNavigate={go} notify={notify} />
+        {me.mode==='local'
+          ? <div className="acct-local">
+              <div className="acct-local-head">
+                <span className="acct-local-dot" aria-hidden />
+                <div><b>本地研究项目</b><small title={me.workspace?.name}>{me.workspace?.name ?? '当前项目'}</small></div>
+              </div>
+              <div className="acct-local-actions">
+                <button type="button" className="button small" onClick={() => go('settings/local')}>项目与文件</button>
+                <button type="button" className="button small primary" onClick={() => go('settings/local')}><Icon name="settings" size={13} />设置</button>
+              </div>
+            </div>
+          : <AccountMenu me={me} reachable={reachable} llmReady={llmReady} onNavigate={go} notify={notify} />}
         <SideResizer width={side.width} onWidth={side.setWidth} />
       </aside>
 
@@ -656,7 +752,12 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
             <span>{PAGE_TITLES[page]}</span>
           </div>
           <div className="topbar-right">
-            <InboxBell onNavigate={go} />
+            {me.mode==='local' && (
+              <button type="button" className="icon-btn topbar-settings" onClick={() => go('settings/local')} aria-label="设置" title="设置">
+                <Icon name="settings" size={16} />
+              </button>
+            )}
+            {me.mode!=='local'&&<InboxBell onNavigate={go} />}
             <Tape />
             <RunBanner onNavigate={go} llmReady={keyedProviders > 0} />
           </div>
@@ -676,7 +777,16 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
           {showHead && <PageHead key={nav}title={NAV_LABEL[nav] ?? PAGE_TITLES[page]} purpose={PURPOSE[page]} page={page} onSlot={setSlot} onNavigate={go} />}
           {hub && <HubTabs tabs={hub} page={page} />}
           <PageSlot.Provider value={showHead ? slot : null}>
-            <div className="page-enter" key={page}><PageErrorBoundary resetKey={`${page}/${route.arg}`}>{render()}</PageErrorBoundary></div>
+            <div className="page-enter" key={page}>
+              <PageErrorBoundary resetKey={`${page}/${route.arg}`}>
+                {capability
+                  ? <ResearchCapabilityProvider value={capability}>
+                      <ReadOnlyCapabilityBanner onNavigate={go} />
+                      {render()}
+                    </ResearchCapabilityProvider>
+                  : render()}
+              </PageErrorBoundary>
+            </div>
           </PageSlot.Provider>
         </main>
       </div>
@@ -684,10 +794,12 @@ function Workbench({ me, onMeChanged }: { me: Me; onMeChanged: () => void }) {
       {busy && <BusyOverlay title={busy.title} note={busy.note} />}
       <RoleDrawer notify={notify} />
       <DialogHost />
-      <AskAIPanel />
-      <OnboardingHost me={me} page={page} go={go} notify={notify} onMeChanged={onMeChanged} />
-      <MessageToasts meName={me.user.name || me.user.username || ''} onNavigate={go} />
+      {/* 研究工作区把「问 AI」嵌入右栏页签；其他页面继续使用全局浮层。 */}
+      {page !== 'workflows' && <AskAIPanel />}
+      {me.mode!=='local'&&<OnboardingHost me={me} page={page} go={go} notify={notify} onStateChanged={(state) => onOnboardingChanged(me.user.id, state)} />}
+      {me.mode!=='local'&&<MessageToasts meName={me.user.name || me.user.username || ''} onNavigate={go} />}
       {toast && <Toast message={toast.message} error={toast.error} onDone={() => setToast(null)} />}
+      <AboutDialog open={about} onClose={() => setAbout(false)} onNavigate={go} />
     </>
   )
 }
@@ -745,6 +857,7 @@ function AccountMenu({ me, reachable, llmReady, onNavigate, notify }: { me: Me; 
           <hr />
           <button role="menuitem" title="通知中心与屏蔽…" onClick={() => pick('inbox')}>通知中心与屏蔽…</button>
           <button role="menuitem" title="查看平台隐私政策…" onClick={() => pick('privacy')}>隐私政策…</button>
+          <button role="menuitem" title="版本信息与开源致谢" onClick={() => { setOpen(false); window.dispatchEvent(new CustomEvent('qa:about')) }}>关于 QuantLab…</button>
           <button role="menuitem" title="报告问题…" onClick={() => { setOpen(false); setReporting(true) }}>报告问题…</button>
           {me.user.is_admin && <button role="menuitem" title="运维控制台 · 部署管理员" onClick={() => pick('admin/overview')}><span>运维控制台</span><span className="role-chip admin">部署管理员</span></button>}
           <hr />
@@ -769,6 +882,15 @@ function AccountMenu({ me, reachable, llmReady, onNavigate, notify }: { me: Me; 
 }
 
 /** 会话门：未登录显示登录页；登录后校正目标工作区（服务端校验成员关系）。 */
+/** A profile refresh started before a tour mutation must not restore old progress. */
+function preserveOnboarding(previous: Me | null | 'anon', incoming: Me): Me {
+  if (previous && previous !== 'anon' && previous.user.id === incoming.user.id
+      && (previous.onboarding?.updated_at ?? 0) > (incoming.onboarding?.updated_at ?? 0)) {
+    return { ...incoming, onboarding: previous.onboarding }
+  }
+  return incoming
+}
+
 export default function App() {
   const [me, setMe] = useState<Me | null | 'anon'>(null)
   const [hash, setHash] = useState(() => window.location.hash)
@@ -783,17 +905,18 @@ export default function App() {
   const load = useCallback(async () => {
     try {
       let m = await v4.me()
+      setDeploymentMode(m.mode)
       const wanted = currentWorkspace()
       if (!wanted || !m.workspaces.some((w) => w.id === wanted)) {
         if (m.workspace) setWorkspace(m.workspace.id)
         m = await v4.me()
       }
-      setMe(m)
+      setMe((previous) => preserveOnboarding(previous, m))
     } catch (e) {
       if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
         if (e.status === 403) {
           setWorkspace('')
-          try { setMe(await v4.me()); return } catch { /* fallthrough */ }
+          try { const refreshed = await v4.me(); setMe((previous) => preserveOnboarding(previous, refreshed)); return } catch { /* fallthrough */ }
         }
         setMe('anon')
       } else {
@@ -812,6 +935,10 @@ export default function App() {
       window.removeEventListener('qa:workspace-invalid', onWs)
     }
   }, [load])
+  const onOnboardingChanged = useCallback((userId: string, state: OnboardingState) => {
+    setMe((previous) => previous && previous !== 'anon' && previous.user.id === userId
+      ? { ...previous, onboarding: state } : previous)
+  }, [])
   if (shareToken) {
     if (shareAuth) return <LoginPage onDone={() => { setShareAuth(false); setMe(null); load() }} />
     return <PublicSharePage token={shareToken} onLogin={() => setShareAuth(true)}
@@ -819,5 +946,5 @@ export default function App() {
   }
   if (me === null) return <div style={{ padding: 80 }}><Loading label="正在验证会话" /></div>
   if (me === 'anon') return <LoginPage onDone={() => { setMe(null); load() }} />
-  return <Workbench me={me} onMeChanged={load} />
+  return <Workbench me={me} onMeChanged={load} onOnboardingChanged={onOnboardingChanged} />
 }

@@ -5,13 +5,15 @@
  * 都记在本机偏好里。宽度写到 CSS 变量 --rail-w，主区域跟着让位。
  */
 import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import { lang } from '../i18n'
 import { store } from './prefs'
 
 const W_KEY = 'qa.side.w'
 const C_KEY = 'qa.side.collapsed'
 export const SIDE_MIN = 200
 export const SIDE_MAX = 420
-export const SIDE_DEFAULT = 232
+/** 英文标签更长，默认侧栏宽一点，避免导航文字被截断。 */
+export const SIDE_DEFAULT = lang === 'en' ? 252 : 232
 
 const clamp = (w: number) => Math.min(SIDE_MAX, Math.max(SIDE_MIN, Math.round(w)))
 

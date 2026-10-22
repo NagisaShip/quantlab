@@ -1,8 +1,8 @@
-# QuantLab v0.1.0-preview.1 · API 参考
+# QuantLab v0.1.0-preview.2 · API 参考
 
 [English](API-Reference.en.md) | [文档索引](README.md) | [返回 README](../README.md)
 
-平台共 **613 个端点**。本文件由 `scripts/gen_api_doc.py` 从 FastAPI 的 OpenAPI 规范生成，
+平台共 **705 个端点**。本文件由 `scripts/gen_api_doc.py` 从 FastAPI 的 OpenAPI 规范生成，
 与运行中服务的 `/docs`（可交互调试）来自同一份定义。
 
 机器可读版本：`docs/openapi.json`（同一次生成）。
@@ -410,6 +410,7 @@
 | `GET` | `/api/lab/meta` | 策略室元信息：可选模型、团队、默认验收目标、模型是否就绪 |
 | `GET` | `/api/lab/projects` | 策略项目列表 |
 | `POST` | `/api/lab/projects` | 新建策略项目（可带初始代码、模板或钉住的上下文） |
+| `POST` | `/api/lab/projects/from-ask` | 把「问 AI」升级成研究会话：写入种子消息，默认私有归当前用户 |
 | `DELETE` | `/api/lab/projects/{pid}` | 删除对话（已保存的平台策略不受影响）；cascade=true 时连同它的全部分叉一起删除 |
 | `GET` | `/api/lab/projects/{pid}` | 项目详情与增量消息（after=已收到的最大序号，since=上次的 server_time） |
 | `PATCH` | `/api/lab/projects/{pid}` | 修改项目：标题、模型、验收目标、标的、归档 |
@@ -417,6 +418,7 @@
 | `POST` | `/api/lab/projects/{pid}/backtest` | 用平台回测跑当前版本（cost_scale>1 为成本压力测试） |
 | `POST` | `/api/lab/projects/{pid}/code` | 保存手动编辑的代码为新版本（先做沙箱试跑） |
 | `POST` | `/api/lab/projects/{pid}/compact` | 压缩对话历史：把之前的对话总结成摘要钉进上下文，之后不再发原文 |
+| `GET` | `/api/lab/projects/{pid}/context-pack` | 统一上下文包：系统规则、项目规则、来源引用与预算 |
 | `POST` | `/api/lab/projects/{pid}/cost-sweep` | 成本压力扫描：并行回测多档成本倍数，找出不再满足目标的成本极限 |
 | `POST` | `/api/lab/projects/{pid}/decision` | 回答 AI 的提问：满意（保存为策略）/ 继续优化 / 换个方向 |
 | `POST` | `/api/lab/projects/{pid}/discussion` | 在对话里挂一张团队讨论卡片（/discuss 发起的讨论，发言以气泡展示） |
@@ -642,6 +644,21 @@
 | `PATCH` | `/api/execution/{sid}` | 修改执行方案的名字、状态、备注 |
 | `GET` | `/api/execution/{sid}/report` | 执行方案的完整报告 |
 
+## 扩展：技能 / 钩子 / MCP
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/api/hooks` | 列出已注册 hooks 与触发点（只读；默认不启用、不执行外部命令） |
+| `POST` | `/api/hooks/{hook_id}/toggle` | 启用/停用进程内 hook（仅本地项目或管理员；不能注册任意代码） |
+| `GET` | `/api/mcp/servers` | MCP server 目录与健康检查（不启动进程、不建立连接） |
+| `POST` | `/api/mcp/servers` | 保存一个 MCP server 配置（只存本地，不启动进程） |
+| `DELETE` | `/api/mcp/servers/{name}` | 删除 MCP 配置 |
+| `POST` | `/api/mcp/servers/{name}/call` | 调用 stdio MCP server 的一个工具（仅本地、显式开启） |
+| `POST` | `/api/mcp/servers/{name}/probe` | 探测 stdio MCP server：initialize + tools/list（仅本地、显式开启） |
+| `GET` | `/api/skills` | 列出项目 / 工作区技能（只读 .quantlab/skills/*.md） |
+| `GET` | `/api/skills/{name}` | 查看一个技能的内容（只读） |
+| `POST` | `/api/skills/{name}/attach` | 把一个技能追加到 Lab 项目的 instructions（可选注入） |
+
 ## 指挥台
 
 | 方法 | 路径 | 说明 |
@@ -664,6 +681,36 @@
 | `GET` | `/api/onboarding` | 读取当前账号的新手引导进度 |
 | `PUT` | `/api/onboarding` | 更新新手引导进度 |
 | `POST` | `/api/onboarding/reset` | 重新开始新手引导 |
+
+## 本地项目
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/api/local/artifacts/{hash}/path` | 解析本地项目中工件文件的真实路径，供桌面端打开文件夹 |
+| `GET` | `/api/local/cache` | Cache |
+| `POST` | `/api/local/cache/clear` | Clear Cache |
+| `GET` | `/api/local/files` | Browse |
+| `POST` | `/api/local/files/document-preview` | Document Preview |
+| `GET` | `/api/local/files/download` | Download Document |
+| `GET` | `/api/local/files/image` | Image |
+| `POST` | `/api/local/files/import` | Import File |
+| `GET` | `/api/local/files/preview` | Preview |
+| `POST` | `/api/local/files/relocate` | Relocate |
+| `GET` | `/api/local/info` | Info |
+| `GET` | `/api/local/library` | Library |
+| `POST` | `/api/local/library/import` | Import Module |
+| `POST` | `/api/local/library/publish` | Publish Module |
+| `POST` | `/api/local/permissions` | Grant |
+| `POST` | `/api/local/permissions/revoke` | Revoke |
+| `GET` | `/api/local/preferences` | Read Preferences |
+| `POST` | `/api/local/preferences` | Preferences |
+| `GET` | `/api/local/project/download/{name}` | Download Project |
+| `POST` | `/api/local/project/export` | Export Project |
+| `POST` | `/api/local/project/open` | Open Project |
+| `GET` | `/api/local/resources` | Resources |
+| `GET` | `/api/local/runtime` | 受管 Python 运行时探测（仅本地模式，只读诊断） |
+| `POST` | `/api/local/shutdown` | Shutdown |
+| `GET` | `/api/local/tasks` | Tasks |
 
 ## 模型库
 
@@ -707,6 +754,73 @@
 | --- | --- | --- |
 | `GET` | `/api/mentor/course` | 研究导师课程与当前进度 |
 | `PUT` | `/api/mentor/progress` | 更新研究导师课程完成进度 |
+
+## 研究工作流
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/api/workflows` | 工作流列表与当前版本 |
+| `POST` | `/api/workflows` | 保存可继续编辑的工作流草稿 |
+| `GET` | `/api/workflows/artifacts` | 按研究、运行和关键词检索真实产物 |
+| `GET` | `/api/workflows/artifacts/pins` | 列出当前工作区的固定成果 |
+| `POST` | `/api/workflows/artifacts/pins` | 固定本工作区的一个真实运行产物 |
+| `DELETE` | `/api/workflows/artifacts/pins/{pin_id}` | 取消固定成果 |
+| `GET` | `/api/workflows/artifacts/versions` | 按版本键读取同一节点端口的历史产物 |
+| `GET` | `/api/workflows/artifacts/{digest}` | 读取本工作区工件的原始JSON内容 |
+| `GET` | `/api/workflows/artifacts/{digest}/download` | 下载经完整性验证的工件JSON或表格CSV |
+| `GET` | `/api/workflows/artifacts/{digest}/versions` | 由工件hash反查同节点端口的历史版本 |
+| `GET` | `/api/workflows/assets` | 浏览同一工作区的策略、因子、模型与组合执行资产 |
+| `POST` | `/api/workflows/assets/snapshot` | 以冻结定义创建已有资产的研究模块 |
+| `GET` | `/api/workflows/catalog` | 函数卡片、完整代码与研究模板 |
+| `POST` | `/api/workflows/charts/preview` | 使用已冻结数据预览图表，不重跑上游研究 |
+| `POST` | `/api/workflows/definitions` | 发布不可覆盖的自定义函数卡片版本 |
+| `POST` | `/api/workflows/definitions/preview` | 静态检查代码并展示端口、参数及代码差异 |
+| `GET` | `/api/workflows/definitions/{kind}/{version}/sources` | 查看真实实现包源码或指定运行的冻结源码 |
+| `GET` | `/api/workflows/experiments` | 工作流实验与来源记录 |
+| `POST` | `/api/workflows/experiments/compare` | 读取实验指标并保留失败和未完成结果 |
+| `GET` | `/api/workflows/exports/{name}` | 下载含依赖安装包的独立运行研究包 |
+| `GET` | `/api/workflows/files` | 工作区已导入的不可覆盖输入文件 |
+| `POST` | `/api/workflows/files` | 流式导入研究文件，不加载整个文件到内存 |
+| `GET` | `/api/workflows/files/download` | 下载本工作区数据或二进制研究工件 |
+| `GET` | `/api/workflows/files/preview` | 分页预览生成的数据文件或文本内容 |
+| `GET` | `/api/workflows/guide` | 查询工作流、组件图和运行工件规范 |
+| `POST` | `/api/workflows/network/inspect` | 验证神经组件图并返回形状、参数量与代码 |
+| `GET` | `/api/workflows/recent-result` | 当前工作区最近一次有工件证据的已完成研究 |
+| `GET` | `/api/workflows/runs/{run_id}` | 查询运行状态、节点输入输出与日志 |
+| `GET` | `/api/workflows/runs/{run_id}/children/{child_id}` | 读取本次实验内的子模块运行证据 |
+| `POST` | `/api/workflows/runs/{run_id}/export` | 以运行时冻结的工作流、版本和实现包构建离线复现包 |
+| `POST` | `/api/workflows/subflows/encapsulate` | 将选中卡片封装为具名输入输出的复用子流程 |
+| `POST` | `/api/workflows/subflows/expand` | 展开子流程为可编辑卡片，保持输入输出连接 |
+| `GET` | `/api/workflows/{wid}` | 读取工作流及历史快照 |
+| `PUT` | `/api/workflows/{wid}` | 校验修订号并创建新工作流版本 |
+| `GET` | `/api/workflows/{wid}/activity` | GUI与Agent共用的最近运行与进行中任务 |
+| `POST` | `/api/workflows/{wid}/experiments/plan` | 预览参数网格或滚动时间窗口，不执行研究 |
+| `POST` | `/api/workflows/{wid}/experiments/submit` | 按冻结修订提交独立实验，不修改画布 |
+| `POST` | `/api/workflows/{wid}/export` | 后台构建含代码、数据及依赖wheel的完整离线包 |
+| `GET` | `/api/workflows/{wid}/notes` | 研究结论、笔记与冻结运行引用 |
+| `PUT` | `/api/workflows/{wid}/notes` | 保存带版本检查的研究笔记 |
+| `POST` | `/api/workflows/{wid}/run` | 使用现有Worker执行完整或局部工作流 |
+| `POST` | `/api/workflows/{wid}/validate` | 运行前自检，不执行卡片代码 |
+| `GET` | `/api/workflows/{wid}/view` | 对话侧只读编排图与真实运行状态 |
+| `GET` | `/api/workflows/{workflow_id}/module-view` | 逐层查看模块内部函数、参数和运行证据 |
+
+## 研究执行环境
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/api/workflows/environment` | Environment |
+| `GET` | `/api/workflows/environment/discover` | Environments |
+| `GET` | `/api/workflows/environment/jobs/{job_id}` | Job |
+| `POST` | `/api/workflows/environment/repair` | Repair Environment |
+| `POST` | `/api/workflows/environment/select` | Select Environment |
+
+## 研究插件
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/api/auth/research-plugins` | Listing |
+| `PUT` | `/api/auth/research-plugins/{plugin}` | Save |
+| `GET` | `/api/auth/research-plugins/{plugin}/impact` | Affected |
 
 ## 研究纪律与自动化
 
@@ -754,6 +868,19 @@
 | `GET` | `/api/portfolio/{sid}` | 方案详情 |
 | `PATCH` | `/api/portfolio/{sid}` | 修改名称、状态、备注 |
 | `GET` | `/api/portfolio/{sid}/report` | 方案的完整评估报告 |
+
+## 统一任务中心
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/api/tasks/overview` | 统一任务中心：运行、AI 研究室与定时任务的活动读模型 |
+
+## 统一审批
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/api/approvals` | 统一审批收件箱：AI 行动 + AI 研究室审批卡片 |
+| `POST` | `/api/approvals/{approval_id}` | 批准/拒绝一条统一审批项 |
 
 ## 能力矩阵
 

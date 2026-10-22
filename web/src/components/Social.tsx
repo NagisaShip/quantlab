@@ -1,3 +1,4 @@
+import { isLocalDeployment } from '../deployment'
 /**
  * 协作小组件（全站复用）：
  * - MemberPicker：搜索工作区成员（名字 / 用户名 / 邮箱），单选或多选，带在线绿点；
@@ -15,6 +16,7 @@ let memberCache: { at: number; list: Member[] } | null = null
 export function useMembers() {
   const [list, setList] = useState<Member[]>(memberCache?.list ?? [])
   useEffect(() => {
+    if (isLocalDeployment()) return
     if (memberCache && Date.now() - memberCache.at < 30_000) return
     collab.members().then((r) => { memberCache = { at: Date.now(), list: r.members }; setList(r.members) }).catch(() => undefined)
   }, [])
@@ -59,7 +61,7 @@ export function MemberPicker({ members, picked, onChange, exclude = [], single, 
 type Target = 'group' | 'dm' | 'square'
 const TARGET_LABEL: Record<Target, string> = { group: '群组', dm: '私聊', square: '策略广场' }
 
-export function ShareToButton({ item, notify, onNavigate, label = '分享', small = true }: {
+function AccountShareToButton({ item, notify, onNavigate, label = '分享', small = true }: {
   item: Ref; notify: (m: string, e?: boolean) => void; onNavigate?: (k: string) => void; label?: string; small?: boolean
 }) {
   const [open, setOpen] = useState(false)
@@ -74,7 +76,7 @@ export function ShareToButton({ item, notify, onNavigate, label = '分享', smal
   )
 }
 
-export function ShareToModal({ item, notify, onNavigate, onClose }: { item: Ref; notify: (m: string, e?: boolean) => void; onNavigate?: (k: string) => void; onClose: () => void }) {
+function AccountShareToModal({ item, notify, onNavigate, onClose }: { item: Ref; notify: (m: string, e?: boolean) => void; onNavigate?: (k: string) => void; onClose: () => void }) {
   const [target, setTarget] = useState<Target>('group')
   const [groups, setGroups] = useState<Group[] | null>(null)
   const [picked, setPicked] = useState<string[]>([])
@@ -141,7 +143,7 @@ export function usePresence(objectType: string, objectId: string | undefined, ed
   const editingRef = useRef(editing)
   editingRef.current = editing
   useEffect(() => {
-    if (!objectId) return
+    if (!objectId || isLocalDeployment()) return
     let alive = true
     const beat = () => {
       if (document.visibilityState === 'hidden') return
@@ -160,7 +162,7 @@ export function usePresence(objectType: string, objectId: string | undefined, ed
   }, [objectType, objectId])
   // 编辑状态变了立刻报一次，别人马上看到「正在编辑」
   useEffect(() => {
-    if (objectId) collab.presence({ object_type: objectType, object_id: objectId, editing }).then((r) => setOthers(r.others)).catch(() => undefined)
+    if (objectId && !isLocalDeployment()) collab.presence({ object_type: objectType, object_id: objectId, editing }).then((r) => setOthers(r.others)).catch(() => undefined)
   }, [editing, objectType, objectId])
   return others
 }
@@ -176,3 +178,7 @@ export function PresenceBar({ others }: { others: Presence[] }) {
     </span>
   )
 }
+
+export function ShareToButton(props: Parameters<typeof AccountShareToButton>[0]) { return isLocalDeployment() ? null : <AccountShareToButton {...props}/> }
+
+export function ShareToModal(props: Parameters<typeof AccountShareToModal>[0]) { return isLocalDeployment() ? null : <AccountShareToModal {...props}/> }

@@ -167,8 +167,8 @@ export function ModelMenu({ models, value, defaultModel, effort, efforts, onMode
           </div>
           <div className="cmp-menu-sep" />
           <button type="button" role="menuitemradio" aria-checked={!value} className={`cmp-menu-item${!value ? ' on' : ''}`}
-            onClick={() => { onModel(''); pop.setOpen(false) }}>
-            <span className="cmp-menu-main">跟随全局路由</span>
+            onClick={() => { onModel(''); pop.setOpen(false) }} title="默认使用模型清单里的第一个模型；可在设置 → 模型 调整顺序">
+            <span className="cmp-menu-main">默认</span>
             <span className="cmp-menu-sub">{models.find((m) => m.target === defaultModel)?.label || modelLabel(defaultModel)}</span>
           </button>
           {Object.entries(groups).map(([provider, items]) => (

@@ -35,7 +35,34 @@ const barsFor = (range: string, tf: string) => {
 const DEFAULT_RANGE: Record<string, string> = { '1m': '1d', '5m': '1w', '15m': '1w', '30m': '1m', '1h': '1m', '4h': '6m', '1d': '1y' }
 const fmtPx = (v: number) => v.toLocaleString('en-US', { maximumFractionDigits: v >= 100 ? 2 : 5 })
 
+/**
+ * 从路由里取默认标的、周期与时间段：
+ * `#/data/ETH/USDT/1h`（首页关注卡片跳过来时带上标的与周期），
+ * `#/data/ETH/USDT/1h/range:3m`（再带上「时间段」，用 range: 前缀避免和 1m / 1d 这类合法 K 线周期撞车），
+ * `#/data` 用默认值，`#/data/hub` 是研究数据页。
+ */
+function dataRoute(arg?: string): { symbol?: string; timeframe?: string; range?: string } {
+  if (!arg || arg === 'hub') return {}
+  const parts = arg.split('/').filter(Boolean)
+  let range = ''
+  const tail = parts[parts.length - 1]
+  if (tail && tail.startsWith('range:')) {
+    const key = tail.slice('range:'.length)
+    if (RANGES.some((r) => r.key === key)) range = key
+    parts.pop()
+  }
+  let timeframe = ''
+  const last = parts[parts.length - 1]
+  if (parts.length > 1 && last && TF_MS[last]) {
+    timeframe = last
+    parts.pop()
+  }
+  const symbol = parts.join('/').toUpperCase()
+  return { symbol: symbol || undefined, timeframe: timeframe || undefined, range: range || undefined }
+}
+
 export default function DataCenterPage({ notify, onNavigate, arg, features }: PageProps & { arg?: string }) {
+  const route = dataRoute(arg)
   const tab = arg === 'hub' ? 'hub' : 'bars'
   const heading = (
     <>
@@ -51,18 +78,22 @@ export default function DataCenterPage({ notify, onNavigate, arg, features }: Pa
     </>
   )
   if (tab === 'hub') return <>{heading}<DatahubSection notify={notify} /></>
-  return <BarsView notify={notify} heading={heading} features={features} />
+  return <BarsView notify={notify} heading={heading} features={features} initialSymbol={route.symbol} initialTimeframe={route.timeframe} initialRange={route.range} />
 }
 
-function BarsView({ notify, heading, features }: Pick<PageProps, 'notify' | 'features'> & { heading: ReactNode }) {
+function BarsView({ notify, heading, features, initialSymbol, initialTimeframe, initialRange }: Pick<PageProps, 'notify' | 'features'> & { heading: ReactNode; initialSymbol?: string; initialTimeframe?: string; initialRange?: string }) {
   const [symbols, setSymbols] = useState<string[]>([])
   const [timeframes, setTimeframes] = useState<string[]>([])
-  const [symbol, setSymbol] = useState('BTC/USDT')
+  const [symbol, setSymbol] = useState(initialSymbol || 'BTC/USDT')
   const [market, setMarket] = useState<'spot' | 'perp'>('spot')
   const effectiveSymbol = market === 'perp' ? `${symbol.split(':')[0]}:PERP` : symbol.split(':')[0]
-  const [timeframe, setTimeframe] = useState('1h')
+  const [timeframe, setTimeframe] = useState(initialTimeframe || '1h')
   const [exchange, setExchange] = useState('binance')
-  const [range, setRange] = useState(() => { try { return localStorage.getItem('qa.kline.range') || '1m' } catch { return '1m' } })
+  // 从首页关注卡片跳进来时，标的、周期与时间段都按卡片上的设置来（而不是沿用上次看的时段）
+  const [range, setRange] = useState(() => {
+    if (initialRange && RANGES.some((r) => r.key === initialRange)) return initialRange
+    try { return (initialTimeframe && DEFAULT_RANGE[initialTimeframe]) || localStorage.getItem('qa.kline.range') || '1m' } catch { return '1m' }
+  })
   const [ma, setMa] = useState<number[]>(() => { try { return JSON.parse(localStorage.getItem('qa.kline.ma') || '[20,60]') } catch { return [20, 60] } })
   const pickRange = (r: string) => { setRange(r); try { localStorage.setItem('qa.kline.range', r) } catch { /* 私密模式 */ } }
   const pickTf = (tf: string) => { setTimeframe(tf); pickRange(DEFAULT_RANGE[tf] ?? range) }
@@ -183,7 +214,7 @@ function BarsView({ notify, heading, features }: Pick<PageProps, 'notify' | 'fea
       <div className="config-bar">
         <Field label="交易对">
           <select value={symbol} onChange={(e) => setSymbol(e.target.value)}>
-            {(symbols.length ? symbols : [symbol]).map((s) => <option key={s}>{s}</option>)}
+            {[...new Set([symbol, ...symbols])].map((s) => <option key={s}>{s}</option>)}
           </select>
         </Field>
         <Field label="市场">

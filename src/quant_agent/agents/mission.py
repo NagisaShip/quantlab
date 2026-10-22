@@ -23,6 +23,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
+from ..llm.base import explain_error
 from .qmoji import decorate_qmoji, metrics_from_materials
 from .roles import Role
 from .team import PARALLEL_BRIEF, TeamRunner
@@ -615,9 +616,8 @@ class MissionRunner:
 
 
 def _first_line(err: str) -> str:
-    """降级原因只留最有用的一行（路由器的「所有模型均失败:」后面那行才是真正原因）。"""
-    lines = [ln.strip() for ln in err.splitlines() if ln.strip() and not ln.strip().endswith("均失败:")]
-    return (lines[0] if lines else err.strip())[:160]
+    """降级原因只留最有用的一句中文：去掉 MDN 链接、堆栈与路由器汇总行。"""
+    return explain_error(err)
 
 
 # ---------------------------------------------------------------------------

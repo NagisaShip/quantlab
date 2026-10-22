@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, runtime_checkable
 
@@ -115,12 +117,18 @@ RETRYABLE_STATUS = frozenset({408, 409, 425, 429, 500, 502, 503, 504, 520, 522, 
 
 
 def http_error(name: str, exc: Exception, detail: str = "") -> LLMError:
-    """把 httpx 异常包装成 LLMError，并标出能否重试、服务端要求的等待时间（Retry-After）。"""
+    """把 httpx 异常包装成 LLMError，并标出能否重试、服务端要求的等待时间（Retry-After）。
+
+    服务商的错误正文（通常是 JSON 里的 message）一并带上：只显示 httpx 的
+    ``Client error '400 Bad Request' … For more information check: https://developer.mozilla.org/…``
+    对用户没有任何帮助，真正的原因往往在响应正文里。
+    """
     import httpx
 
     status = None
     retry_after = None
     retryable = isinstance(exc, (httpx.TimeoutException, httpx.TransportError))
+    body = ""
     if isinstance(exc, httpx.HTTPStatusError):
         status = exc.response.status_code
         retryable = status in RETRYABLE_STATUS
@@ -130,8 +138,136 @@ def http_error(name: str, exc: Exception, detail: str = "") -> LLMError:
                 retry_after = max(0.0, float(raw))
             except ValueError:
                 retry_after = None
+        try:
+            body = (exc.response.text or "").strip()
+        except Exception:  # 流式响应未读完 / 已被关闭
+            body = ""
+    if not detail and body:
+        detail = body[:800]
     msg = f"[{name}] request failed: {exc}" + (f" {detail}" if detail else "")
     return LLMError(msg.strip(), retryable=retryable, status=status, retry_after=retry_after)
+
+
+#: httpx 的 HTTPStatusError 文本里带这段“去 MDN 看状态码”的尾巴，对用户没有信息量
+_MDN_LINK = re.compile(r"https?://developer\.mozilla\.org/\S+")
+_JSON_MESSAGE = re.compile(r'"message"\s*:\s*"((?:[^"\\]|\\.)+)"')
+_JSON_TYPE = re.compile(r'"type"\s*:\s*"((?:[^"\\]|\\.)+)"')
+_HTTP_STATUS = re.compile(r"(?:Client error|Server error) '(\d{3})|HTTP (\d{3})|status(?: code)?\D{0,4}(\d{3})", re.I)
+_NET_ERRORS = ("timeout", "timed out", "connect", "connection", "unexpected_eof", "ssl", "eof occurred", "network")
+
+
+def _clean_reason(reason: str) -> str:
+    """把多行错误压成一行，去掉 MDN 链接这类噪声；保留服务商原文。"""
+    text = (reason or "").replace("\r", "\n")
+    text = _MDN_LINK.sub("", text)
+    return " ".join(part.strip() for part in text.splitlines() if part.strip())
+
+
+def _json_field(pattern: re.Pattern[str], text: str) -> str:
+    match = pattern.search(text)
+    if not match:
+        return ""
+    raw = match.group(1)
+    try:
+        return str(json.loads('{"message": "' + raw + '"}')["message"]).strip()
+    except (ValueError, KeyError):
+        return raw.strip()
+
+
+def _status_of(text: str) -> int | None:
+    match = _HTTP_STATUS.search(text)
+    if not match:
+        return None
+    for group in match.groups():
+        if group:
+            try:
+                return int(group)
+            except ValueError:
+                return None
+    return None
+
+
+def is_opencode_session_error(reason: str) -> bool:
+    """OpenCode 网关要求请求头带 x-opencode-session；缺了它会直接回 400。"""
+    low = (reason or "").lower()
+    return "missingsessionid" in low or ("opencode" in low and "session" in low and "400" in low)
+
+
+def is_context_length_error(reason: str) -> bool:
+    low = (reason or "").lower()
+    return any(
+        k in low
+        for k in (
+            "context length",
+            "context_length",
+            "maximum context",
+            "context window",
+            "too many tokens",
+            "too large",
+            "request entity too large",
+            "payload too large",
+            "body too large",
+            "上下文长度",
+            "超出上下文",
+            "上下文超限",
+        )
+    )
+
+
+def explain_error(reason: str) -> str:
+    """把路由器的原始异常整理成一句用户能行动的中文原因（去掉 MDN/堆栈噪声）。
+
+    例：
+    - ``Client error '400 Bad Request' … For more information check: …`` + ``{"message":"MissingSessionID"}``
+      → ``OpenCode 网关缺少会话标识（x-opencode-session）``
+    - 401 → ``模型密钥无效或没有权限（设置 → 模型 里重新保存密钥）``
+    - 429 → ``模型服务限流，稍后重试``
+    - 网络超时 → ``连不上模型服务（网络中断或超时）``
+    """
+    raw = (reason or "").strip()
+    if not raw:
+        return "模型不可用"
+    if "未配置 API Key" in raw:
+        return "未配置任何模型密钥（设置 → 模型）"
+    text = _clean_reason(raw)
+    if not text:
+        return "模型不可用"
+    lowered = text.lower()
+    service = _json_field(_JSON_TYPE, text)
+    message = _json_field(_JSON_MESSAGE, text) or _json_field(_JSON_TYPE, text)
+    status = _status_of(text)
+
+    if is_opencode_session_error(text):
+        return "模型网关缺少会话标识（x-opencode-session），已自动重试；仍失败请稍后再试"
+    if is_context_length_error(text):
+        return "这次对话太长，超出模型上下文（可先「压缩上下文」再重试）"
+    if "未配置" in text or "no api key" in lowered or "missing api key" in lowered:
+        return "未配置任何模型密钥（设置 → 模型）"
+    if "所有模型均失败" in text:
+        if len(text) <= len("所有模型均失败:"):
+            return "没有可用的模型：请在 设置 → 模型 添加服务商并选择路由"
+        rest = text.split("所有模型均失败", 1)[-1].lstrip(":：").strip()
+        return explain_error(rest) if rest else "没有可用的模型：请在 设置 → 模型 添加服务商并选择路由"
+    if status in (401, 403):
+        tail = f"（{message}）" if message and message not in text[:40] else ""
+        return f"模型密钥无效或没有权限{tail}（设置 → 模型 里重新保存密钥）"
+    if status == 404:
+        return "模型接口或模型名不存在（检查 API 地址与模型名）"
+    if status == 413:
+        return "请求内容过大被模型服务拒绝（先压缩上下文再重试）"
+    if status == 429:
+        return "模型服务限流，稍后重试"
+    if status and 500 <= status < 600:
+        return f"模型服务暂时异常（HTTP {status}），稍后重试"
+    if status == 400:
+        detail = message or ""
+        if service and message and service.lower() not in ("error", "invalid_request_error"):
+            detail = f"{service}：{message}"
+        return f"模型服务拒绝了这次请求（HTTP 400）{('：' + detail) if detail else ''}"
+    if any(k in lowered for k in _NET_ERRORS):
+        return "连不上模型服务（网络中断或超时），可稍后重试"
+    # 兜底：给出去掉 URL 后的一行原文，限制长度
+    return text[:160]
 
 
 # 思考努力程度：平台统一的四档，由各 provider 映射到自己的参数

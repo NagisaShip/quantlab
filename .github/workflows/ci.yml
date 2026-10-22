@@ -4,8 +4,34 @@ on:
   push:
     branches: [main, master]
   pull_request:
+  # 手动触发：用于在任意分支跑一次完整 CI（含下方的视觉回归检查）。
+  workflow_dispatch:
+    inputs:
+      visual_baseline_run_id:
+        description: '包含 visual-baseline 产物的已验收运行编号'
+        type: string
+        required: false
+      visual_update_baseline:
+        description: '生成候选基准（人工检查截图后在下次运行填写本次编号）'
+        type: boolean
+        default: false
 
 jobs:
+  documents:
+    name: 文档交付（真实页面渲染与视觉消息回传）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: 安装排版与渲染依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libreoffice-writer libreoffice-impress fonts-noto-cjk
+          python -m pip install -e '.[dev,deliverables]'
+      - name: 真实 Office 导出、截图与模型图片消息
+        run: python -m pytest tests/test_local_agent_deliverables.py -q
   backend:
     name: 后端（lint + 测试，SQLite）
     runs-on: ubuntu-latest
@@ -29,6 +55,18 @@ jobs:
         run: |
           python scripts/gen_api_doc.py
           git diff --exit-code -- docs/API参考.md docs/openapi.json
+
+      # 快速失败：先跑与桌面端 / Agent / 成果固定强相关的关键子集，再跑全量。
+      # 只在一份 Python 上跑，避免三份矩阵重复等待；全量 pytest 仍然覆盖所有版本。
+      - name: 关键子集（Python 3.13，快速失败）
+        if: matrix.python-version == '3.13'
+        run: |
+          pytest -q \
+            tests/test_workflows_api.py \
+            tests/test_artifact_pins.py \
+            tests/test_local_projects.py \
+            tests/test_local_agent_deliverables.py \
+            tests/test_ai_tools.py
 
       - name: 测试
         run: pytest -q
@@ -75,6 +113,13 @@ jobs:
           node-version: "22"
       - name: 安装依赖
         run: npm ci --no-audit --no-fund
+      - name: TypeScript 类型检查
+        run: npx tsc -b --pretty false
+      - name: i18n 提取检查（missing 必须为 0）
+        shell: bash
+        run: |
+          node scripts/i18n-extract.cjs "$RUNNER_TEMP/i18n-missing.json"
+          node -e "const fs=require('fs');const r=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+'/i18n-missing.json','utf8'));const n=r.plain.length+r.templates.length;if(n){console.error('缺少 i18n 文案：plain='+r.plain.length+' templates='+r.templates.length);console.error([...r.plain,...r.templates].slice(0,20).join('\n'));process.exit(1)}console.log('i18n missing 0')"
       - name: 构建（含 tsc 类型检查）
         run: npm run build
       - name: 上传构建产物
@@ -168,6 +213,85 @@ jobs:
           path: |
             tests/e2e/.artifacts
             tests/e2e/.tmp
+          retention-days: 14
+          if-no-files-found: ignore
+
+  visual:
+    name: 视觉回归（手动 workflow_dispatch）
+    permissions:
+      contents: read
+      actions: read
+    # 只在手动触发时跑：需要真实浏览器与已构建的前端，避免拖慢每次 PR。
+    # 本地等价命令见 docs/CI与视觉回归.md；脚本默认用系统 Chrome，CI 用 Chromium。
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    env:
+      QUANTLAB_BASE: http://127.0.0.1:8399
+      QAGENT_HOME: ${{ github.workspace }}/.tmp/visual-home
+      QAGENT_BACKGROUND: "0"
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: 安装后端 / 前端依赖并构建
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+          cd web
+          npm ci --no-audit --no-fund
+          npm run build
+      - name: 安装 E2E 依赖与 Playwright Chromium
+        run: |
+          npm ci --no-audit --no-fund
+          npx playwright install --with-deps chromium
+      - name: 启动后端（单端口交付 web/dist）
+        run: |
+          mkdir -p .tmp
+          nohup python -m quant_agent.cli serve --port 8399 --no-with-worker > .tmp/visual-backend.log 2>&1 &
+          for _ in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8399/api/healthz > /dev/null; then exit 0; fi
+            sleep 1
+          done
+          echo "后端启动失败，日志：" >&2
+          cat .tmp/visual-backend.log >&2
+          exit 1
+      - name: 视觉检查（pageerror / 横向溢出 / 截图）
+        run: node scripts/visual_check.mjs --channel chromium
+      - name: 下载已验收像素基准
+        if: inputs.visual_baseline_run_id != '' && !inputs.visual_update_baseline
+        uses: actions/download-artifact@v4
+        with:
+          name: visual-baseline
+          path: .tmp/visual-baseline
+          run-id: ${{ inputs.visual_baseline_run_id }}
+          github-token: ${{ github.token }}
+      - name: MCP 像素回归（显式生成基准或比较）
+        env:
+          UPDATE_BASELINE: ${{ inputs.visual_update_baseline }}
+        run: |
+          args=()
+          if [ "$UPDATE_BASELINE" = "true" ]; then args+=(--update-baseline); fi
+          node scripts/visual_check.mjs --channel chromium --pages mcp --out .tmp/visual-mcp --baseline .tmp/visual-baseline "${args[@]}"
+      - name: 上传候选基准
+        if: inputs.visual_update_baseline
+        uses: actions/upload-artifact@v4
+        with:
+          name: visual-baseline
+          path: .tmp/visual-baseline
+          if-no-files-found: error
+      - name: 上传截图与报告（失败也上传）
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: visual-report
+          path: |
+            .tmp/visual
+            .tmp/visual-mcp
           retention-days: 14
           if-no-files-found: ignore
 

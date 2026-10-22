@@ -8,7 +8,32 @@ import { Icon } from './icons'
 
 export interface SettingsItem { key: string; label: string; icon: string; keywords?: string }
 
+/**
+ * 本地项目相关设置：只在本机模式下出现。
+ * 本地项目页原来是一个独立页面，现在按“项目 / 环境 / 运行 / 模块库”拆进设置。
+ */
+const LOCAL_GROUP: { group: string; items: SettingsItem[] } = {
+  group: '本机',
+  items: [
+    { key: 'settings/local', label: '本地项目', icon: 'overview', keywords: '项目 文件夹 路径 数据 文件 导入 引用 复制 权限 快照 导出 迁移 关窗' },
+    { key: 'settings/local-env', label: '研究环境', icon: 'data', keywords: 'Python 解释器 依赖 venv conda 环境 检测 切换 修复' },
+    { key: 'settings/local-runtime', label: '任务与资源', icon: 'paper', keywords: '任务 取消 资源 CPU 内存 磁盘 GPU 缓存 清理' },
+    { key: 'settings/local-library', label: '模块库', icon: 'modellib', keywords: '模块 模板 发布 导入 版本 跨项目' },
+  ],
+}
+
+/** 本机模式下不显示的账号/协作类设置。 */
+const HIDDEN_IN_LOCAL = new Set([
+  'settings/account', 'settings/privacy', 'settings/workspace', 'settings/quota', 'settings/retention',
+  'settings/members', 'settings/runs', 'settings/node', 'settings/audit', 'settings/system', 'settings/env',
+])
+/** 账号模式下不显示的本机项目设置（研究执行环境除外）。 */
+const HIDDEN_IN_ACCOUNT = new Set([
+  'settings/local', 'settings/local-env', 'settings/local-runtime', 'settings/local-library',
+])
+
 export const SETTINGS_GROUPS: { group: string; items: SettingsItem[] }[] = [
+  LOCAL_GROUP,
   {
     group: '设置',
     items: [
@@ -27,7 +52,10 @@ export const SETTINGS_GROUPS: { group: string; items: SettingsItem[] }[] = [
   {
     group: 'AI',
     items: [
+      { key: 'settings/plugins', label: '插件管理', icon: 'modellib', keywords: '插件 功能 开关 导航 Agent 模块 精简' },
+      { key: 'settings/mcp', label: 'MCP 服务', icon: 'data', keywords: 'MCP 工具 连接 stdio HTTP 外部 服务' },
       { key: 'settings/lab', label: '研究偏好', icon: 'lab', keywords: '默认 研究类型 权限 思考 工具调用 上限 团队 上下文 建议 主题 红涨绿跌 关注 首页' },
+      { key: 'settings/env', label: '研究执行环境', icon: 'data', keywords: '执行 Python 解释器 依赖 venv conda 环境 检查 修复 卡片运行' },
       { key: 'models', label: '模型', icon: 'models', keywords: 'AI 模型 密钥 API key 服务商 provider 共享 个人 价格 限额 用量 路由 联网搜索 tavily' },
       { key: 'roles', label: '角色与团队', icon: 'roles', keywords: '角色 团队 agent' },
       { key: 'prompts', label: '提示词', icon: 'prompts', keywords: 'prompt' },
@@ -74,6 +102,12 @@ export const SETTINGS_ENTRIES: SettingsEntry[] = [
   { page: 'settings/system', text: '网络可用性实测', keywords: '网络 连通 交易所 延迟' },
   { page: 'settings/system', text: 'worker 与策略隔离', keywords: '沙箱 隔离 子进程' },
   { page: 'settings/lab', text: '新对话的默认设置', keywords: '默认' },
+  { page: 'settings/local', text: '项目信息', keywords: '本地项目 文件夹 路径 名称 打开 导出 快照 关窗' },
+  { page: 'settings/local', text: '数据文件与目录权限', keywords: '文件 数据 导入 引用 复制 权限 只读 可写 目录 预览 拖拽 CSV Excel Parquet' },
+  { page: 'settings/local-env', text: 'Python 环境', keywords: '解释器 依赖 venv conda 检测 切换 修复 离线 wheel' },
+  { page: 'settings/local-runtime', text: '任务、资源与缓存', keywords: '任务 取消 CPU 内存 磁盘 GPU 缓存 清理' },
+  { page: 'settings/local-library', text: '跨项目模块库', keywords: '模块 模板 发布 导入 版本' },
+  { page: 'settings/env', text: 'Python 环境', keywords: '执行 环境 依赖 解释器' },
   { page: 'settings/lab', text: '默认研究类型', keywords: '研究类型 自动 策略 因子 模型' },
   { page: 'settings/lab', text: '权限模式', keywords: '自动 手动 计划 审批' },
   { page: 'settings/lab', text: '思考努力程度', keywords: 'effort 推理' },
@@ -142,13 +176,14 @@ export function settingsKeyOf(page: string, arg: string): string {
   return page
 }
 
-export function SettingsShell({ current, onNavigate, onClose, badges, children, isAdmin }: {
+export function SettingsShell({ current, onNavigate, onClose, badges, children, isAdmin, localMode }: {
   current: string
   onNavigate: (k: string) => void
   onClose: () => void
   badges?: Record<string, string>
   children: ReactNode
   isAdmin?: boolean
+  localMode?:boolean
 }) {
   const [q, setQ] = useState('')
   const navRef = useRef<HTMLElement>(null)
@@ -156,9 +191,11 @@ export function SettingsShell({ current, onNavigate, onClose, badges, children, 
   useEffect(() => { navRef.current?.querySelector('[aria-current="page"]')?.scrollIntoView({ block: 'nearest', inline: 'center' }) }, [current])
   const needle = q.trim().toLowerCase()
   const all = isAdmin ? [...SETTINGS_GROUPS, ADMIN_GROUP] : SETTINGS_GROUPS
+  // 本机模式与账号模式各自只显示有意义的设置；本机模式不再展示账号/工作区/协作类设置。
+  const hidden = localMode ? HIDDEN_IN_LOCAL : HIDDEN_IN_ACCOUNT
   const groups = all.map((g) => ({
     ...g,
-    items: g.items.filter((i) => !needle || `${g.group} ${i.label} ${i.keywords ?? ''}`.toLowerCase().includes(needle)),
+    items: g.items.filter((i) => !hidden.has(i.key) && !(localMode && i.key.startsWith('admin/')) && (!needle || `${g.group} ${i.label} ${i.keywords ?? ''}`.toLowerCase().includes(needle))),
   })).filter((g) => g.items.length)
   const label = all.flatMap((g) => g.items).find((i) => i.key === current)?.label ?? '设置'
   const pageLabel = (key: string) => SETTINGS_GROUPS.flatMap((g) => g.items).find((i) => i.key === key)?.label ?? key
@@ -239,6 +276,10 @@ export function SettingsShell({ current, onNavigate, onClose, badges, children, 
           )}
           {!groups.length && !entries.length && <div className="set-none">没有匹配的设置</div>}
         </nav>
+        <div className="set-nav-foot">
+          <small>{localMode ? '本机模式 · 数据只保存在这台设备' : 'QuantLab v0.1.0-preview.1'}</small>
+          <button type="button" className="set-about" onClick={() => window.dispatchEvent(new CustomEvent('qa:about'))}>关于 QuantLab</button>
+        </div>
       </aside>
       <section className="set-body" aria-label={label}>
         <button className="set-close desktop-only" onClick={onClose} aria-label="关闭设置">×</button>

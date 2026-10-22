@@ -47,6 +47,7 @@ def default_store_root() -> Path:  # 兼容旧调用
 
 @dataclass
 class AppServices:
+    # local profile is captured at construction; it never changes an account service implicitly.
     config: AgentConfig
     router: ModelRouter
     store: WorkspaceStore  # 按工作区隔离（由请求上下文决定目录）
@@ -73,6 +74,7 @@ class AppServices:
     collab_bot: Any = None  # CollabBot：群组与策略广场里的 QuantLab Bot
     social: Any = None  # SocialService：用户资料、关注、拉黑与私信策略
     dbcache: Any = None  # DbCache：外部接口结果的数据库缓存（行情摘要、搜索结果、网页正文）
+    local: Any = None
 
     @classmethod
     def build(
@@ -117,6 +119,17 @@ class AppServices:
             versions=VersionService(db),
         )
         services.auth.backfill_usernames()  # 用户名登录之前注册的账号：按邮箱补一个用户名
+        from ..local.profile import LocalProject
+        from ..local.profile import enabled as local_enabled
+
+        if local_enabled():
+            services.local = LocalProject(services)
+            store.local_workspace_id = services.local.manifest["workspace_id"]
+            module_path = str(home / "modules")
+            import sys
+
+            if module_path not in sys.path:
+                sys.path.append(module_path)
         from ..live.accounts import AccountService
         from ..live.service import LiveService
 
@@ -180,6 +193,8 @@ class AppServices:
         """新工作区第一次被访问：写入内置角色、团队、默认研究资产与协作示例。"""
         self.roles._seed_builtin(store)
         sync_builtin_teams(store)
+        if self.local:
+            return
         ws = self.auth.workspace(workspace_id) if self.auth is not None else {}
         owner_id = ws.get("owner_id") or "system"
         try:
@@ -342,6 +357,9 @@ class AppServices:
 
     def _register_tools(self, tools: ToolRegistry) -> None:
         """把平台能力暴露给角色（角色卡里的 tools 字段引用这些名字）。"""
+        from ..workflows.agent import register as register_workflow_tools
+
+        register_workflow_tools(tools)
         tools.register(
             "market_summary",
             self.market_summary,
