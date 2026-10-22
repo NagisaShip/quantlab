@@ -100,7 +100,7 @@ def main() -> int:
         return 0
 
     output.mkdir(parents=True, exist_ok=True)
-    print("构建 sidecar →", output)
+    print("Building sidecar:", output)
     return subprocess.call(_command(output, args.clean))
 
 
