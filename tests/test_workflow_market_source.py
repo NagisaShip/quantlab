@@ -273,7 +273,10 @@ def test_workflow_run_with_direct_market_source(client, monkeypatch) -> None:
     detail = c.get("/api/workflows/runs/" + run.json()["id"]).json()
     assert detail["run"]["state"] == "COMPLETED", detail
     outputs = detail["report"]["nodes"]["src"]["outputs"]
-    rows = c.get("/api/workflows/artifacts/" + outputs["data"]["hash"] + "?limit=500").json()["value"]
+    digest = outputs["data"]["hash"]
+    first = c.get(f"/api/workflows/artifacts/{digest}?limit=100").json()
+    second = c.get(f"/api/workflows/artifacts/{digest}?limit=100&offset=100").json()
+    rows = first["value"] + second["value"]
     report = c.get("/api/workflows/artifacts/" + outputs["source"]["hash"]).json()["value"]
     assert len(rows) == 120 and rows[0]["symbol"] == "BTC/USDT"
     assert report["source"] == "exchange" and report["exchange"] == "binance"

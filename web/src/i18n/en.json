@@ -7706,5 +7706,10 @@
  "项": "items",
  "项目上下文键": "Project context keys",
  "项目规则": "Project rules",
- "模型上下文窗口上限": "Model context window limit"
+ "模型上下文窗口上限": "Model context window limit",
+ "检查模型本轮可见的规则与引用": "Review rules and references visible to the model this turn",
+ "检查需要人工确认的研究操作": "Review research actions requiring human approval",
+ "研究函数": "Research functions",
+ "管理工作流使用的研究函数": "Manage research functions used by workflows",
+ "配置并复用可执行的研究步骤": "Configure and reuse executable research steps"
 }
