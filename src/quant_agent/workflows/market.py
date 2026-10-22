@@ -146,7 +146,11 @@ def market_bars(
         "exchange": exchange_used,
         "source": actual,
         "source_label": (
-            "交易所真实历史行情" if actual == "exchange" else "合成数据（不是交易所行情）" if actual == "synthetic" else actual
+            "交易所真实历史行情"
+            if actual == "exchange"
+            else "合成数据（不是交易所行情）"
+            if actual == "synthetic"
+            else actual
         ),
         "bars": len(bars),
         "coverage_start": bars[0].open_time,
@@ -155,7 +159,11 @@ def market_bars(
         "coverage_end_iso": _iso(bars[-1].close_time),
         "fetched_at": time.time(),
         "quality": quality,
-        "warning": stale if actual == "exchange" else "这一列不是交易所真实行情，不能当作实盘证据" if actual == "synthetic" else "",
+        "warning": stale
+        if actual == "exchange"
+        else "这一列不是交易所真实行情，不能当作实盘证据"
+        if actual == "synthetic"
+        else "",
     }
     log(
         f"直连行情：{symbol} {timeframe} {len(bars)}根，来源 {report['source_label']}"

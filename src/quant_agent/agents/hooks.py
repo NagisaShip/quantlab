@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 TRIGGERS: dict[str, dict[str, Any]] = {
     "before_tool": {
@@ -116,7 +117,7 @@ def run_hooks(trigger: str, payload: dict[str, Any]) -> list[dict[str, Any]]:
         try:
             value = handler(dict(payload))
             item = {"id": record["id"], "ok": True, "result": value}
-        except Exception as exc:  # noqa: BLE001 - hook 失败不能影响工具
+        except Exception as exc:
             item = {"id": record["id"], "ok": False, "error": str(exc)[:300]}
         item["elapsed_ms"] = int((time.perf_counter() - started) * 1000)
         results.append(item)
@@ -125,7 +126,7 @@ def run_hooks(trigger: str, payload: dict[str, Any]) -> list[dict[str, Any]]:
 
 def recent_events(limit: int = 50) -> list[dict[str, Any]]:
     with _LOCK:
-        return list(_EVENTS[-max(1, min(int(limit or 50), MAX_EVENTS)):])
+        return list(_EVENTS[-max(1, min(int(limit or 50), MAX_EVENTS)) :])
 
 
 def _register_builtins() -> None:

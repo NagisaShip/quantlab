@@ -22,7 +22,10 @@ for line in sys.stdin:
     method = msg.get("method")
     rid = msg.get("id")
     if method == "initialize":
-        reply(rid, {"protocolVersion": "2024-11-05", "serverInfo": {"name": "fake", "version": "0.0.1"}, "capabilities": {}})
+        reply(
+            rid,
+            {"protocolVersion": "2024-11-05", "serverInfo": {"name": "fake", "version": "0.0.1"}, "capabilities": {}},
+        )
     elif method == "notifications/initialized":
         continue
     elif method == "tools/list":

@@ -59,7 +59,10 @@ NODE = {
     "capabilities": {"network": True, "native": "market_bars", "cache": False},
     "resources": {"scope": "platform market cache", "rows": "explicit bars parameter; no silent sampling"},
     "examples": [
-        {"description": "最近1500根BTC/USDT 1小时K线", "parameters": {"symbol": "BTC/USDT", "timeframe": "1h", "bars": 1500}}
+        {
+            "description": "最近1500根BTC/USDT 1小时K线",
+            "parameters": {"symbol": "BTC/USDT", "timeframe": "1h", "bars": 1500},
+        }
     ],
 }
 

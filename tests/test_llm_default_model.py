@@ -26,7 +26,9 @@ def test_default_target_is_first_ready_model_in_config_order() -> None:
     router = _router(
         [
             ProviderConfig("nokey", "openai", "https://a.example", "", models=["m0"]),
-            ProviderConfig("gw", "openai_responses", "https://b.example", "sk-test", models=["deepseek-v4.1-flash", "other"]),
+            ProviderConfig(
+                "gw", "openai_responses", "https://b.example", "sk-test", models=["deepseek-v4.1-flash", "other"]
+            ),
         ]
     )
     assert router.default_target() == "gw/deepseek-v4.1-flash"

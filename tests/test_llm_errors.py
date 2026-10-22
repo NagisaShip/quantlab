@@ -137,7 +137,10 @@ def test_fallback_reason_never_shows_mdn_link() -> None:
 def test_responses_payload_replays_reasoning_for_thinking_models() -> None:
     """思考模型 + 工具回合必须把 reasoning 传回；否则 OpenCode 转发 DeepSeek 会 400。"""
     provider = OpenAIResponsesProvider(
-        "opencode", "https://opencode.ai/inference/go/v1", "k", transport=httpx.MockTransport(lambda r: httpx.Response(200, json={}))
+        "opencode",
+        "https://opencode.ai/inference/go/v1",
+        "k",
+        transport=httpx.MockTransport(lambda r: httpx.Response(200, json={})),
     )
     assistant = Message(
         role="assistant",
@@ -171,7 +174,9 @@ def test_responses_payload_replays_reasoning_for_thinking_models() -> None:
     assert payload["input"][2]["summary"][0]["text"]
 
     # 非思考网关的普通模型不要凭空插入 reasoning item
-    plain = OpenAIResponsesProvider("gw", "https://gw.example/v1", "k", transport=httpx.MockTransport(lambda r: httpx.Response(200, json={})))
+    plain = OpenAIResponsesProvider(
+        "gw", "https://gw.example/v1", "k", transport=httpx.MockTransport(lambda r: httpx.Response(200, json={}))
+    )
     plain_payload = plain.build_payload(
         [Message(role="user", content="hi"), assistant],
         model="gpt-5",
@@ -195,7 +200,10 @@ def test_responses_parse_keeps_raw_reasoning_items() -> None:
         "usage": {},
     }
     provider = OpenAIResponsesProvider(
-        "opencode", "https://opencode.ai/inference/go/v1", "k", transport=httpx.MockTransport(lambda r: httpx.Response(200, json={}))
+        "opencode",
+        "https://opencode.ai/inference/go/v1",
+        "k",
+        transport=httpx.MockTransport(lambda r: httpx.Response(200, json={})),
     )
     result = provider._parse_response(data, "deepseek-v4.1-flash", None)
     assert result.provider_blocks and result.provider_blocks[0]["id"] == "rs_1"
@@ -221,7 +229,10 @@ def test_responses_parse_keeps_raw_reasoning_items() -> None:
 
 def test_chat_completions_passes_reasoning_content_for_deepseek_models() -> None:
     provider = OpenAICompatibleProvider(
-        "opencode", "https://opencode.ai/inference/go/v1", "k", transport=httpx.MockTransport(lambda r: httpx.Response(200, json={}))
+        "opencode",
+        "https://opencode.ai/inference/go/v1",
+        "k",
+        transport=httpx.MockTransport(lambda r: httpx.Response(200, json={})),
     )
     assistant = Message(
         role="assistant",

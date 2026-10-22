@@ -538,8 +538,8 @@ def test_strategy_prompts_unchanged_but_still_get_instructions(client):
 
 def test_research_kind_hides_strategy_only_tools(client):
     """research/workflow 会话的模型工具表不应再出现写策略/回测入口，避免退回策略研发。"""
-    from quant_agent.api.routes_lab import _lab
     from quant_agent.agents.lab_state import new_project
+    from quant_agent.api.routes_lab import _lab
     from quant_agent.platform import context
 
     ws = client.get("/api/auth/me").json()["workspace"]["id"]

@@ -84,16 +84,17 @@ class _LocalRuntimeOnly:
 
 
 def create_app(*, with_scheduler: bool = False) -> FastAPI:
+    from . import routes_local, routes_research_plugins
     from .routes_research_plugins import enforce
 
     app = FastAPI(
         dependencies=[Depends(enforce)],
         lifespan=_background if with_scheduler else None,
-        title="QuantLab v0.1.0-preview.1 API",
+        title="QuantLab v0.1.0-preview.2 API",
         description=(
             "交易所行情接入、策略管理、回测与仿真、Agent 团队调研、长期 Agent 与通知。\n\n仅为研究结果，非投资建议。"
         ),
-        version="0.1.0-preview.1",
+        version="0.1.0-preview.2",
     )
 
     # 不开放跨域：前端与 API 同源部署（开发时由 Vite 代理）。需要跨域时由反向代理显式配置白名单。
@@ -124,6 +125,9 @@ def create_app(*, with_scheduler: bool = False) -> FastAPI:
         routes_live.router,
         routes_demo.router,
         routes_onboarding.router,
+        routes_local.router,
+        routes_local.envrouter,
+        routes_research_plugins.router,
     )
 
     app.include_router(routes_auth.router)
@@ -131,12 +135,10 @@ def create_app(*, with_scheduler: bool = False) -> FastAPI:
     app.include_router(routes_runs.router)
     app.include_router(routes_tasks.router)
     app.include_router(routes_approvals.router)
-    from . import routes_local
 
     app.include_router(routes_local.router)
     app.include_router(routes_local.envrouter)
     app.include_router(routes_workflows.router)
-    from . import routes_research_plugins
 
     app.include_router(routes_research_plugins.router)
     app.include_router(routes_dsl.router)

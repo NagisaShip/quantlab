@@ -142,7 +142,9 @@ def ai_chat(payload: AiChatIn) -> dict:
 @router.get("/history")
 def ai_history(
     limit: int = Query(30, ge=1, le=200),
-    scope: Literal["mine", "workspace"] = Query("mine", description="mine=只看自己的 AI 会话；workspace=管理员看全工作区"),
+    scope: Literal["mine", "workspace"] = Query(
+        "mine", description="mine=只看自己的 AI 会话；workspace=管理员看全工作区"
+    ),
 ) -> dict:
     """AI 会话历史：默认按发起人过滤；只有管理员可显式查看工作区全部。"""
     rows = get_services().store.list(Collections.AI_SESSIONS, limit=limit * 3 if scope == "workspace" else limit)

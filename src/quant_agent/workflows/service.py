@@ -432,6 +432,7 @@ class WorkflowService:
         self.writable()
         record = self.get(wid, revision)
         from .plugins import require_flow
+
         require_flow(self, record["workflow"], agent=origin == "agent")
         if variant:
             import copy
@@ -612,7 +613,12 @@ def handle_workflow(ctl):
 def _edge_endpoints(edge):
     """兼容规范化前后的两种边写法。"""
     if "source" in edge:
-        return edge.get("source"), edge.get("source_port") or "data", edge.get("target"), edge.get("target_port") or "data"
+        return (
+            edge.get("source"),
+            edge.get("source_port") or "data",
+            edge.get("target"),
+            edge.get("target_port") or "data",
+        )
     source = edge.get("from") or {}
     target = edge.get("to") or {}
     return source.get("node"), source.get("port") or "data", target.get("node"), target.get("port") or "data"
@@ -691,9 +697,7 @@ def _freeze_market_sources(service, workflow, registry, run_id):
         for name in (data_name, report_name):
             if name not in resources:
                 resources.append(name)
-        frozen.append(
-            {"node": nid, "file": data_name, "report": report_name, "rows": len(rows), "sha256": digest}
-        )
+        frozen.append({"node": nid, "file": data_name, "report": report_name, "rows": len(rows), "sha256": digest})
     if frozen:
         compile_workflow(flow, registry)  # 替换后仍必须是合法工作流
     return flow, frozen

@@ -1,141 +1,144 @@
 """Reusable function-card sources, free of workspace paths, accounts and data."""
 
-CARD_SOURCES = ("NODE = {'kind': 'supplychain.explain', 'version': '2', 'title': 'GradCAM、输入敏感性与真实消息路径', 'category': "
- "'供应链信用研究', 'inputs': {'dataset': {'type': 'graph_dataset'}, 'model': {'type': 'risk_model'}}, 'outputs': "
- "{'explanation': {'type': 'research_explanation'}}, 'parameters': {'type': 'object', 'properties': {}, "
- "'required': [], 'additionalProperties': False}, 'requirements': ['numpy>=2,<3', 'pandas>=2.2,<4', "
- "'scikit-learn>=1.5,<2', 'scipy>=1.13,<2', 'torch>=2.8,<2.9', 'torch-geometric==2.7.0', 'networkx>=3,<4', "
- "'matplotlib>=3.8,<4'], 'bundled_modules': ['quantlab_supplychain']}\n"
- '\n'
- 'def execute(ctx, inputs, params):\n'
- '    from quantlab_supplychain.explain import explain\n'
- '    return explain(ctx, inputs, params)\n',
- "NODE = {'kind': 'supplychain.evaluate', 'version': '2', 'title': '冻结模型测试评价与证据图表', 'category': '供应链信用研究', "
- "'inputs': {'dataset': {'type': 'graph_dataset'}, 'lr': {'type': 'risk_model'}, 'gbdt': {'type': "
- "'risk_model'}, 'gcn': {'type': 'risk_model'}, 'gat': {'type': 'risk_model'}, 'hgnn': {'type': "
- "'risk_model'}, 'temporal': {'type': 'risk_model'}, 'abl_trade': {'type': 'risk_model'}, 'abl_cap': "
- "{'type': 'risk_model'}, 'sens_lr': {'type': 'risk_model'}, 'sens_gbdt': {'type': 'risk_model'}}, "
- "'outputs': {'evaluation': {'type': 'research_evaluation'}}, 'parameters': {'type': 'object', 'properties': "
- "{}, 'required': [], 'additionalProperties': False}, 'requirements': ['numpy>=2,<3', 'pandas>=2.2,<4', "
- "'scikit-learn>=1.5,<2', 'scipy>=1.13,<2', 'matplotlib>=3.8,<4'], 'bundled_modules': "
- "['quantlab_supplychain']}\n"
- '\n'
- 'def execute(ctx, inputs, params):\n'
- '    from quantlab_supplychain.evaluate import evaluate\n'
- '    return evaluate(ctx, inputs, params)\n',
- "NODE = {'kind': 'supplychain.alignment_source', 'version': '2', 'title': '载入已完成LoRA实验的受约束对齐结果', "
- "'category': '供应链信用研究', 'inputs': {}, 'outputs': {'alignment': {'type': 'entity_alignment'}}, 'parameters': "
- "{'type': 'object', 'properties': {'file': {'type': 'string'}}, 'required': ['file'], "
- "'additionalProperties': False}, 'requirements': ['numpy>=2,<3', 'pandas>=2.2,<4'], 'bundled_modules': "
- "['quantlab_supplychain'], 'file_params': ['file']}\n"
- '\n'
- 'def execute(ctx, inputs, params):\n'
- '    from quantlab_supplychain.alignment import load_alignment\n'
- '    return load_alignment(ctx, inputs, params)\n',
- "NODE = {'kind': 'supplychain.qwen_lora', 'version': '2', 'title': 'Qwen3-4B真实QLoRA与实体留出评估', 'category': "
- "'供应链信用研究', 'inputs': {'prepared': {'type': 'research_prepared'}}, 'outputs': {'lora_report': {'type': "
- "'report'}, 'alignment': {'type': 'entity_alignment'}}, 'parameters': {'type': 'object', 'properties': "
- "{'model_manifest': {'type': 'string'}, 'steps': {'type': 'integer', 'default': 80, 'minimum': 1, "
- "'maximum': 1000}, 'max_train_examples': {'type': 'integer', 'default': 1000}, 'test_examples': {'type': "
- "'integer', 'default': 64}}, 'required': ['model_manifest'], 'additionalProperties': False}, "
- "'requirements': ['numpy>=2,<3', 'pandas>=2.2,<4', 'scikit-learn>=1.5,<2', 'torch>=2.8,<2.9', "
- "'transformers>=4.51,<5', 'peft>=0.15,<0.19', 'bitsandbytes>=0.50,<0.51', 'accelerate>=1,<2', "
- "'sentencepiece>=0.2,<0.3', 'safetensors>=0.6,<1'], 'bundled_modules': ['quantlab_supplychain'], "
- "'file_params': ['model_manifest']}\n"
- '\n'
- 'def execute(ctx, inputs, params):\n'
- '    from quantlab_supplychain.alignment import train_lora\n'
- '    return train_lora(ctx, inputs, params)\n',
- "NODE = {'kind': 'supplychain.train', 'version': '2', 'title': '风险模型训练与验证选择', 'category': '供应链信用研究', "
- "'inputs': {'dataset': {'type': 'graph_dataset'}}, 'outputs': {'model': {'type': 'risk_model'}}, "
- "'parameters': {'type': 'object', 'properties': {'model': {'type': 'string', 'enum': ['LR', 'GBDT', 'GCN', "
- "'GAT', 'HGNNs', 'T-HGNNs']}, 'seeds': {'type': 'array', 'items': {'type': 'integer'}, 'default': [7, 17, "
- "27]}, 'epochs': {'type': 'integer', 'default': 35, 'minimum': 1, 'maximum': 200}, 'label_variant': "
- "{'type': 'string', 'enum': ['main', 'composite'], 'default': 'main'}, 'ablation': {'type': 'string', "
- "'enum': ['none', 'no_trade', 'no_capital'], 'default': 'none'}}, 'required': ['model'], "
- "'additionalProperties': False}, 'requirements': ['numpy>=2,<3', 'pandas>=2.2,<4', 'scikit-learn>=1.5,<2', "
- "'scipy>=1.13,<2', 'torch>=2.8,<2.9', 'torch-geometric==2.7.0'], 'bundled_modules': "
- "['quantlab_supplychain']}\n"
- '\n'
- 'def execute(ctx, inputs, params):\n'
- '    from quantlab_supplychain.train import train_model\n'
- '    return train_model(ctx, inputs, params)\n',
- "NODE = {'kind': 'supplychain.graphs', 'version': '2', 'title': '年度异构图与训练期特征变换', 'category': '供应链信用研究', "
- "'inputs': {'prepared': {'type': 'research_prepared'}, 'alignment': {'type': 'entity_alignment'}}, "
- "'outputs': {'dataset': {'type': 'graph_dataset'}, 'statistics': {'type': 'report'}}, 'parameters': "
- "{'type': 'object', 'properties': {}, 'required': [], 'additionalProperties': False}, 'requirements': "
- "['numpy>=2,<3', 'pandas>=2.2,<4', 'scikit-learn>=1.5,<2', 'scipy>=1.13,<2', 'networkx>=3,<4'], "
- "'bundled_modules': ['quantlab_supplychain']}\n"
- '\n'
- 'def execute(ctx, inputs, params):\n'
- '    from quantlab_supplychain.graph import build_graphs\n'
- '    return build_graphs(ctx, inputs, params)\n',
- "NODE = {'kind': 'supplychain.align_rules', 'version': '2', 'title': '实体标识与别名一致性校验', 'category': '供应链信用研究', "
- "'inputs': {'prepared': {'type': 'research_prepared'}}, 'outputs': {'alignment': {'type': "
- "'entity_alignment'}, 'pairs': {'type': 'report'}}, 'parameters': {'type': 'object', 'properties': {}, "
- "'required': [], 'additionalProperties': False}, 'requirements': ['numpy>=2,<3', 'pandas>=2.2,<4'], "
- "'bundled_modules': ['quantlab_supplychain']}\n"
- '\n'
- 'def execute(ctx, inputs, params):\n'
- '    from quantlab_supplychain.alignment import align_rules\n'
- '    return align_rules(ctx, inputs, params)\n',
- "NODE = {'kind': 'supplychain.prepare', 'version': '2', 'title': 'CSMAR清洗与风险口径', 'category': '供应链信用研究', "
- "'inputs': {}, 'outputs': {'prepared': {'type': 'research_prepared'}, 'audit': {'type': 'report'}}, "
- "'parameters': {'type': 'object', 'properties': {'manifest': {'type': 'string'}}, 'required': ['manifest'], "
- "'additionalProperties': False}, 'requirements': ['numpy>=2,<3', 'pandas>=2.2,<4'], 'bundled_modules': "
- "['quantlab_supplychain'], 'file_params': ['manifest']}\n"
- '\n'
- 'def execute(ctx, inputs, params):\n'
- '    from quantlab_supplychain.prepare import prepare\n'
- '    return prepare(ctx, inputs, params)\n',
- "NODE = {'kind': 'supplychain.temporal_no_history', 'version': '2', 'title': '严格时序消融：相同年度编码器与单步GRU', "
- "'category': '供应链信用研究', 'inputs': {'dataset': {'type': 'graph_dataset'}}, 'outputs': {'model': {'type': "
- "'risk_model'}}, 'parameters': {'type': 'object', 'properties': {'seeds': {'type': 'array', 'items': "
- "{'type': 'integer'}, 'default': [7, 17, 27]}, 'epochs': {'type': 'integer', 'default': 35}}, 'required': "
- "[], 'additionalProperties': False}, 'requirements': ['numpy>=2,<3', 'pandas>=2.2,<4', "
- "'scikit-learn>=1.5,<2', 'scipy>=1.13,<2', 'torch>=2.8,<2.9', 'torch-geometric==2.7.0'], 'bundled_modules': "
- "['quantlab_supplychain']}\n"
- '\n'
- 'def execute(ctx, inputs, params):\n'
- '    from quantlab_supplychain.train import train_temporal_ablation\n'
- '    return train_temporal_ablation(ctx, inputs, params)\n',
- "NODE = {'kind': 'supplychain.publication', 'version': '2', 'title': '报告与汇报用清晰图表', 'category': '供应链信用研究', "
- "'inputs': {'dataset': {'type': 'graph_dataset'}, 'evaluation': {'type': 'research_evaluation'}, "
- "'explanation': {'type': 'research_explanation'}}, 'outputs': {'figures': {'type': 'report'}}, "
- "'parameters': {'type': 'object', 'properties': {}, 'required': [], 'additionalProperties': False}, "
- "'requirements': ['numpy>=2,<3', 'pandas>=2.2,<4', 'scikit-learn>=1.5,<2', 'scipy>=1.13,<2', "
- "'matplotlib>=3.8,<4', 'networkx>=3,<4'], 'bundled_modules': ['quantlab_supplychain']}\n"
- '\n'
- 'def execute(ctx, inputs, params):\n'
- '    from quantlab_supplychain.publication import publication_figures\n'
- '    return publication_figures(ctx, inputs, params)\n',
- "NODE = {'kind': 'supplychain.evaluate_final', 'version': '2', 'title': '全部实验统一测试证据汇总', 'category': "
- "'供应链信用研究', 'inputs': {'dataset': {'type': 'graph_dataset'}, 'lr': {'type': 'risk_model'}, 'gbdt': {'type': "
- "'risk_model'}, 'gcn': {'type': 'risk_model'}, 'gat': {'type': 'risk_model'}, 'hgnn': {'type': "
- "'risk_model'}, 'temporal': {'type': 'risk_model'}, 'abl_trade': {'type': 'risk_model'}, 'abl_cap': "
- "{'type': 'risk_model'}, 'sens_lr': {'type': 'risk_model'}, 'sens_gbdt': {'type': 'risk_model'}, "
- "'time_abl': {'type': 'risk_model'}}, 'outputs': {'evaluation': {'type': 'research_evaluation'}}, "
- "'parameters': {'type': 'object', 'properties': {}, 'required': [], 'additionalProperties': False}, "
- "'requirements': ['numpy>=2,<3', 'pandas>=2.2,<4', 'scikit-learn>=1.5,<2', 'scipy>=1.13,<2', "
- "'matplotlib>=3.8,<4'], 'bundled_modules': ['quantlab_supplychain']}\n"
- '\n'
- 'def execute(ctx, inputs, params):\n'
- '    from quantlab_supplychain.evaluate import evaluate\n'
- '    return evaluate(ctx, inputs, params)\n',
- "NODE = {'kind': 'supplychain.frozen_experiments', 'version': '2', 'title': '读取已冻结实验与来源', 'category': "
- "'供应链信用研究', 'inputs': {}, 'outputs': {'dataset': {'type': 'graph_dataset'}, 'lr': {'type': 'risk_model'}, "
- "'gbdt': {'type': 'risk_model'}, 'gcn': {'type': 'risk_model'}, 'gat': {'type': 'risk_model'}, 'hgnn': "
- "{'type': 'risk_model'}, 'temporal': {'type': 'risk_model'}, 'abl_trade': {'type': 'risk_model'}, "
- "'abl_cap': {'type': 'risk_model'}, 'sens_lr': {'type': 'risk_model'}, 'sens_gbdt': {'type': 'risk_model'}, "
- "'time_abl': {'type': 'risk_model'}, 'explanation': {'type': 'research_explanation'}}, 'parameters': "
- "{'type': 'object', 'properties': {'file': {'type': 'string'}}, 'required': ['file'], "
- "'additionalProperties': False}, 'requirements': ['numpy>=2,<3', 'pandas>=2.2,<4', 'scikit-learn>=1.5,<2', "
- "'scipy>=1.13,<2', 'matplotlib>=3.8,<4'], 'bundled_modules': ['quantlab_supplychain'], 'file_params': "
- "['file']}\n"
- '\n'
- 'def execute(ctx, inputs, params):\n'
- '    from quantlab_supplychain.evaluate import load_experiments\n'
- '    return load_experiments(ctx, inputs, params)\n')
+CARD_SOURCES = (
+    "NODE = {'kind': 'supplychain.explain', 'version': '2', 'title': 'GradCAM、输入敏感性与真实消息路径', 'category': "
+    "'供应链信用研究', 'inputs': {'dataset': {'type': 'graph_dataset'}, 'model': {'type': 'risk_model'}}, 'outputs': "
+    "{'explanation': {'type': 'research_explanation'}}, 'parameters': {'type': 'object', 'properties': {}, "
+    "'required': [], 'additionalProperties': False}, 'requirements': ['numpy>=2,<3', 'pandas>=2.2,<4', "
+    "'scikit-learn>=1.5,<2', 'scipy>=1.13,<2', 'torch>=2.8,<2.9', 'torch-geometric==2.7.0', 'networkx>=3,<4', "
+    "'matplotlib>=3.8,<4'], 'bundled_modules': ['quantlab_supplychain']}\n"
+    "\n"
+    "def execute(ctx, inputs, params):\n"
+    "    from quantlab_supplychain.explain import explain\n"
+    "    return explain(ctx, inputs, params)\n",
+    "NODE = {'kind': 'supplychain.evaluate', 'version': '2', 'title': '冻结模型测试评价与证据图表', 'category': '供应链信用研究', "
+    "'inputs': {'dataset': {'type': 'graph_dataset'}, 'lr': {'type': 'risk_model'}, 'gbdt': {'type': "
+    "'risk_model'}, 'gcn': {'type': 'risk_model'}, 'gat': {'type': 'risk_model'}, 'hgnn': {'type': "
+    "'risk_model'}, 'temporal': {'type': 'risk_model'}, 'abl_trade': {'type': 'risk_model'}, 'abl_cap': "
+    "{'type': 'risk_model'}, 'sens_lr': {'type': 'risk_model'}, 'sens_gbdt': {'type': 'risk_model'}}, "
+    "'outputs': {'evaluation': {'type': 'research_evaluation'}}, 'parameters': {'type': 'object', 'properties': "
+    "{}, 'required': [], 'additionalProperties': False}, 'requirements': ['numpy>=2,<3', 'pandas>=2.2,<4', "
+    "'scikit-learn>=1.5,<2', 'scipy>=1.13,<2', 'matplotlib>=3.8,<4'], 'bundled_modules': "
+    "['quantlab_supplychain']}\n"
+    "\n"
+    "def execute(ctx, inputs, params):\n"
+    "    from quantlab_supplychain.evaluate import evaluate\n"
+    "    return evaluate(ctx, inputs, params)\n",
+    "NODE = {'kind': 'supplychain.alignment_source', 'version': '2', 'title': '载入已完成LoRA实验的受约束对齐结果', "
+    "'category': '供应链信用研究', 'inputs': {}, 'outputs': {'alignment': {'type': 'entity_alignment'}}, 'parameters': "
+    "{'type': 'object', 'properties': {'file': {'type': 'string'}}, 'required': ['file'], "
+    "'additionalProperties': False}, 'requirements': ['numpy>=2,<3', 'pandas>=2.2,<4'], 'bundled_modules': "
+    "['quantlab_supplychain'], 'file_params': ['file']}\n"
+    "\n"
+    "def execute(ctx, inputs, params):\n"
+    "    from quantlab_supplychain.alignment import load_alignment\n"
+    "    return load_alignment(ctx, inputs, params)\n",
+    "NODE = {'kind': 'supplychain.qwen_lora', 'version': '2', 'title': 'Qwen3-4B真实QLoRA与实体留出评估', 'category': "
+    "'供应链信用研究', 'inputs': {'prepared': {'type': 'research_prepared'}}, 'outputs': {'lora_report': {'type': "
+    "'report'}, 'alignment': {'type': 'entity_alignment'}}, 'parameters': {'type': 'object', 'properties': "
+    "{'model_manifest': {'type': 'string'}, 'steps': {'type': 'integer', 'default': 80, 'minimum': 1, "
+    "'maximum': 1000}, 'max_train_examples': {'type': 'integer', 'default': 1000}, 'test_examples': {'type': "
+    "'integer', 'default': 64}}, 'required': ['model_manifest'], 'additionalProperties': False}, "
+    "'requirements': ['numpy>=2,<3', 'pandas>=2.2,<4', 'scikit-learn>=1.5,<2', 'torch>=2.8,<2.9', "
+    "'transformers>=4.51,<5', 'peft>=0.15,<0.19', 'bitsandbytes>=0.50,<0.51', 'accelerate>=1,<2', "
+    "'sentencepiece>=0.2,<0.3', 'safetensors>=0.6,<1'], 'bundled_modules': ['quantlab_supplychain'], "
+    "'file_params': ['model_manifest']}\n"
+    "\n"
+    "def execute(ctx, inputs, params):\n"
+    "    from quantlab_supplychain.alignment import train_lora\n"
+    "    return train_lora(ctx, inputs, params)\n",
+    "NODE = {'kind': 'supplychain.train', 'version': '2', 'title': '风险模型训练与验证选择', 'category': '供应链信用研究', "
+    "'inputs': {'dataset': {'type': 'graph_dataset'}}, 'outputs': {'model': {'type': 'risk_model'}}, "
+    "'parameters': {'type': 'object', 'properties': {'model': {'type': 'string', 'enum': ['LR', 'GBDT', 'GCN', "
+    "'GAT', 'HGNNs', 'T-HGNNs']}, 'seeds': {'type': 'array', 'items': {'type': 'integer'}, 'default': [7, 17, "
+    "27]}, 'epochs': {'type': 'integer', 'default': 35, 'minimum': 1, 'maximum': 200}, 'label_variant': "
+    "{'type': 'string', 'enum': ['main', 'composite'], 'default': 'main'}, 'ablation': {'type': 'string', "
+    "'enum': ['none', 'no_trade', 'no_capital'], 'default': 'none'}}, 'required': ['model'], "
+    "'additionalProperties': False}, 'requirements': ['numpy>=2,<3', 'pandas>=2.2,<4', 'scikit-learn>=1.5,<2', "
+    "'scipy>=1.13,<2', 'torch>=2.8,<2.9', 'torch-geometric==2.7.0'], 'bundled_modules': "
+    "['quantlab_supplychain']}\n"
+    "\n"
+    "def execute(ctx, inputs, params):\n"
+    "    from quantlab_supplychain.train import train_model\n"
+    "    return train_model(ctx, inputs, params)\n",
+    "NODE = {'kind': 'supplychain.graphs', 'version': '2', 'title': '年度异构图与训练期特征变换', 'category': '供应链信用研究', "
+    "'inputs': {'prepared': {'type': 'research_prepared'}, 'alignment': {'type': 'entity_alignment'}}, "
+    "'outputs': {'dataset': {'type': 'graph_dataset'}, 'statistics': {'type': 'report'}}, 'parameters': "
+    "{'type': 'object', 'properties': {}, 'required': [], 'additionalProperties': False}, 'requirements': "
+    "['numpy>=2,<3', 'pandas>=2.2,<4', 'scikit-learn>=1.5,<2', 'scipy>=1.13,<2', 'networkx>=3,<4'], "
+    "'bundled_modules': ['quantlab_supplychain']}\n"
+    "\n"
+    "def execute(ctx, inputs, params):\n"
+    "    from quantlab_supplychain.graph import build_graphs\n"
+    "    return build_graphs(ctx, inputs, params)\n",
+    "NODE = {'kind': 'supplychain.align_rules', 'version': '2', 'title': '实体标识与别名一致性校验', 'category': '供应链信用研究', "
+    "'inputs': {'prepared': {'type': 'research_prepared'}}, 'outputs': {'alignment': {'type': "
+    "'entity_alignment'}, 'pairs': {'type': 'report'}}, 'parameters': {'type': 'object', 'properties': {}, "
+    "'required': [], 'additionalProperties': False}, 'requirements': ['numpy>=2,<3', 'pandas>=2.2,<4'], "
+    "'bundled_modules': ['quantlab_supplychain']}\n"
+    "\n"
+    "def execute(ctx, inputs, params):\n"
+    "    from quantlab_supplychain.alignment import align_rules\n"
+    "    return align_rules(ctx, inputs, params)\n",
+    "NODE = {'kind': 'supplychain.prepare', 'version': '2', 'title': 'CSMAR清洗与风险口径', 'category': '供应链信用研究', "
+    "'inputs': {}, 'outputs': {'prepared': {'type': 'research_prepared'}, 'audit': {'type': 'report'}}, "
+    "'parameters': {'type': 'object', 'properties': {'manifest': {'type': 'string'}}, 'required': ['manifest'], "
+    "'additionalProperties': False}, 'requirements': ['numpy>=2,<3', 'pandas>=2.2,<4'], 'bundled_modules': "
+    "['quantlab_supplychain'], 'file_params': ['manifest']}\n"
+    "\n"
+    "def execute(ctx, inputs, params):\n"
+    "    from quantlab_supplychain.prepare import prepare\n"
+    "    return prepare(ctx, inputs, params)\n",
+    "NODE = {'kind': 'supplychain.temporal_no_history', 'version': '2', 'title': '严格时序消融：相同年度编码器与单步GRU', "
+    "'category': '供应链信用研究', 'inputs': {'dataset': {'type': 'graph_dataset'}}, 'outputs': {'model': {'type': "
+    "'risk_model'}}, 'parameters': {'type': 'object', 'properties': {'seeds': {'type': 'array', 'items': "
+    "{'type': 'integer'}, 'default': [7, 17, 27]}, 'epochs': {'type': 'integer', 'default': 35}}, 'required': "
+    "[], 'additionalProperties': False}, 'requirements': ['numpy>=2,<3', 'pandas>=2.2,<4', "
+    "'scikit-learn>=1.5,<2', 'scipy>=1.13,<2', 'torch>=2.8,<2.9', 'torch-geometric==2.7.0'], 'bundled_modules': "
+    "['quantlab_supplychain']}\n"
+    "\n"
+    "def execute(ctx, inputs, params):\n"
+    "    from quantlab_supplychain.train import train_temporal_ablation\n"
+    "    return train_temporal_ablation(ctx, inputs, params)\n",
+    "NODE = {'kind': 'supplychain.publication', 'version': '2', 'title': '报告与汇报用清晰图表', 'category': '供应链信用研究', "
+    "'inputs': {'dataset': {'type': 'graph_dataset'}, 'evaluation': {'type': 'research_evaluation'}, "
+    "'explanation': {'type': 'research_explanation'}}, 'outputs': {'figures': {'type': 'report'}}, "
+    "'parameters': {'type': 'object', 'properties': {}, 'required': [], 'additionalProperties': False}, "
+    "'requirements': ['numpy>=2,<3', 'pandas>=2.2,<4', 'scikit-learn>=1.5,<2', 'scipy>=1.13,<2', "
+    "'matplotlib>=3.8,<4', 'networkx>=3,<4'], 'bundled_modules': ['quantlab_supplychain']}\n"
+    "\n"
+    "def execute(ctx, inputs, params):\n"
+    "    from quantlab_supplychain.publication import publication_figures\n"
+    "    return publication_figures(ctx, inputs, params)\n",
+    "NODE = {'kind': 'supplychain.evaluate_final', 'version': '2', 'title': '全部实验统一测试证据汇总', 'category': "
+    "'供应链信用研究', 'inputs': {'dataset': {'type': 'graph_dataset'}, 'lr': {'type': 'risk_model'}, 'gbdt': {'type': "
+    "'risk_model'}, 'gcn': {'type': 'risk_model'}, 'gat': {'type': 'risk_model'}, 'hgnn': {'type': "
+    "'risk_model'}, 'temporal': {'type': 'risk_model'}, 'abl_trade': {'type': 'risk_model'}, 'abl_cap': "
+    "{'type': 'risk_model'}, 'sens_lr': {'type': 'risk_model'}, 'sens_gbdt': {'type': 'risk_model'}, "
+    "'time_abl': {'type': 'risk_model'}}, 'outputs': {'evaluation': {'type': 'research_evaluation'}}, "
+    "'parameters': {'type': 'object', 'properties': {}, 'required': [], 'additionalProperties': False}, "
+    "'requirements': ['numpy>=2,<3', 'pandas>=2.2,<4', 'scikit-learn>=1.5,<2', 'scipy>=1.13,<2', "
+    "'matplotlib>=3.8,<4'], 'bundled_modules': ['quantlab_supplychain']}\n"
+    "\n"
+    "def execute(ctx, inputs, params):\n"
+    "    from quantlab_supplychain.evaluate import evaluate\n"
+    "    return evaluate(ctx, inputs, params)\n",
+    "NODE = {'kind': 'supplychain.frozen_experiments', 'version': '2', 'title': '读取已冻结实验与来源', 'category': "
+    "'供应链信用研究', 'inputs': {}, 'outputs': {'dataset': {'type': 'graph_dataset'}, 'lr': {'type': 'risk_model'}, "
+    "'gbdt': {'type': 'risk_model'}, 'gcn': {'type': 'risk_model'}, 'gat': {'type': 'risk_model'}, 'hgnn': "
+    "{'type': 'risk_model'}, 'temporal': {'type': 'risk_model'}, 'abl_trade': {'type': 'risk_model'}, "
+    "'abl_cap': {'type': 'risk_model'}, 'sens_lr': {'type': 'risk_model'}, 'sens_gbdt': {'type': 'risk_model'}, "
+    "'time_abl': {'type': 'risk_model'}, 'explanation': {'type': 'research_explanation'}}, 'parameters': "
+    "{'type': 'object', 'properties': {'file': {'type': 'string'}}, 'required': ['file'], "
+    "'additionalProperties': False}, 'requirements': ['numpy>=2,<3', 'pandas>=2.2,<4', 'scikit-learn>=1.5,<2', "
+    "'scipy>=1.13,<2', 'matplotlib>=3.8,<4'], 'bundled_modules': ['quantlab_supplychain'], 'file_params': "
+    "['file']}\n"
+    "\n"
+    "def execute(ctx, inputs, params):\n"
+    "    from quantlab_supplychain.evaluate import load_experiments\n"
+    "    return load_experiments(ctx, inputs, params)\n",
+)
+
 
 def card_sources():
     """Return immutable published wrappers for explicit registration in any workspace."""

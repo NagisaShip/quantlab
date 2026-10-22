@@ -172,6 +172,10 @@ export type ToolGroup = (typeof TOOL_GROUPS)[number]['id']
 export interface ToolItem extends FlowItem { group: ToolGroup }
 
 export const TOOLS: ToolItem[] = [
+  { label: '研究工作流', note: '配置并复用可执行的研究步骤', route: 'workflows', group: 'quality' },
+  { label: '研究函数', note: '管理工作流使用的研究函数', route: 'function', group: 'quality' },
+  { label: '待审批', note: '检查需要人工确认的研究操作', route: 'approvals', group: 'quality' },
+  { label: '上下文包', note: '检查模型本轮可见的规则与引用', route: 'context-pack', group: 'quality' },
   { label: '研究导师课程', note: '七课检查项、练习与红旗，和审查卡共用边界', route: 'mentor', feature: 'research.mentor', tag: '学习', group: 'quality' },
   { label: '合约账单核验', note: '用交易所账户账单核对 MMR、资金费、标记价与强平', route: 'demo', tag: '核验', group: 'quality' },
   { label: '研究包校验与重放', note: '把结果交给别人也能重跑并比对哈希', route: 'backtests', tag: '复现', group: 'quality' },

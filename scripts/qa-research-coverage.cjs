@@ -33,6 +33,7 @@ const CONTEXTUAL = {
 
 // 这些页面不是研究流程本身：产品入口、个人资料、法务与部署运维。
 const NON_RESEARCH = {
+  local: '旧本地项目入口，重定向至设置页',
   home: '首页与全局导航',
   board: '同一批数据 / 策略的手机看板',
   brand: '视觉规范与设计令牌',

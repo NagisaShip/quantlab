@@ -176,7 +176,7 @@ def _later_attempt(s, workspace_id, user_id, wid, state, offset):
 
 
 def test_recent_result_is_empty_without_runs_and_does_not_cross_workspaces(client):
-    c, _services, me = client
+    c, _services, _me = client
     empty = c.get("/api/workflows/recent-result")
     assert empty.status_code == 200, empty.text
     assert empty.json()["state"] == "empty"
@@ -197,9 +197,7 @@ def test_recent_result_is_empty_without_runs_and_does_not_cross_workspaces(clien
 def test_recent_result_keeps_completed_evidence_and_reports_newer_attempts(client):
     c, s, me = client
     wid = _saved_workflow(c, "最近结果研究")
-    completed, _report = _completed_evidence(
-        s, me["workspace"]["id"], me["user"]["id"], wid, origin="agent"
-    )
+    completed, _report = _completed_evidence(s, me["workspace"]["id"], me["user"]["id"], wid, origin="agent")
 
     ready = c.get("/api/workflows/recent-result")
     assert ready.status_code == 200, ready.text

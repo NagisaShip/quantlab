@@ -122,7 +122,13 @@ class _FakeBook:
     def fetch_trades(self, symbol: str):
         t = 1_700_000_000_000 + self.i * 1000
         return [
-            {"id": f"{self.i}-{j}", "t": t + 100 * j, "p": 100 + 0.01 * (-1) ** j, "q": 0.5, "side": "buy" if j % 2 else "sell"}
+            {
+                "id": f"{self.i}-{j}",
+                "t": t + 100 * j,
+                "p": 100 + 0.01 * (-1) ** j,
+                "q": 0.5,
+                "side": "buy" if j % 2 else "sell",
+            }
             for j in range(5)
         ]
 
@@ -156,7 +162,9 @@ def test_disabled_domains_keep_history_and_block_new_work(client):
     assert src.status_code == 200 and "def " in src.json()["code"]
     pin = c.post(f"/api/research/record-retention/factor/{factor['id']}/pin")
     assert pin.status_code == 200 and pin.json()["pinned"] is True
-    _blocked(c, "post", "/api/factors/evaluate", json={"expression": "-returns(5)", "source": "synthetic", "bars_limit": 300})
+    _blocked(
+        c, "post", "/api/factors/evaluate", json={"expression": "-returns(5)", "source": "synthetic", "bars_limit": 300}
+    )
     _blocked(c, "post", "/api/factors", json={"name": "新因子", "expression": "returns(3)", "evaluate": False})
     _blocked(c, "post", f"/api/factors/{factor['id']}/refresh", json={"source": "synthetic", "bars_limit": 300})
     _blocked(c, "post", f"/api/factors/{factor['id']}/status", json={"status": "active"})
@@ -194,9 +202,16 @@ def test_disabled_domains_keep_history_and_block_new_work(client):
     assert c.get(f"/api/portfolio/{portfolio['id']}").status_code == 200
     assert c.get(f"/api/portfolio/{portfolio['id']}/report").status_code == 200
     assert c.get(f"/api/portfolio/runs/{portfolio['run_id']}").status_code == 200
-    src = c.post("/api/research/pycode", json={"kind": "portfolio", "artifact": portfolio["config"], "name": "历史组合方案"})
+    src = c.post(
+        "/api/research/pycode", json={"kind": "portfolio", "artifact": portfolio["config"], "name": "历史组合方案"}
+    )
     assert src.status_code == 200 and "optimize" in src.json()["code"]
-    _blocked(c, "post", "/api/portfolio/evaluate", json={"config": {"optimizer": "hrp"}, "source": "synthetic", "bars_limit": 300})
+    _blocked(
+        c,
+        "post",
+        "/api/portfolio/evaluate",
+        json={"config": {"optimizer": "hrp"}, "source": "synthetic", "bars_limit": 300},
+    )
     _blocked(c, "post", "/api/portfolio/risk", json={"weights": {"BTC/USDT": 1.0}, "source": "synthetic"})
     _blocked(c, "post", "/api/portfolio", json={"run_id": portfolio["run_id"], "name": "停用期间新方案"})
     _blocked(c, "patch", f"/api/portfolio/{portfolio['id']}", json={"status": "active"})
@@ -211,10 +226,22 @@ def test_disabled_domains_keep_history_and_block_new_work(client):
     assert c.get("/api/execution/recordings").status_code == 200
     # 雷达是新的行情计算，不是冻结历史；停用时必须在取数前拒绝。
     _blocked(c, "get", "/api/execution/radar?universe=major10&timeframe=5m&source=synthetic")
-    src = c.post("/api/research/pycode", json={"kind": "execution", "artifact": execution["config"], "name": "历史执行方案"})
+    src = c.post(
+        "/api/research/pycode", json={"kind": "execution", "artifact": execution["config"], "name": "历史执行方案"}
+    )
     assert src.status_code == 200 and "def simulate(" in src.json()["code"]
-    _blocked(c, "post", "/api/execution/evaluate", json={"config": {"algo": "twap", "episodes": 4}, "symbols": ["BTC/USDT"], "source": "synthetic", "steps": 600})
-    _blocked(c, "post", "/api/execution/replay", json={"config": {"algo": "twap"}, "symbols": ["BTC/USDT"], "source": "synthetic", "steps": 600})
+    _blocked(
+        c,
+        "post",
+        "/api/execution/evaluate",
+        json={"config": {"algo": "twap", "episodes": 4}, "symbols": ["BTC/USDT"], "source": "synthetic", "steps": 600},
+    )
+    _blocked(
+        c,
+        "post",
+        "/api/execution/replay",
+        json={"config": {"algo": "twap"}, "symbols": ["BTC/USDT"], "source": "synthetic", "steps": 600},
+    )
     _blocked(c, "post", "/api/execution", json={"run_id": execution["run_id"], "name": "停用期间新执行方案"})
     _blocked(c, "patch", f"/api/execution/{execution['id']}", json={"status": "active"})
     _blocked(c, "delete", f"/api/execution/{execution['id']}")
@@ -292,4 +319,6 @@ def test_visibility_agent_and_workspace_remain_independent(client):
     )
     assert created.status_code == 200, created.text
     # The disabled workspace still cannot create.
-    _blocked(c, "post", "/api/factors", json={"name": "停用工作区新因子", "expression": "returns(3)", "evaluate": False})
+    _blocked(
+        c, "post", "/api/factors", json={"name": "停用工作区新因子", "expression": "returns(3)", "evaluate": False}
+    )

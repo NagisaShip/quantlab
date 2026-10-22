@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from quant_agent.platform.db import Database
 
 
 def test_migration_backs_up_existing_sqlite_once_per_upgrade(tmp_path, monkeypatch):
     migrations = tmp_path / "migrations"
     migrations.mkdir()
-    (migrations / "0001_init.sql").write_text("CREATE TABLE sample (id INTEGER PRIMARY KEY, value TEXT);", encoding="utf-8")
+    (migrations / "0001_init.sql").write_text(
+        "CREATE TABLE sample (id INTEGER PRIMARY KEY, value TEXT);", encoding="utf-8"
+    )
     monkeypatch.setattr("quant_agent.platform.db.MIGRATIONS_DIR", migrations)
 
     db_path = tmp_path / "quantlab.db"
@@ -35,7 +35,5 @@ def test_migration_backs_up_existing_sqlite_once_per_upgrade(tmp_path, monkeypat
     for i in range(5):
         (migrations / f"000{i + 3}_more.sql").write_text(f"ALTER TABLE sample ADD COLUMN c{i} TEXT;", encoding="utf-8")
         assert db.migrate() == [f"000{i + 3}_more"]
-    backups = [
-        p for p in tmp_path.glob("quantlab.db.bak-*") if not p.name.endswith(("-wal", "-shm"))
-    ]
+    backups = [p for p in tmp_path.glob("quantlab.db.bak-*") if not p.name.endswith(("-wal", "-shm"))]
     assert len(backups) >= 1

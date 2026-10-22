@@ -2339,7 +2339,7 @@
     "tags": [
      "本地项目"
     ],
-    "summary": "Read Preferences",
+    "summary": "读取本地项目偏好",
     "operationId": "read_preferences_api_local_preferences_get",
     "responses": {
      "200": {
@@ -2356,7 +2356,7 @@
     "tags": [
      "本地项目"
     ],
-    "summary": "Preferences",
+    "summary": "保存本地项目偏好",
     "operationId": "preferences_api_local_preferences_post",
     "requestBody": {
      "content": {
@@ -2395,7 +2395,7 @@
     "tags": [
      "本地项目"
     ],
-    "summary": "Shutdown",
+    "summary": "关闭本地项目服务",
     "description": "请求停止本机项目服务。\n\n有任务在跑时返回结构化 409（``code=tasks_running`` + tasks），桌面端据此给出\n「隐藏到托盘 / 完成后退出 / 取消」；无任务时仍然返回 200 并延迟关闭。",
     "operationId": "shutdown_api_local_shutdown_post",
     "responses": {
@@ -2415,7 +2415,7 @@
     "tags": [
      "本地项目"
     ],
-    "summary": "Info",
+    "summary": "读取本地项目信息",
     "operationId": "info_api_local_info_get",
     "responses": {
      "200": {
@@ -2476,7 +2476,7 @@
     "tags": [
      "本地项目"
     ],
-    "summary": "Browse",
+    "summary": "浏览本地项目文件",
     "operationId": "browse_api_local_files_get",
     "parameters": [
      {
@@ -2527,7 +2527,7 @@
     "tags": [
      "本地项目"
     ],
-    "summary": "Grant",
+    "summary": "授予本地文件访问权限",
     "operationId": "grant_api_local_permissions_post",
     "requestBody": {
      "content": {
@@ -2566,7 +2566,7 @@
     "tags": [
      "本地项目"
     ],
-    "summary": "Revoke",
+    "summary": "撤销本地文件访问权限",
     "operationId": "revoke_api_local_permissions_revoke_post",
     "requestBody": {
      "content": {
@@ -2605,7 +2605,7 @@
     "tags": [
      "本地项目"
     ],
-    "summary": "Image",
+    "summary": "读取本地图片",
     "description": "在对话/报告中内联展示项目内图片（仅本地模式，只读授权目录）。",
     "operationId": "image_api_local_files_image_get",
     "parameters": [
@@ -2646,7 +2646,7 @@
     "tags": [
      "本地项目"
     ],
-    "summary": "Preview",
+    "summary": "预览本地文件",
     "description": "本地文件预览：文本按文本读、表格按表格预览，二进制/办公文件给出可行动说明。",
     "operationId": "preview_api_local_files_preview_get",
     "parameters": [
@@ -2717,7 +2717,7 @@
     "tags": [
      "本地项目"
     ],
-    "summary": "Document Preview",
+    "summary": "渲染文档页面预览",
     "operationId": "document_preview_api_local_files_document_preview_post",
     "parameters": [
      {
@@ -2778,7 +2778,7 @@
     "tags": [
      "本地项目"
     ],
-    "summary": "Download Document",
+    "summary": "下载本地文档",
     "operationId": "download_document_api_local_files_download_get",
     "parameters": [
      {
@@ -2818,7 +2818,7 @@
     "tags": [
      "本地项目"
     ],
-    "summary": "Import File",
+    "summary": "导入本地文件",
     "operationId": "import_file_api_local_files_import_post",
     "requestBody": {
      "content": {
@@ -2857,7 +2857,7 @@
     "tags": [
      "本地项目"
     ],
-    "summary": "Relocate",
+    "summary": "移动本地文件",
     "operationId": "relocate_api_local_files_relocate_post",
     "requestBody": {
      "content": {
@@ -2937,7 +2937,7 @@
     "tags": [
      "本地项目"
     ],
-    "summary": "Open Project",
+    "summary": "打开本地项目",
     "operationId": "open_project_api_local_project_open_post",
     "requestBody": {
      "content": {
@@ -2976,7 +2976,7 @@
     "tags": [
      "本地项目"
     ],
-    "summary": "Resources",
+    "summary": "读取本地资源",
     "operationId": "resources_api_local_resources_get",
     "responses": {
      "200": {
@@ -2995,7 +2995,7 @@
     "tags": [
      "本地项目"
     ],
-    "summary": "Tasks",
+    "summary": "读取本地任务",
     "operationId": "tasks_api_local_tasks_get",
     "responses": {
      "200": {
@@ -3014,7 +3014,7 @@
     "tags": [
      "本地项目"
     ],
-    "summary": "Cache",
+    "summary": "查看本地缓存",
     "operationId": "cache_api_local_cache_get",
     "responses": {
      "200": {
@@ -3033,7 +3033,7 @@
     "tags": [
      "本地项目"
     ],
-    "summary": "Clear Cache",
+    "summary": "清理本地缓存",
     "operationId": "clear_cache_api_local_cache_clear_post",
     "responses": {
      "200": {
@@ -3052,7 +3052,7 @@
     "tags": [
      "本地项目"
     ],
-    "summary": "Export Project",
+    "summary": "导出本地项目",
     "operationId": "export_project_api_local_project_export_post",
     "responses": {
      "200": {
@@ -3071,7 +3071,7 @@
     "tags": [
      "本地项目"
     ],
-    "summary": "Download Project",
+    "summary": "下载项目导出文件",
     "operationId": "download_project_api_local_project_download__name__get",
     "parameters": [
      {
@@ -3111,7 +3111,7 @@
     "tags": [
      "本地项目"
     ],
-    "summary": "Library",
+    "summary": "查看本地成果库",
     "operationId": "library_api_local_library_get",
     "responses": {
      "200": {
@@ -3130,7 +3130,7 @@
     "tags": [
      "本地项目"
     ],
-    "summary": "Publish Module",
+    "summary": "发布模块到成果库",
     "operationId": "publish_module_api_local_library_publish_post",
     "requestBody": {
      "content": {
@@ -3169,7 +3169,7 @@
     "tags": [
      "本地项目"
     ],
-    "summary": "Import Module",
+    "summary": "从成果库导入模块",
     "operationId": "import_module_api_local_library_import_post",
     "requestBody": {
      "content": {
@@ -3208,7 +3208,7 @@
     "tags": [
      "研究执行环境"
     ],
-    "summary": "Environment",
+    "summary": "查看研究执行环境",
     "operationId": "environment_api_workflows_environment_get",
     "responses": {
      "200": {
@@ -3227,7 +3227,7 @@
     "tags": [
      "研究执行环境"
     ],
-    "summary": "Environments",
+    "summary": "发现研究执行环境",
     "operationId": "environments_api_workflows_environment_discover_get",
     "responses": {
      "200": {
@@ -3246,7 +3246,7 @@
     "tags": [
      "研究执行环境"
     ],
-    "summary": "Select Environment",
+    "summary": "选择研究执行环境",
     "operationId": "select_environment_api_workflows_environment_select_post",
     "requestBody": {
      "content": {
@@ -3285,7 +3285,7 @@
     "tags": [
      "研究执行环境"
     ],
-    "summary": "Repair Environment",
+    "summary": "修复研究执行环境依赖",
     "operationId": "repair_environment_api_workflows_environment_repair_post",
     "requestBody": {
      "content": {
@@ -3324,7 +3324,7 @@
     "tags": [
      "研究执行环境"
     ],
-    "summary": "Job",
+    "summary": "查看环境修复任务",
     "operationId": "job_api_workflows_environment_jobs__job_id__get",
     "parameters": [
      {
@@ -5359,7 +5359,7 @@
     "tags": [
      "研究插件"
     ],
-    "summary": "Listing",
+    "summary": "列出研究插件",
     "operationId": "listing_api_auth_research_plugins_get",
     "responses": {
      "200": {
@@ -5378,7 +5378,7 @@
     "tags": [
      "研究插件"
     ],
-    "summary": "Affected",
+    "summary": "查看研究插件影响范围",
     "operationId": "affected_api_auth_research_plugins__plugin__impact_get",
     "parameters": [
      {
@@ -5418,7 +5418,7 @@
     "tags": [
      "研究插件"
     ],
-    "summary": "Save",
+    "summary": "保存研究插件配置",
     "operationId": "save_api_auth_research_plugins__plugin__put",
     "parameters": [
      {

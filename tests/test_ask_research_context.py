@@ -21,7 +21,18 @@ class CaptureRouter:
         self.reply = reply
         self.calls: list[dict[str, Any]] = []
 
-    def chat(self, messages, *, role="default", model=None, temperature=0.2, tools=None, max_tokens=None, effort=None, on_delta=None):
+    def chat(
+        self,
+        messages,
+        *,
+        role="default",
+        model=None,
+        temperature=0.2,
+        tools=None,
+        max_tokens=None,
+        effort=None,
+        on_delta=None,
+    ):
         self.calls.append({"messages": list(messages), "tools": [t.name for t in tools or []]})
         return ChatResult(content=self.reply, model="fake-1", provider="fake")
 
@@ -40,7 +51,18 @@ class ToolRouter:
         self.arguments = arguments
         self.calls: list[dict[str, Any]] = []
 
-    def chat(self, messages, *, role="default", model=None, temperature=0.2, tools=None, max_tokens=None, effort=None, on_delta=None):
+    def chat(
+        self,
+        messages,
+        *,
+        role="default",
+        model=None,
+        temperature=0.2,
+        tools=None,
+        max_tokens=None,
+        effort=None,
+        on_delta=None,
+    ):
         self.calls.append({"messages": list(messages), "tools": [t.name for t in tools or []]})
         if len(self.calls) == 1:
             return ChatResult(
@@ -146,9 +168,7 @@ def _envelope(
             "follows_latest": follows_latest,
             "view_mode": view_mode,
         },
-        "outputs": [
-            {"port": port, "type": ref["type"], "hash": ref["hash"], "run_id": run_id, "node_id": node_id}
-        ],
+        "outputs": [{"port": port, "type": ref["type"], "hash": ref["hash"], "run_id": run_id, "node_id": node_id}],
     }
 
 
@@ -262,8 +282,13 @@ def test_workflow_revision_and_frozen_view_are_separate_from_run_revision(client
     # An explicit frozen view of the newest run remains historical even though the run
     # id equals the server-derived latest id.
     frozen = _envelope(
-        wid, second_run, second_report, workspace_id=me["workspace"]["id"], revision=2,
-        view_mode="frozen", follows_latest=False,
+        wid,
+        second_run,
+        second_report,
+        workspace_id=me["workspace"]["id"],
+        revision=2,
+        view_mode="frozen",
+        follows_latest=False,
     )
     r2 = c.post("/api/ai/ask", json={"question": "冻结快照", "page": "workflows", "research": frozen})
     assert r2.status_code == 200, r2.text
@@ -279,8 +304,13 @@ def test_workflow_revision_and_frozen_view_are_separate_from_run_revision(client
     # Frozen editor view r1 on a workflow whose latest saved revision is r2 keeps both
     # revisions explicit instead of overwriting the editor revision with the run revision.
     frozen_editor = _envelope(
-        wid, first_run, first_report, workspace_id=me["workspace"]["id"], revision=1,
-        view_mode="frozen", follows_latest=False,
+        wid,
+        first_run,
+        first_report,
+        workspace_id=me["workspace"]["id"],
+        revision=1,
+        view_mode="frozen",
+        follows_latest=False,
     )
     r3 = c.post("/api/ai/ask", json={"question": "查看 r1", "page": "workflows", "research": frozen_editor})
     assert r3.status_code == 200, r3.text

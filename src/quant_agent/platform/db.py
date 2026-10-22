@@ -286,11 +286,7 @@ class Database:
         target = source.with_name(f"{source.name}.bak-{stamp}")
         # 先清理旧备份再创建新备份：Windows 上刚关闭的 sqlite 句柄可能仍短暂占用文件，
         # 在创建后删除容易静默失败，导致备份无限累积。
-        existing = [
-            p
-            for p in source.parent.glob(f"{source.name}.bak-*")
-            if not p.name.endswith(("-wal", "-shm"))
-        ]
+        existing = [p for p in source.parent.glob(f"{source.name}.bak-*") if not p.name.endswith(("-wal", "-shm"))]
         existing.sort(key=lambda p: p.stat().st_mtime, reverse=True)
         for old in existing[2:]:
             try:

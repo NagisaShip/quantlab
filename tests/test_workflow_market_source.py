@@ -47,7 +47,9 @@ class FakeMarket:
         self.calls: list[tuple] = []
 
     def get_bars(self, symbol, timeframe, *, limit=1500, exchange="binance", start=None, end=None, source="auto"):
-        self.calls.append({"symbol": symbol, "timeframe": timeframe, "limit": limit, "exchange": exchange, "source": source})
+        self.calls.append(
+            {"symbol": symbol, "timeframe": timeframe, "limit": limit, "exchange": exchange, "source": source}
+        )
         item = self.results[exchange]
         if isinstance(item, Exception):
             raise item
@@ -93,7 +95,9 @@ def test_symbol_normalization_accepts_common_forms() -> None:
 def test_market_bars_returns_rows_and_provenance() -> None:
     symbols = _bars()
     services = Services(FakeMarket({"binance": (symbols, "exchange")}))
-    out = market_bars(services, {"symbol": "btc-usdt", "timeframe": "1h", "bars": 120, "exchange": "binance", "source": "auto"})
+    out = market_bars(
+        services, {"symbol": "btc-usdt", "timeframe": "1h", "bars": 120, "exchange": "binance", "source": "auto"}
+    )
     assert set(out) == {"data", "source"}
     assert len(out["data"]) == 120
     row = out["data"][0]
@@ -110,7 +114,9 @@ def test_auto_exchange_falls_back_to_next_exchange() -> None:
     services = Services(
         FakeMarket({"binance": RuntimeError("blocked"), "okx": (_bars(), "exchange"), "bybit": (_bars(), "exchange")})
     )
-    out = market_bars(services, {"symbol": "ETH/USDT", "timeframe": "1h", "bars": 120, "exchange": "auto", "source": "auto"})
+    out = market_bars(
+        services, {"symbol": "ETH/USDT", "timeframe": "1h", "bars": 120, "exchange": "auto", "source": "auto"}
+    )
     assert out["source"]["exchange"] == "okx"
     assert [c["exchange"] for c in services.market.calls] == ["binance", "okx"]
     assert out["source"]["source_label"] == "交易所真实历史行情"
@@ -121,13 +127,17 @@ def test_auto_source_prefers_real_exchange_before_synthetic() -> None:
     services = Services(
         FakeMarket({"binance": (_bars(), "synthetic"), "okx": (_bars(), "exchange"), "bybit": (_bars(), "exchange")})
     )
-    out = market_bars(services, {"symbol": "BTC/USDT", "timeframe": "1h", "bars": 120, "exchange": "auto", "source": "auto"})
+    out = market_bars(
+        services, {"symbol": "BTC/USDT", "timeframe": "1h", "bars": 120, "exchange": "auto", "source": "auto"}
+    )
     assert out["source"]["exchange"] == "okx" and out["source"]["source"] == "exchange"
 
 
 def test_synthetic_fallback_is_labeled_not_silent() -> None:
     services = Services(FakeMarket({"binance": (_bars(), "synthetic")}))
-    out = market_bars(services, {"symbol": "BTC/USDT", "timeframe": "1h", "bars": 120, "exchange": "binance", "source": "auto"})
+    out = market_bars(
+        services, {"symbol": "BTC/USDT", "timeframe": "1h", "bars": 120, "exchange": "binance", "source": "auto"}
+    )
     assert out["source"]["source"] == "synthetic"
     assert "合成" in out["source"]["source_label"]
     assert "不是交易所真实行情" in out["source"]["warning"]
@@ -148,7 +158,9 @@ def test_all_exchanges_failing_is_explicit() -> None:
         FakeMarket({"binance": RuntimeError("timeout"), "okx": RuntimeError("429"), "bybit": RuntimeError("403")})
     )
     with pytest.raises(WorkflowError, match="直连行情失败"):
-        market_bars(services, {"symbol": "BTC/USDT", "timeframe": "1h", "bars": 120, "exchange": "auto", "source": "exchange"})
+        market_bars(
+            services, {"symbol": "BTC/USDT", "timeframe": "1h", "bars": 120, "exchange": "auto", "source": "exchange"}
+        )
 
 
 def test_card_builtin_contract_and_native_execution(tmp_path) -> None:
@@ -242,7 +254,13 @@ def test_workflow_run_with_direct_market_source(client, monkeypatch) -> None:
                 "id": "src",
                 "kind": "source.market",
                 "version": "1",
-                "params": {"symbol": "BTC/USDT", "timeframe": "1h", "bars": 120, "exchange": "binance", "source": "exchange"},
+                "params": {
+                    "symbol": "BTC/USDT",
+                    "timeframe": "1h",
+                    "bars": 120,
+                    "exchange": "binance",
+                    "source": "exchange",
+                },
             }
         ],
         "edges": [],
@@ -289,7 +307,15 @@ def test_run_export_freezes_market_data_into_csv(tmp_path) -> None:
         "edges": [],
     }
     rows = [
-        {"time": "2024-01-01T00:00:00Z", "open_time": 1, "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5, "volume": 10.0}
+        {
+            "time": "2024-01-01T00:00:00Z",
+            "open_time": 1,
+            "open": 100.0,
+            "high": 101.0,
+            "low": 99.0,
+            "close": 100.5,
+            "volume": 10.0,
+        }
     ]
     runner = Runner(
         root,

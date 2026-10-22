@@ -1729,17 +1729,22 @@ def build() -> dict[str, PlatformTool]:
     from functools import wraps
 
     from ..workflows.plugins import tool_plugin
+
     for tool in tools:
         plugin = tool_plugin(tool.name) or ("data" if tool.scene == "data" else "")
         if plugin:
+
             def wrap(handler, plugin):
                 @wraps(handler)
                 def call(*args, **kwargs):
                     from ..workflows.agent import service
                     from ..workflows.plugins import require
+
                     require(service(), plugin, agent=True)
                     return handler(*args, **kwargs)
+
                 return call
+
             tool.handler = wrap(tool.handler, plugin)
     return {t.name: t for t in tools}
 
@@ -1803,9 +1808,11 @@ def registry() -> dict[str, PlatformTool]:
 def available_registry() -> dict[str, PlatformTool]:
     result = registry()
     from ..platform.context import current
+
     if current().workspace_id:
         from ..workflows.agent import service
         from ..workflows.plugins import agent_tool_allowed, policy
+
         states = {p["id"]: p for p in policy(service())}
         result = {k: v for k, v in result.items() if agent_tool_allowed(v, states)}
     return result

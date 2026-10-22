@@ -185,7 +185,7 @@ def resolve(service, raw: dict[str, Any], *, workspace_id: str) -> dict[str, Any
         if not node_id:
             raise ResearchContextError(INVALID)
         node_def = None
-        node_flow = ((report or {}).get("workflow") or flow)
+        node_flow = (report or {}).get("workflow") or flow
         if node_flow is not None:
             node_def = next((n for n in node_flow.get("nodes") or [] if _id(n.get("id")) == node_id), None)
             if node_def is None and not unsaved:
@@ -342,8 +342,7 @@ def context_text(context: dict[str, Any]) -> str:
             state = "冻结历史运行"
         run_revision = f"r{run.get('revision')}" if run.get("revision") else "未知修订"
         lines.append(
-            f"运行：{run.get('id')}（{run.get('mode')}，{run.get('status')}，{state}，"
-            f"运行修订 {run_revision}）"
+            f"运行：{run.get('id')}（{run.get('mode')}，{run.get('status')}，{state}，运行修订 {run_revision}）"
         )
     else:
         lines.append("运行：本次未关联运行")

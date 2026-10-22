@@ -116,6 +116,7 @@ def variants(workflow, registry, plan):
 
 def submit(service, wid, plan, revision=None, origin="gui"):
     from .plugins import require
+
     require(service, "experiments", agent=origin == "agent")
     service.writable()
     record = service.get(wid, revision)
@@ -138,6 +139,7 @@ def submit(service, wid, plan, revision=None, origin="gui"):
 
 def comparison(service, run_ids):
     from .plugins import require
+
     require(service, "experiments")
     if not 1 <= len(run_ids) <= 8:
         raise WorkflowError("一次比较1—8次实验")

@@ -201,7 +201,7 @@ def test_checkup_cost_matches_engine_stress(bars, base_scale, own_cost):
 
     from quant_agent.engine.research import execute
 
-    src = '''
+    src = """
 def initialize(ctx):
     COST_SETUP
     g.n = 0
@@ -209,10 +209,9 @@ def initialize(ctx):
 def handle_data(ctx):
     g.n += 1
     order_target_percent(ctx.securities[0], 0.5 if g.n % 2 else 0.0)
-'''.replace(
+""".replace(
         "COST_SETUP",
-        'set_order_cost({"taker_fee": 0.001, "slippage_bps": 5, "spread_bps": 2})'
-        if own_cost else "pass",
+        'set_order_cost({"taker_fee": 0.001, "slippage_bps": 5, "spread_bps": 2})' if own_cost else "pass",
     )
     spec = replace(SPEC, cost_scale=base_scale)
     run = C.make_runner(src, name="consistent_cost", spec=spec)

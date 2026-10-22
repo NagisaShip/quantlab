@@ -16,7 +16,8 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from ..agents.platform_tools import ACTIONS, confirm as confirm_action
+from ..agents.platform_tools import ACTIONS
+from ..agents.platform_tools import confirm as confirm_action
 from ..platform import context
 from .deps import get_services
 from .routes_collab import filter_visible
@@ -143,7 +144,12 @@ def list_approvals(
         items.extend(_lab_items(limit))
     items.sort(key=lambda x: x["created_at"], reverse=True)
     counts = {s: sum(1 for i in items if i["source"] == s) for s in SOURCES}
-    return {"items": items[:limit], "counts": counts, "total": sum(counts.values()), "server_time": int(time.time() * 1000)}
+    return {
+        "items": items[:limit],
+        "counts": counts,
+        "total": sum(counts.values()),
+        "server_time": int(time.time() * 1000),
+    }
 
 
 @router.post("/{approval_id}", summary="批准/拒绝一条统一审批项")

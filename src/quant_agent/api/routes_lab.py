@@ -117,7 +117,9 @@ class ProjectIn(BaseModel):
     context: dict[str, Any] = Field(default_factory=dict, description="来源引用：工作流 / 运行 / 节点 / 页面资料")
     # 项目级规则（研究规则 / 偏好 / 边界）：注入聊天、计划与团队提示词；存储时截断到 20k
     # 请求体上限放宽到 10 倍，落库时统一截断到 MAX_INSTRUCTIONS_CHARS（20k），避免一次超长就 422
-    instructions: str = Field("", max_length=MAX_INSTRUCTIONS_CHARS * 10, description="研究者设定的项目规则（≤20k 字符）")
+    instructions: str = Field(
+        "", max_length=MAX_INSTRUCTIONS_CHARS * 10, description="研究者设定的项目规则（≤20k 字符）"
+    )
     permission: Literal["auto", "manual", "accept_edits", "plan", "bypass"] = "auto"
     folder: str = Field("", max_length=40)
     market_auto: bool | None = Field(None, description="标的与周期交给 AI 根据对话决定；省略时按是否提供了标的自动判断")
@@ -760,7 +762,9 @@ def lab_meta() -> dict:
         "models": s.router.available_models(),
         "routing": cfg.routing,
         # 默认 = 当前模型清单里的第一个（优先已配置密钥的）；没有模型时才回落到全局路由
-        "default_model": default_target() if callable(default_target) else (current("code_gen") if callable(current) else ""),
+        "default_model": default_target()
+        if callable(default_target)
+        else (current("code_gen") if callable(current) else ""),
         "efforts": [
             {"id": "low", "label": "低", "hint": "快速回答，少想"},
             {"id": "medium", "label": "中", "hint": "大多数任务"},
@@ -936,7 +940,9 @@ class FromAskIn(BaseModel):
     messages: list[SeedMessageIn] = Field(default_factory=list, max_length=MAX_SEED_INPUT)
     research: dict[str, Any] | None = Field(None, description="Ask 的研究上下文信封：只取工作流 / 运行 / 节点引用")
     # 请求体上限放宽到 10 倍，落库时统一截断到 MAX_INSTRUCTIONS_CHARS（20k），避免一次超长就 422
-    instructions: str = Field("", max_length=MAX_INSTRUCTIONS_CHARS * 10, description="研究者设定的项目规则（≤20k 字符）")
+    instructions: str = Field(
+        "", max_length=MAX_INSTRUCTIONS_CHARS * 10, description="研究者设定的项目规则（≤20k 字符）"
+    )
 
 
 def _research_refs(research: Any) -> dict[str, Any]:

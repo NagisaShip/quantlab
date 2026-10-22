@@ -687,30 +687,30 @@
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | `GET` | `/api/local/artifacts/{hash}/path` | 解析本地项目中工件文件的真实路径，供桌面端打开文件夹 |
-| `GET` | `/api/local/cache` | Cache |
-| `POST` | `/api/local/cache/clear` | Clear Cache |
-| `GET` | `/api/local/files` | Browse |
-| `POST` | `/api/local/files/document-preview` | Document Preview |
-| `GET` | `/api/local/files/download` | Download Document |
-| `GET` | `/api/local/files/image` | Image |
-| `POST` | `/api/local/files/import` | Import File |
-| `GET` | `/api/local/files/preview` | Preview |
-| `POST` | `/api/local/files/relocate` | Relocate |
-| `GET` | `/api/local/info` | Info |
-| `GET` | `/api/local/library` | Library |
-| `POST` | `/api/local/library/import` | Import Module |
-| `POST` | `/api/local/library/publish` | Publish Module |
-| `POST` | `/api/local/permissions` | Grant |
-| `POST` | `/api/local/permissions/revoke` | Revoke |
-| `GET` | `/api/local/preferences` | Read Preferences |
-| `POST` | `/api/local/preferences` | Preferences |
-| `GET` | `/api/local/project/download/{name}` | Download Project |
-| `POST` | `/api/local/project/export` | Export Project |
-| `POST` | `/api/local/project/open` | Open Project |
-| `GET` | `/api/local/resources` | Resources |
+| `GET` | `/api/local/cache` | 查看本地缓存 |
+| `POST` | `/api/local/cache/clear` | 清理本地缓存 |
+| `GET` | `/api/local/files` | 浏览本地项目文件 |
+| `POST` | `/api/local/files/document-preview` | 渲染文档页面预览 |
+| `GET` | `/api/local/files/download` | 下载本地文档 |
+| `GET` | `/api/local/files/image` | 读取本地图片 |
+| `POST` | `/api/local/files/import` | 导入本地文件 |
+| `GET` | `/api/local/files/preview` | 预览本地文件 |
+| `POST` | `/api/local/files/relocate` | 移动本地文件 |
+| `GET` | `/api/local/info` | 读取本地项目信息 |
+| `GET` | `/api/local/library` | 查看本地成果库 |
+| `POST` | `/api/local/library/import` | 从成果库导入模块 |
+| `POST` | `/api/local/library/publish` | 发布模块到成果库 |
+| `POST` | `/api/local/permissions` | 授予本地文件访问权限 |
+| `POST` | `/api/local/permissions/revoke` | 撤销本地文件访问权限 |
+| `GET` | `/api/local/preferences` | 读取本地项目偏好 |
+| `POST` | `/api/local/preferences` | 保存本地项目偏好 |
+| `GET` | `/api/local/project/download/{name}` | 下载项目导出文件 |
+| `POST` | `/api/local/project/export` | 导出本地项目 |
+| `POST` | `/api/local/project/open` | 打开本地项目 |
+| `GET` | `/api/local/resources` | 读取本地资源 |
 | `GET` | `/api/local/runtime` | 受管 Python 运行时探测（仅本地模式，只读诊断） |
-| `POST` | `/api/local/shutdown` | Shutdown |
-| `GET` | `/api/local/tasks` | Tasks |
+| `POST` | `/api/local/shutdown` | 关闭本地项目服务 |
+| `GET` | `/api/local/tasks` | 读取本地任务 |
 
 ## 模型库
 
@@ -808,19 +808,19 @@
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| `GET` | `/api/workflows/environment` | Environment |
-| `GET` | `/api/workflows/environment/discover` | Environments |
-| `GET` | `/api/workflows/environment/jobs/{job_id}` | Job |
-| `POST` | `/api/workflows/environment/repair` | Repair Environment |
-| `POST` | `/api/workflows/environment/select` | Select Environment |
+| `GET` | `/api/workflows/environment` | 查看研究执行环境 |
+| `GET` | `/api/workflows/environment/discover` | 发现研究执行环境 |
+| `GET` | `/api/workflows/environment/jobs/{job_id}` | 查看环境修复任务 |
+| `POST` | `/api/workflows/environment/repair` | 修复研究执行环境依赖 |
+| `POST` | `/api/workflows/environment/select` | 选择研究执行环境 |
 
 ## 研究插件
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| `GET` | `/api/auth/research-plugins` | Listing |
-| `PUT` | `/api/auth/research-plugins/{plugin}` | Save |
-| `GET` | `/api/auth/research-plugins/{plugin}/impact` | Affected |
+| `GET` | `/api/auth/research-plugins` | 列出研究插件 |
+| `PUT` | `/api/auth/research-plugins/{plugin}` | 保存研究插件配置 |
+| `GET` | `/api/auth/research-plugins/{plugin}/impact` | 查看研究插件影响范围 |
 
 ## 研究纪律与自动化
 

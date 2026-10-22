@@ -393,9 +393,7 @@ class OpenAIResponsesProvider(OpenAICompatibleProvider):
                     items.append(
                         {
                             "type": "reasoning",
-                            "summary": [
-                                {"type": "summary_text", "text": m.reasoning or "（模型未返回思考摘要）"}
-                            ],
+                            "summary": [{"type": "summary_text", "text": m.reasoning or "（模型未返回思考摘要）"}],
                         }
                     )
             for tc in m.tool_calls:
