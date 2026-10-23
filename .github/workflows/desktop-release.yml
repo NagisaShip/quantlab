@@ -1,6 +1,11 @@
 name: desktop-release
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: '要重建资产的现有 release 标签（须与应用版本一致）'
+        required: false
+        type: string
   push:
     tags: ['v0.1.0-preview.*']
 permissions:
@@ -22,9 +27,8 @@ jobs:
           node-version: '22'
       - uses: dtolnay/rust-toolchain@stable
       - name: Validate release tag version
-        if: startsWith(github.ref, 'refs/tags/v0.1.0-preview.')
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
         shell: pwsh
         run: |
           $version = (Get-Content desktop/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
@@ -59,10 +63,10 @@ jobs:
           if-no-files-found: error
           retention-days: 30
       - name: Create draft release with installer and checksums
-        if: startsWith(github.ref, 'refs/tags/v0.1.0-preview.')
+        if: startsWith(github.ref, 'refs/tags/v0.1.0-preview.') || inputs.release_tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
         shell: pwsh
         run: |
           gh release view $env:RELEASE_TAG *> $null
@@ -71,6 +75,6 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
           $draft = gh release view $env:RELEASE_TAG --json isDraft --jq '.isDraft'
-          if ($draft -ne 'true') { throw 'Refusing to replace assets in a published release' }
+          if ($draft -ne 'true' -and '${{ github.event_name }}' -ne 'workflow_dispatch') { throw 'Refusing to replace assets in a published release' }
           $assets = Get-ChildItem desktop/src-tauri/target/release/bundle/nsis/* -File | Select-Object -ExpandProperty FullName
           gh release upload $env:RELEASE_TAG @assets --clobber

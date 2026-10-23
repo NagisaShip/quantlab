@@ -20,6 +20,7 @@ jobs:
   documents:
     name: 文档交付（真实页面渲染与视觉消息回传）
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -27,8 +28,10 @@ jobs:
           python-version: '3.12'
       - name: 安装排版与渲染依赖
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libreoffice-writer libreoffice-impress fonts-noto-cjk
+          printf 'deb https://archive.ubuntu.com/ubuntu noble main restricted universe multiverse\ndeb https://archive.ubuntu.com/ubuntu noble-updates main restricted universe multiverse\ndeb https://security.ubuntu.com/ubuntu noble-security main restricted universe multiverse\n' > /tmp/quantlab-ubuntu.list
+          apt_opts=(-o Dir::Etc::sourcelist=/tmp/quantlab-ubuntu.list -o Dir::Etc::sourceparts=- -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
+          sudo apt-get "${apt_opts[@]}" update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get "${apt_opts[@]}" install -y --no-install-recommends libreoffice-writer libreoffice-impress fonts-noto-cjk
           python -m pip install -e '.[dev,deliverables]'
       - name: 真实 Office 导出、截图与模型图片消息
         run: python -m pytest tests/test_local_agent_deliverables.py -q

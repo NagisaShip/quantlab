@@ -14,6 +14,8 @@ const LINKS = [
 ]
 
 const HIGHLIGHTS = ['本地优先', '研究可复现', '证据可追溯', '不下真实订单']
+const RELEASE_URL = 'https://github.com/NagisaShip/quantlab/releases/tag/v0.1.0-preview.2'
+const INSTALLER_URL = 'https://github.com/NagisaShip/quantlab/releases/download/v0.1.0-preview.2/QuantLab_0.1.0-preview.2_x64-setup.exe'
 
 export default function AboutDialog({ open, onClose, onNavigate }: {
   open: boolean
@@ -63,9 +65,11 @@ export default function AboutDialog({ open, onClose, onNavigate }: {
         </dl>
         <footer className="about-foot">
           <div className="about-links">
+            <a href={RELEASE_URL} target="_blank" rel="noreferrer">发布说明</a>
             {LINKS.map((l) => <a key={l.href} href={l.href} target="_blank" rel="noreferrer">{l.label}</a>)}
           </div>
           <div className="about-actions">
+            <a className="button" href={INSTALLER_URL} target="_blank" rel="noreferrer">下载 Windows 安装包</a>
             {onNavigate && (
               <button type="button" className="button" onClick={() => { onClose(); onNavigate('docs') }}>API 文档</button>
             )}
