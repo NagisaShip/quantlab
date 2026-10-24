@@ -65,3 +65,34 @@ is configured, isolated PostgreSQL schemas. See
 for the fault cases, host boundaries and verification commands.
 
 Approval grants expire before dispatch after `ToolSpec.approval_ttl_ms` (24 hours by default). An expired grant returns the step to approval waiting; renewal uses a new signal identity. QuantLab generic Agents and Team roles share the same durable execution adapter when enabled.
+
+## Telemetry
+
+Install `pip install -e './packages/agent-runtime[telemetry]'` to use the optional
+OpenTelemetry SDK adapter. The host owns exporters, endpoints and metric readers;
+the core never installs a global provider. This follows the
+[OpenTelemetry Python instrumentation boundary](https://opentelemetry.io/docs/languages/python/instrumentation/).
+
+```python
+from agent_runtime import RuntimeTelemetry
+from agent_runtime.telemetry import OpenTelemetrySpanSink, OpenTelemetryMetrics
+
+telemetry = RuntimeTelemetry(journal)
+telemetry.export_attempts(OpenTelemetrySpanSink(exporter), consumer_id="production-collector", tenant_id="workspace")
+OpenTelemetryMetrics(telemetry, meter, tenant_id="workspace")
+```
+
+Only completed attempt facts are exported. Attempts in one run share a stable
+trace ID; every attempt has a stable span ID and carries run/step/attempt/effect
+correlation attributes. These are flat attempt spans, without fabricated parent
+spans. Export acknowledgement is durable and delivery is **at least once**:
+a crash after collector acceptance and before local acknowledgement can redeliver
+the same IDs. Exporter errors never change execution state or dispatch work.
+One consumer must use a stable consumer ID across restarts; concurrent exporters
+can also redeliver, so collectors must deduplicate by trace/span identity.
+
+Metrics observe durable totals (run/step states, attempts, duration and confirmed
+cost), rather than replaying increments after restart. Attributes omit prompts,
+responses, tool arguments and exception text. QuantLab exposes the current
+workspace's aggregate snapshot to workspace administrators through
+`GET /api/runs/runtime-metrics`.

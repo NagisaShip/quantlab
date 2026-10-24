@@ -121,6 +121,18 @@ def _public(run: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+@router.get("/runtime-metrics", summary="查询当前工作区的 Runtime 执行指标")
+def runtime_metrics() -> dict:
+    if not context.current().is_ws_admin:
+        raise AppError(ErrorCode.PERMISSION_DENIED, "仅工作区管理员可查看执行指标")
+    bridge = get_services().runtime_bridge
+    if bridge is None:
+        raise AppError(ErrorCode.UPSTREAM_UNAVAILABLE, "Agent Runtime 预览功能未启用")
+    from agent_runtime.telemetry import RuntimeTelemetry
+
+    return RuntimeTelemetry(bridge.runtime.journal).snapshot(tenant_id=context.current_workspace())
+
+
 @router.post("/runtime-agent", summary="提交一个 opt-in Agent Runtime 任务")
 def create_runtime_agent(payload: RuntimeAgentIn) -> dict:
     """Opt-in single-agent ingress; the Runtime worker owns execution afterward."""

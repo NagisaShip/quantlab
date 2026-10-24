@@ -117,6 +117,12 @@ CREATE TABLE IF NOT EXISTS reservations (
     status TEXT NOT NULL,
     PRIMARY KEY(step_id, account_id)
 );
+CREATE TABLE IF NOT EXISTS telemetry_exports (
+    consumer_id TEXT NOT NULL,
+    attempt_id TEXT NOT NULL REFERENCES attempts(id),
+    exported_at BIGINT NOT NULL,
+    PRIMARY KEY(consumer_id, attempt_id)
+);
 """
 
 
@@ -198,6 +204,20 @@ class Journal:
             yield db
         finally:
             db.close()
+
+    @contextmanager
+    def read_tx(self) -> Iterator[_DB]:
+        """Consistent read snapshot without taking the execution writer lock."""
+        with self.connection() as db:
+            if self.dialect == "sqlite":
+                db.execute("PRAGMA query_only=ON")
+                db.execute("BEGIN")
+            else:
+                db.execute("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            try:
+                yield db
+            finally:
+                db.rollback()
 
     @contextmanager
     def tx(self) -> Iterator[_DB]:

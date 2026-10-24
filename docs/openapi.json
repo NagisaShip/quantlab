@@ -1514,6 +1514,29 @@
     }
    }
   },
+  "/api/runs/runtime-metrics": {
+   "get": {
+    "tags": [
+     "运行与任务"
+    ],
+    "summary": "查询当前工作区的 Runtime 执行指标",
+    "operationId": "runtime_metrics_api_runs_runtime_metrics_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "type": "object",
+         "title": "Response Runtime Metrics Api Runs Runtime Metrics Get"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
   "/api/runs/runtime-agent": {
    "post": {
     "tags": [

@@ -85,3 +85,11 @@ npx playwright test tests/e2e/19-runtime-recovery.spec.ts --workers=1
 边界：本矩阵覆盖交互对话迁移与首版故障保障。高级公平调度、完整 OpenTelemetry 和通用 DAG / Join 属于 RFC 中的后续 P1/P2 范围。
 
 最后入口迁移验证：开启 Runtime 的研究室及通用 Agent 回归 93 项通过、3 项可选训练测试跳过；审批有效期与入口迁移定向验收 50 项通过；最终 SQLite/PostgreSQL 内核、独立进程及通用 Agent 矩阵 60 项通过；文档交付和工作流兼容测试 33 项通过、1 项跳过。各组选择有重叠，不合并计数。Docker 镜像与源码安装命令均显式安装独立 Runtime 包。
+
+## 可观测性故障边界
+
+`packages/agent-runtime/tests/test_telemetry.py` 同时覆盖 SQLite 与可选 PostgreSQL：导出拒绝或抛错不确认游标、不改变执行状态；采集器重建后补发未确认跨度；外部导出成功但本地确认提交失败时使用相同 trace/span ID 重发；真实 OpenTelemetry SDK 内存导出器及指标采集验证；重复采集指标不重复计费。跨度投递为至少一次，不承诺采集端恰好一次。
+
+`tests/test_lab_runtime_api.py` 验证管理员指标 API 的工作区隔离、普通成员拒绝访问及不泄露对话正文。当前跨度为按 Run 关联的平面 Attempt 跨度；首 token、完整父子跨度树与外部 provider 分布式上下文仍需后续接入，不能据此宣称完整遥测已经完成。
+
+可观测性阶段验收：SQLite/PostgreSQL 内核、进程故障、宿主接线及 HTTP 指标验收共 74 项通过；新增只读快照保障后，双数据库遥测用例 10 项通过。指标读取使用只读一致性事务，不获取执行全局写锁；数据库拒绝在该快照内写入执行状态。

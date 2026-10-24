@@ -161,12 +161,30 @@ def test_member_cannot_adjudicate_effects_or_billing(host):
             json={"step_id": current["steps"][0]["id"], "no_charge_confirmed": True},
         )
         assert response.status_code == 403, response.text
+        assert member.get("/api/runs/runtime-metrics").status_code == 403
         response = member.post(
             f"/api/lab/projects/{pid}/runtime/effect-resolution",
             json={"step_id": "unknown", "signal_id": "forbidden", "outcome": "absent"},
         )
         assert response.status_code == 403, response.text
     assert client.get(f"/api/lab/projects/{pid}/runtime").json()["run"]["state"] == "WAITING"
+
+
+def test_runtime_metrics_are_scoped_and_contain_no_conversation_content(host):
+    from agent_runtime import AgentRuntime, AgentSpec
+
+    from quant_agent.api.deps import get_services
+
+    client, model, pid = host
+    model.replies = [_reply("private answer")]
+    _send(client, pid, "private question")
+    journal = get_services().runtime_bridge.runtime.journal
+    other = AgentRuntime(journal, None, None)
+    other.start("another private prompt", AgentSpec("other", "1"), tenant_id="another-workspace")
+    response = client.get("/api/runs/runtime-metrics")
+    assert response.status_code == 200, response.text
+    assert sum(row["n"] for row in response.json()["runs"]) == 1
+    assert "private" not in response.text
 
 
 def test_runtime_run_id_cannot_escape_its_project(host):
