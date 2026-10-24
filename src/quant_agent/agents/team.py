@@ -204,8 +204,8 @@ class TeamRunner:
         # API 注入时开启：团队角色与对话 Agent 共用平台只读 / 运行工具（confirm 类不开放）。
         self.platform_tools = platform_tools
         # Set by AppServices when QAGENT_AGENT_RUNTIME=1 is enabled. A shared
-        # Journal makes role invocations durable; parallel Team graphs also
-        # persist outer joins, while sequential/debate still use host orchestration.
+        # Journal owns role invocations and all Team execution graphs, including
+        # sequential dependencies and round-specific debate snapshots.
         self.runtime_journal: Any = None
 
     # ---------------- 团队 CRUD ----------------
@@ -265,11 +265,13 @@ class TeamRunner:
         shared = self._build_material(topic, context, materials)
         qmetrics = metrics_from_materials(materials)
 
-        if team.mode == "parallel" and self.runtime_journal is not None:
-            from .team_runtime import start_parallel
+        if self.runtime_journal is not None:
+            from .team_runtime import start_team
 
             synthesizer = self.roles.get(team.synthesizer_id) if team.synthesizer_id else None
-            return start_parallel(self, run, roles, synthesizer or roles[-1], shared, qmetrics)
+            return start_team(
+                self, run, roles, synthesizer or roles[-1], shared, qmetrics, rounds=team.challenge_rounds
+            )
         if team.mode == "parallel":
             run.steps = self._run_parallel(roles, shared, qmetrics)
         elif team.mode == "debate":

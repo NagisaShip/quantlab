@@ -2,7 +2,8 @@ import { expect, test } from '@playwright/test'
 import { createServer } from 'node:http'
 import { api, newIsolatedSession, uiLogin } from './helpers'
 
-test('团队评审等待时继续与取消均沿用原执行图', async ({ page, request }, testInfo) => {
+for (const mode of ['parallel', 'sequential', 'debate'] as const) {
+test(`团队评审等待时继续与取消均沿用原执行图 · ${mode}`, async ({ page, request }, testInfo) => {
   test.skip(process.env.QAGENT_AGENT_RUNTIME !== '1', 'Runtime migration acceptance')
   let calls = 0
   const provider = createServer((req, res) => {
@@ -27,7 +28,7 @@ test('团队评审等待时继续与取消均沿用原执行图', async ({ page,
     const role = await api(request, '/api/agents/roles', { workspaceId, method: 'POST', data: { name: '持久评审员', system_prompt: '请评审', tools: [], restrict_tools: true } })
     expect(role.status, JSON.stringify(role.body)).toBe(200)
     const team = await api(request, '/api/agents/teams', { workspaceId, method: 'POST', data: {
-      id: 'lab_review', name: '持久评审组', mode: 'parallel', role_ids: [role.body.role.id], synthesizer_id: role.body.role.id,
+      id: 'lab_review', name: '持久评审组', mode, role_ids: mode === 'sequential' ? [role.body.role.id, role.body.role.id] : [role.body.role.id], synthesizer_id: role.body.role.id,
     } })
     expect(team.status, JSON.stringify(team.body)).toBe(200)
     const project = await api(request, '/api/lab/projects', { workspaceId, method: 'POST', data: { kind: 'research', title: 'Team 恢复验收', idea: '验证评审恢复' } })
@@ -42,6 +43,8 @@ test('团队评审等待时继续与取消均沿用原执行图', async ({ page,
     const card = page.locator('.lab2-card').filter({ hasText: '持久评审组' })
     await expect(card.getByRole('button', { name: '继续评审', exact: true })).toBeVisible()
     await expect(card).toContainText('等待核对')
+    await expect(card.getByText('Runtime', { exact: true })).toHaveCount(0)
+    if (mode !== 'parallel') await expect(card).toContainText('等待前序角色')
     await expect(page.locator('.lab-state-pill').first()).toContainText('等待核对')
     await expect(page.locator('.lab-msg-state-label').filter({ hasText: '已生成' })).toHaveCount(0)
     await card.getByRole('button', { name: '继续评审', exact: true }).click()
@@ -50,6 +53,7 @@ test('团队评审等待时继续与取消均沿用原执行图', async ({ page,
     await page.screenshot({ path: testInfo.outputPath('team-waiting.png'), animations: 'disabled' })
     await card.getByRole('button', { name: '取消评审', exact: true }).click()
     await expect(card).toContainText('取消中')
+    await expect(card.getByText('失败', { exact: true })).toHaveCount(0)
     await page.reload()
     await expect(card).toContainText('取消中')
     await expect(page.locator('.lab-state-pill').first()).toContainText('取消中')
@@ -60,3 +64,5 @@ test('团队评审等待时继续与取消均沿用原执行图', async ({ page,
     await new Promise<void>((resolve, reject) => provider.close((error) => error ? reject(error) : resolve()))
   }
 })
+
+}

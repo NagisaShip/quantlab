@@ -1,4 +1,4 @@
-"""QuantLab parallel Team host for the Runtime's persistent child/join contract."""
+"""QuantLab Team host for the Runtime's persistent child/join contract."""
 
 from __future__ import annotations
 
@@ -44,16 +44,58 @@ def _decorate(output: str, role: Role, metrics: dict) -> str:
     return decorate_qmoji(output, role=role.id, tags=role.tags, metrics=metrics)
 
 
-def start_parallel(
-    runner: Any, run: TeamRun, roles: list[Role], synthesizer: Role, shared: str, metrics: dict
+def _compile_children(runner: Any, mode: str, roles: list[Role], shared: str, rounds: int):
+    if mode not in {"parallel", "debate"}:
+        mode = "sequential"
+    critics = [role for role in roles if "质疑" in role.tags or "风控" in role.tags] or roles[-1:]
+    count = len(roles) + (max(1, rounds) * len(critics) if mode == "debate" else 0)
+    if count > 32:
+        raise AppError(ErrorCode.QUOTA_EXHAUSTED, "一次团队运行最多支持 32 个角色步骤，请减少角色或质疑轮数")
+    tasks, frozen, labels = [], [], []
+
+    def add(role: Role, prompt: str, predecessors: tuple[int, ...], label: str):
+        if predecessors:
+            prompt += "\n\ndependency_results 按顺序对应角色：" + "、".join(labels[index] for index in predecessors)
+        prepared = prepare_agent(runner._make_agent(role), prompt)
+        tasks.append(replace(prepared, depends_on=predecessors, dependency_policy="all_settled"))
+        frozen.append(role)
+        labels.append(label)
+
+    for index, role in enumerate(roles):
+        if mode == "sequential":
+            prior = tuple(range(index))
+            task = shared + (
+                "\n\n【前序角色产出】已提交意见在 dependency_results 中，按角色声明顺序排列。只引用成功角色的结论。"
+                if prior
+                else ""
+            )
+        else:
+            prior, task = (), shared + PARALLEL_BRIEF
+        add(role, task, prior, role.name)
+    if mode == "debate":
+        for turn in range(max(1, rounds)):
+            prior = tuple(range(len(tasks)))
+            for role in critics:
+                task = (
+                    f"{shared}\n\n【其他角色的观点】见 dependency_results 中此前已提交的意见。"
+                    f"请进行第 {turn + 1} 轮质疑：指出最脆弱的假设、构造具体反例、"
+                    "指出哪些结论看起来像证据其实不是。失败角色不构成有效证据。"
+                )
+                add(role, task, prior, f"{role.name} · 第 {turn + 1} 轮质疑")
+    return tasks, frozen, labels
+
+
+def start_team(
+    runner: Any, run: TeamRun, roles: list[Role], synthesizer: Role, shared: str, metrics: dict, *, rounds: int = 1
 ) -> TeamRun:
     engine = _engine(runner)
+    children, roles, labels = _compile_children(runner, run.mode, roles, shared, rounds)
     run.runtime_run_id = "team-root-" + run.id
     parent_agent = runner._make_agent(synthesizer, max_steps=2, use_tools=False)
     task = (
         f"调研主题：{run.topic}\n\n"
         "接下来 child_results 中是各角色已提交的独立意见。按声明顺序对应角色："
-        + "、".join(role.name for role in roles)
+        + "、".join(labels)
         + "。失败或取消的角色没有可用结论，不能当成有效证据。"
         "请汇总共识、分歧、你的判断、结论和下一步行动。不要再调用工具。"
     )
@@ -61,6 +103,8 @@ def start_parallel(
     plan = {
         "run": run.to_dict(),
         "roles": [role.to_dict() for role in roles],
+        "node_labels": labels,
+        "challenge_rounds": rounds,
         "synthesizer": synthesizer.to_dict(),
         "metrics": metrics,
     }
@@ -68,7 +112,6 @@ def start_parallel(
         parent.spec,
         metadata={**parent.spec.metadata, "team_plan": plan, "child_output_chars": runner.SYNTH_CHARS_PER_STEP},
     )
-    children = [prepare_agent(runner._make_agent(role), shared + PARALLEL_BRIEF) for role in roles]
     engine.start_with_children(
         task,
         parent_spec,
@@ -104,21 +147,31 @@ def project(runner: Any, root: dict) -> TeamRun:
     children = _engine(runner).children(root["id"])
     if len(children) != len(plan["roles"]):
         raise ValueError("Team plan and child runs disagree")
-    for child_id, frozen in zip(children, plan["roles"], strict=True):
+    for index, (child_id, frozen) in enumerate(zip(children, plan["roles"], strict=True)):
         child = runner.runtime_journal.run(child_id)
         role = Role.from_dict(frozen)
         successful = child["state"] == "COMPLETED"
-        status = {"COMPLETED": "ok", "FAILED": "error", "CANCELED": "error"}.get(child["state"], "waiting")
+        status = {"COMPLETED": "ok", "FAILED": "error", "CANCELED": "canceled"}.get(child["state"], "waiting")
         output = child.get("output") or ""
         steps = runner.runtime_journal.steps(child_id)
+        if status == "waiting":
+            states = {step["state"] for step in steps}
+            if "RECONCILING" in states:
+                status = "waiting"
+            elif "WAITING_DEPENDENCIES" in states:
+                status = "blocked"
+            elif "WAITING_ADMISSION" in states:
+                status = "queued"
+            elif child["state"] == "RUNNING":
+                status = "running"
         models = [step["result"] for step in steps if step["kind"] == "model" and step.get("result")]
         actual = models[-1] if models else {}
         model = "/".join(str(actual.get(key) or "") for key in ("provider", "model")).strip("/")
         run.steps.append(
             TeamRunStep(
                 role_id=role.id,
-                role_name=role.name,
-                model=model or role.model or "Runtime",
+                role_name=plan.get("node_labels", [item["name"] for item in plan["roles"]])[index],
+                model=model or role.model,
                 status=status,
                 output=_decorate(output, role, plan["metrics"]) if successful else "",
                 error="" if successful else (child.get("error") or f"Runtime 状态：{child['state']}"),
@@ -133,6 +186,11 @@ def project(runner: Any, root: dict) -> TeamRun:
         "CANCELING": "canceling",
         "WAITING": "waiting",
     }.get(root["state"], "running")
+    if root["state"] == "WAITING" and run.steps and not any(step.status == "waiting" for step in run.steps):
+        if any(step.status in {"running", "blocked"} for step in run.steps):
+            run.status = "running"
+        elif any(step.status == "queued" for step in run.steps):
+            run.status = "queued"
     role = Role.from_dict(plan["synthesizer"])
     if root.get("output"):
         run.synthesis = _decorate(root["output"], role, plan["metrics"])
@@ -157,13 +215,30 @@ def resume(runner: Any, run_id: str) -> TeamRun:
             agent = runner._make_agent(role, max_steps=child["spec"]["max_steps"], tool_names=names)
             agent.resume_runtime(child_id)
 
-        with ThreadPoolExecutor(max_workers=min(runner.max_workers, len(children))) as pool:
-            futures = [
-                pool.submit(contextvars.copy_context().run, one, child, role)
-                for child, role in zip(children, plan["roles"], strict=True)
-            ]
-            for future in futures:
-                future.result()
+        first = True
+        while True:
+            refreshed = engine.refresh(root["id"])
+            if refreshed["state"] in {"COMPLETED", "FAILED", "CANCELED", "CANCELING"}:
+                break
+            ready = []
+            for child, frozen in zip(children, plan["roles"], strict=True):
+                state = engine.get(child)
+                if state["state"] in {"COMPLETED", "FAILED", "CANCELED", "CANCELING"}:
+                    continue
+                if any(step["state"] == "READY" for step in state["steps"]) or (
+                    first
+                    and any(
+                        step["state"] in {"WAITING_ADMISSION", "IN_FLIGHT", "RECONCILING"} for step in state["steps"]
+                    )
+                ):
+                    ready.append((child, frozen))
+            if not ready:
+                break
+            with ThreadPoolExecutor(max_workers=min(runner.max_workers, len(ready))) as pool:
+                futures = [pool.submit(contextvars.copy_context().run, one, child, role) for child, role in ready]
+                for future in futures:
+                    future.result()
+            first = False
         # Resolve the join with control-plane ports first. Only a READY parent
         # is handed to its frozen synthesis model by the host below.
         role = Role.from_dict(plan["synthesizer"])

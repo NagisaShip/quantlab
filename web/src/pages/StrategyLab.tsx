@@ -2032,7 +2032,7 @@ function TeamCard({ m, concise }: { m: LabMessage; concise?: boolean }) {
   const id = String(d.run_id || '')
   const durable = Boolean(d.runtime_run_id)
   const status = current?.status || String(d.status || '')
-  const pending = ['waiting', 'running', 'canceling'].includes(status)
+  const pending = ['waiting', 'running', 'queued', 'canceling'].includes(status)
   useEffect(() => {
     if (!id || !durable) return
     let alive = true
@@ -2057,7 +2057,7 @@ function TeamCard({ m, concise }: { m: LabMessage; concise?: boolean }) {
         <b>{d.team_name} 评审</b>
         <span className="lab2-faint lab2-ellipsis">{d.topic}</span>
         <span className="lab2-card-gap" />
-        {durable && <span className="cc-kind">{status === 'waiting' ? '等待核对' : status === 'canceling' ? '取消中' : status === 'canceled' ? '已取消' : status === 'done' ? '已完成' : status === 'failed' ? '失败' : '处理中'}</span>}
+        {durable && <span className="cc-kind">{status === 'queued' ? '排队中' : status === 'waiting' ? '等待核对' : status === 'canceling' ? '取消中' : status === 'canceled' ? '已取消' : status === 'done' ? '已完成' : status === 'failed' ? '失败' : '处理中'}</span>}
         {pending && current?.can_manage && status !== 'canceling' && <>
           <button className="link" disabled={busy} onClick={() => void act(false)}>继续评审</button>
           <button className="link" disabled={busy} onClick={() => void act(true)}>取消评审</button>
@@ -2070,8 +2070,8 @@ function TeamCard({ m, concise }: { m: LabMessage; concise?: boolean }) {
             <div key={i} className={`lab2-team-row ${s.status === 'error' ? 'error' : ''}`}>
               <Avatar id={s.role_id} size={22} />
               <div className="lab2-team-bubble">
-                <div className="lab2-team-who"><b>{s.role_name}</b>{s.status === 'error' && <span className="cc-kind">失败</span>}{s.status === 'waiting' && <span className="cc-kind">等待核对</span>}{s.model && <span>{s.model}</span>}</div>
-                {s.status !== 'waiting' && <Markdown text={s.output || '（没有产出内容）'} compact />}
+                <div className="lab2-team-who"><b>{s.role_name}</b>{s.status === 'error' && <span className="cc-kind">失败</span>}{s.status === 'waiting' && <span className="cc-kind">等待核对</span>}{s.status === 'blocked' && <span className="cc-kind">等待前序角色</span>}{s.status === 'canceled' && <span className="cc-kind">已取消</span>}{s.status === 'queued' && <span className="cc-kind">排队中</span>}{s.status === 'running' && <span className="cc-kind">进行中</span>}{s.model && <span>{s.model}</span>}</div>
+                {['ok', 'error'].includes(s.status) && <Markdown text={s.output || '（没有产出内容）'} compact />}
               </div>
             </div>
           ))}

@@ -141,9 +141,8 @@ tenant-wide root-run queue limits and child worker admission.
 Canceling the parent propagates durably through the child tree in the same
 transaction. In-flight/unknown effects and unsettled model charges remain in
 CANCELING until reconciled. Parent resume refreshes joins bottom-up without
-re-executing completed child work. This is structured fork/join. QuantLab's parallel Team outer orchestration now
-uses atomic graphs and all-settled joins; sequential/debate outer orchestration
-and arbitrary dependency DAGs are still pending.
+re-executing completed child work. This is structured fork/join. QuantLab's parallel, sequential and debate Team modes now use atomic graphs,
+persistent dependencies and all-settled joins.
 
 The standalone `examples/structured_cli.py DATABASE --pause-after-first` exits
 with a WAITING parent. Run it again with `DATABASE --parent PARENT_ID` to finish
@@ -156,3 +155,27 @@ allows a report to summarize known failed/canceled branches once every child is
 terminal. It never advances past unresolved model fees or unknown effects.
 The default remains `all_success`. Previously persisted list-shaped fork requests
 retain their idempotency identity under the default policy.
+
+## Declared child dependencies
+
+ChildTask accepts `depends_on=(0, 1)` to refer to earlier children in the same
+fork batch. Declarations must be topologically ordered: forward references,
+self-dependencies and duplicate edges are rejected before graph commit.
+`dependency_policy` defaults to `all_success`; `all_settled` permits known failed
+or canceled predecessors, never unresolved work. Dependencies do not reserve
+model budget or occupy an execution attempt while blocked.
+
+A blocked child persists WAITING_DEPENDENCIES on its original model step.
+When predecessors meet the policy, one committed `dependency_results` input is
+added and that same step becomes READY. Effects and attempts retain their own
+identities. `runtime.refresh(parent_id)` resolves dependency and join facts
+without dispatching any model or tool. Host workers can then schedule newly
+READY children using their frozen ports; admission waits are retried on the next
+explicit wake, not by an unbounded busy loop.
+
+QuantLab sequential roles depend on all prior role outcomes. Debate critics
+read the snapshot from before their round; same-round critics cannot see one
+another's new opinions. These declarations, role bindings, rounds and system
+messages are committed up front. Host reconstruction never recompiles a live
+plan from editable role definitions. Existing graph/fork identity checks retain
+compatibility with the previous no-dependency request shape.

@@ -15,6 +15,7 @@ def pytest_generate_tests(metafunc):
         "test_fault_matrix",
         "test_telemetry",
         "test_children",
+        "test_dependencies",
     }:
         metafunc.parametrize("persistence_backend", ["sqlite", *(["postgres"] if PG else [])], indirect=True)
 

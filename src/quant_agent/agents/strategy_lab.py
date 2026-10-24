@@ -2750,7 +2750,7 @@ class StrategyLab:
             self.pin(pid, kind="team", title=f"团队结论 · {topic[:20]}", text=run["synthesis"][:3000])
             self._post(pid, role="event", kind="text", content="团队结论已自动加入上下文（可在 设置 里关闭）")
         out: dict[str, Any] = {"ok": run.get("status") == "done", "synthesis": (run.get("synthesis") or "")[:3000]}
-        if run.get("status") in {"waiting", "running", "canceling"}:
+        if run.get("status") in {"waiting", "running", "queued", "canceling"}:
             return {
                 **out,
                 "waiting": True,

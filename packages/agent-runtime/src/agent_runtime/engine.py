@@ -143,22 +143,31 @@ class AgentRuntime:
             }
         )
         digest = hashlib.sha256(request.encode()).hexdigest()
+        legacy_digest = None
+        if all(not child.depends_on and child.dependency_policy == "all_success" for child in children):
+            legacy = load(request)
+            for child in legacy["children"]:
+                child.pop("depends_on")
+                child.pop("dependency_policy")
+            legacy_digest = hashlib.sha256(dump(legacy).encode()).hexdigest()
         with self.journal.tx() as db:
             existing = db.execute("SELECT tenant_id FROM runs WHERE id=?", (run_id,)).fetchone()
             if existing:
                 event = db.execute(
                     "SELECT data FROM events WHERE run_id=? AND type='graph.created'", (run_id,)
                 ).fetchone()
-                if (
-                    existing["tenant_id"] != tenant_id
-                    or event is None
-                    or load(event["data"])["request_sha256"] != digest
-                ):
+                fact = load(event["data"]) if event else {}
+                matches = fact.get("request_sha256") == digest or (
+                    fact.get("request_contract", 1) == 1
+                    and legacy_digest is not None
+                    and fact.get("request_sha256") == legacy_digest
+                )
+                if existing["tenant_id"] != tenant_id or not matches:
                     raise ValueError("graph identity belongs to another request")
                 return run_id
             self._start(db, prompt, spec, run_id=run_id, tenant_id=tenant_id, initial_messages=initial_messages)
             self._fork_children(db, run_id, children, idempotency_key="initial", join_policy=join_policy)
-            self.journal.event(db, run_id, "graph.created", {"request_sha256": digest})
+            self.journal.event(db, run_id, "graph.created", {"request_sha256": digest, "request_contract": 2})
         return run_id
 
     def _fork_children(
@@ -175,6 +184,13 @@ class AgentRuntime:
         if join_policy not in {"all_success", "all_settled"}:
             raise ValueError("unsupported join policy")
         tasks = [child if isinstance(child, ChildTask) else ChildTask(*child) for child in children]
+        for index, task in enumerate(tasks):
+            if task.dependency_policy not in {"all_success", "all_settled"}:
+                raise ValueError("unsupported dependency policy")
+            if len(set(task.depends_on)) != len(task.depends_on) or any(
+                type(value) is not int or not 0 <= value < index for value in task.depends_on
+            ):
+                raise ValueError("dependencies must be distinct earlier child indices")
         request = dump({"children": [asdict(child) for child in tasks], "policy": join_policy})
         join_id = "join-" + hashlib.sha256(dump([run_id, idempotency_key]).encode()).hexdigest()
         prior = db.execute("SELECT * FROM run_joins WHERE id=?", (join_id,)).fetchone()
@@ -182,6 +198,9 @@ class AgentRuntime:
             previous = load(prior["request"])
             if isinstance(previous, list):
                 previous = {"children": previous, "policy": "all_success"}
+            for child in previous["children"]:
+                child.setdefault("depends_on", [])
+                child.setdefault("dependency_policy", "all_success")
             if dump(previous) != request:
                 raise ValueError("join idempotency key belongs to another request")
             return [row["id"] for row in self._join_children(db, prior)]
@@ -234,6 +253,23 @@ class AgentRuntime:
                 (join_id, child_id, ordinal),
             )
             child_ids.append(child_id)
+            if child.depends_on:
+                child_step = db.execute("SELECT id FROM steps WHERE run_id=? AND ordinal=1", (child_id,)).fetchone()[
+                    "id"
+                ]
+                for position, predecessor in enumerate(child.depends_on):
+                    db.execute(
+                        "INSERT INTO run_dependencies(child_id,predecessor_id,ordinal) VALUES(?,?,?)",
+                        (child_id, child_ids[predecessor], position),
+                    )
+                self.journal.event(
+                    db,
+                    child_id,
+                    "dependency.created",
+                    {"step_id": child_step, "predecessors": [child_ids[index] for index in child.depends_on]},
+                )
+                self.journal.set_step(db, child_step, "WAITING_DEPENDENCIES")
+                self.journal.set_run(db, child_id, "WAITING")
         self.journal.event(
             db, run_id, "join.created", {"join_id": join_id, "child_ids": child_ids, "step_id": step["id"]}
         )
@@ -365,10 +401,68 @@ class AgentRuntime:
                 raise JournalIntegrityError("join child identity or specification differs from committed intent")
         return children
 
+    def _refresh_dependencies(self, db: Any, run: Any) -> None:
+        if run["state"] in {"COMPLETED", "FAILED", "CANCELING", "CANCELED"}:
+            return
+        step = db.execute(
+            "SELECT * FROM steps WHERE run_id=? AND state='WAITING_DEPENDENCIES'", (run["id"],)
+        ).fetchone()
+        if step is None:
+            return
+        membership = db.execute(
+            "SELECT c.ordinal,j.* FROM run_join_children c JOIN run_joins j ON j.id=c.join_id WHERE c.child_id=?",
+            (run["id"],),
+        ).fetchone()
+        if membership is None or step["ordinal"] != 1 or step["attempt_count"] != 0:
+            raise JournalIntegrityError("invalid dependency wait boundary")
+        request = load(membership["request"])
+        tasks = request["children"] if isinstance(request, dict) else request
+        intent = tasks[membership["ordinal"]]
+        expected = [f"{membership['id']}:{index}" for index in intent.get("depends_on", [])]
+        predecessors = db.execute(
+            "SELECT r.id,r.state,r.output FROM run_dependencies d JOIN runs r ON r.id=d.predecessor_id WHERE d.child_id=? ORDER BY d.ordinal",
+            (run["id"],),
+        ).fetchall()
+        if not expected or [row["id"] for row in predecessors] != expected:
+            raise JournalIntegrityError("dependency edges differ from committed intent")
+        for predecessor in predecessors:
+            self.journal.audit(predecessor["id"])
+        if any(row["state"] not in {"COMPLETED", "FAILED", "CANCELED"} for row in predecessors):
+            return
+        if intent.get("dependency_policy", "all_success") == "all_success" and any(
+            row["state"] != "COMPLETED" for row in predecessors
+        ):
+            self.journal.set_step(db, step["id"], "FAILED")
+            self.journal.set_run(db, run["id"], "FAILED", error="predecessor task failed or was canceled")
+            return
+        messages = load(run["messages"])
+        messages.append({"role": "user", "content": dump({"dependency_results": [dict(row) for row in predecessors]})})
+        self.journal.event(db, run["id"], "dependency.resolved", {"step_id": step["id"], "predecessors": expected})
+        self.journal.set_step(db, step["id"], "READY")
+        self.journal.set_run(db, run["id"], "RUNNING", messages=messages)
+
+    def refresh(self, run_id: str) -> dict[str, Any]:
+        """Fold ready dependencies and joins without dispatching any external work."""
+        self.journal.audit(run_id)
+        with self.journal.tx() as db:
+            ids = self._tree_ids(db, run_id)
+            for _ in range(len(ids) + 1):
+                before = tuple(db.execute("SELECT seq FROM runs WHERE id=?", (item,)).fetchone()["seq"] for item in ids)
+                self._refresh_tree_joins(db, run_id)
+                after = tuple(db.execute("SELECT seq FROM runs WHERE id=?", (item,)).fetchone()["seq"] for item in ids)
+                if before == after:
+                    break
+            else:
+                raise JournalIntegrityError("dependency projection failed to converge")
+        return self.get(run_id)
+
     def _refresh_tree_joins(self, db: Any, run_id: str) -> None:
         ids = self._tree_ids(db, run_id)
         for current in ids[1:]:
             self.journal.audit(current)
+        for current in ids:
+            run = db.execute("SELECT * FROM runs WHERE id=?", (current,)).fetchone()
+            self._refresh_dependencies(db, run)
         for current in reversed(ids):
             run = db.execute("SELECT * FROM runs WHERE id=?", (current,)).fetchone()
             self._refresh_joins(db, run)

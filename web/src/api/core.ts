@@ -210,7 +210,7 @@ export interface TeamRunStep {
   role_id: string
   role_name: string
   model: string
-  status: 'ok' | 'error' | 'waiting'
+  status: 'ok' | 'error' | 'waiting' | 'blocked' | 'running' | 'queued' | 'canceled'
   output: string
   elapsed_ms: number
   error: string

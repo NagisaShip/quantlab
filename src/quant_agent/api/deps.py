@@ -176,8 +176,8 @@ class AppServices:
                 router=services.router,
             )
             services.runtime_bridge = RuntimeBridge(services.runs, facade, spec_loader=facade.load_spec)
-            # Role loops and parallel Team graphs share the durable journal;
-            # sequential/debate outer orchestration remains in the host.
+            # Role loops and every Team mode share durable execution graphs;
+            # model and tool bindings remain the host's responsibility.
             services.teams.runtime_journal = facade.journal
             services.router.runtime_journal = facade.journal
         return services

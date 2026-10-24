@@ -138,6 +138,13 @@ CREATE TABLE IF NOT EXISTS run_join_children (
     ordinal BIGINT NOT NULL,
     PRIMARY KEY(join_id, ordinal)
 );
+CREATE TABLE IF NOT EXISTS run_dependencies (
+    child_id TEXT NOT NULL REFERENCES runs(id),
+    predecessor_id TEXT NOT NULL REFERENCES runs(id),
+    ordinal BIGINT NOT NULL,
+    PRIMARY KEY(child_id, ordinal),
+    UNIQUE(child_id, predecessor_id)
+);
 """
 
 
@@ -201,7 +208,18 @@ class Journal:
         else:
             Path(self.path).parent.mkdir(parents=True, exist_ok=True)
             with self.connection() as db:
-                db.execute("PRAGMA journal_mode=WAL")
+                deadline = time.monotonic() + 30
+                while True:
+                    try:
+                        db.execute("PRAGMA journal_mode=WAL")
+                        break
+                    except sqlite3.OperationalError as exc:
+                        # Journal-mode transitions may bypass busy_timeout when
+                        # fresh API/worker processes initialize the same file.
+                        code = getattr(exc, "sqlite_errorcode", 0) & 255
+                        if code not in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED} or time.monotonic() >= deadline:
+                            raise
+                        time.sleep(0.01)
                 for statement in SCHEMA.split(";"):
                     if statement.strip():
                         db.execute(statement)

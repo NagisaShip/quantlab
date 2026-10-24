@@ -79,6 +79,8 @@ class ChildTask:
     prompt: str
     spec: AgentSpec
     initial_messages: list[dict[str, Any]] | None = None
+    depends_on: tuple[int, ...] = ()
+    dependency_policy: str = "all_success"
 
 
 class ModelUnavailable(RuntimeError):
@@ -112,6 +114,7 @@ STEP_STATES = frozenset(
         "WAITING_TIMER",
         "WAITING_INPUT",
         "WAITING_CHILDREN",
+        "WAITING_DEPENDENCIES",
         "SUCCEEDED",
         "FAILED",
         "CANCELED",

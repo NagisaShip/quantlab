@@ -7755,5 +7755,6 @@
  "缓存读取 token": "Cache read tokens",
  "继续评审": "Continue review",
  "取消评审": "Cancel review",
- "等待核对": "Awaiting verification"
+ "等待核对": "Awaiting verification",
+ "等待前序角色": "Waiting for earlier roles"
 }

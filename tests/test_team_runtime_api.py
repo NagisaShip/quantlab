@@ -91,6 +91,7 @@ def test_team_http_waiting_is_not_retried_and_another_member_cannot_resume_or_ca
     assert run["status"] == "waiting" and model.calls == 1
     assert client.post(f"/api/agents/team-runs/{run['id']}/resume").json()["run"]["status"] == "waiting"
     assert model.calls == 1
+
     invite = client.post("/api/workspace/invites", json={"role": "member"}).json()["invite"]["code"]
     with TestClient(create_app()) as member:
         login(member, email="member@team.test", password="Member01!", name="Member", invite_code=invite)
@@ -103,3 +104,28 @@ def test_team_http_waiting_is_not_retried_and_another_member_cannot_resume_or_ca
     canceled = client.post(f"/api/agents/team-runs/{run['id']}/cancel", json={"signal_id": "owner-cancel"})
     assert canceled.status_code == 200 and canceled.json()["run"]["status"] == "canceling"
     assert model.calls == 1
+
+
+@pytest.mark.parametrize("mode", ["sequential", "debate"])
+def test_team_http_modes_complete_and_resume_without_repeating_roles(team_host, mode):
+    client, _services, model = team_host
+    configured = client.put(
+        "/api/agents/teams/durable",
+        json={
+            "name": "Durable",
+            "mode": mode,
+            "role_ids": ["review"],
+            "synthesizer_id": "review",
+            "challenge_rounds": 2,
+        },
+    )
+    assert configured.status_code == 200, configured.text
+    response = client.post("/api/agents/teams/durable/run", json={"topic": "review", "include_market_data": False})
+    assert response.status_code == 200, response.text
+    run = response.json()["run"]
+    assert run["status"] == "done"
+    assert len(run["steps"]) == (1 if mode == "sequential" else 3)
+    expected = 2 if mode == "sequential" else 4
+    assert model.calls == expected
+    assert client.post(f"/api/agents/team-runs/{run['id']}/resume").json()["run"]["status"] == "done"
+    assert model.calls == expected

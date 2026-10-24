@@ -124,3 +124,16 @@ npx playwright test tests/e2e/19-runtime-recovery.spec.ts --workers=1
 - 状态判定：`tests/agent-status.test.mjs` 新增 Team 等待/取消/完成证据测试；状态单测 7 项通过。
 
 双数据库内核与宿主/API 综合回归 129 项通过，开启 Runtime 的策略研究室与 Team 定向回归 57 项通过，最后的适配和上下文裁剪定向验收 13 项通过。浏览器主对话恢复与并行 Team 验收 2 项通过；前端构建和翻译提取检查通过。各测试选择有重叠，不累加为唯一用例数。当前产品接入仅覆盖 parallel 外层，不能宣称 sequential/debate 外层已经完成迁移。
+
+
+## 顺序与辩论模式（2026-10-25）
+
+`packages/agent-runtime/tests/test_dependencies.py` 共用 SQLite/PostgreSQL：依赖满足前零模型派发；重建宿主后读取同一前序结果；自环、前向和重复边使整图回滚；all_success/all_settled 区分已知失败与未知结果；边丢失安全停止；重复 refresh 不追加第二份上下文；并发 Worker 只提交一次依赖结果；取消后不解锁未开始的角色；旧图创建请求保持身份兼容。
+
+`tests/test_team_modes_runtime.py` 验证真实 Team 顺序、跨轮观点和同轮快照隔离；未知工具效果中断后重建 TeamRunner，完成核对后继续原角色，不重跑已发生效果。`tests/test_team_runtime_api.py` 通过 HTTP 验证顺序和辩论完成后的重复 resume 无额外模型调用。
+
+`packages/agent-runtime/tests/test_journal_startup.py` 注入 SQLite BUSY、LOCKED 和 CORRUPT：只重试锁竞争，不掩盖损坏。已有四宿主并发冷启动验收继续保留。
+
+双数据库内核、Team 模式及 HTTP 综合回归 154 项通过；开启 Runtime 的研究室/Team 回归 59 项通过。最后补充的请求兼容、取消展示与浏览器模式矩阵另列最终结果，测试选择存在重叠，不累加计数。
+
+顺序/辩论阶段收尾：兼容请求、依赖等待、SQLite 冷启动、Team 模式及 HTTP 定向验收 39 项通过；浏览器主对话与三种 Team 模式共 4 项通过。截图已确认等待前序、等待核对及取消状态展示；未开始的角色不显示虚构的模型名称。前端构建、类型和翻译检查通过。
