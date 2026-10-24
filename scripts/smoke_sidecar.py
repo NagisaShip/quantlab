@@ -20,6 +20,9 @@ def main():
     parser.add_argument("binary", type=Path)
     args = parser.parse_args()
     binary = args.binary.resolve(strict=True)
+    manifest_path = binary.parent / "build-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["agent_runtime"] is True, "sidecar manifest does not include Agent Runtime"
     scratch = Path(__file__).resolve().parents[1] / ".tmp"
     scratch.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="quantlab-sidecar-", dir=scratch) as tmp:
@@ -32,6 +35,7 @@ def main():
         env.update(
             QUANTLAB_LIBRARY=str(root / "library"),
             QUANTLAB_CREDENTIALS=str(root / "credentials"),
+            QAGENT_AGENT_RUNTIME="1",
             PYTHONIOENCODING="utf-8",
         )
         with (root / "backend.log").open("w", encoding="utf-8") as log:
@@ -56,6 +60,9 @@ def main():
                         time.sleep(0.5)
                 else:
                     raise RuntimeError("sidecar readiness timed out")
+                with urllib.request.urlopen(base + "/api/healthz", timeout=5) as response:
+                    health = json.load(response)
+                    assert health.get("version"), "sidecar health handshake has no version"
                 with urllib.request.urlopen(base + "/", timeout=5) as response:
                     assert b"<html" in response.read().lower(), "bundled frontend missing"
                 with urllib.request.urlopen(base + "/api/local/runtime", timeout=10) as response:
@@ -63,7 +70,7 @@ def main():
                     assert runtime["interpreter"]["frozen"], "smoke test did not run frozen backend"
                     for package in ("python-docx", "python-pptx", "PyMuPDF"):
                         assert runtime["dependencies"][package]["available"], f"bundled dependency missing: {package}"
-                print("PASS: frozen backend, local API, bundled frontend and document dependencies")
+                print("PASS: frozen backend, Agent Runtime, local API, bundled frontend and document dependencies")
             except Exception:
                 log.flush()
                 print((root / "backend.log").read_text(encoding="utf-8", errors="replace"))

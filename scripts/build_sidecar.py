@@ -16,6 +16,7 @@ The frozen executable is ``quantlab-backend[.exe]`` and accepts the same
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -23,6 +24,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 ENTRY = ROOT / "scripts" / "sidecar_entry.py"
+RUNTIME_SRC = ROOT / "packages" / "agent-runtime" / "src"
 DEFAULT_OUT = ROOT / "desktop" / "src-tauri" / "resources" / "backend"
 NAME = "quantlab-backend"
 
@@ -51,6 +53,8 @@ def _command(output: Path, clean: bool) -> list[str]:
         "--collect-all",
         "quantlab_supplychain",
         "--collect-all",
+        "agent_runtime",
+        "--collect-all",
         "docx",
         "--collect-all",
         "pptx",
@@ -58,6 +62,8 @@ def _command(output: Path, clean: bool) -> list[str]:
         "pymupdf",
         "--paths",
         str(ROOT / "src"),
+        "--paths",
+        str(RUNTIME_SRC),
         "--add-data",
         f"{ROOT / 'web' / 'dist'}{os.pathsep}web/dist",
         str(ENTRY),
@@ -90,6 +96,9 @@ def main() -> int:
     if not (ROOT / "web" / "dist" / "index.html").is_file():
         print("缺少 web/dist/index.html：先运行 `cd web && npm run build:windows`")
         return 1
+    if not (RUNTIME_SRC / "agent_runtime" / "__init__.py").is_file():
+        print(f"缺少 Agent Runtime 源码：{RUNTIME_SRC}")
+        return 1
     if not have:
         print("未安装 PyInstaller：先 `python -m pip install pyinstaller`（或 `.[dev]` 中的打包依赖）")
         print("将执行：", " ".join(_command(output, args.clean)))
@@ -101,7 +110,25 @@ def main() -> int:
 
     output.mkdir(parents=True, exist_ok=True)
     print("Building sidecar:", output)
-    return subprocess.call(_command(output, args.clean))
+    code = subprocess.call(_command(output, args.clean))
+    if code:
+        return code
+    executable = output / NAME / (NAME + (".exe" if os.name == "nt" else ""))
+    if not executable.is_file():
+        print(f"PyInstaller 未生成预期可执行文件：{executable}")
+        return 1
+    manifest = {
+        "format": "quantlab.sidecar-build/1",
+        "name": NAME,
+        "executable": executable.name,
+        "agent_runtime": True,
+        "frontend": "web/dist",
+    }
+    (executable.parent / "build-manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    print("Sidecar ready:", executable)
+    return 0
 
 
 if __name__ == "__main__":

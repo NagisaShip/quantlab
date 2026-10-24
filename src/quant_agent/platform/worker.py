@@ -166,7 +166,9 @@ class Worker:
         info = {
             "busy": list(self.busy),
             "resident": list(self.drivers),
-            "kinds": list(self.batch) + list(self.resident),
+            "kinds": list(self.batch)
+            + list(self.resident)
+            + (["runtime_agent"] if getattr(self.services, "runtime_bridge", None) else []),
             "slots": self.slots,
             "busy_count": len(self.busy),
             "resident_count": len(self.drivers),
@@ -230,9 +232,66 @@ class Worker:
             if run is None:
                 break
             self._dispatch(run, background=True)
+        self._schedule_runtime()
         # 2) 推进常驻任务
         for run_id in list(self.drivers):
             self.drive(run_id)
+
+    def _schedule_runtime(self) -> None:
+        bridge = getattr(self.services, "runtime_bridge", None)
+        if bridge is None:
+            return
+        capacity = max(0, self.slots - len(self.busy))
+        if not capacity:
+            return
+        cursor_created_at = -1
+        cursor_id = ""
+        page_size = 32
+        while len(self.busy) < self.slots:
+            rows = self.runs.db.fetchall(
+                "SELECT t.run_id,r.created_at FROM runtime_tickets t JOIN runs r ON r.id=t.run_id "
+                "WHERE r.state IN ('QUEUED','RUNNING','PAUSED','RECOVERING') "
+                "AND (r.created_at>? OR (r.created_at=? AND r.id>?)) "
+                "ORDER BY r.created_at,r.id LIMIT ?",
+                (cursor_created_at, cursor_created_at, cursor_id, page_size),
+            )
+            if not rows:
+                break
+            cursor_created_at, cursor_id = rows[-1]["created_at"], rows[-1]["run_id"]
+            for row in rows:
+                run_id = row["run_id"]
+                current = bridge.runtime.get(run_id)
+                if current is not None:
+                    if current["state"] in {"COMPLETED", "FAILED", "CANCELED", "CANCELING"}:
+                        bridge.project(run_id)
+                        continue
+                    active = [
+                        step
+                        for step in current["steps"]
+                        if step["state"] in {"READY", "WAITING_ADMISSION", "IN_FLIGHT", "RECONCILING"}
+                    ]
+                    if not active:
+                        continue
+                    if active[0]["state"] == "IN_FLIGHT" and (active[0]["lease_until"] or 0) > int(time.time() * 1000):
+                        continue
+                with self._lock:
+                    if run_id in self.busy or len(self.busy) >= self.slots:
+                        continue
+                    self.busy[run_id] = self.pool.submit(self._execute_runtime, run_id)
+            if len(rows) < page_size:
+                break
+
+    def _execute_runtime(self, run_id: str) -> None:
+        bridge = self.services.runtime_bridge
+        try:
+            bridge.deliver(run_id)
+            bridge.runtime.resume(run_id)
+            bridge.project(run_id)
+        except Exception:
+            log.exception("Agent Runtime 运行推进失败：%s", run_id)
+        finally:
+            with self._lock:
+                self.busy.pop(run_id, None)
 
     def _dispatch(self, run: dict[str, Any], *, background: bool) -> None:
         kind = run["kind"]
@@ -428,7 +487,7 @@ class Worker:
         changed = self.runs.db.execute(
             "UPDATE runs SET state=?, lease_owner=?, lease_expires_at=?, attempts=attempts+1, started_at=COALESCE(star"
             "ted_at, ?), "
-            "updated_at=? WHERE id=? AND state IN (?,?)",
+            "updated_at=? WHERE id=? AND runtime_version IS NULL AND state IN (?,?)",
             (RUNNING, self.owner, now + LEASE_MS, now, now, run_id, QUEUED, RECOVERING),
         )
         if not changed:

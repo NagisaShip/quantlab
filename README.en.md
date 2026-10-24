@@ -76,7 +76,7 @@ Local development:
 
 ```bash
 pip install -r requirements-dev.lock
-pip install --no-deps -e .
+pip install --no-deps -e ./packages/agent-runtime -e .
 cd web && npm ci && npm run build && cd ..
 qagent migrate
 qagent serve --with-worker

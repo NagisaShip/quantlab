@@ -17,6 +17,7 @@ from typing import Any
 from ..context.manager import ContextManager
 from ..llm.base import Message, Tool, ToolCall
 from ..llm.router import ModelRouter
+from .tool_guards import clean_protocol_residue
 
 
 @dataclass
@@ -73,7 +74,9 @@ class Agent:
         temperature: float = 0.2,
         model: str | None = None,
         effort: str | None = None,
+        runtime_journal: Any = None,
     ) -> None:
+        self.runtime_journal = runtime_journal
         self.name = name
         self.role = role  # 用于模型路由，如 "code_gen" | "reasoning"
         self.router = router
@@ -85,6 +88,11 @@ class Agent:
         self.effort = effort or None  # 思考努力程度（角色级配置）
 
     def run(self, task: str, *, retrieved: list | None = None) -> AgentRun:
+        journal = self.runtime_journal or getattr(self.router, "runtime_journal", None)
+        if journal is not None:
+            from .runtime_agent import run_agent
+
+            return run_agent(self, task, journal=journal, retrieved=retrieved)
         run = AgentRun(run_id=str(uuid.uuid4()), role=self.role)
         tool_specs = [t for t in self.tools.values()]
         messages = self.context.build(task, retrieved=retrieved)
@@ -107,15 +115,14 @@ class Agent:
                 run.ended_at = int(time.time() * 1000)
                 return run
 
-            run.steps.append(
-                AgentStep(index=i, kind="llm", content=result.content, model=f"{result.provider}/{result.model}")
-            )
+            content = clean_protocol_residue(result.content or "")
+            run.steps.append(AgentStep(index=i, kind="llm", content=content, model=f"{result.provider}/{result.model}"))
             run.model = f"{result.provider}/{result.model}"
             run.usage = result.usage or run.usage
             messages.append(
                 Message(
                     role="assistant",
-                    content=result.content,
+                    content=content,
                     tool_calls=result.tool_calls,
                     provider_blocks=list(getattr(result, "provider_blocks", []) or []),
                     reasoning=getattr(result, "thinking", "") or "",
@@ -123,7 +130,7 @@ class Agent:
             )
 
             if not result.tool_calls:
-                run.final = result.content
+                run.final = content
                 run.status = "done"
                 run.ended_at = int(time.time() * 1000)
                 return run
@@ -160,7 +167,7 @@ class Agent:
             )
             try:
                 result = self.router.chat(messages, role=self.role, model=self.model, temperature=self.temperature)
-                run.final = result.content or ""
+                run.final = clean_protocol_residue(result.content or "")
                 run.model = f"{result.provider}/{result.model}"
                 run.usage = result.usage or run.usage
                 run.steps.append(AgentStep(index=self.max_steps, kind="llm", content=run.final, model=run.model))
@@ -169,6 +176,15 @@ class Agent:
                 run.steps.append(AgentStep(index=self.max_steps, kind="llm", content=f"最终答复失败: {e}"))
         run.ended_at = int(time.time() * 1000)
         return run
+
+    def resume_runtime(self, run_id: str) -> AgentRun:
+        """Wake the saved execution using this host's current bindings."""
+        journal = self.runtime_journal or getattr(self.router, "runtime_journal", None)
+        if journal is None:
+            raise ValueError("Agent Runtime is not enabled")
+        from .runtime_agent import run_agent
+
+        return run_agent(self, "", journal=journal, run_id=run_id)
 
     def _execute_tool(self, call: ToolCall) -> str:
         tool = self.tools.get(call.name)

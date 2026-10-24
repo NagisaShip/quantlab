@@ -47,6 +47,21 @@ if _PG:
 
     _deps.default_url = _pg_url
 
+    @pytest.fixture(autouse=True)
+    def isolated_runtime_schema(monkeypatch):
+        """Runtime and business tables have separate, test-owned PG schemas."""
+        from psycopg import sql
+
+        schema = "runtime_t_" + uuid.uuid4().hex[:12]
+        monkeypatch.setenv("QAGENT_AGENT_RUNTIME_DB", _PG)
+        monkeypatch.setenv("QAGENT_AGENT_RUNTIME_SCHEMA", schema)
+        try:
+            yield
+        finally:
+            with psycopg.connect(_PG, autocommit=True) as connection:
+                connection.execute(sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(sql.Identifier(schema)))
+
+
 ADMIN = {"email": "admin@example.com", "password": "Passw0rd!", "name": "管理员"}
 
 

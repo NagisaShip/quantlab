@@ -30,7 +30,7 @@ const PYTHON = process.env.QAGENT_E2E_PYTHON || (process.platform === 'win32' ? 
 
 const serverEnv: Record<string, string> = {
   ...(process.env as Record<string, string>),
-  PYTHONPATH: path.join(REPO_ROOT, 'src'),
+  PYTHONPATH: [path.join(REPO_ROOT, 'src'), path.join(REPO_ROOT, 'packages', 'agent-runtime', 'src')].join(path.delimiter),
   PYTHONUTF8: '1',
   QAGENT_HOME: E2E_HOME,
   QAGENT_SECRET_KEY: SECRET_KEY,

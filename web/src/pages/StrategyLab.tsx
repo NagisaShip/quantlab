@@ -8,6 +8,7 @@ import { createPortal } from 'react-dom'
 import { lab, labPrefs, mergeBySeq, missions, type ContextView, type Effort, type Executor, type FactorSummary, type GoalSpec, type LabKind, type LabMessage, type LabMeta, type LabPlan, type LabProject, type Metrics, type Permission, APPROVAL_CATEGORIES, type ApprovalCategory } from '../apiLab'
 import { get } from '../http'
 import { AgentStatePill, MessageStateTag } from '../components/chat/LabStatus'
+import { RuntimeRecovery } from '../components/lab/RuntimeRecovery'
 import {
   clearObservedFailure, deriveAgentStatus, evidenceProbes, messageTag, normalizeRunState, rememberObservedFailure,
   type RunEvidenceState,
@@ -149,6 +150,7 @@ export default function StrategyLabPage({ onNavigate, notify, arg, me }: PagePro
 
       {activeId ? (
         <ProjectView key={activeId} id={activeId} meta={meta} notify={notify} onNavigate={onNavigate}
+          canResolveRuntime={me?.workspace?.role === 'admin' || Boolean(me?.user?.is_admin)}
           feedbackCfg={me?.workspace?.settings?.feedback}
           onChanged={refreshList} onDeleted={() => { open(''); refreshList() }} onOpenProject={(pid) => { refreshList(); open(pid) }} />
       ) : (
@@ -673,10 +675,11 @@ function Welcome({ meta, notify, onCreated, folder = '', onFolder }: {
 /* ------------------------------------------------------------------ */
 /* 项目对话                                                            */
 /* ------------------------------------------------------------------ */
-function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpenProject, feedbackCfg }: {
+function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpenProject, feedbackCfg, canResolveRuntime }: {
   id: string; meta: LabMeta | null; notify: PageProps['notify']; onNavigate: PageProps['onNavigate']
   onChanged: () => void; onDeleted: () => void; onOpenProject: (id: string) => void
   feedbackCfg?: { enabled: boolean; every_n_messages: number; auto_close_seconds: number }
+  canResolveRuntime: boolean
 }) {
   const [project, setProject] = useState<LabProject | null>(null)
   const [messages, setMessages] = useState<LabMessage[]>([])
@@ -1285,6 +1288,9 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
         </div>
 
         <div className="lab2-dock" data-tour="lab-composer">
+          <RuntimeRecovery projectId={id} runId={project.runtime_pending_ids?.[0] || project.runtime_chat_id} running={running}
+            revision={project.updated_at} canResolve={canResolveRuntime} onChanged={() => pull(false)}
+            onError={(message) => notify(message, true)} />
           {goalOpen && (
             <div className="lab2-goal-pop">
               <GoalForm meta={dmeta} domain={project.kind} initial={goalOpen.initial} unparsed={goalOpen.unparsed} projectId={id}

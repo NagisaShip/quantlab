@@ -161,6 +161,7 @@ class ModelRouter:
         # 调用前的限额检查（返回原因则跳过该服务商）与调用后的用量记账
         self.guard: Any = None
         self.on_usage: Any = None
+        self.admission: Any = None
         self.sleep = time.sleep  # 重试等待（测试里替换掉，不真的睡）
 
     @property
@@ -267,6 +268,13 @@ class ModelRouter:
                         emitted["any"] = False
                     try:
                         client = self._client(provider_name, pc)
+                        admission_id = (
+                            self.admission.reserve(pc, candidate, messages, max_tokens) if self.admission else None
+                        )
+                    except LLMError as e:
+                        errors.append(str(e))
+                        break
+                    try:
                         extra: dict[str, Any] = {}
                         if target_effort:
                             extra["effort"] = target_effort
@@ -280,13 +288,9 @@ class ModelRouter:
                             max_tokens=max_tokens,
                             **extra,
                         )
-                        if self.on_usage:
-                            try:
-                                self.on_usage(pc, candidate, result.usage)
-                            except Exception:
-                                pass
-                        return result
                     except LLMError as e:
+                        if admission_id is not None:
+                            self.admission.unknown(pc, candidate, admission_id)
                         delay = self._retry_delay(e, attempt) if attempt < retries else None
                         if delay is None:  # 不可重试、次数用完或要等太久：换下一个候选模型
                             errors.append(str(e) + (f"（已重试 {attempt} 次）" if attempt else ""))
@@ -305,6 +309,19 @@ class ModelRouter:
                                 }
                             )
                         self.sleep(delay)
+                    except BaseException:
+                        if admission_id is not None:
+                            self.admission.unknown(pc, candidate, admission_id)
+                        raise
+                    else:
+                        if admission_id is not None:
+                            self.admission.settle(pc, candidate, admission_id, result.usage)
+                        if self.on_usage:
+                            try:
+                                self.on_usage(pc, candidate, result.usage)
+                            except Exception:
+                                pass
+                        return result
         if not errors:
             # 一个候选都没有（服务商 / 路由没配）：不要抛「所有模型均失败:」后面跟空行这种谜语
             raise LLMError("没有可用的模型：请在 设置 → 模型 里添加服务商，并在 路由 里选择默认模型")

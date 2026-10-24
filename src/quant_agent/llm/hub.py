@@ -46,10 +46,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import time
 import urllib.error
 import urllib.request
+import uuid
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -60,9 +62,11 @@ from ..platform import context
 from ..platform.backtest_retention import DEFAULT_MEMBER_RECORD_UNITS
 from ..platform.db import Database, now_ms
 from ..platform.errors import AppError, ErrorCode
+from ..platform.quota import day_start_ms, today
 from ..platform.secretbox import SecretError
 from ..platform.storage_usage import upload_storage
 from ..store import Collections
+from .base import LLMError, Message
 from .router import AgentConfig, ProviderConfig
 
 PROVIDERS = "llm_providers"
@@ -226,12 +230,25 @@ def fmt_cost(micro: int | Decimal) -> str:
 
 
 class ModelHub:
-    def __init__(self, *, store: Any, secrets: Any, db: Database, auth: Any = None, audit: Any = None) -> None:
+    def __init__(
+        self,
+        *,
+        store: Any,
+        secrets: Any,
+        db: Database,
+        auth: Any = None,
+        audit: Any = None,
+        quota: Any = None,
+    ) -> None:
         self.store = store  # WorkspaceStore
         self.secrets = secrets
         self.db = db
         self.auth = auth
         self.audit = audit
+        self.quota = quota
+        self.max_inflight = int(os.environ.get("QAGENT_MODEL_MAX_IN_FLIGHT", "8"))
+        if self.max_inflight < 1:
+            raise ValueError("QAGENT_MODEL_MAX_IN_FLIGHT must be positive")
         # 服务商侧额度查询缓存：{缓存键: (抓取时间, 结果)}。避免每次打开额度页都打外部接口。
         self._remote_quota_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
@@ -598,19 +615,32 @@ class ModelHub:
         pc: ProviderConfig, model: str, inp: int, out: int, cache_read: int = 0, cache_write: int = 0
     ) -> int:
         """inp 是全部输入（含缓存）。缓存命中 / 写入按各自单价，没填就按普通输入价。"""
+        return ModelHub._priced_cost(ModelHub._price_snapshot(pc, model), inp, out, cache_read, cache_write)
+
+    @staticmethod
+    def _price_snapshot(pc: ProviderConfig, model: str) -> dict[str, str]:
         st = pc.setting(model)
         rate = dec(pc.fx_rate, "1") if pc.currency != "CNY" else Decimal(1)
         p_in = dec(st.get("price_in"))
         p_read = dec(st.get("price_cache")) if dec(st.get("price_cache")) > 0 else p_in
         p_write = dec(st.get("price_cache_write")) if dec(st.get("price_cache_write")) > 0 else p_in
+        return {
+            "input": str(p_in * rate),
+            "cache_read": str(p_read * rate),
+            "cache_write": str(p_write * rate),
+            "output": str(dec(st.get("price_out")) * rate),
+        }
+
+    @staticmethod
+    def _priced_cost(prices: dict[str, str], inp: int, out: int, cache_read: int = 0, cache_write: int = 0) -> int:
         plain_in = max(0, inp - cache_read - cache_write)
         # 价格是「每百万 token」：tokens × 价格 / 1e6 元 = tokens × 价格 微元
         micro = (
-            Decimal(plain_in) * p_in
-            + Decimal(cache_read) * p_read
-            + Decimal(cache_write) * p_write
-            + Decimal(out) * dec(st.get("price_out"))
-        ) * rate
+            Decimal(plain_in) * Decimal(prices["input"])
+            + Decimal(cache_read) * Decimal(prices["cache_read"])
+            + Decimal(cache_write) * Decimal(prices["cache_write"])
+            + Decimal(out) * Decimal(prices["output"])
+        )
         return int(micro.to_integral_value())
 
     def record(self, pc: ProviderConfig, model: str, usage: dict[str, Any] | None) -> None:
@@ -639,6 +669,303 @@ class ModelHub:
             ),
         )
 
+    def _admission_constraints(
+        self, pc: ProviderConfig, ws: str, user_id: str, role: str | None
+    ) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+        """Model quota scopes applied to one request; all are checked in one DB transaction."""
+        scopes: list[tuple[list[dict[str, Any]], dict[str, Any]]] = []
+        provider_where: dict[str, Any] = {"provider": pc.name, "scope": pc.scope}
+        if pc.scope == "personal":
+            provider_where["user_id"] = pc.owner_id
+        if pc.scope == "group":
+            provider_where["group_id"] = pc.group_id
+        scopes.append((pc.limits, provider_where))
+        human = bool(user_id and user_id != "system")
+        if pc.scope == "group" and human and pc.group_id:
+            scopes.append(
+                (
+                    self.group_settings(pc.group_id).get("member_limits") or [],
+                    {"scope": "group", "group_id": pc.group_id, "user_id": user_id},
+                )
+            )
+        if pc.scope == "workspace" and human:
+            scopes.append((self.policy(ws, user_id, role)["limits"], {"scope": "workspace", "user_id": user_id}))
+            for group_id in self.my_groups(ws, user_id):
+                scopes.append(
+                    (
+                        self.group_settings(group_id).get("ws_limits") or [],
+                        {"scope": "workspace", "user_ids": self.group_members(group_id)},
+                    )
+                )
+        return [
+            (rule, where)
+            for rules, where in scopes
+            for rule in clean_limits(rules)
+            if rule["metric"] in {"tokens", "cost"}
+        ]
+
+    @staticmethod
+    def _admission_sum(tx: Any, table: str, ws: str, since_ms: int, metric: str, where: dict[str, Any]) -> int:
+        column = (
+            ("input_tokens + output_tokens" if metric == "tokens" else "cost_micro")
+            if table == "llm_usage"
+            else ("reserved_tokens" if metric == "tokens" else "reserved_micro")
+        )
+        sql = f"SELECT COALESCE(SUM({column}),0) FROM {table} WHERE workspace_id=? AND created_at>=?"
+        args: list[Any] = [ws, since_ms]
+        if table == "llm_admissions":
+            sql += " AND status IN ('RESERVED','IN_FLIGHT','UNSETTLED')"
+        for key in ("provider", "scope", "user_id", "group_id"):
+            if where.get(key):
+                sql += f" AND {key}=?"
+                args.append(where[key])
+        if "user_ids" in where:
+            members = where["user_ids"]
+            if not members:
+                return 0
+            sql += f" AND user_id IN ({','.join('?' * len(members))})"
+            args.extend(members)
+        return int(tx.scalar(sql, tuple(args)) or 0)
+
+    def admit(
+        self,
+        pc: ProviderConfig,
+        model: str,
+        *,
+        request_id: str,
+        reserved_tokens: int,
+        reserved_micro: int,
+        run_id: str | None = None,
+        step_id: str | None = None,
+        attempt_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Atomically reserve every applicable provider/member/group limit."""
+        ctx = context.current()
+        ws, user_id = ctx.workspace_id, ctx.user_id or "system"
+        if not ws or not request_id or reserved_tokens < 0 or reserved_micro < 0:
+            raise ValueError("workspace, request_id and nonnegative estimates are required")
+        constraints = self._admission_constraints(pc, ws, user_id, ctx.role)
+        with self.db.tx() as tx:
+            if self.db.dialect == "postgres":
+                tx.execute("SELECT pg_advisory_xact_lock(7243002, hashtext(?))", (ws,))
+            existing = tx.fetchone("SELECT * FROM llm_admissions WHERE request_id=?", (request_id,))
+            if existing:
+                identity = (existing["workspace_id"], existing["user_id"], existing["provider"], existing["model"])
+                if identity != (ws, user_id, pc.name, model):
+                    raise AppError(ErrorCode.IDEMPOTENCY_CONFLICT, "模型请求 ID 已用于其他调用")
+                if (
+                    existing["reserved_tokens"],
+                    existing["reserved_micro"],
+                    existing["run_id"],
+                    existing["step_id"],
+                    existing["attempt_id"],
+                ) != (reserved_tokens, reserved_micro, run_id, step_id, attempt_id):
+                    raise AppError(ErrorCode.IDEMPOTENCY_CONFLICT, "模型请求 ID 的预算或步骤身份不一致")
+                return existing
+            stamp = now_ms()
+            in_flight = int(
+                tx.scalar(
+                    "SELECT COUNT(*) FROM llm_admissions WHERE workspace_id=? "
+                    "AND status IN ('RESERVED','IN_FLIGHT','UNSETTLED') AND response_received_at IS NULL",
+                    (ws,),
+                )
+                or 0
+            )
+            if in_flight >= self.max_inflight:
+                raise AppError(
+                    ErrorCode.QUOTA_EXHAUSTED,
+                    "模型并发请求已达上限，请等待在途请求结束或核对后重试",
+                    details={"limit": self.max_inflight, "in_flight": in_flight},
+                )
+            quota_day = today(stamp)
+            if self.quota is not None:
+                active = tx.fetchone(
+                    "SELECT COUNT(*) AS calls,COALESCE(SUM(reserved_tokens),0) AS tokens "
+                    "FROM llm_admissions WHERE workspace_id=? AND created_at>=? AND created_at<? "
+                    "AND status IN ('RESERVED','IN_FLIGHT','UNSETTLED')",
+                    (ws, day_start_ms(quota_day), day_start_ms(quota_day) + 86400_000),
+                )
+                self.quota.check_with_reserved(
+                    tx,
+                    "llm_calls",
+                    1,
+                    reserved=int((active or {}).get("calls") or 0),
+                    workspace_id=ws,
+                    day=quota_day,
+                )
+                self.quota.check_with_reserved(
+                    tx,
+                    "llm_tokens",
+                    reserved_tokens,
+                    reserved=int((active or {}).get("tokens") or 0),
+                    workspace_id=ws,
+                    day=quota_day,
+                )
+            for rule, where in constraints:
+                since = window_start(rule["window"], self._tz(ws))
+                spent = self._admission_sum(tx, "llm_usage", ws, since, rule["metric"], where)
+                pending = self._admission_sum(tx, "llm_admissions", ws, since, rule["metric"], where)
+                requested = reserved_tokens if rule["metric"] == "tokens" else reserved_micro
+                limit = int(dec(rule["limit"]) * (MICRO if rule["metric"] == "cost" else 1))
+                if spent + pending + requested > limit:
+                    raise AppError(
+                        ErrorCode.QUOTA_EXHAUSTED,
+                        "模型额度不足，无法预留本次请求",
+                        details={
+                            "metric": rule["metric"],
+                            "limit": limit,
+                            "spent": spent,
+                            "reserved": pending,
+                            "requested": requested,
+                        },
+                    )
+            tx.execute(
+                "INSERT INTO llm_admissions(request_id,run_id,step_id,attempt_id,workspace_id,user_id,scope,"
+                "provider,model,group_id,reserved_tokens,reserved_micro,status,created_at,pricing_json) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    request_id,
+                    run_id,
+                    step_id,
+                    attempt_id,
+                    ws,
+                    user_id,
+                    pc.scope,
+                    pc.name,
+                    model,
+                    pc.group_id or None,
+                    reserved_tokens,
+                    reserved_micro,
+                    "RESERVED",
+                    stamp,
+                    json.dumps(self._price_snapshot(pc, model), separators=(",", ":")),
+                ),
+            )
+            return tx.fetchone("SELECT * FROM llm_admissions WHERE request_id=?", (request_id,))
+
+    def mark_dispatched(self, request_id: str) -> bool:
+        """Consume the one dispatch right before calling an external provider."""
+        with self.db.tx() as tx:
+            row = tx.fetchone("SELECT status FROM llm_admissions WHERE request_id=?", (request_id,))
+            if row is None:
+                raise KeyError(request_id)
+            return bool(
+                tx.execute(
+                    "UPDATE llm_admissions SET status='IN_FLIGHT' WHERE request_id=? AND status='RESERVED'",
+                    (request_id,),
+                )
+            )
+
+    def admission(self, request_id: str) -> dict[str, Any] | None:
+        return self.db.fetchone("SELECT * FROM llm_admissions WHERE request_id=?", (request_id,))
+
+    def settle_admission(
+        self,
+        pc: ProviderConfig,
+        model: str,
+        request_id: str,
+        usage: dict[str, Any] | None,
+        *,
+        response_confirmed: bool = False,
+    ) -> bool:
+        """Exactly one usage row on confirmed settlement; missing usage stays reserved."""
+        with self.db.tx() as tx:
+            row = tx.fetchone("SELECT * FROM llm_admissions WHERE request_id=?", (request_id,))
+            if row is None:
+                raise KeyError(request_id)
+            if row["provider"] != pc.name or row["model"] != model:
+                raise ValueError("admission provider/model mismatch")
+            if row["status"] == "SETTLED":
+                if usage is not None:
+                    b = usage_breakdown(usage)
+                    prices = json.loads(row["pricing_json"]) if row["pricing_json"] else self._price_snapshot(pc, model)
+                    cost = self._priced_cost(prices, b["input"], b["output"], b["cache_read"], b["cache_write"])
+                    recorded = tx.fetchone(
+                        "SELECT input_tokens,output_tokens,cache_read_tokens,cache_write_tokens "
+                        "FROM llm_usage WHERE admission_id=?",
+                        (request_id,),
+                    )
+                    if recorded is None or (b["input"], b["output"], b["cache_read"], b["cache_write"], cost) != (
+                        recorded["input_tokens"],
+                        recorded["output_tokens"],
+                        recorded["cache_read_tokens"],
+                        recorded["cache_write_tokens"],
+                        row["actual_micro"],
+                    ):
+                        raise AppError(ErrorCode.IDEMPOTENCY_CONFLICT, "模型请求已按不同用量结算")
+                return False
+            if row["status"] == "RELEASED":
+                raise ValueError("released admission cannot be settled")
+            if usage is None:
+                tx.execute(
+                    "UPDATE llm_admissions SET status='UNSETTLED',"
+                    "response_received_at=COALESCE(response_received_at,?) WHERE request_id=?",
+                    (now_ms() if response_confirmed else None, request_id),
+                )
+                return False
+            b = usage_breakdown(usage)
+            prices = json.loads(row["pricing_json"]) if row["pricing_json"] else self._price_snapshot(pc, model)
+            cost = self._priced_cost(prices, b["input"], b["output"], b["cache_read"], b["cache_write"])
+            tx.execute(
+                "INSERT INTO llm_usage(workspace_id,user_id,scope,provider,model,input_tokens,output_tokens,"
+                "cache_read_tokens,cache_write_tokens,cost_micro,created_at,group_id,admission_id) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    row["workspace_id"],
+                    row["user_id"],
+                    row["scope"],
+                    row["provider"],
+                    row["model"],
+                    b["input"],
+                    b["output"],
+                    b["cache_read"],
+                    b["cache_write"],
+                    cost,
+                    now_ms(),
+                    row["group_id"],
+                    request_id,
+                ),
+            )
+            actual_tokens = b["input"] + b["output"]
+            tx.execute(
+                "UPDATE llm_admissions SET status='SETTLED',actual_tokens=?,actual_micro=?,"
+                "over_tokens=?,over_micro=?,settled_at=?,response_received_at=COALESCE(response_received_at,?) WHERE request_id=?",
+                (
+                    actual_tokens,
+                    cost,
+                    max(0, actual_tokens - row["reserved_tokens"]),
+                    max(0, cost - row["reserved_micro"]),
+                    now_ms(),
+                    now_ms(),
+                    request_id,
+                ),
+            )
+            if self.quota is not None:
+                # The provider usage row, admission status and daily workspace
+                # counters commit together. Replaying settlement returns before
+                # this block, so a retry cannot count the call twice.
+                quota_day = today(row["created_at"])
+                self.quota.add_in_transaction(tx, "llm_calls", 1, workspace_id=row["workspace_id"], day=quota_day)
+                self.quota.add_in_transaction(
+                    tx, "llm_tokens", actual_tokens, workspace_id=row["workspace_id"], day=quota_day
+                )
+            return True
+
+    def release_admission(self, request_id: str) -> bool:
+        """Release only after the provider confirms that the request incurred no usage."""
+        with self.db.tx() as tx:
+            row = tx.fetchone("SELECT status FROM llm_admissions WHERE request_id=?", (request_id,))
+            if row is None:
+                raise KeyError(request_id)
+            if row["status"] in {"SETTLED", "RELEASED"}:
+                return False
+            tx.execute(
+                "UPDATE llm_admissions SET status='RELEASED',actual_tokens=0,actual_micro=0,"
+                "settled_at=?,response_received_at=COALESCE(response_received_at,?) WHERE request_id=?",
+                (now_ms(), now_ms(), request_id),
+            )
+            return True
+
     def _sum(
         self,
         ws: str,
@@ -650,6 +977,7 @@ class ModelHub:
         owner_only: bool = False,
         group_id: str | None = None,
         user_ids: list[str] | None = None,
+        include_reserved: bool = False,
     ) -> tuple[int, int]:
         sql = (
             "SELECT COALESCE(SUM(input_tokens + output_tokens), 0) AS t, COALESCE(SUM(cost_micro), 0) AS c "
@@ -674,7 +1002,21 @@ class ModelHub:
             sql += f" AND user_id IN ({','.join('?' * len(user_ids))})"
             args.extend(user_ids)
         row = self.db.fetchone(sql, tuple(args)) or {}
-        return int(row.get("t") or 0), int(row.get("c") or 0)
+        tokens, cost = int(row.get("t") or 0), int(row.get("c") or 0)
+        if include_reserved:
+            where = (
+                {"provider": provider, "scope": scope, "user_id": user_id, "group_id": group_id, "user_ids": user_ids}
+                if user_ids is not None
+                else {
+                    "provider": provider,
+                    "scope": scope,
+                    "user_id": user_id,
+                    "group_id": group_id,
+                }
+            )
+            tokens += self._admission_sum(self.db, "llm_admissions", ws, since_ms, "tokens", where)
+            cost += self._admission_sum(self.db, "llm_admissions", ws, since_ms, "cost", where)
+        return tokens, cost
 
     def _task_usage(
         self,
@@ -721,7 +1063,9 @@ class ModelHub:
                 total += max(1, _int(manifest.get("combinations") or 1))
         return total
 
-    def rule_status(self, ws: str, rules: list[dict[str, Any]], **where: Any) -> list[dict[str, Any]]:
+    def rule_status(
+        self, ws: str, rules: list[dict[str, Any]], *, include_reserved: bool = False, **where: Any
+    ) -> list[dict[str, Any]]:
         rules = clean_limits(rules)
         tz = self._tz(ws) if any(r["window"] in CALENDAR_WINDOWS for r in rules) else "Asia/Shanghai"
         out = []
@@ -748,10 +1092,10 @@ class ModelHub:
                     Decimal(0),
                 )
             elif r["metric"] == "tokens":
-                tokens, _ = self._sum(ws, since, **where)
+                tokens, _ = self._sum(ws, since, include_reserved=include_reserved, **where)
                 used = Decimal(tokens)
             else:
-                _, cost = self._sum(ws, since, **where)
+                _, cost = self._sum(ws, since, include_reserved=include_reserved, **where)
                 used = Decimal(cost) / MICRO
             limit = dec(r["limit"])
             pct = int(min(Decimal(999), used * 100 / limit)) if limit > 0 else 0
@@ -792,7 +1136,7 @@ class ModelHub:
         if pc.scope == "group":
             where["group_id"] = pc.group_id
         model_rules = [r for r in pc.limits if r.get("metric") not in ("storage_bytes", "record_units")]
-        for st in self.rule_status(ws, model_rules, **where):
+        for st in self.rule_status(ws, model_rules, include_reserved=True, **where):
             if st["exceeded"]:
                 return f"已达服务商限额（{st['label']}）"
         human = bool(ctx.user_id and ctx.user_id != "system")
@@ -802,13 +1146,15 @@ class ModelHub:
                 for r in (self.group_settings(pc.group_id).get("member_limits") or [])
                 if r.get("metric") not in ("storage_bytes", "record_units")
             ]
-            for st in self.rule_status(ws, rules, scope="group", group_id=pc.group_id, user_id=ctx.user_id):
+            for st in self.rule_status(
+                ws, rules, include_reserved=True, scope="group", group_id=pc.group_id, user_id=ctx.user_id
+            ):
                 if st["exceeded"]:
                     return f"已达群主给你设定的群组模型限额（{st['label']}）"
         if pc.scope == "workspace" and human:
             pol = self.policy(ws, ctx.user_id, ctx.role)
             model_limits = [r for r in pol["limits"] if r.get("metric") not in ("storage_bytes", "record_units")]
-            for st in self.rule_status(ws, model_limits, scope="workspace", user_id=ctx.user_id):
+            for st in self.rule_status(ws, model_limits, include_reserved=True, scope="workspace", user_id=ctx.user_id):
                 if st["exceeded"]:
                     return f"已达你的成员限额（{st['label']}），可以在「额度与用量」里申请提升"
             # 工作区管理员分给群组的共享模型额度：全体群成员合计
@@ -820,7 +1166,9 @@ class ModelHub:
                 ]
                 if not rules:
                     continue
-                for st in self.rule_status(ws, rules, scope="workspace", user_ids=self.group_members(gid)):
+                for st in self.rule_status(
+                    ws, rules, include_reserved=True, scope="workspace", user_ids=self.group_members(gid)
+                ):
                     if st["exceeded"]:
                         return f"你所在群组的共享模型额度已用完（{st['label']}）"
         return None
@@ -1258,6 +1606,43 @@ class ModelHub:
                     )
         global_store.upsert(Collections.SETTINGS, {"id": "llm_hub_migrated", "moved": moved})
         return moved
+
+
+class ModelHubAdmission:
+    """Give legacy ModelRouter calls the same atomic admission authority as Runtime."""
+
+    def __init__(self, hub: ModelHub) -> None:
+        self.hub = hub
+
+    def reserve(self, pc: ProviderConfig, model: str, messages: list[Message], max_tokens: int | None) -> str:
+        estimated_input = max(
+            1,
+            sum(len(message.content) for message in messages) // 3
+            + sum(len(message.images) * 1024 for message in messages),
+        )
+        estimated_output = max(1, max_tokens or 1024)
+        request_id = f"legacy:{uuid.uuid4().hex}"
+        try:
+            self.hub.admit(
+                pc,
+                model,
+                request_id=request_id,
+                reserved_tokens=estimated_input + estimated_output,
+                reserved_micro=self.hub.cost_micro(pc, model, estimated_input, estimated_output),
+            )
+        except AppError as exc:
+            if exc.code == ErrorCode.QUOTA_EXHAUSTED:
+                raise LLMError(exc.message) from exc
+            raise
+        if not self.hub.mark_dispatched(request_id):
+            raise RuntimeError("new model admission could not be dispatched")
+        return request_id
+
+    def settle(self, pc: ProviderConfig, model: str, request_id: str, usage: dict[str, Any] | None) -> None:
+        self.hub.settle_admission(pc, model, request_id, usage, response_confirmed=True)
+
+    def unknown(self, pc: ProviderConfig, model: str, request_id: str) -> None:
+        self.hub.settle_admission(pc, model, request_id, None)
 
 
 def key_fingerprint(api_key: str) -> str:

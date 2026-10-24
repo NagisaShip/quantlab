@@ -519,6 +519,7 @@ def _lab() -> StrategyLab:
         stage=_stage_project,
         platform_tools=True,
         load_result=lambda bt_id: s.store.get_blob("backtests", bt_id),
+        runtime_journal=s.teams.runtime_journal,
     )
     from .routes_collab import claim_new
 
@@ -650,12 +651,12 @@ def _lab_for(pid: str) -> StrategyLab:
 def _project_or_404(lab: StrategyLab, pid: str) -> dict[str, Any]:
     from .routes_collab import guard_visible
 
-    lab.recover_stale(pid)
     p = lab.store.get(pid)
     if p is None:
         raise HTTPException(404, "策略项目不存在")
     guard_visible("project", pid)
-    return p
+    lab.recover_stale(pid)
+    return lab.store.get(pid) or p
 
 
 def _brief(p: dict[str, Any]) -> dict[str, Any]:
@@ -685,6 +686,7 @@ def _view(lab: StrategyLab, p: dict[str, Any], after: int = 0, since: float = 0.
 
     from ..platform import context
 
+    snapshot_time = time.time()
     messages = lab.store.messages(p["id"], after=after, since=since)
     uid = context.current().user_id or ""
     if uid and messages:
@@ -705,7 +707,7 @@ def _view(lab: StrategyLab, p: dict[str, Any], after: int = 0, since: float = 0.
         "project": p,
         "messages": messages,
         "context": lab.context_view(p),
-        "server_time": time.time(),
+        "server_time": snapshot_time,
     }
 
 
@@ -737,7 +739,7 @@ def context_pack(pid: str) -> dict:
 
 def _start(lab: StrategyLab, pid: str, kind: str, fn, wait: bool) -> dict:
     # 要调用模型的回合：工作区当日 LLM 配额用完就直接拒绝，不再降级成模板回复「假装还能对话」
-    if kind not in ("backtest", "walkforward"):
+    if lab.tools.runtime_journal is None and kind not in ("backtest", "walkforward"):
         block = getattr(get_services(), "llm_quota_block", None)
         if callable(block) and (reason := block()):
             raise AppError(ErrorCode.QUOTA_EXHAUSTED, reason)
@@ -1060,6 +1062,15 @@ def delete_project(pid: str, cascade: bool = False) -> dict:
             kids = [p["id"] for p in everything if p.get("parent_id") in frontier and p["id"] not in ids]
             ids.extend(kids)
             frontier = set(kids)
+    if lab.tools.runtime_journal is not None:
+        from ..agents.lab_runtime import prepare_history_change
+
+        try:
+            for project_id in ids:
+                lab.request_stop(project_id)
+                prepare_history_change(lab, project_id, deleting=True)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
     deleted = [i for i in reversed(ids) if lab.store.delete(i)]
     return {"ok": pid in deleted, "deleted": deleted}
 
@@ -1570,6 +1581,189 @@ def stop_project(pid: str) -> dict:
         time.sleep(0.05)
     p = _project_or_404(lab, pid)
     return {"ok": True, "status": p.get("status")}
+
+
+def _project_runtime(pid: str, run_id: str | None = None):
+    from ..platform import context
+
+    lab = _lab_for(pid)
+    project = _project_or_404(lab, pid)
+    run_id = run_id or project.get("runtime_chat_id")
+    if lab.tools.runtime_journal is None or not run_id:
+        raise HTTPException(404, "该对话没有 Runtime 运行记录")
+    from agent_runtime import AgentRuntime
+
+    runtime = AgentRuntime(lab.tools.runtime_journal, None, None)
+    current = runtime.get(run_id)
+    if (
+        current is None
+        or current["tenant_id"] != context.current_workspace()
+        or current["spec"]["metadata"].get("project_id") != pid
+    ):
+        raise HTTPException(404, "Runtime 运行记录不存在")
+    return lab, runtime, current
+
+
+@router.get("/projects/{pid}/runtime", summary="读取对话的权威执行状态和数据库游标事件")
+def project_runtime(
+    pid: str, after: int = Query(0, ge=0), limit: int = Query(200, ge=1, le=1000), run_id: str | None = None
+) -> dict:
+    _, runtime, current = _project_runtime(pid, run_id)
+    events = [event for event in runtime.events(current["id"], after=after) if event["seq"] <= current["seq"]][:limit]
+    return {
+        "run": {key: current[key] for key in ("id", "state", "seq", "error", "steps")},
+        "events": events,
+        "cursor": events[-1]["seq"] if events else after,
+    }
+
+
+@router.post("/projects/{pid}/runtime/resume", summary="幂等请求推进已有对话运行")
+def resume_project_runtime(pid: str, payload: WaitIn, run_id: str | None = None) -> dict:
+    from ..agents.lab_runtime import run_chat
+
+    lab, _, current = _project_runtime(pid, run_id)
+    return _start(lab, pid, "runtime_recover", lambda: run_chat(lab, pid, run_id=current["id"]), payload.wait)
+
+
+class EffectResolutionIn(BaseModel):
+    step_id: str = Field(min_length=1, max_length=200)
+    signal_id: str = Field(min_length=1, max_length=200)
+    outcome: Literal["succeeded", "absent"]
+    result: Any = None
+
+
+def _runtime_admin() -> str:
+    from ..platform import context
+
+    actor = context.current()
+    if actor.role != "admin" and not actor.is_admin:
+        raise AppError(ErrorCode.PERMISSION_DENIED, "只有管理员可以确认不确定的外部效果与费用")
+    return actor.user_id or "system"
+
+
+@router.post("/projects/{pid}/runtime/effect-resolution", summary="管理员记录已核实的外部效果结果")
+def resolve_project_effect(pid: str, payload: EffectResolutionIn, run_id: str | None = None) -> dict:
+    actor = _runtime_admin()
+    lab, runtime, current = _project_runtime(pid, run_id)
+    try:
+        accepted = runtime.signal(
+            current["id"],
+            "effect_resolution",
+            payload.model_dump(exclude={"signal_id"}),
+            signal_id=payload.signal_id,
+            actor=actor,
+        )
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    get_services().audit.record(
+        "lab.runtime.effect_resolution",
+        object_type="project",
+        object_id=pid,
+        details={"run_id": current["id"], "step_id": payload.step_id, "outcome": payload.outcome},
+    )
+    return _resolution_reply(lab, runtime, current, accepted)
+
+
+def _resolution_reply(lab, runtime, current, accepted):
+    state = runtime.get(current["id"])["state"]
+    if state in {"COMPLETED", "CANCELED", "FAILED"}:
+        pid = current["spec"]["metadata"]["project_id"]
+        project = lab.store.get(pid) or {}
+        lab.store.patch(
+            pid,
+            runtime_pending_ids=[
+                run_id for run_id in project.get("runtime_pending_ids", []) if run_id != current["id"]
+            ],
+        )
+        if project.get("runtime_chat_id") == current["id"]:
+            from ..agents.lab_runtime import run_chat
+
+            run_chat(lab, pid, run_id=current["id"], project_only=True)
+            waiting = any(
+                item["kind"] == "ask" and (item.get("data") or {}).get("answered") is None
+                for item in lab.store.messages(pid)
+            )
+            lab.store.patch(pid, status="awaiting_user" if waiting else "idle", job=None)
+    return {"accepted": accepted, "state": state}
+
+
+class ModelUsageResolutionIn(BaseModel):
+    step_id: str = Field(min_length=1, max_length=200)
+    usage: dict[str, Any] | None = None
+    no_charge_confirmed: bool = False
+
+    @field_validator("usage")
+    @classmethod
+    def confirmed_usage(cls, value):
+        if value is None:
+            return value
+        counters = {
+            "input_tokens",
+            "output_tokens",
+            "prompt_tokens",
+            "completion_tokens",
+            "cached_tokens",
+            "cache_read_input_tokens",
+            "cache_creation_input_tokens",
+            "prompt_cache_hit_tokens",
+        }
+
+        def validate(items):
+            found = False
+            for key, count in items.items():
+                if isinstance(count, dict):
+                    found = validate(count) or found
+                elif key in counters:
+                    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+                        raise ValueError("已确认的 token 用量必须是非负整数")
+                    found = True
+            return found
+
+        if not validate(value):
+            raise ValueError("缺少已确认的 token 用量")
+        return value
+
+
+@router.post("/projects/{pid}/runtime/model-usage", summary="管理员记录服务商已确认的模型用量")
+def resolve_project_model_usage(pid: str, payload: ModelUsageResolutionIn, run_id: str | None = None) -> dict:
+    from ..llm.router import ProviderConfig
+
+    actor = _runtime_admin()
+    lab, runtime, current = _project_runtime(pid, run_id)
+    if (payload.usage is None) == (not payload.no_charge_confirmed):
+        raise HTTPException(422, "必须提供已确认用量，或明确确认未计费，两者不可同时提供")
+    step = next((step for step in current["steps"] if step["id"] == payload.step_id), None)
+    if step is None or step["kind"] != "model":
+        raise HTTPException(404, "模型步骤不存在")
+    if step["state"] != "RECONCILING":
+        return {"accepted": False, "state": current["state"]}
+    hub = get_services().model_hub
+    admission = hub.admission(payload.step_id)
+    if not admission or admission["workspace_id"] != current["tenant_id"] or admission["run_id"] != current["id"]:
+        raise HTTPException(409, "模型准入记录与该步骤不一致")
+    try:
+        if payload.no_charge_confirmed:
+            if admission["status"] == "SETTLED":
+                raise ValueError("已结算用量不可改为未计费")
+            hub.release_admission(payload.step_id)
+        else:
+            if not admission["pricing_json"]:
+                raise ValueError("缺少原始价格快照，不能推算费用")
+            provider = ProviderConfig(admission["provider"], "openai_compatible", "", "")
+            hub.settle_admission(provider, admission["model"], payload.step_id, payload.usage)
+        confirmed = hub.admission(payload.step_id)
+        accepted = runtime.settle_model_uncertainty(
+            current["id"], payload.step_id, usage_micro=confirmed["actual_micro"], actor=actor
+        )
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    get_services().audit.record(
+        "lab.runtime.model_usage",
+        object_type="project",
+        object_id=pid,
+        details={"run_id": current["id"], "step_id": payload.step_id},
+    )
+    return _resolution_reply(lab, runtime, current, accepted)
 
 
 @router.post("/projects/{pid}/backtest", summary="用平台回测跑当前版本（cost_scale>1 为成本压力测试）")

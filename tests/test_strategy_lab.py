@@ -77,6 +77,18 @@ def _project(client, **kw):
 
 
 # ---------------- 纯函数 ----------------
+def test_agent_protocol_residue_and_empty_delete_guards():
+    from quant_agent.agents.tool_guards import approval_input_error, clean_protocol_residue
+
+    assert clean_protocol_residue("结论\n<target_placeholder>\n继续") == "结论\n\n继续"
+    assert clean_protocol_residue("代码示例 <tool> 保留") == "代码示例 <tool> 保留"
+    assert "未创建审批" in approval_input_error("delete_backtests", {"ids": []})
+    assert "未创建审批" in approval_input_error("delete_backtests", {"ids": ["  "]})
+    assert approval_input_error("delete_backtests", {"ids": ["bt-1"]}) == ""
+    assert approval_input_error("delete_strategy", {"slug": ""})
+    assert approval_input_error("delete_factor", {"fid": "factor-1"}) == ""
+
+
 def test_evaluate_goals_and_rule_revise():
     ev = evaluate_goals({"sharpe": 0.5, "max_drawdown": 0.4, "trades": 3}, DEFAULT_GOALS)
     assert not ev["passed"] and {i["key"] for i in ev["items"] if not i["ok"]} == {

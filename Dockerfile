@@ -27,7 +27,8 @@ RUN pip install -r requirements.lock
 COPY pyproject.toml README.md agent.config.example.toml ./
 COPY src ./src
 COPY prompts ./prompts
-RUN pip install --no-deps -e . \
+COPY packages/agent-runtime ./packages/agent-runtime
+RUN pip install --no-deps -e ./packages/agent-runtime -e . \
     # 策略子进程会降权到 nobody，源码必须对其可读、不可写
     && chmod -R a+rX,go-w /app \
     && mkdir -p /data/home && chmod 700 /data

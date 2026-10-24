@@ -1514,6 +1514,50 @@
     }
    }
   },
+  "/api/runs/runtime-agent": {
+   "post": {
+    "tags": [
+     "运行与任务"
+    ],
+    "summary": "提交一个 opt-in Agent Runtime 任务",
+    "description": "Opt-in single-agent ingress; the Runtime worker owns execution afterward.",
+    "operationId": "create_runtime_agent_api_runs_runtime_agent_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/RuntimeAgentIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": true,
+         "type": "object",
+         "title": "Response Create Runtime Agent Api Runs Runtime Agent Post"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
   "/api/runs": {
    "get": {
     "tags": [
@@ -15986,6 +16030,299 @@
          "type": "object",
          "additionalProperties": true,
          "title": "Response Stop Project Api Lab Projects  Pid  Stop Post"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/lab/projects/{pid}/runtime": {
+   "get": {
+    "tags": [
+     "AI 策略室"
+    ],
+    "summary": "读取对话的权威执行状态和数据库游标事件",
+    "operationId": "project_runtime_api_lab_projects__pid__runtime_get",
+    "parameters": [
+     {
+      "name": "pid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Pid"
+      }
+     },
+     {
+      "name": "after",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "minimum": 0,
+       "default": 0,
+       "title": "After"
+      }
+     },
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "maximum": 1000,
+       "minimum": 1,
+       "default": 200,
+       "title": "Limit"
+      }
+     },
+     {
+      "name": "run_id",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Run Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "additionalProperties": true,
+         "title": "Response Project Runtime Api Lab Projects  Pid  Runtime Get"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/lab/projects/{pid}/runtime/resume": {
+   "post": {
+    "tags": [
+     "AI 策略室"
+    ],
+    "summary": "幂等请求推进已有对话运行",
+    "operationId": "resume_project_runtime_api_lab_projects__pid__runtime_resume_post",
+    "parameters": [
+     {
+      "name": "pid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Pid"
+      }
+     },
+     {
+      "name": "run_id",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Run Id"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/quant_agent__api__routes_lab__WaitIn"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "additionalProperties": true,
+         "title": "Response Resume Project Runtime Api Lab Projects  Pid  Runtime Resume Post"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/lab/projects/{pid}/runtime/effect-resolution": {
+   "post": {
+    "tags": [
+     "AI 策略室"
+    ],
+    "summary": "管理员记录已核实的外部效果结果",
+    "operationId": "resolve_project_effect_api_lab_projects__pid__runtime_effect_resolution_post",
+    "parameters": [
+     {
+      "name": "pid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Pid"
+      }
+     },
+     {
+      "name": "run_id",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Run Id"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/EffectResolutionIn"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "additionalProperties": true,
+         "title": "Response Resolve Project Effect Api Lab Projects  Pid  Runtime Effect Resolution Post"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/lab/projects/{pid}/runtime/model-usage": {
+   "post": {
+    "tags": [
+     "AI 策略室"
+    ],
+    "summary": "管理员记录服务商已确认的模型用量",
+    "operationId": "resolve_project_model_usage_api_lab_projects__pid__runtime_model_usage_post",
+    "parameters": [
+     {
+      "name": "pid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Pid"
+      }
+     },
+     {
+      "name": "run_id",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Run Id"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/ModelUsageResolutionIn"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "additionalProperties": true,
+         "title": "Response Resolve Project Model Usage Api Lab Projects  Pid  Runtime Model Usage Post"
         }
        }
       }
@@ -32813,6 +33150,40 @@
     ],
     "title": "DslValidateIn"
    },
+   "EffectResolutionIn": {
+    "properties": {
+     "step_id": {
+      "type": "string",
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Step Id"
+     },
+     "signal_id": {
+      "type": "string",
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Signal Id"
+     },
+     "outcome": {
+      "type": "string",
+      "enum": [
+       "succeeded",
+       "absent"
+      ],
+      "title": "Outcome"
+     },
+     "result": {
+      "title": "Result"
+     }
+    },
+    "type": "object",
+    "required": [
+     "step_id",
+     "signal_id",
+     "outcome"
+    ],
+    "title": "EffectResolutionIn"
+   },
    "EmailCodeIn": {
     "properties": {
      "email": {
@@ -34738,6 +35109,38 @@
     },
     "type": "object",
     "title": "ModelSettingIn"
+   },
+   "ModelUsageResolutionIn": {
+    "properties": {
+     "step_id": {
+      "type": "string",
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Step Id"
+     },
+     "usage": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Usage"
+     },
+     "no_charge_confirmed": {
+      "type": "boolean",
+      "title": "No Charge Confirmed",
+      "default": false
+     }
+    },
+    "type": "object",
+    "required": [
+     "step_id"
+    ],
+    "title": "ModelUsageResolutionIn"
    },
    "ModuleIn": {
     "properties": {
@@ -38298,6 +38701,53 @@
     },
     "type": "object",
     "title": "RunNowIn"
+   },
+   "RuntimeAgentIn": {
+    "properties": {
+     "prompt": {
+      "type": "string",
+      "maxLength": 20000,
+      "minLength": 1,
+      "title": "Prompt"
+     },
+     "title": {
+      "type": "string",
+      "maxLength": 200,
+      "title": "Title",
+      "default": "Agent 任务"
+     },
+     "idempotency_key": {
+      "type": "string",
+      "maxLength": 160,
+      "minLength": 1,
+      "title": "Idempotency Key"
+     },
+     "budget_limit_micro": {
+      "type": "integer",
+      "minimum": 1.0,
+      "title": "Budget Limit Micro",
+      "default": 1000000
+     },
+     "model_reservation_micro": {
+      "type": "integer",
+      "minimum": 1.0,
+      "title": "Model Reservation Micro",
+      "default": 50000
+     },
+     "max_steps": {
+      "type": "integer",
+      "maximum": 32.0,
+      "minimum": 1.0,
+      "title": "Max Steps",
+      "default": 8
+     }
+    },
+    "type": "object",
+    "required": [
+     "prompt",
+     "idempotency_key"
+    ],
+    "title": "RuntimeAgentIn"
    },
    "SayIn": {
     "properties": {

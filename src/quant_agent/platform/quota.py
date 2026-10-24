@@ -121,6 +121,13 @@ def today(ts_ms: int | None = None) -> str:
     return moment.strftime("%Y-%m-%d")
 
 
+def day_start_ms(day: str | None = None) -> int:
+    """UTC start-of-day in epoch milliseconds for quota-aligned reservation queries."""
+    bucket = day or today()
+    moment = datetime.strptime(bucket, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    return int(moment.timestamp() * 1000)
+
+
 def _check_metric(metric: str) -> Metric:
     item = METRIC_BY_NAME.get(metric)
     if item is None:
@@ -210,6 +217,47 @@ class QuotaService:
         self.db = db
 
     # ---------------- 写入（原子自增） ----------------
+    def add_in_transaction(
+        self,
+        tx: Any,
+        metric: str,
+        amount: Any = 1,
+        *,
+        workspace_id: str | None = None,
+        day: str | None = None,
+    ) -> Decimal:
+        """Atomically add usage using a transaction owned by the caller.
+
+        ModelHub uses this to commit provider usage, admission settlement and the
+        workspace daily counter together. A crash cannot leave the model ledger
+        and the user-visible quota panel disagreeing.
+        """
+        item = _check_metric(metric)
+        ws = workspace_id or context.current_workspace()
+        delta = to_units(item, amount)
+        if delta < 0:
+            raise AppError(
+                ErrorCode.INVALID_PARAMETER,
+                f"{item.label}的增量不能为负（如需修正请用 set_value 覆盖）",
+                details={"metric": item.name, "amount": dstr(amount)},
+            )
+        bucket = _bucket(item.name, day)
+        stamp = now_ms()
+        tx.execute(
+            "INSERT INTO quota_usage (workspace_id, day, metric, value, updated_at) VALUES (?,?,?,?,?) "
+            "ON CONFLICT (workspace_id, day, metric) DO NOTHING",
+            (ws, bucket, item.name, 0, stamp),
+        )
+        tx.execute(
+            "UPDATE quota_usage SET value = value + ?, updated_at=? WHERE workspace_id=? AND day=? AND metric=?",
+            (delta, stamp, ws, bucket, item.name),
+        )
+        row = tx.fetchone(
+            "SELECT value FROM quota_usage WHERE workspace_id=? AND day=? AND metric=?",
+            (ws, bucket, item.name),
+        )
+        return from_units(item, row["value"]) if row else dec(0)
+
     def add(
         self,
         metric: str,
@@ -222,36 +270,64 @@ class QuotaService:
 
         并发安全：占位 INSERT 与自增 UPDATE 在同一个事务里，且加法发生在数据库侧
         （`value = value + ?`），因此多个进程同时调用不会丢更新。
-        `ON CONFLICT DO NOTHING` 让"第一次写入"与"第 N 次写入"走同一条代码路径
-        （不能用 `INSERT OR REPLACE`，那会把已有计数清零）。
+        """
+        with self.db.tx() as tx:
+            return self.add_in_transaction(tx, metric, amount, workspace_id=workspace_id, day=day)
+
+    def check_with_reserved(
+        self,
+        tx: Any,
+        metric: str,
+        amount: Any = 0,
+        *,
+        reserved: Any = 0,
+        workspace_id: str | None = None,
+        day: str | None = None,
+    ) -> None:
+        """Check used + caller-held reservations + this request in one transaction.
+
+        `amount` is the new request's estimate. `reserved` is the sum of active
+        model admissions that has not yet been settled or released. This closes
+        the check-then-record race where concurrent callers could all pass the
+        same daily workspace limit.
         """
         item = _check_metric(metric)
         ws = workspace_id or context.current_workspace()
-        delta = to_units(item, amount)
-        if delta < 0:
-            # 负增量会让"已用"倒退，等于绕过配额；确实要减少请用 set_value 显式覆盖
-            raise AppError(
-                ErrorCode.INVALID_PARAMETER,
-                f"{item.label}的增量不能为负（如需修正请用 set_value 覆盖）",
-                details={"metric": item.name, "amount": dstr(amount)},
-            )
         bucket = _bucket(item.name, day)
-        stamp = now_ms()
-        with self.db.tx() as t:
-            t.execute(
-                "INSERT INTO quota_usage (workspace_id, day, metric, value, updated_at) VALUES (?,?,?,?,?) "
-                "ON CONFLICT (workspace_id, day, metric) DO NOTHING",
-                (ws, bucket, item.name, 0, stamp),
-            )
-            t.execute(
-                "UPDATE quota_usage SET value = value + ?, updated_at=? WHERE workspace_id=? AND day=? AND metric=?",
-                (delta, stamp, ws, bucket, item.name),
-            )
-            row = t.fetchone(
-                "SELECT value FROM quota_usage WHERE workspace_id=? AND day=? AND metric=?",
+        limit = self.limit_for(item.name, ws)
+        if limit is None:
+            return
+        used_units = int(
+            tx.scalar(
+                "SELECT COALESCE(value,0) FROM quota_usage WHERE workspace_id=? AND day=? AND metric=?",
                 (ws, bucket, item.name),
             )
-        return from_units(item, row["value"]) if row else dec(0)
+            or 0
+        )
+        requested_units = to_units(item, amount)
+        reserved_units = to_units(item, reserved)
+        limit_units = to_units(item, limit)
+        if used_units + reserved_units + requested_units <= limit_units:
+            return
+        used = from_units(item, used_units)
+        held = from_units(item, reserved_units)
+        wanted = from_units(item, requested_units)
+        raise AppError(
+            ErrorCode.QUOTA_EXHAUSTED,
+            f"{item.label}配额已耗尽：已用 {dstr(used)}{item.unit}，"
+            f"在途预留 {dstr(held)}{item.unit}，本次还需要 {dstr(wanted)}{item.unit}。"
+            "请等待次日重置（UTC），或由工作区管理员在「设置与审计 → 工作区」调整上限。",
+            details={
+                "metric": item.name,
+                "label": item.label,
+                "unit": item.unit,
+                "used": dstr(used),
+                "reserved": dstr(held),
+                "limit": dstr(limit),
+                "requested": dstr(wanted),
+                "quota_key": item.quota_key,
+            },
+        )
 
     def set_value(
         self,

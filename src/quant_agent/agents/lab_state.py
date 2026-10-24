@@ -158,6 +158,9 @@ class LabStore:
         for m in rows:
             m["data"] = dict(m.get("data") or {})
             m["data"].pop("streaming", None)
+            m["data"].pop("runtime_step", None)
+            if m["data"].pop("runtime_approval", None) is not None:
+                m["data"]["answered"] = m["data"].get("answered") or "分叉时已失效"
             # 附图复制一份给新对话：各自持有，删掉任何一边都不影响另一边
             refs = []
             for img in m["data"].get("images") or []:

@@ -20,6 +20,10 @@ x-app: &app
     QAGENT_SECRET_KEY_FILE: /run/secrets/qagent_secret_key
     QAGENT_HOME: /data/home
     QAGENT_WORKER: external
+    # Agent Runtime 多 worker 共享账本（独立 schema，避免与业务表冲突）
+    QAGENT_AGENT_RUNTIME: "${QAGENT_AGENT_RUNTIME:-0}"
+    QAGENT_AGENT_RUNTIME_DB: postgresql://${POSTGRES_USER:-qagent}:${POSTGRES_PASSWORD:?请在 .env 设置 POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-qagent}
+    QAGENT_AGENT_RUNTIME_SCHEMA: "${QAGENT_AGENT_RUNTIME_SCHEMA:-agent_runtime}"
     # 微实盘（真实资金）总开关，默认关闭；打开前先读 docs/运维与恢复手册.md 第 8 节
     QAGENT_MICROLIVE: "${QAGENT_MICROLIVE:-0}"
     # 真实永续总开关，独立于微实盘，默认关闭

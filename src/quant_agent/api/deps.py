@@ -75,6 +75,7 @@ class AppServices:
     social: Any = None  # SocialService：用户资料、关注、拉黑与私信策略
     dbcache: Any = None  # DbCache：外部接口结果的数据库缓存（行情摘要、搜索结果、网页正文）
     local: Any = None
+    runtime_bridge: Any = None  # opt-in Agent Runtime ingress and state projection
 
     @classmethod
     def build(
@@ -152,6 +153,33 @@ class AppServices:
         services._register_tools(tools)
         services._migrate_plain_secrets()
         services.apply_runtime_config()
+        if os.environ.get("QAGENT_AGENT_RUNTIME") == "1":
+            try:
+                from agent_runtime import Journal
+            except ImportError as exc:
+                raise RuntimeError("Install agent-runtime-core before enabling QAGENT_AGENT_RUNTIME") from exc
+            from ..platform.runtime_adapters import QuantLabRuntimeFacade
+            from ..platform.runtime_bridge import RuntimeBridge
+
+            journal_url = os.environ.get("QAGENT_AGENT_RUNTIME_DB", "").strip()
+            if not journal_url:
+                if db.dialect != "sqlite":
+                    raise RuntimeError(
+                        "PostgreSQL deployment requires QAGENT_AGENT_RUNTIME_DB for the shared Runtime journal"
+                    )
+                journal_url = str(home / "runtime" / "agent_runtime.sqlite")
+            journal_schema = os.environ.get("QAGENT_AGENT_RUNTIME_SCHEMA", "agent_runtime")
+            facade = QuantLabRuntimeFacade(
+                journal=Journal(journal_url, schema=journal_schema),
+                runs=services.runs,
+                hub=services.model_hub,
+                router=services.router,
+            )
+            services.runtime_bridge = RuntimeBridge(services.runs, facade, spec_loader=facade.load_spec)
+            # Existing Team role invocations use the same durable journal while
+            # retaining TeamRunner's sequential/parallel/debate orchestration.
+            services.teams.runtime_journal = facade.journal
+            services.router.runtime_journal = facade.journal
         return services
 
     def _register_collab_hooks(self) -> None:
@@ -271,36 +299,28 @@ class AppServices:
         个人服务商，或工作区管理员共享的服务商。旧版存在部署级 global store 的服务商
         在第一次启动时迁到部署管理员的工作区。
         """
-        from ..llm.hub import ModelHub
+        from ..llm.hub import ModelHub, ModelHubAdmission
 
         if self.model_hub is None:
             self.model_hub = ModelHub(
-                store=self.store, secrets=self.secrets, db=self.db, auth=self.auth, audit=self.audit
+                store=self.store,
+                secrets=self.secrets,
+                db=self.db,
+                auth=self.auth,
+                audit=self.audit,
+                quota=self.quota,
             )
             self.model_hub.migrate_legacy(self.global_store, self.read_secrets())
         hub = self.model_hub
         self.router.resolver = hub.scoped_config
 
-        def guard(pc, model):
-            """服务商 / 成员限额之外，再查工作区当日配额（LLM 调用次数与 token）：用完就不再调用模型。"""
-            reason = hub.guard(pc, model)
-            if reason:
-                return reason
-            return self.llm_quota_block()
+        # ModelHub admission checks workspace/provider/member limits together.
+        self.router.guard = None
+        self.router.admission = ModelHubAdmission(hub)
 
-        self.router.guard = guard
-
-        def on_usage(pc, model, usage):
-            hub.record(pc, model, usage)
-            if self.quota is not None:
-                from ..llm.hub import usage_tokens
-
-                inp, out = usage_tokens(usage)
-                self.quota.add("llm_calls", 1)
-                if inp + out:
-                    self.quota.add("llm_tokens", inp + out)
-
-        self.router.on_usage = on_usage
+        # ModelHub commits workspace daily counters in the same transaction as
+        # llm_usage and admission settlement. A second on_usage hook would double count.
+        self.router.on_usage = None
         self.router._clients.clear()
 
     def llm_quota_block(self) -> str | None:

@@ -69,3 +69,11 @@
 
 @keyframes cmd-bob { 50% { margin-top: -4px; } }
 
+/* Recovery only appears when durable execution needs attention. */
+.lab-runtime-recovery { display: grid; gap: 8px; padding: 10px 12px; margin-bottom: 8px; border: 1px solid var(--border); border-radius: 10px; font-size: 12px; }
+.lab-runtime-recovery label { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.lab-runtime-recovery textarea { width: 100%; min-height: 60px; }
+.lab-runtime-recovery pre { max-height: 160px; overflow: auto; white-space: pre-wrap; }
+.lab-runtime-recovery p { margin: 0; }
+.lab-runtime-token-fields { display: flex; gap: 12px; flex-wrap: wrap; }
+.lab-runtime-token-fields input { width: 100px; }

@@ -1222,6 +1222,12 @@ def reload_config(services: Any) -> None:
     services.apply_runtime_config()
 
 
+def project_runtime_runs(services: Any) -> None:
+    bridge = getattr(services, "runtime_bridge", None)
+    if bridge is not None:
+        bridge.project_active()
+
+
 def scan_schedules(services: Any) -> None:
     """worker 周期钩子：把到期的定时任务登记为 run；每日研究计划到点也登记一次（每天一次，幂等）。"""
     from .routes_ops import due_schedules
@@ -1361,6 +1367,7 @@ def build_worker(services: Any, **kw: Any) -> Worker:
         batch=dict(BATCH),
         resident=dict(RESIDENT),
         periodic=[
+            (5.0, project_runtime_runs),
             (30.0, deliver_alerts),
             (60.0, scan_schedules),
             (300.0, probe_network),

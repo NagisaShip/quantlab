@@ -13,7 +13,7 @@ from typing import Any, Literal
 
 import anyio
 from fastapi import APIRouter, Query, Request, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ..platform import context
 from ..platform.db import jload
@@ -23,6 +23,16 @@ from . import tasks
 from .deps import get_services
 
 router = APIRouter(prefix="/api/runs", tags=["运行与任务"])
+
+
+class RuntimeAgentIn(BaseModel):
+    prompt: str = Field(min_length=1, max_length=20000)
+    title: str = Field(default="Agent 任务", max_length=200)
+    idempotency_key: str = Field(min_length=1, max_length=160)
+    budget_limit_micro: int = Field(default=1_000_000, ge=1)
+    model_reservation_micro: int = Field(default=50_000, ge=1)
+    max_steps: int = Field(default=8, ge=1, le=32)
+
 
 # 事件推送：一次最多推这么多条，空闲多久发一次心跳。
 # 心跳让浏览器能判断"连接已经半开"——断网时浏览器不一定立刻触发 close，
@@ -111,6 +121,63 @@ def _public(run: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+@router.post("/runtime-agent", summary="提交一个 opt-in Agent Runtime 任务")
+def create_runtime_agent(payload: RuntimeAgentIn) -> dict:
+    """Opt-in single-agent ingress; the Runtime worker owns execution afterward."""
+    s = get_services()
+    bridge = s.runtime_bridge
+    if bridge is None:
+        raise AppError(ErrorCode.UPSTREAM_UNAVAILABLE, "Agent Runtime 预览功能未启用")
+    ctx = context.current()
+    ws = context.current_workspace()
+    spec = {
+        "name": "quantlab-preview",
+        "version": "1",
+        "max_steps": payload.max_steps,
+        "budget_limit_micro": payload.budget_limit_micro,
+        "model_reservation_micro": payload.model_reservation_micro,
+    }
+    existing = s.db.fetchone(
+        "SELECT id FROM runs WHERE workspace_id=? AND idempotency_key=?", (ws, payload.idempotency_key)
+    )
+    if existing:
+        run = bridge.create(
+            workspace_id=ws,
+            user_id=ctx.user_id,
+            title=payload.title,
+            prompt=payload.prompt,
+            spec=spec,
+            idempotency_key=payload.idempotency_key,
+        )
+        bridge.deliver(run["id"])
+        return {"run": _public(bridge.strong_get(run["id"], workspace_id=ws))}
+    quotas = (s.auth.workspace(ws).get("settings") or {}).get("quotas") or {}
+    active = s.runs.count_active(ws)
+    if active >= int(quotas.get("max_concurrent_runs", 4)):
+        raise AppError(ErrorCode.QUOTA_EXHAUSTED, "工作区同时运行的任务已达上限", details={"active": active})
+    today = s.runs.count_since(ws, int(time.time() // 86400 * 86400 * 1000))
+    if today >= int(quotas.get("max_runs_per_day", 200)):
+        raise AppError(ErrorCode.QUOTA_EXHAUSTED, "今日运行次数已达上限", details={"today": today})
+    s.quota.enforce_enqueue("agent_job", {}, workspace_id=ws)
+    blocked = s.model_hub.task_guard("agent_job", {}) if s.model_hub else None
+    if blocked:
+        raise AppError(ErrorCode.QUOTA_EXHAUSTED, blocked)
+    run = bridge.create(
+        workspace_id=ws,
+        user_id=ctx.user_id,
+        title=payload.title,
+        prompt=payload.prompt,
+        spec=spec,
+        idempotency_key=payload.idempotency_key,
+    )
+    bridge.deliver(run["id"])
+    if tasks.worker_mode() == "inline":
+        bridge.runtime.resume(run["id"])
+        bridge.project(run["id"])
+    s.audit.record("run.create.runtime_agent", object_type="run", object_id=run["id"])
+    return {"run": _public(bridge.strong_get(run["id"], workspace_id=ws))}
+
+
 @router.get("")
 def list_runs(
     kind: str | None = None,
@@ -186,6 +253,10 @@ def workers() -> dict:
 def get_run(run_id: str) -> dict:
     s = get_services()
     run = s.runs.require(run_id, context.current_workspace())
+    if run.get("runtime_version"):
+        if s.runtime_bridge is None:
+            raise AppError(ErrorCode.UPSTREAM_UNAVAILABLE, "Agent Runtime 暂时不可用")
+        run = s.runtime_bridge.strong_get(run_id, workspace_id=context.current_workspace())
     return {"run": _public(run), "commands": s.runs.commands(run_id)}
 
 
@@ -253,7 +324,11 @@ def run_series(
 def run_events(run_id: str, after: int = 0, limit: int = Query(500, ge=1, le=5000), types: str | None = None) -> dict:
     """事件流（游标分页）：after = 上次拿到的最后一个事件 id。"""
     s = get_services()
-    s.runs.require(run_id, context.current_workspace())
+    run = s.runs.require(run_id, context.current_workspace())
+    if run.get("runtime_version"):
+        if s.runtime_bridge is None:
+            raise AppError(ErrorCode.UPSTREAM_UNAVAILABLE, "Agent Runtime 暂时不可用")
+        s.runtime_bridge.project(run_id)
     items = s.runs.events(run_id, after=after, limit=limit, types=types.split(",") if types else None)
     return {"items": items, "cursor": items[-1]["id"] if items else after}
 
@@ -289,6 +364,22 @@ def send_command(run_id: str, payload: CommandIn, request: Request) -> dict:
     s = get_services()
     ctx = context.current()
     key = payload.idempotency_key or request.headers.get("idempotency-key")
+    run = s.runs.require(run_id, context.current_workspace())
+    if run.get("runtime_version"):
+        if s.runtime_bridge is None:
+            raise AppError(ErrorCode.UPSTREAM_UNAVAILABLE, "Agent Runtime 暂时不可用")
+        if payload.command != "cancel":
+            raise AppError(ErrorCode.UNSUPPORTED_CAPABILITY, "该 Agent 运行目前只支持取消命令")
+        if not key:
+            raise AppError(ErrorCode.INVALID_PARAMETER, "Runtime 命令需要幂等键")
+        changed = s.runtime_bridge.cancel(
+            run_id, workspace_id=context.current_workspace(), actor=ctx.user_id, signal_id=key
+        )
+        current = s.runtime_bridge.strong_get(run_id, workspace_id=context.current_workspace())
+        return {
+            "command": {"id": key, "command": "cancel", "status": "applied", "new": changed},
+            "run": _public(current),
+        }
     cmd = s.runs.command(run_id, context.current_workspace(), ctx.user_id, payload.command, idempotency_key=key)
     s.audit.record(f"run.command.{payload.command}", object_type="run", object_id=run_id)
     if tasks.worker_mode() == "inline":
@@ -343,11 +434,16 @@ async def run_ws(websocket: WebSocket, run_id: str, after: int = 0) -> None:
     if run is None or run["workspace_id"] not in {m["id"] for m in memberships}:
         await websocket.close(code=4403)
         return
+    if run.get("runtime_version") and s.runtime_bridge is None:
+        await websocket.close(code=1013)
+        return
     await websocket.accept()
     cursor = after
     last_sent = time.monotonic()
     try:
         while True:
+            if run.get("runtime_version"):
+                await anyio.to_thread.run_sync(s.runtime_bridge.project, run_id)
             # 一次把积压的事件推完再睡：断线十秒后可能攒了几十条，
             # 每批之间都睡一秒的话补齐会慢到肉眼可见。
             while True:

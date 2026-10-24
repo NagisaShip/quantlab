@@ -95,6 +95,8 @@ export function sessionKindOf(p: { kind?: string; workflow?: string }): SessionK
 }
 
 export interface LabProject {
+  runtime_chat_id?: string
+  runtime_pending_ids?: string[]
   id: string
   kind?: LabKind
   universe?: string
@@ -286,6 +288,12 @@ export function labPrefs(): { max_tool_calls: number; auto_team_context: boolean
 }
 
 export const lab = {
+  runtime: (id: string, runId?: string) => get<{ run: { id: string; state: string; seq: number; steps: { id: string; kind: string; state: string; payload: { name?: string; arguments?: Record<string, unknown> } }[] } }>(`/api/lab/projects/${id}/runtime${runId ? '?run_id=' + encodeURIComponent(runId) : ''}`),
+  resumeRuntime: (id: string, runId?: string) => post<LabView>(`/api/lab/projects/${id}/runtime/resume${runId ? '?run_id=' + encodeURIComponent(runId) : ''}`, { wait: false }),
+  resolveEffect: (id: string, payload: { step_id: string; signal_id: string; outcome: 'succeeded' | 'absent'; result?: unknown }, runId?: string) =>
+    post<{ accepted: boolean; state: string }>(`/api/lab/projects/${id}/runtime/effect-resolution${runId ? '?run_id=' + encodeURIComponent(runId) : ''}`, payload),
+  resolveModelUsage: (id: string, payload: { step_id: string; usage?: { input_tokens: number; output_tokens: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number }; no_charge_confirmed?: boolean }, runId?: string) =>
+    post<{ accepted: boolean; state: string }>(`/api/lab/projects/${id}/runtime/model-usage${runId ? '?run_id=' + encodeURIComponent(runId) : ''}`, payload),
   meta: () => get<LabMeta>('/api/lab/meta'),
   projects: (archived = false) => get<{ projects: LabProjectBrief[] }>(`/api/lab/projects?archived=${archived}`),
   create: (p: Partial<Omit<LabProject, 'goals' | 'pins' | 'versions'>> & { goals?: Partial<Goals>; template_id?: string; pins?: { kind?: string; title: string; text: string }[] }) =>

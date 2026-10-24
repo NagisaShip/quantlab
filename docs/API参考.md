@@ -2,7 +2,7 @@
 
 [English](API-Reference.en.md) | [文档索引](README.md) | [返回 README](../README.md)
 
-平台共 **705 个端点**。本文件由 `scripts/gen_api_doc.py` 从 FastAPI 的 OpenAPI 规范生成，
+平台共 **710 个端点**。本文件由 `scripts/gen_api_doc.py` 从 FastAPI 的 OpenAPI 规范生成，
 与运行中服务的 `/docs`（可交互调试）来自同一份定义。
 
 机器可读版本：`docs/openapi.json`（同一次生成）。
@@ -62,6 +62,7 @@
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | `GET` | `/api/runs` | 运行列表（回测、优化、实时模拟等所有长任务） |
+| `POST` | `/api/runs/runtime-agent` | 提交一个 opt-in Agent Runtime 任务 |
 | `GET` | `/api/runs/workers` | 在线 worker 与唤醒方式 |
 | `GET` | `/api/runs/{run_id}` | 运行详情：状态、进度、租约、命令 |
 | `POST` | `/api/runs/{run_id}/commands` | 发送运行命令（暂停、恢复、取消、模拟平仓并结束、立即采集） |
@@ -436,6 +437,10 @@
 | `POST` | `/api/lab/projects/{pid}/report` | /report：按调研报告流程列计划、收集资料、分析，最后生成可导出 PDF 的报告 |
 | `GET` | `/api/lab/projects/{pid}/reports/{rid}` | 读取一份调研报告（Markdown 正文） |
 | `POST` | `/api/lab/projects/{pid}/rewind` | 编辑或重试一条用户消息：删掉它之后的对话，用新内容重新发送 |
+| `GET` | `/api/lab/projects/{pid}/runtime` | 读取对话的权威执行状态和数据库游标事件 |
+| `POST` | `/api/lab/projects/{pid}/runtime/effect-resolution` | 管理员记录已核实的外部效果结果 |
+| `POST` | `/api/lab/projects/{pid}/runtime/model-usage` | 管理员记录服务商已确认的模型用量 |
+| `POST` | `/api/lab/projects/{pid}/runtime/resume` | 幂等请求推进已有对话运行 |
 | `POST` | `/api/lab/projects/{pid}/save` | 把当前版本保存为平台策略草稿（可在编辑器、回测、模拟中继续使用） |
 | `POST` | `/api/lab/projects/{pid}/stop` | 停止正在运行的回合：模型输出与联网搜索立即中断；其他工具在跑完当前一步后停下 |
 | `POST` | `/api/lab/projects/{pid}/stress-test` | 一键过拟合压力测试：滚动分段、参数敏感性、成本压力 |

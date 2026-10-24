@@ -95,7 +95,7 @@ bash scripts/dev.sh
 
 ```bash
 pip install -r requirements-dev.lock
-pip install --no-deps -e .
+pip install --no-deps -e ./packages/agent-runtime -e .
 cd web && npm ci && npm run build && cd ..
 qagent migrate
 qagent serve --with-worker   # 单机：API + 守护 worker，http://127.0.0.1:8000

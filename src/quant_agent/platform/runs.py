@@ -87,6 +87,8 @@ class RunService:
         now = now_ms()
         if mode not in MODES:
             raise ValueError(f"未知的运行模式 {mode!r}；允许的模式：{'、'.join(MODES)}")
+        if kind == "runtime_agent":
+            raise ValueError("runtime_agent must be created atomically through RuntimeBridge")
         try:
             self.db.execute(
                 "INSERT INTO runs (id, workspace_id, created_by, mode, kind, state, title, strategy_version_id, manife"
@@ -245,6 +247,8 @@ class RunService:
         if command not in COMMANDS:
             raise AppError(ErrorCode.INVALID_PARAMETER, f"未知命令：{command}；可选 {', '.join(COMMANDS)}")
         run = self.require(run_id, workspace_id)
+        if run.get("runtime_version"):
+            raise AppError(ErrorCode.CONFLICT, "该 Agent 运行由 Runtime 管理，请使用 Runtime 信号入口")
         if run["state"] in TERMINAL:
             raise AppError(
                 ErrorCode.CONFLICT, f"运行已结束（{run['state']}），不能再发送命令", details={"state": run["state"]}
@@ -331,7 +335,7 @@ class RunService:
         lock = " FOR UPDATE SKIP LOCKED" if self.db.dialect == "postgres" else ""
         with self.db.tx() as t:
             row = t.fetchone(
-                f"SELECT id, state, workspace_id FROM runs WHERE state IN (?,?){kind_sql} ORDER BY created_at, id LIMIT "
+                f"SELECT id, state, workspace_id FROM runs WHERE state IN (?,?) AND runtime_version IS NULL{kind_sql} ORDER BY created_at, id LIMIT "
                 f"1{lock}",
                 [QUEUED, RECOVERING, *(kinds or [])],
             )
@@ -364,7 +368,7 @@ class RunService:
         now = now_ms()
         return bool(
             self.db.execute(
-                "UPDATE runs SET lease_expires_at=?, updated_at=? WHERE id=? AND lease_owner=? AND state IN (?,?)",
+                "UPDATE runs SET lease_expires_at=?, updated_at=? WHERE id=? AND lease_owner=? AND runtime_version IS NULL AND state IN (?,?)",
                 (now + lease_ms, now, run_id, owner, RUNNING, PAUSED),
             )
         )
@@ -393,14 +397,18 @@ class RunService:
             sets.append("summary=?")
             params.append(jdump(summary))
         params += [run_id, owner]
-        return bool(self.db.execute(f"UPDATE runs SET {', '.join(sets)} WHERE id=? AND lease_owner=?", params))
+        return bool(
+            self.db.execute(
+                f"UPDATE runs SET {', '.join(sets)} WHERE id=? AND lease_owner=? AND runtime_version IS NULL", params
+            )
+        )
 
     def progress(self, run_id: str, owner: str, done: int, total: int) -> bool:
         now = now_ms()
         return bool(
             self.db.execute(
                 "UPDATE runs SET progress_done=?, progress_total=?, lease_expires_at=?, updated_at=? WHERE id=? AND le"
-                "ase_owner=?",
+                "ase_owner=? AND runtime_version IS NULL",
                 (done, total, now + LEASE_MS, now, run_id, owner),
             )
         )
@@ -431,7 +439,11 @@ class RunService:
             sets.append("error_code=?")
             params.append(error_code)
         params += [run_id, owner]
-        ok = bool(self.db.execute(f"UPDATE runs SET {', '.join(sets)} WHERE id=? AND lease_owner=?", params))
+        ok = bool(
+            self.db.execute(
+                f"UPDATE runs SET {', '.join(sets)} WHERE id=? AND lease_owner=? AND runtime_version IS NULL", params
+            )
+        )
         if ok:
             self.event(
                 run_id, "state", {"state": state, **({"error": error[:300], "code": error_code} if error else {})}
@@ -444,7 +456,7 @@ class RunService:
         self.db.execute(
             "UPDATE runs SET state=?, lease_owner=NULL, lease_expires_at=NULL, updated_at=? WHERE id=? AND lease_owner"
             "=? "
-            "AND state IN (?,?)",
+            "AND runtime_version IS NULL AND state IN (?,?)",
             (RECOVERING, now, run_id, owner, RUNNING, PAUSED),
         )
 

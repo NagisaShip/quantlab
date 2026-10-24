@@ -75,6 +75,7 @@ class TeamRunStep:
     output: str
     elapsed_ms: int = 0
     error: str = ""
+    runtime_run_id: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return self.__dict__
@@ -196,6 +197,10 @@ class TeamRunner:
         self.max_workers = max_workers
         # API 注入时开启：团队角色与对话 Agent 共用平台只读 / 运行工具（confirm 类不开放）。
         self.platform_tools = platform_tools
+        # Set by AppServices when QAGENT_AGENT_RUNTIME=1 is enabled. A shared
+        # Journal makes every role invocation durable while TeamRunner remains
+        # responsible for the higher-level team transcript and synthesis.
+        self.runtime_journal: Any = None
 
     # ---------------- 团队 CRUD ----------------
     def list_teams(self) -> list[Team]:
@@ -379,13 +384,14 @@ class TeamRunner:
         if not use_tools:
             names = []
         tools = [t for t in (self._make_tool(name) for name in names) if t is not None]
+        agent_context = ContextManager(
+            system_prompt=self._system_prompt(role) + (TEAM_TOOL_HINT if self.platform_tools else "")
+        )
         agent = Agent(
             name=role.id,
             role="reasoning",
             router=self.router,
-            context=ContextManager(
-                system_prompt=self._system_prompt(role) + (TEAM_TOOL_HINT if self.platform_tools else "")
-            ),
+            context=agent_context,
             tools=tools,
             temperature=role.temperature,
             max_steps=max_steps,
@@ -393,7 +399,11 @@ class TeamRunner:
             effort=role.effort or None,
         )
         try:
-            run: AgentRun = agent.run(task)
+            run: AgentRun = (
+                self._invoke_runtime(role, task, tools=tools, max_steps=max_steps, agent_context=agent_context)
+                if self.runtime_journal is not None
+                else agent.run(task)
+            )
         except Exception as e:  # 单角色失败不影响整队
             return TeamRunStep(
                 role_id=role.id,
@@ -416,7 +426,31 @@ class TeamRunner:
             output=output,
             elapsed_ms=int((time.time() - started) * 1000),
             error="" if status == "ok" else (run.final or "未产出内容"),
+            runtime_run_id=run.run_id if self.runtime_journal is not None else "",
         )
+
+    def _invoke_runtime(
+        self,
+        role: Role,
+        task: str,
+        *,
+        tools: list[Any],
+        max_steps: int,
+        agent_context: ContextManager,
+    ) -> AgentRun:
+        agent = Agent(
+            name=role.id,
+            role="reasoning",
+            router=self.router,
+            context=agent_context,
+            tools=tools,
+            temperature=role.temperature,
+            max_steps=max_steps,
+            model=role.model or None,
+            effort=role.effort or None,
+            runtime_journal=self.runtime_journal,
+        )
+        return agent.run(task)
 
     @staticmethod
     def _system_prompt(role: Role) -> str:

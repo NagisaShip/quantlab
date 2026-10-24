@@ -50,10 +50,11 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev,server,research,deliverables]"
+          pip install -e ./packages/agent-runtime
       - name: 静态检查
         run: |
-          ruff check src tests scripts
-          ruff format --check src tests scripts
+          ruff check src tests scripts packages/agent-runtime/src packages/agent-runtime/tests
+          ruff format --check src tests scripts packages/agent-runtime/src packages/agent-runtime/tests
       - name: API 快照与代码一致
         run: |
           python scripts/gen_api_doc.py
@@ -70,6 +71,14 @@ jobs:
             tests/test_local_projects.py \
             tests/test_local_agent_deliverables.py \
             tests/test_ai_tools.py
+
+      - name: Agent Runtime 与研究室迁移回归
+        if: matrix.python-version == '3.13'
+        env:
+          QAGENT_AGENT_RUNTIME: "1"
+        run: >-
+          pytest -q packages/agent-runtime/tests tests/test_lab_runtime.py tests/test_lab_runtime_api.py
+          tests/test_team_runtime.py tests/test_generic_agent_runtime.py tests/test_strategy_lab.py tests/test_factor_research.py tests/test_model_research.py
 
       - name: 测试
         run: pytest -q
@@ -98,6 +107,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-dev.lock
           pip install -e ".[research,deliverables]"
+          pip install -e ./packages/agent-runtime
+      - name: Agent Runtime PostgreSQL 多进程验证
+        env:
+          QAGENT_TEST_PG: postgresql://postgres:ci@localhost:5432/postgres
+        run: pytest -q packages/agent-runtime/tests tests/test_runtime_postgres.py
       - name: 测试（每个用例独立 schema）
         env:
           QAGENT_TEST_PG: postgresql://postgres:ci@localhost:5432/postgres
@@ -208,6 +222,14 @@ jobs:
         env:
           CI: "true"
 
+      - name: Agent Runtime 研究室恢复验收
+        run: npx playwright test tests/e2e/19-runtime-recovery.spec.ts --workers=1
+        env:
+          CI: "true"
+          QAGENT_AGENT_RUNTIME: "1"
+          QAGENT_AGENT_RUNTIME_DB: ${{ matrix.storage == 'postgres' && 'postgresql://postgres:ci@localhost:5432/postgres' || '' }}
+          QAGENT_AGENT_RUNTIME_SCHEMA: agent_runtime_e2e
+
       - name: 上传 trace / 截图 / 报告（失败也上传）
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
@@ -276,10 +298,15 @@ jobs:
       - name: MCP 像素回归（显式生成基准或比较）
         env:
           UPDATE_BASELINE: ${{ inputs.visual_update_baseline }}
+          BASELINE_RUN_ID: ${{ inputs.visual_baseline_run_id }}
         run: |
-          args=()
+          if [ -z "$BASELINE_RUN_ID" ] && [ "$UPDATE_BASELINE" != "true" ]; then
+            echo "::notice::未提供已验收基准；本次只检查 pageerror / 横向溢出，不执行像素比较。"
+            exit 0
+          fi
+          args=(--channel chromium --pages mcp --out .tmp/visual-mcp --baseline .tmp/visual-baseline)
           if [ "$UPDATE_BASELINE" = "true" ]; then args+=(--update-baseline); fi
-          node scripts/visual_check.mjs --channel chromium --pages mcp --out .tmp/visual-mcp --baseline .tmp/visual-baseline "${args[@]}"
+          node scripts/visual_check.mjs "${args[@]}"
       - name: 上传候选基准
         if: inputs.visual_update_baseline
         uses: actions/upload-artifact@v4
