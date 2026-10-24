@@ -2727,6 +2727,7 @@ class StrategyLab:
             content=run.get("synthesis", "")[:4000],
             data={
                 "run_id": run.get("id"),
+                "runtime_run_id": run.get("runtime_run_id"),
                 "team_name": run.get("team_name"),
                 "mode": run.get("mode"),
                 "status": run.get("status"),
@@ -2737,7 +2738,9 @@ class StrategyLab:
                         "role_name": s.get("role_name"),
                         "status": s.get("status"),
                         "model": s.get("model"),
-                        "output": (s.get("output") or s.get("error") or "")[:1500],
+                        "output": (
+                            s.get("output") or ("等待核对" if s.get("status") == "waiting" else s.get("error")) or ""
+                        )[:1500],
                     }
                     for s in run.get("steps", [])
                 ],
@@ -2747,7 +2750,15 @@ class StrategyLab:
             self.pin(pid, kind="team", title=f"团队结论 · {topic[:20]}", text=run["synthesis"][:3000])
             self._post(pid, role="event", kind="text", content="团队结论已自动加入上下文（可在 设置 里关闭）")
         out: dict[str, Any] = {"ok": run.get("status") == "done", "synthesis": (run.get("synthesis") or "")[:3000]}
-        failed = [s for s in run.get("steps", []) if s.get("status") != "ok"]
+        if run.get("status") in {"waiting", "running", "canceling"}:
+            return {
+                **out,
+                "waiting": True,
+                "run_id": run.get("id"),
+                "runtime_run_id": run.get("runtime_run_id"),
+                "message": "团队评审正在等待已发出请求的结果核对。请继续原评审，不要重复召集。",
+            }
+        failed = [s for s in run.get("steps", []) if s.get("status") == "error"]
         if failed:  # 把失败原因交给模型，别让它对着空结论重试同样的调用
             out["failed_roles"] = [{"role": s.get("role_name"), "error": (s.get("error") or "")[:200]} for s in failed]
         if not out["synthesis"]:

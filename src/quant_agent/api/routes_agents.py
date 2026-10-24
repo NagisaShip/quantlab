@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel, Field
 
 from ..agents.roles import RoleDesigner
 from ..agents.team import Team
@@ -11,6 +12,10 @@ from .deps import get_services
 from .schemas import RoleDraftIn, RoleIn, TeamIn, TeamRunIn
 
 router = APIRouter(prefix="/api/agents", tags=["Agent 角色与团队"])
+
+
+class TeamCancelIn(BaseModel):
+    signal_id: str = Field(min_length=1, max_length=160)
 
 
 # ---------------- 角色 ----------------
@@ -203,6 +208,26 @@ def get_team_run(run_id: str) -> dict:
 
 
 # ---------------- 单角色调用（用于快速试跑一个角色）----------------
+@router.post("/team-runs/{run_id}/resume")
+def resume_team_run(run_id: str) -> dict:
+    try:
+        return {"run": get_services().teams.resume_run(run_id).to_dict()}
+    except KeyError as exc:
+        raise HTTPException(404, "团队运行记录不存在") from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.post("/team-runs/{run_id}/cancel")
+def cancel_team_run(run_id: str, payload: TeamCancelIn) -> dict:
+    try:
+        return {"run": get_services().teams.cancel_run(run_id, signal_id=payload.signal_id).to_dict()}
+    except KeyError as exc:
+        raise HTTPException(404, "团队运行记录不存在") from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
 @router.post("/roles/{role_id}/run")
 def run_single_role(role_id: str, payload: TeamRunIn) -> dict:
     s = get_services()

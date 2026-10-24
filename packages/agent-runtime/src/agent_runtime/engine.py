@@ -108,79 +108,137 @@ class AgentRuntime:
             return [child["id"] for join in joins for child in self._join_children(db, join)]
 
     def fork_children(
-        self, run_id: str, children: list[ChildTask | tuple[str, AgentSpec]], *, idempotency_key: str
+        self,
+        run_id: str,
+        children: list[ChildTask | tuple[str, AgentSpec]],
+        *,
+        idempotency_key: str,
+        join_policy: str = "all_success",
     ) -> list[str]:
-        """Atomically suspend a READY model step and create an all-success join.
+        """Suspend a READY boundary and atomically create durable child runs."""
+        self.journal.audit(run_id)
+        with self.journal.tx() as db:
+            return self._fork_children(db, run_id, children, idempotency_key=idempotency_key, join_policy=join_policy)
 
-        Hosts choose the child model/tool bindings and schedule their run IDs.
-        Parent resumption never executes children through the parent's ports.
-        """
+    def start_with_children(
+        self,
+        prompt: str,
+        spec: AgentSpec,
+        children: list[ChildTask],
+        *,
+        run_id: str,
+        tenant_id: str,
+        initial_messages: list[dict[str, Any]] | None = None,
+        join_policy: str = "all_success",
+    ) -> str:
+        """Create a whole graph in one transaction, before any worker may run it."""
+        request = dump(
+            {
+                "prompt": prompt,
+                "spec": asdict(spec),
+                "children": [asdict(child) for child in children],
+                "messages": initial_messages,
+                "tenant_id": tenant_id,
+                "join_policy": join_policy,
+            }
+        )
+        digest = hashlib.sha256(request.encode()).hexdigest()
+        with self.journal.tx() as db:
+            existing = db.execute("SELECT tenant_id FROM runs WHERE id=?", (run_id,)).fetchone()
+            if existing:
+                event = db.execute(
+                    "SELECT data FROM events WHERE run_id=? AND type='graph.created'", (run_id,)
+                ).fetchone()
+                if (
+                    existing["tenant_id"] != tenant_id
+                    or event is None
+                    or load(event["data"])["request_sha256"] != digest
+                ):
+                    raise ValueError("graph identity belongs to another request")
+                return run_id
+            self._start(db, prompt, spec, run_id=run_id, tenant_id=tenant_id, initial_messages=initial_messages)
+            self._fork_children(db, run_id, children, idempotency_key="initial", join_policy=join_policy)
+            self.journal.event(db, run_id, "graph.created", {"request_sha256": digest})
+        return run_id
+
+    def _fork_children(
+        self,
+        db: Any,
+        run_id: str,
+        children: list[ChildTask | tuple[str, AgentSpec]],
+        *,
+        idempotency_key: str,
+        join_policy: str,
+    ) -> list[str]:
         if not idempotency_key or len(idempotency_key) > 160 or not 1 <= len(children) <= 32:
             raise ValueError("a stable key and between 1 and 32 children are required")
-        self.journal.audit(run_id)
+        if join_policy not in {"all_success", "all_settled"}:
+            raise ValueError("unsupported join policy")
         tasks = [child if isinstance(child, ChildTask) else ChildTask(*child) for child in children]
-        request = dump([asdict(child) for child in tasks])
+        request = dump({"children": [asdict(child) for child in tasks], "policy": join_policy})
         join_id = "join-" + hashlib.sha256(dump([run_id, idempotency_key]).encode()).hexdigest()
-        with self.journal.tx() as db:
-            prior = db.execute("SELECT * FROM run_joins WHERE id=?", (join_id,)).fetchone()
-            if prior:
-                if prior["request"] != request:
-                    raise ValueError("join idempotency key belongs to another request")
-                return [row["id"] for row in self._join_children(db, prior)]
-            run = db.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
-            if run is None:
-                raise KeyError(run_id)
-            pending = db.execute(
-                "SELECT * FROM steps WHERE run_id=? AND state NOT IN ('SUCCEEDED','FAILED','CANCELED')",
-                (run_id,),
+        prior = db.execute("SELECT * FROM run_joins WHERE id=?", (join_id,)).fetchone()
+        if prior:
+            previous = load(prior["request"])
+            if isinstance(previous, list):
+                previous = {"children": previous, "policy": "all_success"}
+            if dump(previous) != request:
+                raise ValueError("join idempotency key belongs to another request")
+            return [row["id"] for row in self._join_children(db, prior)]
+        run = db.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
+        if run is None:
+            raise KeyError(run_id)
+        pending = db.execute(
+            "SELECT * FROM steps WHERE run_id=? AND state NOT IN ('SUCCEEDED','FAILED','CANCELED')",
+            (run_id,),
+        ).fetchall()
+        if (
+            run["state"] != "RUNNING"
+            or len(pending) != 1
+            or pending[0]["kind"] != "model"
+            or pending[0]["state"] != "READY"
+        ):
+            raise ValueError("children may only fork at an unclaimed READY model boundary")
+        step = pending[0]
+        if db.execute("SELECT id FROM run_joins WHERE step_id=?", (step["id"],)).fetchone():
+            raise ValueError("this model boundary already has a join")
+        accounts = tuple(
+            row["account_id"]
+            for row in db.execute(
+                "SELECT account_id FROM run_accounts WHERE run_id=? ORDER BY account_id", (run_id,)
             ).fetchall()
-            if (
-                run["state"] != "RUNNING"
-                or len(pending) != 1
-                or pending[0]["kind"] != "model"
-                or pending[0]["state"] != "READY"
-            ):
-                raise ValueError("children may only fork at an unclaimed READY model boundary")
-            step = pending[0]
-            if db.execute("SELECT id FROM run_joins WHERE step_id=?", (step["id"],)).fetchone():
-                raise ValueError("this model boundary already has a join")
-            accounts = tuple(
-                row["account_id"]
-                for row in db.execute(
-                    "SELECT account_id FROM run_accounts WHERE run_id=? ORDER BY account_id", (run_id,)
-                ).fetchall()
+        )
+        # A zero estimate must not bypass an inherited hard budget.
+        self._check_child_bounds(db, run, len(tasks))
+        if accounts and any(child.spec.model_reservation_micro <= 0 for child in tasks):
+            raise ValueError("children sharing a budget require a positive reservation estimate")
+        db.execute(
+            "INSERT INTO run_joins(id,parent_id,step_id,request,state) VALUES(?,?,?,?,'WAITING')",
+            (join_id, run_id, step["id"], request),
+        )
+        child_ids = []
+        for ordinal, child in enumerate(tasks):
+            child_id = f"{join_id}:{ordinal}"
+            self._start(
+                db,
+                child.prompt,
+                child.spec,
+                run_id=child_id,
+                initial_messages=child.initial_messages,
+                tenant_id=run["tenant_id"],
+                account_ids=accounts,
+                parent_id=run_id,
             )
-            # A zero estimate must not bypass an inherited hard budget.
-            self._check_child_bounds(db, run, len(tasks))
-            if accounts and any(child.spec.model_reservation_micro <= 0 for child in tasks):
-                raise ValueError("children sharing a budget require a positive reservation estimate")
             db.execute(
-                "INSERT INTO run_joins(id,parent_id,step_id,request,state) VALUES(?,?,?,?,'WAITING')",
-                (join_id, run_id, step["id"], request),
+                "INSERT INTO run_join_children(join_id,child_id,ordinal) VALUES(?,?,?)",
+                (join_id, child_id, ordinal),
             )
-            child_ids = []
-            for ordinal, child in enumerate(tasks):
-                child_id = f"{join_id}:{ordinal}"
-                self._start(
-                    db,
-                    child.prompt,
-                    child.spec,
-                    run_id=child_id,
-                    initial_messages=child.initial_messages,
-                    tenant_id=run["tenant_id"],
-                    account_ids=accounts,
-                    parent_id=run_id,
-                )
-                db.execute(
-                    "INSERT INTO run_join_children(join_id,child_id,ordinal) VALUES(?,?,?)",
-                    (join_id, child_id, ordinal),
-                )
-                child_ids.append(child_id)
-            self.journal.event(
-                db, run_id, "join.created", {"join_id": join_id, "child_ids": child_ids, "step_id": step["id"]}
-            )
-            self.journal.set_step(db, step["id"], "WAITING_CHILDREN")
-            self.journal.set_run(db, run_id, "WAITING")
+            child_ids.append(child_id)
+        self.journal.event(
+            db, run_id, "join.created", {"join_id": join_id, "child_ids": child_ids, "step_id": step["id"]}
+        )
+        self.journal.set_step(db, step["id"], "WAITING_CHILDREN")
+        self.journal.set_run(db, run_id, "WAITING")
         return child_ids
 
     def _check_child_bounds(self, db: Any, parent: Any, count: int) -> None:
@@ -255,7 +313,9 @@ class AgentRuntime:
             if any(child["state"] not in {"COMPLETED", "FAILED", "CANCELED"} for child in children):
                 continue
             canceled = run["state"] in {"CANCELING", "CANCELED"}
-            succeeded = all(child["state"] == "COMPLETED" for child in children)
+            request = load(join["request"])
+            policy = request.get("policy", "all_success") if isinstance(request, dict) else "all_success"
+            succeeded = policy == "all_settled" or all(child["state"] == "COMPLETED" for child in children)
             state = "CANCELED" if canceled else ("COMPLETED" if succeeded else "FAILED")
             db.execute("UPDATE run_joins SET state=? WHERE id=?", (state, join["id"]))
             self.journal.event(db, run["id"], "join.resolved", {"join_id": join["id"], "state": state})
@@ -289,6 +349,8 @@ class AgentRuntime:
             (join["id"],),
         ).fetchall()
         expected = load(join["request"])
+        if isinstance(expected, dict):
+            expected = expected["children"]
         tenant = db.execute("SELECT tenant_id FROM runs WHERE id=?", (join["parent_id"],)).fetchone()["tenant_id"]
         if len(children) != len(expected) or not children:
             raise JournalIntegrityError("join children differ from the committed fork request")

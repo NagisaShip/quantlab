@@ -46,7 +46,7 @@ export function MessageStateTag({ tag, live }: { tag: MessageTag; live?: Record<
   return (
     <span className={`lab-msg-state ${tag.tone}`} data-tone={tag.tone} role="note"
       title={tag.tone === 'replied' ? '本轮没有 run / 工件证据，只是文字回复'
-        : tag.tone === 'submitted' ? '运行已提交，仍在排队或运行中' : undefined}>
+        : tag.tone === 'submitted' && tag.label === '已提交' ? '运行已提交，仍在排队或运行中' : undefined}>
       <span className="lab-msg-state-label">{tag.label}</span>
       {tag.tone === 'replied' && <span className="lab-msg-state-hint">无运行证据</span>}
       <EvidenceChips items={tag.evidence} live={live} />

@@ -9,7 +9,11 @@ export const EN: Record<string, string> = { ...(dict as Record<string, string>),
 
 /** 带数字等变量的文案：[正则（不含 ^$，用捕获组表示变量）, 译文（$1… 引用变量，变量本身也会再翻译）]。 */
 export const EN_PATTERNS: [string, string][] = [
+  ['评审 (.+?)', 'Review $1'],
   ['删除「(.+?)」的连接配置？', 'Delete the connection settings for “$1”?'],
+  ['图表 (.+?)', 'Chart $1'],
+  ['（(.+?)默认：(.+?) 次）', '($1 default: $2)'],
+  ['（(.+?)默认：(.+?)）', '($1 default: $2)'],
   ['第 (.+?) 页', 'Page $1'],
   ['# 渲染失败：(.+?)', '# Render failed: $1'],
   ['查看 (.+?) 的主页', 'View $1’s profile'],

@@ -110,6 +110,17 @@ npx playwright test tests/e2e/19-runtime-recovery.spec.ts --workers=1
 | 子任务尝试绕过祖先数量/深度限制 | 拒绝且不创建部分任务 |
 | 子任务系统消息与图片 | 持久化并由恢复后的宿主重新读取 |
 
-父子任务定向双数据库实验最初 32 项通过，随后补充冷启动、取消后的模型费用预留和终态复活防护用例。独立 CLI 已实际跨进程从 WAITING 恢复为 COMPLETED。该 API 仍由宿主选择子任务端口并调度；QuantLab Team 的外层编排尚未切入这条显式 Join 路径，不能把内核契约验收等同于产品迁移完成。
+父子任务定向双数据库实验最初 32 项通过，随后补充冷启动、取消后的模型费用预留和终态复活防护用例。独立 CLI 已实际跨进程从 WAITING 恢复为 COMPLETED。该 API 仍由宿主选择子任务端口并调度；该轮验收尚未包含 QuantLab Team 外层；后续并行 Team 接入的证据见下节。
 
 并发冷启动验收：取消父进程预先建表后，4 个真实 PostgreSQL Worker 同时首次初始化曾复现系统目录唯一键冲突。已将 schema 与全部 DDL 放在同一 advisory-lock 事务中；修复后 PostgreSQL 3 项验收通过。综合内核/宿主回归 124 项通过；收尾增加的 Join 终态防护另跑双数据库定向矩阵，38 项通过。
+
+
+## 并行 Team 产品接入（2026-10-25）
+
+- 内核图创建与 Join 策略：`test_initial_graph_is_atomic_and_repeated_creation_keeps_original_children`、`test_all_settled_join_waits_for_unknown_child_and_then_includes_known_failure`、`test_legacy_join_request_retries_keep_the_same_identity`。
+- Team 宿主：`tests/test_team_structured_runtime.py` 验证重建宿主、已完成角色不重复调用、未知工具效果不重放、角色定义变更仍沿用冻结配置、取消保留未知效果、已知失败可以进入汇总、索引丢失可重建，以及汇总截断不修改持久结果。
+- HTTP：`tests/test_team_runtime_api.py` 验证完成与等待运行的幂等 resume、普通成员不能借原发起人身份继续/取消，以及只读视图中的管理权限。
+- 浏览器：`tests/e2e/20-team-runtime.spec.ts` 使用真实本地 HTTP 模型服务、真实 ModelHub 与数据库。等待时继续、取消、刷新，模型调用始终为 1；等待核对不能标成“已生成”，页头与评审卡片均跟随权威状态。截图保留在 E2E 产物目录。
+- 状态判定：`tests/agent-status.test.mjs` 新增 Team 等待/取消/完成证据测试；状态单测 7 项通过。
+
+双数据库内核与宿主/API 综合回归 129 项通过，开启 Runtime 的策略研究室与 Team 定向回归 57 项通过，最后的适配和上下文裁剪定向验收 13 项通过。浏览器主对话恢复与并行 Team 验收 2 项通过；前端构建和翻译提取检查通过。各测试选择有重叠，不累加为唯一用例数。当前产品接入仅覆盖 parallel 外层，不能宣称 sequential/debate 外层已经完成迁移。

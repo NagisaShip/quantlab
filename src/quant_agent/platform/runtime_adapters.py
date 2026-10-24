@@ -175,6 +175,7 @@ class QuantLabAgentModelPort:
         self.tools = tools or []
         self.prefix_messages = prefix_messages or []
         self.max_tokens = max_tokens
+        self.child_output_chars: int | None = None
 
     def generate(self, messages: list[dict[str, Any]], *, request_id: str) -> Any:
         from agent_runtime.contracts import ModelResult, ToolCall
@@ -184,6 +185,26 @@ class QuantLabAgentModelPort:
         from ..local.documents import preview_images
 
         messages = list(messages)
+        if self.child_output_chars is not None:
+            for index, message in enumerate(messages):
+                if message.get("role") != "user":
+                    continue
+                try:
+                    body = json.loads(message.get("content") or "")
+                except (TypeError, ValueError):
+                    continue
+                if not isinstance(body, dict) or not isinstance(body.get("child_results"), list):
+                    continue
+                results = []
+                for child in body["child_results"]:
+                    output = child.get("output")
+                    if isinstance(output, str) and len(output) > self.child_output_chars:
+                        child = {**child, "output": output[: self.child_output_chars] + "……（已截断）"}
+                    results.append(child)
+                messages[index] = {
+                    **message,
+                    "content": json.dumps({**body, "child_results": results}, ensure_ascii=False),
+                }
         images = []
         for message in reversed(messages):
             if message.get("role") != "tool":

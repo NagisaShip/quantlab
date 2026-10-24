@@ -314,3 +314,56 @@ def test_corrupt_join_cannot_resurrect_a_completed_parent(tmp_path):
     with pytest.raises(JournalIntegrityError, match="disagrees"):
         runtime.resume(run_id)
     assert runtime.get(run_id)["state"] == "COMPLETED"
+
+
+def test_initial_graph_is_atomic_and_repeated_creation_keeps_original_children(tmp_path):
+    journal = Journal(tmp_path / "runtime.sqlite")
+    runtime = AgentRuntime(journal, Model(), None)
+    parent_spec = AgentSpec("parent", "1", budget_limit_micro=10, model_reservation_micro=1)
+    with pytest.raises(ValueError, match="reservation"):
+        runtime.start_with_children(
+            "parent", parent_spec, [ChildTask("child", AgentSpec("child", "1"))], run_id="graph", tenant_id="tenant"
+        )
+    assert runtime.get("graph") is None
+    children = [ChildTask("child", AgentSpec("child", "1", model_reservation_micro=2))]
+    assert runtime.start_with_children("parent", parent_spec, children, run_id="graph", tenant_id="tenant") == "graph"
+    ids = runtime.children("graph")
+    assert runtime.start_with_children("parent", parent_spec, children, run_id="graph", tenant_id="tenant") == "graph"
+    assert runtime.children("graph") == ids
+    with pytest.raises(ValueError, match="another request"):
+        runtime.start_with_children("changed", parent_spec, children, run_id="graph", tenant_id="tenant")
+
+
+def test_all_settled_join_waits_for_unknown_child_and_then_includes_known_failure(tmp_path):
+    journal = Journal(tmp_path / "runtime.sqlite")
+    runtime = AgentRuntime(journal, Model(), None)
+    root = runtime.start_with_children(
+        "parent",
+        AgentSpec("parent", "1"),
+        [ChildTask("one", AgentSpec("one", "1")), ChildTask("two", AgentSpec("two", "1"))],
+        run_id="settled",
+        tenant_id="tenant",
+        join_policy="all_settled",
+    )
+    children = runtime.children(root)
+    runtime.signal(children[0], "cancel", {}, signal_id="cancel-child", actor="user")
+    assert runtime.resume(root)["state"] == "WAITING"
+    runtime.resume(children[1])
+    result = runtime.resume(root)
+    assert result["state"] == "COMPLETED" and '"state":"CANCELED"' in result["messages"][1]["content"]
+
+
+def test_legacy_join_request_retries_keep_the_same_identity(tmp_path):
+    from agent_runtime.journal import dump, load
+
+    journal = Journal(tmp_path / "runtime.sqlite")
+    runtime = AgentRuntime(journal, Model(), None)
+    root = runtime.start("parent", AgentSpec("parent", "1"))
+    children = [("child", AgentSpec("child", "1"))]
+    ids = runtime.fork_children(root, children, idempotency_key="legacy")
+    with journal.tx() as db:
+        request = load(db.execute("SELECT request FROM run_joins WHERE parent_id=?", (root,)).fetchone()["request"])
+        db.execute("UPDATE run_joins SET request=? WHERE parent_id=?", (dump(request["children"]), root))
+    assert runtime.fork_children(root, children, idempotency_key="legacy") == ids
+    with pytest.raises(ValueError, match="another request"):
+        runtime.fork_children(root, children, idempotency_key="legacy", join_policy="all_settled")

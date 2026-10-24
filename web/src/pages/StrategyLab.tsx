@@ -7,10 +7,11 @@ import { useDraft } from '../components/draft'
 import { createPortal } from 'react-dom'
 import { lab, labPrefs, mergeBySeq, missions, type ContextView, type Effort, type Executor, type FactorSummary, type GoalSpec, type LabKind, type LabMessage, type LabMeta, type LabPlan, type LabProject, type Metrics, type Permission, APPROVAL_CATEGORIES, type ApprovalCategory } from '../apiLab'
 import { get } from '../http'
+import { api, type TeamRun } from '../api/core'
 import { AgentStatePill, MessageStateTag } from '../components/chat/LabStatus'
 import { RuntimeRecovery } from '../components/lab/RuntimeRecovery'
 import {
-  clearObservedFailure, deriveAgentStatus, evidenceProbes, messageTag, normalizeRunState, rememberObservedFailure,
+  clearObservedFailure, deriveAgentStatus, evidenceProbes, messageTag, normalizeRunState, normalizeTeamState, rememberObservedFailure,
   type RunEvidenceState,
 } from '../components/chat/status'
 import { Avatar } from '../components/Avatar'
@@ -751,7 +752,7 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
   )
   // 用签名字符串做依赖，避免每次渲染都重开探测轮询
   const probeSignature = agentStatus.evidence
-    .filter((e) => e.probe && (e.state === 'queued' || e.state === 'running'))
+    .filter((e) => e.probe && ['queued', 'running', 'waiting', 'canceling'].includes(e.state))
     .map((e) => e.key)
     .join('|')
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -817,9 +818,9 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
       for (const probe of probes) {
         get<Record<string, any>>(probe.url).then((v) => {
           if (!alive) return
-          const next = normalizeRunState(probe.kind === 'workflow' ? v?.state : (v?.run?.state ?? v?.state))
+          const next = probe.kind === 'team' ? normalizeTeamState(v?.run?.status) : normalizeRunState(probe.kind === 'workflow' ? v?.state : (v?.run?.state ?? v?.state))
           setLiveEvidence((prev) => (prev[probe.key] === next ? prev : { ...prev, [probe.key]: next }))
-          if (next === 'done' || next === 'failed') { pull().catch(() => undefined); onChanged() }
+          if (next === 'done' || next === 'failed' || next === 'canceled') { pull().catch(() => undefined); onChanged() }
         }).catch(() => undefined)
       }
     }
@@ -1700,7 +1701,7 @@ function MessageView({ m, project, meta, active, actions, concise, onDecide, onO
   if (m.role === 'user' && m.kind === 'code') return <UserBubble>手动保存为 v{m.data.v}：{m.content}</UserBubble>
   const d = m.data || {}
   // P4：气泡状态标签 + 运行证据。已生成只在有 run / 工件证据时出现，纯文字回复标「已回复」。
-  const tag = messageTag(m, { projectId: project.id, domain: project.kind })
+  const tag = messageTag(m, { projectId: project.id, domain: project.kind, live: liveEvidence })
   const stateLine = tag && m.kind !== 'text' && m.kind !== 'error' &&
     tag.tone !== 'generating' && tag.tone !== 'failed' && tag.tone !== 'stopped'
     ? <MessageStateTag tag={tag} live={liveEvidence} />
@@ -2024,7 +2025,31 @@ function RoundCard({ m, metrics }: { m: LabMessage; metrics: ReturnType<typeof m
 function TeamCard({ m, concise }: { m: LabMessage; concise?: boolean }) {
   const [open, setOpen] = useState(!concise)
   const d = m.data
-  const steps = (d.steps || []) as { role_id: string; role_name: string; status: string; model: string; output: string }[]
+  const [current, setCurrent] = useState<TeamRun | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [cancelId] = useState(() => crypto.randomUUID())
+  const id = String(d.run_id || '')
+  const durable = Boolean(d.runtime_run_id)
+  const status = current?.status || String(d.status || '')
+  const pending = ['waiting', 'running', 'canceling'].includes(status)
+  useEffect(() => {
+    if (!id || !durable) return
+    let alive = true
+    const refresh = () => api.teamRun(id).then(({ run }) => { if (alive) setCurrent(run) }).catch((e) => { if (alive) setError(String(e)) })
+    void refresh()
+    const timer = pending ? window.setInterval(refresh, 5000) : undefined
+    return () => { alive = false; if (timer) window.clearInterval(timer) }
+  }, [id, durable, pending])
+  const act = async (cancel: boolean) => {
+    if (busy) return
+    setBusy(true); setError('')
+    try { const result = await (cancel ? api.cancelTeamRun(id, cancelId) : api.resumeTeamRun(id)); setCurrent(result.run) }
+    catch (e) { setError(String(e)) }
+    finally { setBusy(false) }
+  }
+  const summary = current ? current.synthesis : m.content
+  const steps = (current?.steps || d.steps || []) as { role_id: string; role_name: string; status: string; model: string; output: string }[]
   return (
     <div className="lab2-card">
       <div className="lab2-card-head">
@@ -2032,6 +2057,11 @@ function TeamCard({ m, concise }: { m: LabMessage; concise?: boolean }) {
         <b>{d.team_name} 评审</b>
         <span className="lab2-faint lab2-ellipsis">{d.topic}</span>
         <span className="lab2-card-gap" />
+        {durable && <span className="cc-kind">{status === 'waiting' ? '等待核对' : status === 'canceling' ? '取消中' : status === 'canceled' ? '已取消' : status === 'done' ? '已完成' : status === 'failed' ? '失败' : '处理中'}</span>}
+        {pending && current?.can_manage && status !== 'canceling' && <>
+          <button className="link" disabled={busy} onClick={() => void act(false)}>继续评审</button>
+          <button className="link" disabled={busy} onClick={() => void act(true)}>取消评审</button>
+        </>}
         <button className="link" onClick={() => setOpen(!open)}>{open ? '收起' : `${steps.length} 条发言`}</button>
       </div>
       {open && (
@@ -2040,14 +2070,15 @@ function TeamCard({ m, concise }: { m: LabMessage; concise?: boolean }) {
             <div key={i} className={`lab2-team-row ${s.status === 'error' ? 'error' : ''}`}>
               <Avatar id={s.role_id} size={22} />
               <div className="lab2-team-bubble">
-                <div className="lab2-team-who"><b>{s.role_name}</b>{s.status === 'error' && <span className="cc-kind">失败</span>}{s.model && <span>{s.model}</span>}</div>
-                <Markdown text={s.output || '（没有产出内容）'} compact />
+                <div className="lab2-team-who"><b>{s.role_name}</b>{s.status === 'error' && <span className="cc-kind">失败</span>}{s.status === 'waiting' && <span className="cc-kind">等待核对</span>}{s.model && <span>{s.model}</span>}</div>
+                {s.status !== 'waiting' && <Markdown text={s.output || '（没有产出内容）'} compact />}
               </div>
             </div>
           ))}
         </div>
       )}
-      {m.content && <div className="lab2-team-sum"><Markdown text={m.content} compact /></div>}
+      {error && <div role="alert" className="lab2-faint">{error}</div>}
+      {summary && <div className="lab2-team-sum"><Markdown text={summary} compact /></div>}
     </div>
   )
 }

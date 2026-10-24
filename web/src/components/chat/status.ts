@@ -25,8 +25,8 @@ export const AGENT_STATE_LABEL: Record<AgentState, string> = {
   failed: '执行失败',
 }
 
-export type RunEvidenceKind = 'backtest' | 'run' | 'workflow' | 'task' | 'report' | 'artifact'
-export type RunEvidenceState = 'queued' | 'running' | 'done' | 'failed' | 'unknown'
+export type RunEvidenceKind = 'backtest' | 'run' | 'workflow' | 'task' | 'report' | 'artifact' | 'team'
+export type RunEvidenceState = 'queued' | 'running' | 'done' | 'failed' | 'unknown' | 'waiting' | 'canceling' | 'canceled'
 
 export const RUN_EVIDENCE_LABEL: Record<RunEvidenceKind, string> = {
   backtest: '回测',
@@ -35,6 +35,7 @@ export const RUN_EVIDENCE_LABEL: Record<RunEvidenceKind, string> = {
   task: '任务',
   report: '报告',
   artifact: '工件',
+  team: '评审',
 }
 
 export const RUN_STATE_LABEL: Record<RunEvidenceState, string> = {
@@ -43,6 +44,9 @@ export const RUN_STATE_LABEL: Record<RunEvidenceState, string> = {
   done: '已完成',
   failed: '失败',
   unknown: '未确认',
+  waiting: '等待核对',
+  canceling: '取消中',
+  canceled: '已取消',
 }
 
 /** 一条可跳转 / 可探测的运行证据。key 在同一会话内唯一，重复出现时保留最新的状态。 */
@@ -57,10 +61,10 @@ export interface RunEvidence {
   /** 来自哪条消息（seq），用于判断是不是本轮产生的证据 */
   seq: number
   /** 只读探测：用现有接口确认后台 run 是否还在排队 / 已完成（不改后端、不新建接口） */
-  probe?: { url: string; kind: 'workflow' | 'task' }
+  probe?: { url: string; kind: 'workflow' | 'task' | 'team' }
 }
 
-export interface EvidenceProbe { key: string; url: string; kind: 'workflow' | 'task' }
+export interface EvidenceProbe { key: string; url: string; kind: 'workflow' | 'task' | 'team' }
 
 /* ------------------------------------------------------------------ */
 /* 基础工具                                                            */
@@ -87,6 +91,14 @@ export function normalizeRunState(raw: unknown): RunEvidenceState {
   return 'unknown'
 }
 
+export function normalizeTeamState(raw: unknown): RunEvidenceState {
+  const value = text(raw).toUpperCase()
+  if (value === 'WAITING') return 'waiting'
+  if (value === 'CANCELING') return 'canceling'
+  if (value === 'CANCELED') return 'canceled'
+  return normalizeRunState(raw)
+}
+
 /** 模型 / 组合 / 执行研究的训练实验页（与 lab/model.tsx 的 onOpenRun 路由一致）。 */
 function runHref(domain: LabProject['kind'] | undefined, id: string): string | undefined {
   const safe = encodeURIComponent(id)
@@ -105,6 +117,7 @@ export function evidenceLabel(e: RunEvidence): string {
 /* ------------------------------------------------------------------ */
 
 export interface EvidenceOptions {
+  live?: Record<string, RunEvidenceState>
   projectId?: string
   domain?: LabProject['kind']
 }
@@ -130,10 +143,14 @@ export interface MessageTag {
 export function messageTag(m: LabMessage, opts: EvidenceOptions = {}): MessageTag | null {
   if (m.role === 'user') return null
   const d = isRecord(m.data) ? m.data : {}
-  const evidence = messageEvidence(m, opts)
+  const evidence = applyLive(messageEvidence(m, opts), opts.live)
   const states = evidence.map((e) => e.state)
   const anyDone = states.includes('done')
   const anyActive = states.some((s) => s === 'queued' || s === 'running')
+  const team = evidence.find((item) => item.kind === 'team')
+  if (team?.state === 'waiting') return { label: '等待核对', tone: 'submitted', evidence }
+  if (team?.state === 'canceling') return { label: '取消中', tone: 'submitted', evidence }
+  if (team?.state === 'canceled') return { label: '已取消', tone: 'stopped', evidence }
   if (m.kind === 'error') return { label: '执行失败', tone: 'failed', evidence }
   if (m.kind === 'tool') {
     const status = text(d.status)
@@ -289,7 +306,11 @@ export function scanMessages(messages: LabMessage[], opts: ScanOptions = {}): Me
     }
     if (!isRecord(value)) return
     const runId = text(value.run_id)
-    if (runId) putRun(runId, seq, value.run_state ?? value.state)
+    const teamId = text(value.runtime_run_id).startsWith('team-root-') ? (runId || text(value.id)) : ''
+    if (teamId) put({ key: `team:${teamId}`, kind: 'team', id: teamId, label: `评审 ${shortId(teamId)}`,
+      state: normalizeTeamState(value.status), seq,
+      probe: { url: `/api/agents/team-runs/${encodeURIComponent(teamId)}`, kind: 'team' } })
+    else if (runId) putRun(runId, seq, value.run_state ?? value.state)
     const bt = text(value.bt_id) || text(value.backtest_id)
     if (bt) putBacktest(bt, seq)
     if (isRecord(value.workflow_view)) putWorkflow(value.workflow_view, seq)
@@ -337,6 +358,23 @@ export function scanMessages(messages: LabMessage[], opts: ScanOptions = {}): Me
       if (status === 'running') noteActive(m.seq, text(d.label) || '工具执行中')
       else if (status === 'error') noteFailure(m.seq, text(d.error) || m.content || '')
       else if (status === 'stopped') stopped = true
+      // 本地交付也是真实产物；只接受成功工具返回，不从助手正文推断。
+      if (status === 'ok' && ['local_chart', 'workflow_import_data'].includes(text(d.name))) {
+        let result: unknown = d.preview
+        if (typeof result === 'string') {
+          try { result = JSON.parse(result) } catch { result = null }
+        }
+        if (isRecord(result)) {
+          if (d.name === 'workflow_import_data' && /^[a-f0-9]{64}$/i.test(text(result.sha256))) {
+            putArtifact(result.sha256, m.seq)
+          }
+          if (d.name === 'local_chart' && Number(result.bytes) > 0 && text(result.path)
+            && /^\/api\/local\/files\/image\?path=/.test(text(result.url))) {
+            put({ key: `local-file:${result.path}`, kind: 'artifact', id: result.path,
+              label: `图表 ${text(result.path).split(/[\\/]/).pop()}`, state: 'done', seq: m.seq })
+          }
+        }
+      }
     }
     if (m.kind === 'subagents' && text(d.status) === 'running') noteActive(m.seq, '子 Agent 并行研究')
     if (m.kind === 'ask' && m.role === 'assistant' && !d.answered) {
@@ -452,6 +490,12 @@ export function deriveAgentStatus(input: StatusInput): AgentStatus {
     }
   }
 
+  const pendingTeam = [...evidence].reverse().find((item) => item.kind === 'team' && ['waiting', 'canceling', 'canceled'].includes(item.state))
+  if (pendingTeam && pendingTeam.seq >= lastDoneSeq) {
+    return { state: 'waiting', label: pendingTeam.state === 'canceled' ? '已取消' : pendingTeam.state === 'canceling' ? '取消中' : '等待核对',
+      evidence, artifacts, phase, startedAt, detail: evidenceLabel(pendingTeam) }
+  }
+
   // 2) 回合已结束，但后台 run（worker 任务 / 工作流运行）还在排队或运行：长任务恢复
   const background = [...evidence].reverse().find((e) => e.state === 'queued' || e.state === 'running')
   if (background && background.seq >= lastDoneSeq && (!failure || background.seq > failure.seq)) {
@@ -462,19 +506,19 @@ export function deriveAgentStatus(input: StatusInput): AgentStatus {
     }
   }
 
+  // 等待审批/回答是当前可操作状态，不能被前面的可恢复工具错误遮住。
+  if (status === 'awaiting_user') {
+    return {
+      state: 'waiting', label: AGENT_STATE_LABEL.waiting, evidence, artifacts, phase, startedAt,
+      detail: scan.pendingAsk ? (scan.pendingAsk.question || '等你回答') : '等你回答',
+    }
+  }
+
   // 3) 本轮有失败、且之后没有完成证据：执行失败（后续成功会以 done 证据出现）
   if (failure && failure.seq > lastDoneSeq) {
     return {
       state: 'failed', label: AGENT_STATE_LABEL.failed, evidence, artifacts, phase, startedAt,
       detail: failure.reason, failure: failure.reason,
-    }
-  }
-
-  // 4) 后端明确在等用户回答：等待输入优先于历史产物
-  if (status === 'awaiting_user') {
-    return {
-      state: 'waiting', label: AGENT_STATE_LABEL.waiting, evidence, artifacts, phase, startedAt,
-      detail: scan.pendingAsk ? (scan.pendingAsk.question || '等你回答') : '等你回答',
     }
   }
 
@@ -523,7 +567,7 @@ export function evidenceProbes(evidence: RunEvidence[]): EvidenceProbe[] {
   const seen = new Set<string>()
   const out: EvidenceProbe[] = []
   for (const e of evidence) {
-    if (!e.probe || (e.state !== 'queued' && e.state !== 'running')) continue
+    if (!e.probe || !['queued', 'running', 'waiting', 'canceling'].includes(e.state)) continue
     if (seen.has(e.probe.url)) continue
     seen.add(e.probe.url)
     out.push({ key: e.key, ...e.probe })

@@ -2,7 +2,7 @@
 
 [English](API-Reference.en.md) | [文档索引](README.md) | [返回 README](../README.md)
 
-平台共 **711 个端点**。本文件由 `scripts/gen_api_doc.py` 从 FastAPI 的 OpenAPI 规范生成，
+平台共 **713 个端点**。本文件由 `scripts/gen_api_doc.py` 从 FastAPI 的 OpenAPI 规范生成，
 与运行中服务的 `/docs`（可交互调试）来自同一份定义。
 
 机器可读版本：`docs/openapi.json`（同一次生成）。
@@ -335,6 +335,8 @@
 | `GET` | `/api/agents/store-stats` | 存储内容统计 |
 | `GET` | `/api/agents/team-runs` | 团队调研记录列表 |
 | `GET` | `/api/agents/team-runs/{run_id}` | 团队调研详情（各角色产出与结论） |
+| `POST` | `/api/agents/team-runs/{run_id}/cancel` | Cancel Team Run |
+| `POST` | `/api/agents/team-runs/{run_id}/resume` | Resume Team Run |
 | `GET` | `/api/agents/teams` | 调研团队列表 |
 | `POST` | `/api/agents/teams` | 新建团队 |
 | `DELETE` | `/api/agents/teams/{team_id}` | 删除团队 |

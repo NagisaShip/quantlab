@@ -9891,6 +9891,104 @@
     }
    }
   },
+  "/api/agents/team-runs/{run_id}/resume": {
+   "post": {
+    "tags": [
+     "Agent 角色与团队"
+    ],
+    "summary": "Resume Team Run",
+    "operationId": "resume_team_run_api_agents_team_runs__run_id__resume_post",
+    "parameters": [
+     {
+      "name": "run_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Run Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "additionalProperties": true,
+         "title": "Response Resume Team Run Api Agents Team Runs  Run Id  Resume Post"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/agents/team-runs/{run_id}/cancel": {
+   "post": {
+    "tags": [
+     "Agent 角色与团队"
+    ],
+    "summary": "Cancel Team Run",
+    "operationId": "cancel_team_run_api_agents_team_runs__run_id__cancel_post",
+    "parameters": [
+     {
+      "name": "run_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Run Id"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/TeamCancelIn"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "additionalProperties": true,
+         "title": "Response Cancel Team Run Api Agents Team Runs  Run Id  Cancel Post"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
   "/api/agents/roles/{role_id}/run": {
    "post": {
     "tags": [
@@ -40194,6 +40292,21 @@
     },
     "type": "object",
     "title": "TaskPatch"
+   },
+   "TeamCancelIn": {
+    "properties": {
+     "signal_id": {
+      "type": "string",
+      "maxLength": 160,
+      "minLength": 1,
+      "title": "Signal Id"
+     }
+    },
+    "type": "object",
+    "required": [
+     "signal_id"
+    ],
+    "title": "TeamCancelIn"
    },
    "TeamIn": {
     "properties": {

@@ -141,10 +141,18 @@ tenant-wide root-run queue limits and child worker admission.
 Canceling the parent propagates durably through the child tree in the same
 transaction. In-flight/unknown effects and unsettled model charges remain in
 CANCELING until reconciled. Parent resume refreshes joins bottom-up without
-re-executing completed child work. This is structured fork/join; Team's outer
-orchestration has not yet switched to this API, and arbitrary dependency DAGs are
-not implemented here.
+re-executing completed child work. This is structured fork/join. QuantLab's parallel Team outer orchestration now
+uses atomic graphs and all-settled joins; sequential/debate outer orchestration
+and arbitrary dependency DAGs are still pending.
 
 The standalone `examples/structured_cli.py DATABASE --pause-after-first` exits
 with a WAITING parent. Run it again with `DATABASE --parent PARENT_ID` to finish
 using only the independent package and its own database.
+
+`start_with_children` commits the initial parent, children and join as one graph,
+identified by a stable run ID and request digest. Repeated identical creation
+returns the original graph; different input is rejected. `join_policy="all_settled"`
+allows a report to summarize known failed/canceled branches once every child is
+terminal. It never advances past unresolved model fees or unknown effects.
+The default remains `all_success`. Previously persisted list-shaped fork requests
+retain their idempotency identity under the default policy.

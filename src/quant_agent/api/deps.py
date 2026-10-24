@@ -176,8 +176,8 @@ class AppServices:
                 router=services.router,
             )
             services.runtime_bridge = RuntimeBridge(services.runs, facade, spec_loader=facade.load_spec)
-            # Existing Team role invocations use the same durable journal while
-            # retaining TeamRunner's sequential/parallel/debate orchestration.
+            # Role loops and parallel Team graphs share the durable journal;
+            # sequential/debate outer orchestration remains in the host.
             services.teams.runtime_journal = facade.journal
             services.router.runtime_journal = facade.journal
         return services

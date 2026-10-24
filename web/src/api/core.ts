@@ -210,7 +210,7 @@ export interface TeamRunStep {
   role_id: string
   role_name: string
   model: string
-  status: 'ok' | 'error'
+  status: 'ok' | 'error' | 'waiting'
   output: string
   elapsed_ms: number
   error: string
@@ -226,6 +226,9 @@ export interface TeamRun {
   synthesis: string
   status: string
   created_at: number
+  runtime_run_id?: string
+  runtime_event_seq?: number
+  can_manage?: boolean
 }
 
 export interface DigestData {
@@ -692,6 +695,8 @@ export const api = {
   runTeam: (id: string, p: Record<string, unknown>) => post<{ run: TeamRun }>(`/api/agents/teams/${id}/run`, p),
   teamRuns: () => get<{ runs: TeamRun[] }>('/api/agents/team-runs'),
   teamRun: (id: string) => get<{ run: TeamRun }>(`/api/agents/team-runs/${id}`),
+  resumeTeamRun: (id: string) => post<{ run: TeamRun }>(`/api/agents/team-runs/${id}/resume`, {}),
+  cancelTeamRun: (id: string, signal_id: string) => post<{ run: TeamRun }>(`/api/agents/team-runs/${id}/cancel`, { signal_id }),
   runRole: (id: string, p: Record<string, unknown>) => post<{ run: TeamRun }>(`/api/agents/roles/${id}/run`, p),
   prompts: () => get<{ prompts: PromptDoc[] }>('/api/agents/prompts'),
 

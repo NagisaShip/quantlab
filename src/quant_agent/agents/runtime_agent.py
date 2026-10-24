@@ -14,11 +14,35 @@ from .base import AgentRun, AgentStep
 from .tool_guards import clean_protocol_residue
 
 
+def prepare_agent(agent: Any, task: str, *, retrieved: list | None = None):
+    from agent_runtime import AgentSpec, ChildTask, ToolSpec
+
+    messages = [asdict(message) for message in agent.context.build(task, retrieved=retrieved)]
+    return ChildTask(
+        task,
+        AgentSpec(
+            name=agent.name,
+            version="1",
+            tools=tuple(ToolSpec(tool.name, effect="external_effect") for tool in agent.tools.values()),
+            max_steps=agent.max_steps,
+            metadata={
+                "host": "generic_agent",
+                "role": agent.role,
+                "user_id": context.current().user_id or "system",
+                "model": agent.model,
+                "effort": agent.effort,
+                "temperature": agent.temperature,
+                "context_hash": agent.context.snapshot_hash(),
+            },
+        ),
+        messages,
+    )
+
+
 def run_agent(
     agent: Any, task: str, *, journal: Any, retrieved: list | None = None, run_id: str | None = None
 ) -> AgentRun:
     from agent_runtime import AgentRuntime
-    from agent_runtime.contracts import AgentSpec, ToolSpec
 
     existing_id = run_id
     run_id = run_id or (f"team-{uuid.uuid4().hex}" if agent.role == "reasoning" else f"agent-{uuid.uuid4().hex}")
@@ -55,34 +79,26 @@ def run_agent(
         if spec["name"] != agent.name or spec.get("metadata", {}).get("role") != agent.role:
             raise ValueError("Runtime run belongs to another agent")
         metadata = spec.get("metadata", {})
+        model.child_output_chars = metadata.get("child_output_chars")
         if metadata.get("user_id") != (context.current().user_id or "system"):
             raise ValueError("Runtime run belongs to another user")
-        if metadata.get("model") != agent.model or metadata.get("effort") != agent.effort:
+        if (
+            metadata.get("model") != agent.model
+            or metadata.get("effort") != agent.effort
+            or metadata.get("temperature", agent.temperature) != agent.temperature
+        ):
             raise ValueError("Runtime model binding has changed")
         if {item["name"] for item in spec["tools"]} != set(agent.tools):
             raise ValueError("Runtime tool bindings have changed")
         started = saved["created_at"]
     else:
-        initial_messages = [asdict(message) for message in agent.context.build(task, retrieved=retrieved)]
+        prepared = prepare_agent(agent, task, retrieved=retrieved)
         runtime.start(
             task,
-            AgentSpec(
-                name=agent.name,
-                version="1",
-                tools=tuple(ToolSpec(tool.name, effect="external_effect") for tool in tools),
-                max_steps=agent.max_steps,
-                metadata={
-                    "host": "generic_agent",
-                    "role": agent.role,
-                    "user_id": context.current().user_id or "system",
-                    "model": agent.model,
-                    "effort": agent.effort,
-                    "context_hash": agent.context.snapshot_hash(),
-                },
-            ),
+            prepared.spec,
             run_id=run_id,
             tenant_id=context.current_workspace(),
-            initial_messages=initial_messages,
+            initial_messages=prepared.initial_messages,
         )
     state = runtime.resume(run_id)
     run = AgentRun(

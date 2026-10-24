@@ -93,6 +93,9 @@ class TeamRun:
     synthesis: str = ""
     status: str = "running"
     created_at: float = field(default_factory=time.time)
+    runtime_run_id: str = ""
+    runtime_event_seq: int = 0
+    can_manage: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -106,6 +109,9 @@ class TeamRun:
             "synthesis": self.synthesis,
             "status": self.status,
             "created_at": self.created_at,
+            "runtime_run_id": self.runtime_run_id,
+            "runtime_event_seq": self.runtime_event_seq,
+            "can_manage": self.can_manage,
         }
 
 
@@ -198,8 +204,8 @@ class TeamRunner:
         # API 注入时开启：团队角色与对话 Agent 共用平台只读 / 运行工具（confirm 类不开放）。
         self.platform_tools = platform_tools
         # Set by AppServices when QAGENT_AGENT_RUNTIME=1 is enabled. A shared
-        # Journal makes every role invocation durable while TeamRunner remains
-        # responsible for the higher-level team transcript and synthesis.
+        # Journal makes role invocations durable; parallel Team graphs also
+        # persist outer joins, while sequential/debate still use host orchestration.
         self.runtime_journal: Any = None
 
     # ---------------- 团队 CRUD ----------------
@@ -259,6 +265,11 @@ class TeamRunner:
         shared = self._build_material(topic, context, materials)
         qmetrics = metrics_from_materials(materials)
 
+        if team.mode == "parallel" and self.runtime_journal is not None:
+            from .team_runtime import start_parallel
+
+            synthesizer = self.roles.get(team.synthesizer_id) if team.synthesizer_id else None
+            return start_parallel(self, run, roles, synthesizer or roles[-1], shared, qmetrics)
         if team.mode == "parallel":
             run.steps = self._run_parallel(roles, shared, qmetrics)
         elif team.mode == "debate":
@@ -281,10 +292,31 @@ class TeamRunner:
         self.store.upsert(Collections.TEAM_RUNS, run.to_dict())
 
     def list_runs(self, *, limit: int = 30) -> list[dict]:
-        return self.store.list(Collections.TEAM_RUNS, limit=limit)
+        records = self.store.list(Collections.TEAM_RUNS, limit=limit)
+        if self.runtime_journal is not None:
+            from .team_runtime import recover_indexes
+
+            records = recover_indexes(self, records, limit)
+        return records
 
     def get_run(self, run_id: str) -> dict | None:
+        if self.runtime_journal is not None:
+            from .team_runtime import get_run
+
+            result = get_run(self, run_id)
+            if result is not None:
+                return result.to_dict()
         return self.store.get(Collections.TEAM_RUNS, run_id)
+
+    def resume_run(self, run_id: str) -> TeamRun:
+        from .team_runtime import resume
+
+        return resume(self, run_id)
+
+    def cancel_run(self, run_id: str, *, signal_id: str) -> TeamRun:
+        from .team_runtime import cancel
+
+        return cancel(self, run_id, signal_id=signal_id)
 
     # ---------------- 编排模式 ----------------
     def _run_sequential(
@@ -375,35 +407,9 @@ class TeamRunner:
         qmetrics: dict[str, Any] | None = None,
     ) -> TeamRunStep:
         started = time.time()
-        # 默认把平台工具都交给角色、由 AI 自己决定何时调用；角色勾了「只用指定工具」才收窄
-        if getattr(role, "restrict_tools", False):
-            names = list(role.tools)
-        else:
-            # 团队与对话 Agent 使用同一套平台只读 / 运行工具；confirm 类操作没有人工审批入口，不交给角色。
-            names = sorted({*self.tools.names(), *self._platform_tool_names(), *role.tools})
-        if not use_tools:
-            names = []
-        tools = [t for t in (self._make_tool(name) for name in names) if t is not None]
-        agent_context = ContextManager(
-            system_prompt=self._system_prompt(role) + (TEAM_TOOL_HINT if self.platform_tools else "")
-        )
-        agent = Agent(
-            name=role.id,
-            role="reasoning",
-            router=self.router,
-            context=agent_context,
-            tools=tools,
-            temperature=role.temperature,
-            max_steps=max_steps,
-            model=role.model or None,
-            effort=role.effort or None,
-        )
+        agent = self._make_agent(role, max_steps=max_steps, use_tools=use_tools)
         try:
-            run: AgentRun = (
-                self._invoke_runtime(role, task, tools=tools, max_steps=max_steps, agent_context=agent_context)
-                if self.runtime_journal is not None
-                else agent.run(task)
-            )
+            run: AgentRun = agent.run(task)
         except Exception as e:  # 单角色失败不影响整队
             return TeamRunStep(
                 role_id=role.id,
@@ -429,16 +435,29 @@ class TeamRunner:
             runtime_run_id=run.run_id if self.runtime_journal is not None else "",
         )
 
-    def _invoke_runtime(
+    def _make_agent(
         self,
         role: Role,
-        task: str,
         *,
-        tools: list[Any],
-        max_steps: int,
-        agent_context: ContextManager,
-    ) -> AgentRun:
-        agent = Agent(
+        max_steps: int = 6,
+        use_tools: bool = True,
+        tool_names: list[str] | None = None,
+    ) -> Agent:
+        # 默认把平台工具都交给角色、由 AI 自己决定何时调用；角色勾了「只用指定工具」才收窄
+        if getattr(role, "restrict_tools", False):
+            names = list(role.tools)
+        else:
+            # 团队与对话 Agent 使用同一套平台只读 / 运行工具；confirm 类操作没有人工审批入口，不交给角色。
+            names = sorted({*self.tools.names(), *self._platform_tool_names(), *role.tools})
+        if not use_tools:
+            names = []
+        if tool_names is not None:
+            names = tool_names
+        tools = [t for t in (self._make_tool(name) for name in names) if t is not None]
+        agent_context = ContextManager(
+            system_prompt=self._system_prompt(role) + (TEAM_TOOL_HINT if self.platform_tools else "")
+        )
+        return Agent(
             name=role.id,
             role="reasoning",
             router=self.router,
@@ -450,7 +469,6 @@ class TeamRunner:
             effort=role.effort or None,
             runtime_journal=self.runtime_journal,
         )
-        return agent.run(task)
 
     @staticmethod
     def _system_prompt(role: Role) -> str:

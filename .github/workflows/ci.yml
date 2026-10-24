@@ -78,7 +78,7 @@ jobs:
           QAGENT_AGENT_RUNTIME: "1"
         run: >-
           pytest -q packages/agent-runtime/tests tests/test_lab_runtime.py tests/test_lab_runtime_api.py
-          tests/test_team_runtime.py tests/test_generic_agent_runtime.py tests/test_strategy_lab.py tests/test_factor_research.py tests/test_model_research.py
+          tests/test_team_runtime.py tests/test_team_structured_runtime.py tests/test_team_runtime_api.py tests/test_generic_agent_runtime.py tests/test_strategy_lab.py tests/test_factor_research.py tests/test_model_research.py
 
       - name: 测试
         run: pytest -q
@@ -223,7 +223,7 @@ jobs:
           CI: "true"
 
       - name: Agent Runtime 研究室恢复验收
-        run: npx playwright test tests/e2e/19-runtime-recovery.spec.ts --workers=1
+        run: npx playwright test tests/e2e/19-runtime-recovery.spec.ts tests/e2e/20-team-runtime.spec.ts --workers=1
         env:
           CI: "true"
           QAGENT_AGENT_RUNTIME: "1"
