@@ -70,3 +70,18 @@ def test_app_services_uses_shared_postgres_runtime_journal(tmp_path, monkeypatch
     journal = services.runtime_bridge.runtime.journal
     assert journal.dialect == "postgres"
     assert journal.schema == schema
+
+
+def test_workers_can_initialize_a_fresh_schema_concurrently():
+    import psycopg
+    from psycopg import sql
+
+    schema = _schema()
+    try:
+        # No parent-process pre-initialization: API and workers may start together.
+        with ProcessPoolExecutor(max_workers=4) as pool:
+            results = list(pool.map(_worker_run, [(PG, schema, index) for index in range(4)]))
+        assert all(result[1] == "COMPLETED" for result in results)
+    finally:
+        with psycopg.connect(PG, autocommit=True) as connection:
+            connection.execute(sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(sql.Identifier(schema)))

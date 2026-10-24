@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS steps (
     lease_until BIGINT,
     UNIQUE(run_id, ordinal)
 );
+CREATE INDEX IF NOT EXISTS idx_runs_parent ON runs(parent_id);
 CREATE INDEX IF NOT EXISTS idx_steps_ready ON steps(state, run_id, ordinal);
 CREATE TABLE IF NOT EXISTS attempts (
     id TEXT PRIMARY KEY,
@@ -123,6 +124,20 @@ CREATE TABLE IF NOT EXISTS telemetry_exports (
     exported_at BIGINT NOT NULL,
     PRIMARY KEY(consumer_id, attempt_id)
 );
+CREATE TABLE IF NOT EXISTS run_joins (
+    id TEXT PRIMARY KEY,
+    parent_id TEXT NOT NULL REFERENCES runs(id),
+    step_id TEXT NOT NULL UNIQUE REFERENCES steps(id),
+    request TEXT NOT NULL,
+    state TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_run_joins_parent ON run_joins(parent_id,state);
+CREATE TABLE IF NOT EXISTS run_join_children (
+    join_id TEXT NOT NULL REFERENCES run_joins(id),
+    child_id TEXT NOT NULL UNIQUE REFERENCES runs(id),
+    ordinal BIGINT NOT NULL,
+    PRIMARY KEY(join_id, ordinal)
+);
 """
 
 
@@ -171,19 +186,25 @@ class Journal:
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,62}", schema):
             raise ValueError("invalid journal schema")
         self.schema = schema
-        if self.dialect == "sqlite":
-            Path(self.path).parent.mkdir(parents=True, exist_ok=True)
-        else:
+        if self.dialect == "postgres":
             import psycopg
 
-            with psycopg.connect(self.path, autocommit=True) as bootstrap:
+            # IF NOT EXISTS alone does not serialize concurrent catalog writes.
+            # Bootstrap schema and tables atomically with the execution lock.
+            with psycopg.connect(self.path) as bootstrap:
+                bootstrap.execute("SELECT pg_advisory_xact_lock(7243003)")
                 bootstrap.execute(f'CREATE SCHEMA IF NOT EXISTS "{self.schema}"')
-        with self.connection() as db:
-            if self.dialect == "sqlite":
+                bootstrap.execute(f'SET LOCAL search_path TO "{self.schema}", public')
+                for statement in SCHEMA.split(";"):
+                    if statement.strip():
+                        bootstrap.execute(statement)
+        else:
+            Path(self.path).parent.mkdir(parents=True, exist_ok=True)
+            with self.connection() as db:
                 db.execute("PRAGMA journal_mode=WAL")
-            for statement in SCHEMA.split(";"):
-                if statement.strip():
-                    db.execute(statement)
+                for statement in SCHEMA.split(";"):
+                    if statement.strip():
+                        db.execute(statement)
 
     @contextmanager
     def connection(self) -> Iterator[_DB]:
@@ -371,7 +392,7 @@ class Journal:
 
     def audit(self, run_id: str) -> dict[str, Any]:
         """Fold committed events and compare with authoritative rows before recovery."""
-        with self.tx() as db:
+        with self.read_tx() as db:
             run = db.execute("SELECT seq,state FROM runs WHERE id=?", (run_id,)).fetchone()
             if run is None:
                 raise KeyError(run_id)

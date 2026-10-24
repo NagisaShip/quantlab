@@ -2,6 +2,7 @@
 
 from .contracts import (
     AgentSpec,
+    ChildTask,
     ModelPort,
     ModelResult,
     ModelUnavailable,
@@ -16,6 +17,7 @@ from .telemetry import RuntimeTelemetry
 __all__ = [
     "AgentRuntime",
     "AgentSpec",
+    "ChildTask",
     "Journal",
     "ModelPort",
     "ModelResult",

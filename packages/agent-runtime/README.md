@@ -96,3 +96,55 @@ cost), rather than replaying increments after restart. Attributes omit prompts,
 responses, tool arguments and exception text. QuantLab exposes the current
 workspace's aggregate snapshot to workspace administrators through
 `GET /api/runs/runtime-metrics`.
+
+## Structured child runs and join
+
+```python
+from agent_runtime import AgentSpec, ChildTask
+
+parent = runtime.start("summarize", AgentSpec("parent", "1", budget_limit_micro=100, model_reservation_micro=10))
+children = runtime.fork_children(
+    parent,
+    [
+        ChildTask(
+            "review A",
+            AgentSpec("reviewer", "1", model_reservation_micro=20),
+            initial_messages=[{"role": "system", "content": "Reviewer rules"}, {"role": "user", "content": "Review A"}],
+        ),
+        ChildTask("review B", AgentSpec("reviewer", "1", model_reservation_micro=20)),
+    ],
+    idempotency_key="review-round-1",
+)
+# Host workers rebind each child's ports, then call resume(child_id).
+# Parent resume never dispatches children through the parent's model/tool ports.
+runtime.resume(parent)
+```
+
+Fork requires an unclaimed READY model boundary. Parent suspension, child
+creation, inherited budget accounts and join intent commit atomically. The same
+key and identical request return the original child IDs; changed input is
+rejected. Child results are joined in declaration order only after **all children
+complete successfully**. A failed/canceled child fails the join once all children
+are terminal. Unknown effects keep the child and parent waiting.
+
+`runtime.children(parent)` discovers committed direct children after restart.
+Each child keeps its own AgentSpec and complete initial system/history/image
+messages. Children share the actual parent/ancestor budget accounts, not copied
+limits, and may additionally have their own budget. Children with inherited
+budget accounts must provide a positive model reservation estimate.
+
+AgentSpec limits default to 32 direct children, 256 total descendants and depth
+16. Every ancestor's limits apply; setting any relevant limit to zero disables
+forking at that boundary. Each fork batch is also capped at 32. Hosts still own
+tenant-wide root-run queue limits and child worker admission.
+
+Canceling the parent propagates durably through the child tree in the same
+transaction. In-flight/unknown effects and unsettled model charges remain in
+CANCELING until reconciled. Parent resume refreshes joins bottom-up without
+re-executing completed child work. This is structured fork/join; Team's outer
+orchestration has not yet switched to this API, and arbitrary dependency DAGs are
+not implemented here.
+
+The standalone `examples/structured_cli.py DATABASE --pause-after-first` exits
+with a WAITING parent. Run it again with `DATABASE --parent PARENT_ID` to finish
+using only the independent package and its own database.

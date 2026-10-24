@@ -10,8 +10,8 @@ import uuid
 from dataclasses import asdict
 from typing import Any
 
-from .contracts import AgentSpec, ModelPort, ModelUnavailable, ToolCall, ToolPort
-from .journal import Journal, dump, load, now_ms
+from .contracts import AgentSpec, ChildTask, ModelPort, ModelUnavailable, ToolCall, ToolPort
+from .journal import Journal, JournalIntegrityError, dump, load, now_ms
 
 
 class AgentRuntime:
@@ -37,32 +37,55 @@ class AgentRuntime:
         initial_messages: list[dict[str, Any]] | None = None,
     ) -> str:
         run_id = run_id or uuid.uuid4().hex
-        stamp = now_ms()
         with self.journal.tx() as db:
-            db.execute(
-                "INSERT INTO runs(id,tenant_id,state,spec,messages,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
-                (
-                    run_id,
-                    tenant_id,
-                    "QUEUED",
-                    dump(asdict(spec)),
-                    dump(initial_messages if initial_messages is not None else [{"role": "user", "content": prompt}]),
-                    stamp,
-                    stamp,
-                ),
+            self._start(
+                db,
+                prompt,
+                spec,
+                run_id=run_id,
+                tenant_id=tenant_id,
+                account_ids=account_ids,
+                initial_messages=initial_messages,
             )
-            for account_id in account_ids:
-                db.execute("INSERT INTO run_accounts(run_id,account_id) VALUES(?,?)", (run_id, account_id))
-            if spec.budget_limit_micro:
-                account_id = f"run:{run_id}"
-                db.execute(
-                    "INSERT INTO budget_accounts(id,limit_micro) VALUES(?,?)", (account_id, spec.budget_limit_micro)
-                )
-                db.execute("INSERT INTO run_accounts(run_id,account_id) VALUES(?,?)", (run_id, account_id))
-            self.journal.event(db, run_id, "run.created", {"run_id": run_id})
-            self.journal.new_step(db, run_id, "model", "READY", {})
-            self.journal.set_run(db, run_id, "RUNNING")
         return run_id
+
+    def _start(
+        self,
+        db: Any,
+        prompt: str,
+        spec: AgentSpec,
+        *,
+        run_id: str,
+        tenant_id: str,
+        account_ids: tuple[str, ...] = (),
+        initial_messages: list[dict[str, Any]] | None = None,
+        parent_id: str | None = None,
+    ) -> None:
+        stamp = now_ms()
+        db.execute(
+            "INSERT INTO runs(id,tenant_id,state,spec,messages,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+            (
+                run_id,
+                tenant_id,
+                "QUEUED",
+                dump(asdict(spec)),
+                dump(initial_messages if initial_messages is not None else [{"role": "user", "content": prompt}]),
+                stamp,
+                stamp,
+            ),
+        )
+        for account_id in account_ids:
+            db.execute("INSERT INTO run_accounts(run_id,account_id) VALUES(?,?)", (run_id, account_id))
+        if spec.budget_limit_micro:
+            account_id = f"run:{run_id}"
+            db.execute("INSERT INTO budget_accounts(id,limit_micro) VALUES(?,?)", (account_id, spec.budget_limit_micro))
+            db.execute("INSERT INTO run_accounts(run_id,account_id) VALUES(?,?)", (run_id, account_id))
+        self.journal.event(db, run_id, "run.created", {"run_id": run_id})
+        self.journal.new_step(db, run_id, "model", "READY", {})
+        self.journal.set_run(db, run_id, "RUNNING")
+        if parent_id is not None:
+            db.execute("UPDATE runs SET parent_id=? WHERE id=?", (parent_id, run_id))
+            self.journal.event(db, run_id, "run.parent", {"parent_id": parent_id})
 
     def get(self, run_id: str) -> dict[str, Any] | None:
         run = self.journal.run(run_id)
@@ -72,6 +95,221 @@ class AgentRuntime:
 
     def events(self, run_id: str, after: int = 0) -> list[dict[str, Any]]:
         return self.journal.events(run_id, after)
+
+    def children(self, run_id: str) -> list[str]:
+        """Discover committed direct children for host-side port rebinding."""
+        with self.journal.read_tx() as db:
+            if db.execute("SELECT id FROM runs WHERE id=?", (run_id,)).fetchone() is None:
+                raise KeyError(run_id)
+            joins = db.execute(
+                "SELECT j.* FROM run_joins j JOIN steps s ON s.id=j.step_id WHERE j.parent_id=? ORDER BY s.ordinal",
+                (run_id,),
+            ).fetchall()
+            return [child["id"] for join in joins for child in self._join_children(db, join)]
+
+    def fork_children(
+        self, run_id: str, children: list[ChildTask | tuple[str, AgentSpec]], *, idempotency_key: str
+    ) -> list[str]:
+        """Atomically suspend a READY model step and create an all-success join.
+
+        Hosts choose the child model/tool bindings and schedule their run IDs.
+        Parent resumption never executes children through the parent's ports.
+        """
+        if not idempotency_key or len(idempotency_key) > 160 or not 1 <= len(children) <= 32:
+            raise ValueError("a stable key and between 1 and 32 children are required")
+        self.journal.audit(run_id)
+        tasks = [child if isinstance(child, ChildTask) else ChildTask(*child) for child in children]
+        request = dump([asdict(child) for child in tasks])
+        join_id = "join-" + hashlib.sha256(dump([run_id, idempotency_key]).encode()).hexdigest()
+        with self.journal.tx() as db:
+            prior = db.execute("SELECT * FROM run_joins WHERE id=?", (join_id,)).fetchone()
+            if prior:
+                if prior["request"] != request:
+                    raise ValueError("join idempotency key belongs to another request")
+                return [row["id"] for row in self._join_children(db, prior)]
+            run = db.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
+            if run is None:
+                raise KeyError(run_id)
+            pending = db.execute(
+                "SELECT * FROM steps WHERE run_id=? AND state NOT IN ('SUCCEEDED','FAILED','CANCELED')",
+                (run_id,),
+            ).fetchall()
+            if (
+                run["state"] != "RUNNING"
+                or len(pending) != 1
+                or pending[0]["kind"] != "model"
+                or pending[0]["state"] != "READY"
+            ):
+                raise ValueError("children may only fork at an unclaimed READY model boundary")
+            step = pending[0]
+            if db.execute("SELECT id FROM run_joins WHERE step_id=?", (step["id"],)).fetchone():
+                raise ValueError("this model boundary already has a join")
+            accounts = tuple(
+                row["account_id"]
+                for row in db.execute(
+                    "SELECT account_id FROM run_accounts WHERE run_id=? ORDER BY account_id", (run_id,)
+                ).fetchall()
+            )
+            # A zero estimate must not bypass an inherited hard budget.
+            self._check_child_bounds(db, run, len(tasks))
+            if accounts and any(child.spec.model_reservation_micro <= 0 for child in tasks):
+                raise ValueError("children sharing a budget require a positive reservation estimate")
+            db.execute(
+                "INSERT INTO run_joins(id,parent_id,step_id,request,state) VALUES(?,?,?,?,'WAITING')",
+                (join_id, run_id, step["id"], request),
+            )
+            child_ids = []
+            for ordinal, child in enumerate(tasks):
+                child_id = f"{join_id}:{ordinal}"
+                self._start(
+                    db,
+                    child.prompt,
+                    child.spec,
+                    run_id=child_id,
+                    initial_messages=child.initial_messages,
+                    tenant_id=run["tenant_id"],
+                    account_ids=accounts,
+                    parent_id=run_id,
+                )
+                db.execute(
+                    "INSERT INTO run_join_children(join_id,child_id,ordinal) VALUES(?,?,?)",
+                    (join_id, child_id, ordinal),
+                )
+                child_ids.append(child_id)
+            self.journal.event(
+                db, run_id, "join.created", {"join_id": join_id, "child_ids": child_ids, "step_id": step["id"]}
+            )
+            self.journal.set_step(db, step["id"], "WAITING_CHILDREN")
+            self.journal.set_run(db, run_id, "WAITING")
+        return child_ids
+
+    def _check_child_bounds(self, db: Any, parent: Any, count: int) -> None:
+        direct = db.execute("SELECT COUNT(*) AS n FROM runs WHERE parent_id=?", (parent["id"],)).fetchone()["n"]
+        if direct + count > load(parent["spec"]).get("max_children", 32):
+            raise ValueError("maximum direct children exceeded")
+        ancestor, seen, depth = parent, set(), 1
+        while ancestor is not None:
+            if ancestor["id"] in seen or ancestor["tenant_id"] != parent["tenant_id"]:
+                raise JournalIntegrityError("invalid ancestor chain")
+            seen.add(ancestor["id"])
+            spec = load(ancestor["spec"])
+            if depth > spec.get("max_child_depth", 16):
+                raise ValueError("maximum child depth exceeded")
+            if len(self._tree_ids(db, ancestor["id"])) - 1 + count > spec.get("max_descendants", 256):
+                raise ValueError("maximum descendants exceeded")
+            ancestor = (
+                db.execute("SELECT * FROM runs WHERE id=?", (ancestor["parent_id"],)).fetchone()
+                if ancestor["parent_id"]
+                else None
+            )
+            depth += 1
+
+    def _finish_cancellation(self, db: Any, run_id: str) -> None:
+        pending = db.execute(
+            "SELECT id FROM steps WHERE run_id=? AND state IN ('IN_FLIGHT','RECONCILING') LIMIT 1", (run_id,)
+        ).fetchone()
+        child = db.execute(
+            "SELECT id FROM runs WHERE parent_id=? AND state NOT IN ('COMPLETED','FAILED','CANCELED') LIMIT 1",
+            (run_id,),
+        ).fetchone()
+        self.journal.set_run(db, run_id, "CANCELING" if pending or child else "CANCELED")
+
+    @staticmethod
+    def _tree_ids(db: Any, run_id: str) -> list[str]:
+        tenant = db.execute("SELECT tenant_id FROM runs WHERE id=?", (run_id,)).fetchone()["tenant_id"]
+        ids, seen = [run_id], {run_id}
+        for current in ids:
+            for child in db.execute("SELECT id,tenant_id FROM runs WHERE parent_id=?", (current,)).fetchall():
+                if child["id"] in seen or child["tenant_id"] != tenant:
+                    raise JournalIntegrityError("child tree contains a cycle or crosses tenant boundaries")
+                seen.add(child["id"])
+                ids.append(child["id"])
+        return ids
+
+    def _cancel_tree(self, db: Any, run_id: str, actor: str) -> None:
+        ids = self._tree_ids(db, run_id)
+        for current in ids[1:]:
+            self.journal.audit(current)
+        for current in reversed(ids):
+            state = db.execute("SELECT state FROM runs WHERE id=?", (current,)).fetchone()["state"]
+            if state in {"COMPLETED", "FAILED", "CANCELED"}:
+                continue
+            if current != run_id:
+                self.journal.event(db, current, "run.cancel_propagated", {"root_id": run_id, "actor": actor})
+            for step in db.execute("SELECT id,state FROM steps WHERE run_id=?", (current,)).fetchall():
+                if step["state"] not in {"SUCCEEDED", "FAILED", "CANCELED"}:
+                    self.journal.set_step(
+                        db, step["id"], "RECONCILING" if step["state"] in {"IN_FLIGHT", "RECONCILING"} else "CANCELED"
+                    )
+            self._finish_cancellation(db, current)
+
+    def _refresh_joins(self, db: Any, run: Any) -> None:
+        for join in db.execute(
+            "SELECT * FROM run_joins WHERE parent_id=? AND state='WAITING'", (run["id"],)
+        ).fetchall():
+            step = db.execute("SELECT state FROM steps WHERE id=?", (join["step_id"],)).fetchone()
+            expected_step = "WAITING_CHILDREN" if run["state"] == "WAITING" else "CANCELED"
+            if run["state"] not in {"WAITING", "CANCELING", "CANCELED"} or step["state"] != expected_step:
+                raise JournalIntegrityError("pending join disagrees with parent execution state")
+            children = self._join_children(db, join)
+            if any(child["state"] not in {"COMPLETED", "FAILED", "CANCELED"} for child in children):
+                continue
+            canceled = run["state"] in {"CANCELING", "CANCELED"}
+            succeeded = all(child["state"] == "COMPLETED" for child in children)
+            state = "CANCELED" if canceled else ("COMPLETED" if succeeded else "FAILED")
+            db.execute("UPDATE run_joins SET state=? WHERE id=?", (state, join["id"]))
+            self.journal.event(db, run["id"], "join.resolved", {"join_id": join["id"], "state": state})
+            if canceled:
+                self._finish_cancellation(db, run["id"])
+            elif not succeeded:
+                self.journal.set_step(db, join["step_id"], "FAILED")
+                self.journal.set_run(db, run["id"], "FAILED", error="child task failed or was canceled")
+            else:
+                messages = load(run["messages"])
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": dump(
+                            {
+                                "child_results": [
+                                    {"id": child["id"], "state": child["state"], "output": child["output"]}
+                                    for child in children
+                                ]
+                            }
+                        ),
+                    }
+                )
+                self.journal.set_step(db, join["step_id"], "READY")
+                self.journal.set_run(db, run["id"], "RUNNING", messages=messages)
+
+    def _join_children(self, db: Any, join: Any) -> list[Any]:
+        children = db.execute(
+            "SELECT r.*,c.ordinal FROM run_join_children c JOIN runs r ON r.id=c.child_id "
+            "WHERE c.join_id=? ORDER BY c.ordinal",
+            (join["id"],),
+        ).fetchall()
+        expected = load(join["request"])
+        tenant = db.execute("SELECT tenant_id FROM runs WHERE id=?", (join["parent_id"],)).fetchone()["tenant_id"]
+        if len(children) != len(expected) or not children:
+            raise JournalIntegrityError("join children differ from the committed fork request")
+        for ordinal, child in enumerate(children):
+            if (
+                child["id"] != f"{join['id']}:{ordinal}"
+                or child["ordinal"] != ordinal
+                or child["parent_id"] != join["parent_id"]
+                or child["tenant_id"] != tenant
+                or load(child["spec"]) != expected[ordinal]["spec"]
+            ):
+                raise JournalIntegrityError("join child identity or specification differs from committed intent")
+        return children
+
+    def _refresh_tree_joins(self, db: Any, run_id: str) -> None:
+        ids = self._tree_ids(db, run_id)
+        for current in ids[1:]:
+            self.journal.audit(current)
+        for current in reversed(ids):
+            run = db.execute("SELECT * FROM runs WHERE id=?", (current,)).fetchone()
+            self._refresh_joins(db, run)
 
     def signal(self, run_id: str, type_: str, data: dict[str, Any], *, signal_id: str, actor: str) -> bool:
         if not actor or not signal_id:
@@ -95,15 +333,7 @@ class AgentRuntime:
             )
             self.journal.event(db, run_id, "signal.received", {"id": signal_id, "type": type_, "actor": actor})
             if type_ == "cancel" and run["state"] not in {"COMPLETED", "FAILED", "CANCELED"}:
-                uncertain = False
-                for step in db.execute("SELECT id,state FROM steps WHERE run_id=?", (run_id,)).fetchall():
-                    if step["state"] not in {"SUCCEEDED", "FAILED", "CANCELED"}:
-                        if step["state"] in {"IN_FLIGHT", "RECONCILING"}:
-                            uncertain = True
-                            self.journal.set_step(db, step["id"], "RECONCILING")
-                        else:
-                            self.journal.set_step(db, step["id"], "CANCELED")
-                self.journal.set_run(db, run_id, "CANCELING" if uncertain else "CANCELED")
+                self._cancel_tree(db, run_id, actor)
             elif type_ == "effect_resolution":
                 step = db.execute(
                     "SELECT * FROM steps WHERE id=? AND run_id=?", (data.get("step_id"), run_id)
@@ -134,7 +364,7 @@ class AgentRuntime:
                     )
                     if run["state"] == "CANCELING":
                         self.journal.set_step(db, step["id"], "SUCCEEDED", result=result)
-                        self.journal.set_run(db, run_id, "CANCELED")
+                        self._finish_cancellation(db, run_id)
                     else:
                         full_run = db.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
                         self._finish_tool(db, full_run, step, result)
@@ -143,7 +373,7 @@ class AgentRuntime:
                         "UPDATE effects SET state='ABSENT',updated_at=? WHERE id=?", (now_ms(), step["effect_id"])
                     )
                     self.journal.set_step(db, step["id"], "CANCELED")
-                    self.journal.set_run(db, run_id, "CANCELED")
+                    self._finish_cancellation(db, run_id)
                 else:
                     db.execute(
                         "UPDATE effects SET state='PENDING',updated_at=? WHERE id=?", (now_ms(), step["effect_id"])
@@ -216,13 +446,13 @@ class AgentRuntime:
                 self.journal.event(db, run_id, "effect.reconciled", {"step_id": step_id, "actor": actor})
                 if run["state"] == "CANCELING":
                     self.journal.set_step(db, step_id, "SUCCEEDED", result=result)
-                    self.journal.set_run(db, run_id, "CANCELED")
+                    self._finish_cancellation(db, run_id)
                 else:
                     self._finish_tool(db, run, step, result)
             else:
                 if run["state"] == "CANCELING":
                     self.journal.set_step(db, step_id, "CANCELED")
-                    self.journal.set_run(db, run_id, "CANCELED")
+                    self._finish_cancellation(db, run_id)
                 else:
                     self.journal.set_step(db, step_id, "READY")
                     self.journal.set_run(db, run_id, "RUNNING")
@@ -250,7 +480,7 @@ class AgentRuntime:
             self.journal.event(db, run_id, "model.usage_reconciled", {"step_id": step_id, "actor": actor})
             if run["state"] == "CANCELING":
                 self.journal.set_step(db, step_id, "CANCELED")
-                self.journal.set_run(db, run_id, "CANCELED")
+                self._finish_cancellation(db, run_id)
             elif step["result"] is not None:
                 full_run = db.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
                 result = load(step["result"])
@@ -282,6 +512,8 @@ class AgentRuntime:
             run = db.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
             if run is None:
                 raise KeyError(run_id)
+            self._refresh_tree_joins(db, run_id)
+            run = db.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
             if run["state"] in {"COMPLETED", "FAILED", "CANCELED", "CANCELING"}:
                 return False
             step = db.execute(

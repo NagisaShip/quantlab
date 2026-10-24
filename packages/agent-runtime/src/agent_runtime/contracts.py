@@ -57,16 +57,28 @@ class AgentSpec:
     model_reservation_micro: int = 0
     metadata: dict[str, Any] = field(default_factory=dict)
     max_tool_calls: int | None = None
+    max_children: int = 32
+    max_descendants: int = 256
+    max_child_depth: int = 16
 
     def __post_init__(self) -> None:
         if self.max_steps < 1:
             raise ValueError("max_steps must be positive")
+        if min(self.max_children, self.max_descendants, self.max_child_depth) < 0:
+            raise ValueError("child task bounds cannot be negative")
         if self.max_tool_calls is not None and self.max_tool_calls < 0:
             raise ValueError("max_tool_calls cannot be negative")
         if self.budget_limit_micro < 0 or self.model_reservation_micro < 0:
             raise ValueError("budgets cannot be negative")
         if self.budget_limit_micro and not self.model_reservation_micro:
             raise ValueError("budgeted runs require a model reservation estimate")
+
+
+@dataclass(frozen=True)
+class ChildTask:
+    prompt: str
+    spec: AgentSpec
+    initial_messages: list[dict[str, Any]] | None = None
 
 
 class ModelUnavailable(RuntimeError):
@@ -99,6 +111,7 @@ STEP_STATES = frozenset(
         "WAITING_APPROVAL",
         "WAITING_TIMER",
         "WAITING_INPUT",
+        "WAITING_CHILDREN",
         "SUCCEEDED",
         "FAILED",
         "CANCELED",

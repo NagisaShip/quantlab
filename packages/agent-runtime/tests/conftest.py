@@ -9,7 +9,13 @@ PG = os.environ.get("QAGENT_TEST_PG", "").strip()
 
 
 def pytest_generate_tests(metafunc):
-    if metafunc.module.__name__ in {"test_engine", "test_process_crash", "test_fault_matrix", "test_telemetry"}:
+    if metafunc.module.__name__ in {
+        "test_engine",
+        "test_process_crash",
+        "test_fault_matrix",
+        "test_telemetry",
+        "test_children",
+    }:
         metafunc.parametrize("persistence_backend", ["sqlite", *(["postgres"] if PG else [])], indirect=True)
 
 

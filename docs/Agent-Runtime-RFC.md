@@ -151,3 +151,5 @@ MVP 必须有基本硬预算和准入；高级熔断、复杂模型动态降级�
 通用入口收尾（2026-10-24）：`Agent.run` 与 Team 共用 `runtime_agent` 适配；开启开关后，宿主 Router 注入同一 Journal，已构建的 Agent 也可使用。`resume_runtime` 检查工作区、用户、Agent 身份和绑定后唤醒原执行实例，已提交工具不重做。通用 trace 从已提交步骤重建；文档检查图片从持久化预览结果重建。工具审批授权默认有效 24 小时（由 `ToolSpec.approval_ttl_ms` 配置），超过有效期仍未派发则重新审批。
 
 可观测性实施：独立包增加只读 RuntimeTelemetry 投影、带持久确认的至少一次跨度导出和可选 OpenTelemetry SDK 适配；宿主指定 exporter 与 meter。运行、步骤、尝试、耗时和确认费用从权威记录观察，采集器重启不重放计数。QuantLab 管理员可读取当前工作区聚合指标。当前为平面 Attempt 跨度，完整父子跨度、首 token 与 provider 上下文传播尚未完成。
+
+父子任务实施：内核提供原子 fork_children、持久 WAITING_CHILDREN、显式 all-success Join、children 恢复发现、完整子任务初始消息和祖先预算账户继承。取消在同一事务传播整棵树，未知效果继续等待核对；子任务数量、后代总数和深度服从所有祖先限制。SQLite/PostgreSQL 定向故障实验与真实进程退出恢复已验证。Team 外层编排接入和任意依赖 DAG 尚未完成。审计仅做一致性读取，已改为只读事务，避免父任务写事务内审计子任务时重复争抢写锁。
