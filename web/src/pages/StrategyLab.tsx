@@ -1746,7 +1746,7 @@ function MessageView({ m, project, meta, active, actions, concise, onDecide, onO
       return <EventLine tone="error">{m.content}</EventLine>
     case 'tool':
       return <><ToolLine icon={TOOL_ICON[d.name]} label={d.label} args={d.args} status={d.status} elapsedMs={d.elapsed_ms}
-        detail={d.error || (d.preview ? prettyJson(d.preview) : undefined)} />{d.artifact_view&&<ArtifactPreview initial={d.artifact_view}/>}{d.task_view&&<TaskResult value={d.task_view}/>}{d.workflow_view&&<button type="button" className="button small" onClick={()=>onOpenWorkflow(d.workflow_view.workflow_id)}>查看右侧编排 · {d.workflow_view.title}</button>}</>
+        detail={d.error || (d.preview ? prettyJson(d.preview) : undefined)} result={d.preview} />{d.artifact_view&&<ArtifactPreview initial={d.artifact_view}/>}{d.task_view&&<TaskResult value={d.task_view}/>}{d.workflow_view&&<button type="button" className="button small" onClick={()=>onOpenWorkflow(d.workflow_view.workflow_id)}>查看右侧编排 · {d.workflow_view.title}</button>}</>
     case 'code':
       return <CodeCard m={m} onOpenCode={onOpenCode} />
     case 'factor_code':

@@ -156,6 +156,11 @@ SUMMARIES: dict[tuple[str, str], str] = {
     ("POST", "/api/agents/teams/{team_id}/run"): "执行一次团队调研",
     ("GET", "/api/agents/team-runs"): "团队调研记录列表",
     ("GET", "/api/agents/team-runs/{run_id}"): "团队调研详情（各角色产出与结论）",
+    ("POST", "/api/agents/team-runs/{run_id}/resume"): "恢复团队执行",
+    ("POST", "/api/agents/team-runs/{run_id}/cancel"): "取消团队执行",
+    ("GET", "/api/agents/team-runs/{run_id}/runtime"): "查询团队恢复状态",
+    ("POST", "/api/agents/team-runs/{run_id}/runtime/effect-resolution"): "核对团队工具效果",
+    ("POST", "/api/agents/team-runs/{run_id}/runtime/model-usage"): "核对团队模型用量",
     ("GET", "/api/agents/prompts"): "提示词库（任务模板 + 角色提示词）",
     ("GET", "/api/agents/store-stats"): "存储内容统计",
     # ---- 长期 Agent 与通知 ----

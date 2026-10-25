@@ -4,6 +4,7 @@ import { Markdown } from '../markdown'
 import { modelLabel } from './Composer'
 import { QuantBot, QuantEyes, type BotState } from '../QuantBot'
 import { t } from '../../i18n'
+import { ArtifactDelivery } from './ArtifactDelivery'
 
 export function UserBubble({ children }: { children: ReactNode }) {
   return <div className="cb-user"><div className="cb-user-bubble">{children}</div></div>
@@ -46,9 +47,9 @@ export function AssistantText({ content, thinking, thinkingMs, streaming, model,
   )
 }
 
-export function ToolLine({ icon, label, args, status, elapsedMs, detail }: {
+export function ToolLine({ icon, label, args, status, elapsedMs, detail, result }: {
   icon?: string; label: string; args?: Record<string, unknown>; status: 'running' | 'ok' | 'error' | string
-  elapsedMs?: number; detail?: string
+  elapsedMs?: number; detail?: string; result?: unknown
 }) {
   const [open, setOpen] = useState(false)
   const argText = Object.entries(args || {}).map(([k, v]) => `${t(k)} ${String(v)}`).join(' · ')
@@ -63,6 +64,7 @@ export function ToolLine({ icon, label, args, status, elapsedMs, detail }: {
           {status === 'error' ? t('失败') : status === 'stopped' ? t('已停止') : status === 'ok' && elapsedMs !== undefined ? `${(elapsedMs / 1000).toFixed(1)}s` : ''}
         </span>
       </button>
+      {status === 'ok' && <ArtifactDelivery value={result} />}
       {open && detail && <pre className="cb-tool-detail">{detail}</pre>}
     </div>
   )

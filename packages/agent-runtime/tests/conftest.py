@@ -15,6 +15,7 @@ def pytest_generate_tests(metafunc):
         "test_fault_matrix",
         "test_telemetry",
         "test_scheduler",
+        "test_artifacts",
         "test_children",
         "test_dependencies",
     }:

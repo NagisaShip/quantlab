@@ -459,3 +459,52 @@ def import_module(payload: ModuleIn):
     from ..local.management import import_library
 
     return import_library(WorkflowService(get_services()), payload.id)
+
+
+@router.get("/runtime-artifacts/{effect_id}/{digest}", summary="读取已提交文档交付快照")
+def runtime_artifact_download(effect_id: str, digest: str):
+    from agent_runtime import RuntimeArtifacts
+    from fastapi.responses import Response
+
+    from ..local.runtime_artifacts import read_snapshot
+
+    profile = local()
+    s = get_services()
+    bridge = s.runtime_bridge
+    if bridge is None:
+        raise HTTPException(404, "交付快照不存在")
+    journal = bridge.runtime.journal
+    with journal.read_tx() as db:
+        row = db.execute(
+            "SELECT r.id,r.tenant_id,r.spec FROM steps t JOIN runs r ON r.id=t.run_id WHERE t.effect_id=?", (effect_id,)
+        ).fetchone()
+    if row is None or row["tenant_id"] != context.current_workspace():
+        raise HTTPException(404, "交付快照不存在")
+    from agent_runtime.journal import load
+
+    metadata = load(row["spec"]).get("metadata", {})
+    owner = metadata.get("user_id") or metadata.get("actor")
+    if owner != context.current().user_id and not context.current().is_ws_admin:
+        raise HTTPException(404, "交付快照不存在")
+    refs = RuntimeArtifacts(journal).list(row["id"], tenant_id=context.current_workspace())
+    ref = next((item for item in refs if item["effect_id"] == effect_id and item["sha256"] == digest), None)
+    if ref is None:
+        raise HTTPException(404, "交付快照不存在")
+    from urllib.parse import quote
+
+    return Response(
+        read_snapshot(profile, ref),
+        media_type=ref["media_type"],
+        headers={
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Disposition": "inline; filename*=UTF-8''" + quote(ref["name"], safe=""),
+        },
+    )
+
+
+@router.post("/runtime-artifacts/cleanup", summary="清理过期交付快照缓存")
+def cleanup_runtime_artifacts():
+    from ..local.runtime_artifacts import prune
+
+    return {"removed": prune(local())}

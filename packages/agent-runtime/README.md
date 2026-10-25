@@ -296,3 +296,9 @@ Attempt identities/counts or state/event facts are not repaired or executed.
 只读快照补齐原方案指标：`waiting` 按步骤种类和状态记录连续等待区间数量、总毫秒数及当前等待数，覆盖 READY、额度、审批、输入、计时、子任务、依赖和结果核对；活动区间计算到采集时刻，重复同状态事件不拆分区间。生成/工具耗时沿用已结束 Attempt 的时长，首 token 单独统计。`retries` 是同一逻辑 Step 超过第一次的 Attempt 数，包含未获模型准入后的再申请，不等于 provider 实际请求数；重新生成的新 Step 可由费用核对事件与跨度关联辨认。
 
 `cancellation` 按 Run 首次 CANCELING（直接取消则 CANCELED）起算，分别输出请求数、完成数、完成耗时及未确认取消的当前时长；根与子 Run 分别计量。`recoveries` 仅计已提交的租约失效、效果核对与模型费用核对事实，幂等 resume 或只读查询不伪装恢复次数。所有值均可从持久记录重新计算，按租户隔离；OpenTelemetry 使用有限种类/状态标签，不把 Run ID、参数或正文作为指标标签。快照用于运维采集，不参与执行或计费。
+
+## 可追溯交付物（2026-10-25）
+
+`ArtifactRef` 定义宿主管理的存储键、SHA-256、字节数、名称、媒体类型、来源及可选过期时间。工具结果的 `_runtime_artifacts` 清单与原 Step/effect 结果同事务提交；非法清单保持结果未知，不将外部效果误判为未执行。`RuntimeArtifacts(journal).list(run_id, tenant_id=...)` 只投影已成功提交的工具步骤，补充稳定产物 ID、Run/Step/effect 身份；不导入宿主、不读取文件、不宣称引用指向的字节仍可用。采集不执行模型/工具，过期也不删除执行证据。
+
+QuantLab 本地文档适配器为正式导出与页面预览工具建立内容寻址快照，存储在项目私有数据目录；覆盖用户原文件不会改变旧交付。下载仍检查原目录授权、Run 租户和所有者/管理员，校验长度及 SHA-256 后返回字节。快照保留 30 天；过期即拒绝下载，`POST /api/local/runtime-artifacts/cleanup` 只删除达到期限、名称匹配且不为符号链接的缓存，保留原文件和 Journal 引用。清理接口不被描述为后台定时清理。账户部署不开放本地快照。宿主可以替换成自己的对象存储与保留策略，无需修改内核。

@@ -312,6 +312,29 @@ def run_chat(
             current = runtime.get(run_id)
             for step in current["steps"]:
                 if (
+                    step["kind"] == "tool"
+                    and step["state"] == "SUCCEEDED"
+                    and isinstance(step.get("result"), dict)
+                    and step["result"].get("_runtime_artifacts")
+                ):
+                    if not any(
+                        (item.get("data") or {}).get("runtime_artifact_step") == step["id"]
+                        for item in lab.store.messages(pid)
+                    ):
+                        lab._post(
+                            pid,
+                            role="assistant",
+                            kind="tool",
+                            content="",
+                            data={
+                                "runtime_artifact_step": step["id"],
+                                "name": "document_delivery",
+                                "label": "交付文件",
+                                "status": "ok",
+                                "preview": json.dumps(step["result"], ensure_ascii=False),
+                            },
+                        )
+                if (
                     step["kind"] != "model"
                     or step["state"] not in {"SUCCEEDED", "RECONCILING"}
                     or not step.get("result")

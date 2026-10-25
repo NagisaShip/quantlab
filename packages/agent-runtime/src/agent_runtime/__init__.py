@@ -1,5 +1,6 @@
 """Host-independent durable Agent Runtime."""
 
+from .artifacts import ArtifactRef, RuntimeArtifacts
 from .contracts import (
     AgentSpec,
     ChildTask,
@@ -19,12 +20,14 @@ from .telemetry import RuntimeTelemetry
 __all__ = [
     "AgentRuntime",
     "AgentSpec",
+    "ArtifactRef",
     "ChildTask",
     "Journal",
     "ModelAdmissionPending",
     "ModelPort",
     "ModelResult",
     "ModelUnavailable",
+    "RuntimeArtifacts",
     "RuntimeScheduler",
     "RuntimeTelemetry",
     "ToolCall",

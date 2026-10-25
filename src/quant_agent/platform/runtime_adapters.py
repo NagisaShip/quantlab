@@ -24,6 +24,7 @@ def tool_resource_classes(names) -> dict[str, str]:
     groups = {
         "local_preview_document": "class:document_render",
         "local_export_docx": "class:document_authoring",
+        "local_export_docx_file": "class:document_authoring",
         "local_export_pptx": "class:document_authoring",
         "local_export_pptx_file": "class:document_authoring",
     }
@@ -295,7 +296,10 @@ class QuantLabToolPort:
         binding = self.bindings.get(call.name)
         if binding is None:
             raise KeyError(call.name)
-        return binding.execute(json.loads(json.dumps(call.arguments)), effect_id)
+        result = binding.execute(json.loads(json.dumps(call.arguments)), effect_id)
+        from ..local.runtime_artifacts import attach_artifacts
+
+        return attach_artifacts(call.name, result, effect_id=effect_id)
 
     def reconcile(self, call: Any, *, effect_id: str) -> tuple[bool, Any] | None:
         binding = self.bindings.get(call.name)

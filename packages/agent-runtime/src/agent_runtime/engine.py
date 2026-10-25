@@ -819,6 +819,10 @@ class AgentRuntime:
             messages = load(run["messages"])
         try:
             result = self._execute_with_lease(run_id, step, epoch, messages, payload, attempt_id)
+            if step["kind"] == "tool":
+                from .artifacts import references
+
+                references(result)
         except ModelAdmissionPending as exc:
             with self.journal.tx() as db:
                 if not self._owns(db, step["id"], epoch, run_id):
@@ -1048,6 +1052,9 @@ class AgentRuntime:
             heartbeat.join(timeout=1)
 
     def _finish_tool(self, db: Any, run: Any, step: Any, result: Any) -> None:
+        from .artifacts import references
+
+        references(result)  # Validate metadata in the same transaction as the effect result.
         messages = load(run["messages"])
         messages.append(
             {
