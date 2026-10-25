@@ -268,3 +268,48 @@ def test_model_capacity_wait_has_resume_without_usage_reconciliation(host):
     completed = client.get(f"/api/lab/projects/{pid}/runtime").json()["run"]
     assert completed["state"] == "COMPLETED" and model.calls == before + 1
     assert len(completed["steps"]) == 1 and completed["steps"][0]["id"] == step["id"]
+
+
+def test_lab_document_tool_waits_for_shared_class_then_resumes_original_step(host, monkeypatch):
+    from agent_runtime import RuntimeScheduler
+
+    from quant_agent.api.deps import get_services
+
+    client, model, pid = host
+    journal = get_services().teams.runtime_journal
+    scheduler = RuntimeScheduler(journal)
+    scheduler.set_limit("class:document_render", 0)
+    effects = []
+
+    def preview(path):
+        effects.append(path)
+        return {"rendered": True}
+
+    monkeypatch.setattr(
+        StrategyLab,
+        "_all_tools",
+        lambda self, pid: {
+            "local_preview_document": Tool("local_preview_document", "preview", {}, preview),
+        },
+    )
+    model.replies = [
+        _reply(calls=[ToolCall("preview", "local_preview_document", {"path": "report.docx"})]),
+        _reply("checked"),
+    ]
+    _send(client, pid, "preview")
+    current = client.get(f"/api/lab/projects/{pid}/runtime").json()["run"]
+    step = current["steps"][-1]
+    assert step["kind"] == "tool" and step["state"] == "WAITING_ADMISSION" and effects == []
+    assert step["attempt_count"] == 0 and model.calls == 1
+    assert client.get(f"/api/lab/projects/{pid}").json()["project"]["runtime_wait_reason"] == "tool_capacity"
+    assert (
+        journal.run(current["id"])["spec"]["metadata"]["tool_resource_classes"]["local_preview_document"]
+        == "class:document_render"
+    )
+    scheduler.set_limit("class:document_render", 1)
+    with journal.tx() as db:
+        db.execute("UPDATE admission_waits SET retry_at=0 WHERE step_id=?", (step["id"],))
+    assert client.post(f"/api/lab/projects/{pid}/runtime/resume", json={"wait": True}).status_code == 200
+    done = client.get(f"/api/lab/projects/{pid}/runtime").json()["run"]
+    assert done["state"] == "COMPLETED" and done["steps"][1]["id"] == step["id"]
+    assert effects == ["report.docx"] and model.calls == 2

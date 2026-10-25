@@ -19,6 +19,17 @@ from ..llm.router import ModelRouter, ProviderConfig
 from . import context
 
 
+def tool_resource_classes(names) -> dict[str, str]:
+    """Freeze capability groups into the host's AgentSpec, not kernel policy."""
+    groups = {
+        "local_preview_document": "class:document_render",
+        "local_export_docx": "class:document_authoring",
+        "local_export_pptx": "class:document_authoring",
+        "local_export_pptx_file": "class:document_authoring",
+    }
+    return {name: groups[name] for name in names if name in groups}
+
+
 class QuantLabModelPort:
     def __init__(
         self,

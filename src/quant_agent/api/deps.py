@@ -195,6 +195,11 @@ class AppServices:
                 hub=services.model_hub,
                 router=services.router,
             )
+            from agent_runtime import RuntimeScheduler
+
+            scheduler = RuntimeScheduler(facade.journal)
+            scheduler.set_limit("class:document_render", 2, if_absent=True)
+            scheduler.set_limit("class:document_authoring", 4, if_absent=True)
             services.runtime_bridge = RuntimeBridge(services.runs, facade, spec_loader=facade.load_spec)
             # Role loops and every Team mode share durable execution graphs;
             # model and tool bindings remain the host's responsibility.

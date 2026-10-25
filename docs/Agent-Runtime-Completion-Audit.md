@@ -10,7 +10,7 @@
 | 模型单一准入与共享费用账本 | ModelHub admission、适配器及费用提交中断实验 | 临时并发不足已改为持久准入等待，并有冷却、取消、无重复计费证据；仍需最终整体验收 |
 | 预算层级、共享父子原子预留与未知费用 | model_admission、children 和取消费用测试 | 有定向证据；需核对全部账本字段及单位要求 |
 | 取消、审批、效果核对和幂等信号 | 核心故障矩阵、Lab 与 Team recovery API/UI | 有定向证据；继续核对宿主全部入口 |
-| 背压、队列上限、租户并发与基本轮转 | 宿主现有队列与 Runtime ticket 接线 | Runtime ticket 入口已原子检查积压/每日/在途上限，Worker 已有区内优先级与工作区轮转；直接宿主入口及跨 Worker 共享执行资源仍待证明 |
+| 背压、队列上限、租户并发与基本轮转 | 宿主现有队列与 Runtime ticket 接线 | Runtime ticket 入口已原子检查积压/每日/在途上限，Worker 已有区内优先级与工作区轮转；通用 Agent/Team/研究室现共用跨进程工具名额，模型仍由 ModelHub 管理；其他入口和全生命周期仍待最终审计 |
 | 第二宿主独立安装与跨进程恢复 | 独立包 CLI/structured_cli 与进程故障实验 | 有定向证据；发布包和安装退出门槛仍需最终重跑 |
 | 三种 Team 模式与显式 Join | children、dependencies、Team 模式 HTTP/UI | 有定向证据 |
 | 研究室主对话、上下文/图片与历史恢复 | Lab runtime、API 与真实浏览器恢复测试 | 有定向证据；默认仍按计划保留灰度开关 |

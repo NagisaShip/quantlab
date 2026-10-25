@@ -61,6 +61,22 @@ CREATE TABLE IF NOT EXISTS steps (
 );
 CREATE INDEX IF NOT EXISTS idx_runs_parent ON runs(parent_id);
 CREATE INDEX IF NOT EXISTS idx_steps_ready ON steps(state, run_id, ordinal);
+CREATE TABLE IF NOT EXISTS resource_limits (
+    scope TEXT NOT NULL,
+    tenant_id TEXT NOT NULL,
+    resource TEXT NOT NULL,
+    capacity BIGINT NOT NULL,
+    PRIMARY KEY(scope, tenant_id, resource)
+);
+CREATE TABLE IF NOT EXISTS resource_policy_meta (
+    id BIGINT PRIMARY KEY,
+    version BIGINT NOT NULL
+);
+INSERT INTO resource_limits(scope,tenant_id,resource,capacity)
+SELECT 'global','','tools',32 WHERE NOT EXISTS (SELECT 1 FROM resource_policy_meta WHERE id=1) ON CONFLICT DO NOTHING;
+INSERT INTO resource_limits(scope,tenant_id,resource,capacity)
+SELECT 'tenant_default','','tools',8 WHERE NOT EXISTS (SELECT 1 FROM resource_policy_meta WHERE id=1) ON CONFLICT DO NOTHING;
+INSERT INTO resource_policy_meta(id,version) VALUES(1,1) ON CONFLICT DO NOTHING;
 CREATE TABLE IF NOT EXISTS admission_waits (
     step_id TEXT PRIMARY KEY REFERENCES steps(id),
     retry_at BIGINT NOT NULL
@@ -237,6 +253,66 @@ class Journal:
                 for statement in SCHEMA.split(";"):
                     if statement.strip():
                         db.execute(statement)
+
+        self._repair_interrupted_attempts()
+
+    def _repair_interrupted_attempts(self) -> None:
+        """Close legacy tracking records using committed fencing facts, never I/O.
+
+        UNKNOWN describes the interrupted attempt, not a failed external effect.
+        No Step, effect, budget, frozen spec or model result is changed.
+        """
+        with self.tx() as db:
+            rows = db.execute(
+                "SELECT a.id,a.step_id,a.started_at,s.run_id,r.updated_at FROM attempts a "
+                "JOIN steps s ON s.id=a.step_id JOIN runs r ON r.id=s.run_id "
+                "WHERE a.status='IN_FLIGHT' AND a.ended_at IS NULL AND s.state<>'IN_FLIGHT'"
+            ).fetchall()
+            history = {}
+            invalid = set()
+            for row in rows:
+                rid = row["run_id"]
+                if rid in invalid:
+                    continue
+                if rid not in history:
+                    try:
+                        self.audit(rid)
+                    except JournalIntegrityError:
+                        invalid.add(rid)
+                        continue
+                    history[rid] = db.execute(
+                        "SELECT seq,type,data,created_at FROM events WHERE run_id=? ORDER BY seq", (rid,)
+                    ).fetchall()
+                started = False
+                boundary = None
+                for event in history[rid]:
+                    data = load(event["data"])
+                    if event["type"] == "attempt.started" and data.get("attempt_id") == row["id"]:
+                        started = True
+                    elif (
+                        started
+                        and event["type"] == "step.state"
+                        and data.get("step_id") == row["step_id"]
+                        and data["state"] != "IN_FLIGHT"
+                    ):
+                        boundary = event
+                        break
+                ended_at = max(row["started_at"], boundary["created_at"] if boundary else row["updated_at"])
+                db.execute(
+                    "UPDATE attempts SET status='UNKNOWN',ended_at=?,error=COALESCE(error,?) WHERE id=?",
+                    (ended_at, "recovered from committed step interruption", row["id"]),
+                )
+                self.event(
+                    db,
+                    rid,
+                    "attempt.interrupted",
+                    {
+                        "attempt_id": row["id"],
+                        "step_id": row["step_id"],
+                        "reason": "legacy_tracking_repair",
+                        "source_event_seq": boundary["seq"] if boundary else None,
+                    },
+                )
 
     @contextmanager
     def connection(self) -> Iterator[_DB]:
@@ -456,6 +532,23 @@ class Journal:
                     for row in db.execute("SELECT id,state FROM steps WHERE run_id=?", (run_id,))
                 },
             }
+            starts = [load(event["data"]) for event in events if event["type"] == "attempt.started"]
+            expected_attempts = {item["attempt_id"]: (item["step_id"], item["epoch"]) for item in starts}
+            attempt_rows = db.execute(
+                "SELECT a.id,a.step_id,a.epoch FROM attempts a JOIN steps s ON s.id=a.step_id WHERE s.run_id=?",
+                (run_id,),
+            ).fetchall()
+            actual_attempts = {item["id"]: (item["step_id"], item["epoch"]) for item in attempt_rows}
+            if len(expected_attempts) != len(starts) or expected_attempts != actual_attempts:
+                raise JournalIntegrityError(f"attempt identities differ from committed events for {run_id}")
+            counts = {}
+            for item in attempt_rows:
+                counts[item["step_id"]] = counts.get(item["step_id"], 0) + 1
+            if any(
+                row["attempt_count"] != counts.get(row["id"], 0)
+                for row in db.execute("SELECT id,attempt_count FROM steps WHERE run_id=?", (run_id,)).fetchall()
+            ):
+                raise JournalIntegrityError(f"attempt counts differ from committed records for {run_id}")
             if len(events) != run["seq"] or state != actual:
                 raise JournalIntegrityError(
                     f"committed state differs from events for {run_id}: "

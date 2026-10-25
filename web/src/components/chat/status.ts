@@ -508,8 +508,8 @@ export function deriveAgentStatus(input: StatusInput): AgentStatus {
 
   // 等待审批/回答是当前可操作状态，不能被前面的可恢复工具错误遮住。
   if (status === 'awaiting_user') {
-    if (project?.runtime_wait_reason === 'admission') return {
-      state: 'queued', label: AGENT_STATE_LABEL.queued, evidence, artifacts, phase, startedAt, detail: '等待模型空闲',
+    if (project?.runtime_wait_reason === 'admission' || project?.runtime_wait_reason === 'tool_capacity') return {
+      state: 'queued', label: AGENT_STATE_LABEL.queued, evidence, artifacts, phase, startedAt, detail: project.runtime_wait_reason === 'tool_capacity' ? '等待工具空闲' : '等待模型空闲',
     }
     return {
       state: 'waiting', label: AGENT_STATE_LABEL.waiting, evidence, artifacts, phase, startedAt,

@@ -220,7 +220,7 @@ def test_billing_commit_can_be_retried_after_runtime_commit_failure(team_host, m
     assert model.calls == 1
 
 
-def test_temporary_hub_capacity_queues_same_team_graph_without_billing_or_failure(team_host):
+def test_temporary_hub_capacity_queues_same_team_graph_without_billing_or_failure(team_host, monkeypatch):
     client, services, model = team_host
     me = client.get("/api/auth/me").json()
     hub = services.model_hub
@@ -240,7 +240,11 @@ def test_temporary_hub_capacity_queues_same_team_graph_without_billing_or_failur
     child = engine.children(root["id"])[0]
     step = engine.get(child)["steps"][0]
     assert step["state"] == "WAITING_ADMISSION" and hub.admission(step["id"]) is None
-    assert client.post(f"/api/agents/team-runs/{run['id']}/resume").json()["run"]["status"] == "queued"
+    from agent_runtime import engine as engine_module
+
+    with monkeypatch.context() as before_deadline:
+        before_deadline.setattr(engine_module, "now_ms", lambda: step["admission_retry_at"] - 1)
+        assert client.post(f"/api/agents/team-runs/{run['id']}/resume").json()["run"]["status"] == "queued"
     assert engine.get(child)["steps"][0]["attempt_count"] == 1
     assert model.calls == 0
     hub.release_admission("occupied")
@@ -292,3 +296,63 @@ def test_synthesis_capacity_wait_is_queued_and_keeps_finished_role(team_host, mo
         db.execute("UPDATE admission_waits SET retry_at=0 WHERE step_id=?", (step_id,))
     assert client.post(f"/api/agents/team-runs/{run['id']}/resume").json()["run"]["status"] == "done"
     assert model.calls == 2
+
+
+def test_team_document_tool_uses_shared_class_and_preserves_role_progress(team_host):
+    from agent_runtime import AgentRuntime, RuntimeScheduler
+
+    client, services, model = team_host
+    scheduler = RuntimeScheduler(services.teams.runtime_journal)
+    scheduler.set_limit("class:document_render", 0)
+    effects = []
+    me = client.get("/api/auth/me").json()
+    with context.bind(me["workspace"]["id"], user_id=me["user"]["id"]):
+        role = services.roles.get("review")
+        role.tools = ["local_preview_document"]
+        services.roles.save(role)
+    services.teams.tools.register(
+        "local_preview_document",
+        lambda path: effects.append(path) or {"rendered": True},
+        parameters={"type": "object", "properties": {"path": {"type": "string"}}},
+    )
+
+    def chat(messages, **kwargs):
+        model.calls += 1
+        if kwargs.get("tools") and not any(message.role == "tool" for message in messages):
+            return ChatResult(
+                content="",
+                provider="fake",
+                model="m",
+                usage={"input_tokens": 1, "output_tokens": 1},
+                tool_calls=[ToolCall("preview", "local_preview_document", {"path": "report.pptx"})],
+            )
+        return ChatResult(content="checked", provider="fake", model="m", usage={"input_tokens": 1, "output_tokens": 1})
+
+    model.chat = chat
+    run = start(client)
+    assert run["status"] == "queued" and effects == [] and model.calls == 1
+    engine = AgentRuntime(services.teams.runtime_journal, None, None)
+    child = engine.children(run["runtime_run_id"])[0]
+    step = engine.get(child)["steps"][-1]
+    assert step["state"] == "WAITING_ADMISSION"
+    scheduler.set_limit("class:document_render", 1)
+    with engine.journal.tx() as db:
+        db.execute("UPDATE admission_waits SET retry_at=0 WHERE step_id=?", (step["id"],))
+    assert client.post(f"/api/agents/team-runs/{run['id']}/resume").json()["run"]["status"] == "done"
+    assert effects == ["report.pptx"] and model.calls == 3
+    assert engine.get(child)["steps"][1]["id"] == step["id"]
+
+
+def test_host_restart_keeps_operator_resource_limits(team_host):
+    from agent_runtime import RuntimeScheduler
+
+    from quant_agent.api.deps import AppServices
+
+    _client, services, _model = team_host
+    RuntimeScheduler(services.teams.runtime_journal).set_limit("class:document_render", 1)
+    rebuilt = AppServices.build(store_root=str(services.home))
+    with rebuilt.teams.runtime_journal.read_tx() as db:
+        limit = db.execute(
+            "SELECT capacity FROM resource_limits WHERE scope='global' AND resource=?", ("class:document_render",)
+        ).fetchone()
+    assert limit["capacity"] == 1

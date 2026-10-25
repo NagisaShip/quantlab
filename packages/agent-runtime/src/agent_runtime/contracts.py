@@ -64,6 +64,13 @@ class AgentSpec:
     def __post_init__(self) -> None:
         if self.max_steps < 1:
             raise ValueError("max_steps must be positive")
+        if isinstance(self.metadata, dict) and "tool_resource_classes" in self.metadata:
+            classes = self.metadata["tool_resource_classes"]
+            if not isinstance(classes, dict) or any(
+                not isinstance(name, str) or not isinstance(resource, str) or not resource or len(resource) > 256
+                for name, resource in classes.items()
+            ):
+                raise ValueError("tool_resource_classes must map tool names to bounded resource identities")
         if min(self.max_children, self.max_descendants, self.max_child_depth) < 0:
             raise ValueError("child task bounds cannot be negative")
         if self.max_tool_calls is not None and self.max_tool_calls < 0:

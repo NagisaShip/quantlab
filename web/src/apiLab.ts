@@ -95,7 +95,7 @@ export function sessionKindOf(p: { kind?: string; workflow?: string }): SessionK
 }
 
 export interface LabProject {
-  runtime_wait_reason?: 'admission' | ''
+  runtime_wait_reason?: 'admission' | 'tool_capacity' | ''
   runtime_chat_id?: string
   runtime_pending_ids?: string[]
   id: string

@@ -62,3 +62,10 @@ test('temporary model admission is queued rather than asking for human input', (
   assert.equal(result.state, 'queued')
   assert.equal(result.detail, '等待模型空闲')
 })
+
+
+test('shared tool capacity waits are queued and do not request billing review', () => {
+  const result = deriveAgentStatus({ project: { status: 'awaiting_user', runtime_wait_reason: 'tool_capacity' }, messages: [] })
+  assert.equal(result.state, 'queued')
+  assert.equal(result.detail, '等待工具空闲')
+})

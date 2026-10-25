@@ -9,7 +9,12 @@ from dataclasses import asdict
 from typing import Any
 
 from ..platform import context
-from ..platform.runtime_adapters import QuantLabAgentModelPort, QuantLabToolPort, RuntimeToolBinding
+from ..platform.runtime_adapters import (
+    QuantLabAgentModelPort,
+    QuantLabToolPort,
+    RuntimeToolBinding,
+    tool_resource_classes,
+)
 from .base import AgentRun, AgentStep
 from .tool_guards import clean_protocol_residue
 
@@ -18,6 +23,7 @@ def prepare_agent(agent: Any, task: str, *, retrieved: list | None = None):
     from agent_runtime import AgentSpec, ChildTask, ToolSpec
 
     messages = [asdict(message) for message in agent.context.build(task, retrieved=retrieved)]
+    resource_classes = tool_resource_classes(agent.tools)
     return ChildTask(
         task,
         AgentSpec(
@@ -27,6 +33,7 @@ def prepare_agent(agent: Any, task: str, *, retrieved: list | None = None):
             max_steps=agent.max_steps,
             metadata={
                 "host": "generic_agent",
+                **({"tool_resource_classes": resource_classes} if resource_classes else {}),
                 "role": agent.role,
                 "user_id": context.current().user_id or "system",
                 "model": agent.model,

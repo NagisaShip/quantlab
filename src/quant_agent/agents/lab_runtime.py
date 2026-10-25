@@ -8,7 +8,7 @@ from dataclasses import asdict, replace
 from typing import Any
 
 from ..platform import context
-from ..platform.runtime_adapters import QuantLabModelPort, QuantLabToolPort, RuntimeToolBinding
+from ..platform.runtime_adapters import QuantLabModelPort, QuantLabToolPort, RuntimeToolBinding, tool_resource_classes
 
 
 def _engine(lab: Any, pid: str, tools: dict[str, Any]) -> tuple[Any, Any]:
@@ -243,6 +243,7 @@ def run_chat(
             )
             for name in tools
         )
+        resource_classes = tool_resource_classes(tools)
         runtime.start(
             "",
             AgentSpec(
@@ -251,7 +252,12 @@ def run_chat(
                 tools=specs,
                 max_steps=tool_call_limit(project) * 2 + 2,
                 max_tool_calls=tool_call_limit(project),
-                metadata={"project_id": pid, "mode": mode, "actor": actor},
+                metadata={
+                    "project_id": pid,
+                    "mode": mode,
+                    "actor": actor,
+                    **({"tool_resource_classes": resource_classes} if resource_classes else {}),
+                },
             ),
             run_id=run_id,
             tenant_id=context.current_workspace(),
@@ -361,10 +367,11 @@ def run_chat(
         cancel_chat(lab, pid)
         raise
     current = runtime.get(run_id)
+    waits = [step for step in current["steps"] if step["state"] == "WAITING_ADMISSION"]
     lab.store.patch(
         pid,
-        runtime_wait_reason="admission"
-        if any(step["state"] == "WAITING_ADMISSION" for step in current["steps"])
+        runtime_wait_reason=("tool_capacity" if any(step["kind"] == "tool" for step in waits) else "admission")
+        if waits
         else "",
     )
     runtime.journal.checkpoint(run_id)

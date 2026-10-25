@@ -13,6 +13,7 @@ from .contracts import (
 )
 from .engine import AgentRuntime
 from .journal import Journal
+from .scheduler import RuntimeScheduler
 from .telemetry import RuntimeTelemetry
 
 __all__ = [
@@ -24,6 +25,7 @@ __all__ = [
     "ModelPort",
     "ModelResult",
     "ModelUnavailable",
+    "RuntimeScheduler",
     "RuntimeTelemetry",
     "ToolCall",
     "ToolPort",

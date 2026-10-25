@@ -332,6 +332,29 @@ class AgentRuntime:
                 self.journal.event(db, current, "run.cancel_propagated", {"root_id": run_id, "actor": actor})
             for step in db.execute("SELECT id,state FROM steps WHERE run_id=?", (current,)).fetchall():
                 if step["state"] not in {"SUCCEEDED", "FAILED", "CANCELED"}:
+                    interrupted = db.execute(
+                        "SELECT id FROM attempts WHERE step_id=? AND status='IN_FLIGHT' AND ended_at IS NULL",
+                        (step["id"],),
+                    ).fetchall()
+                    for attempt in interrupted:
+                        db.execute(
+                            "UPDATE attempts SET status='UNKNOWN',ended_at=?,error=? WHERE id=?",
+                            (
+                                now_ms(),
+                                "cancel fenced the executing attempt; external result unconfirmed",
+                                attempt["id"],
+                            ),
+                        )
+                        self.journal.event(
+                            db,
+                            current,
+                            "attempt.interrupted",
+                            {
+                                "attempt_id": attempt["id"],
+                                "step_id": step["id"],
+                                "reason": "cancel_requested",
+                            },
+                        )
                     if step["state"] not in {"IN_FLIGHT", "RECONCILING"}:
                         if db.execute(
                             "SELECT 1 FROM reservations WHERE step_id=? AND status='reserved'", (step["id"],)
@@ -684,7 +707,7 @@ class AgentRuntime:
             ).fetchone()
             if step is None:
                 return False
-            if step["state"] == "WAITING_ADMISSION":
+            if step["state"] in {"WAITING_ADMISSION", "RECONCILING"}:
                 wait = db.execute("SELECT retry_at FROM admission_waits WHERE step_id=?", (step["id"],)).fetchone()
                 if wait and wait["retry_at"] > now_ms():
                     return False
@@ -747,6 +770,24 @@ class AgentRuntime:
                         },
                     )
                     self.journal.set_run(db, run_id, "WAITING")
+                    return False
+            if step["kind"] == "tool":
+                from .scheduler import RuntimeScheduler
+
+                blocked = RuntimeScheduler.tool_admission(db, run, step, spec, payload)
+                if blocked is not None:
+                    retry_at = now_ms() + 1000
+                    db.execute(
+                        "INSERT INTO admission_waits(step_id,retry_at) VALUES(?,?) "
+                        "ON CONFLICT(step_id) DO UPDATE SET retry_at=excluded.retry_at",
+                        (step["id"], retry_at),
+                    )
+                    self.journal.event(
+                        db, run_id, "scheduler.admission_wait", {"step_id": step["id"], "retry_at": retry_at, **blocked}
+                    )
+                    if step["state"] != "RECONCILING":
+                        self.journal.set_step(db, step["id"], "WAITING_ADMISSION", lease_owner=None, lease_until=None)
+                    self.journal.set_run(db, run_id, "WAITING", error=None)
                     return False
             if step["kind"] == "model" and step["attempt_count"] == 0:
                 if not self.journal.reserve(db, run_id, step["id"], spec["model_reservation_micro"]):

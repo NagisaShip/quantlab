@@ -14,6 +14,7 @@ def pytest_generate_tests(metafunc):
         "test_process_crash",
         "test_fault_matrix",
         "test_telemetry",
+        "test_scheduler",
         "test_children",
         "test_dependencies",
     }:

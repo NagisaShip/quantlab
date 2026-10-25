@@ -238,3 +238,55 @@ marks only concurrent-capacity exhaustion as retryable; it creates no admission
 row and sends no request for that denial. Worker polling skips retry deadlines
 without claiming an execution slot. Research conversations and Team cards expose
 queued status and an explicit resume action; they do not ask for billing review.
+
+
+## Shared tool resource admission
+
+All Runtime hosts using the same Journal share `RuntimeScheduler` limits.
+Defaults are 32 managed tool operations globally and 8 per tenant. Model
+requests remain under the host's AdmissionPort/ModelHub authority; this scheduler
+does not reserve model fees or create a second model ledger.
+
+```python
+from agent_runtime import RuntimeScheduler
+scheduler = RuntimeScheduler(journal)
+scheduler.set_limit("tools", 16)                          # global aggregate
+scheduler.set_limit("tools", 4, tenant_default=True)      # default per tenant
+scheduler.set_limit("tools", 6, tenant_id="workspace-a") # tenant override
+scheduler.set_limit("class:office", 2)                   # optional capability pool
+```
+
+By default each tool also has identity `tool:NAME`. A host may freeze a shared
+capability pool in `AgentSpec.metadata["tool_resource_classes"]`, for example
+`{"render_word": "class:office", "render_ppt": "class:office"}`. Global aggregate,
+tenant aggregate and applicable class limits are all checked atomically in the
+same write transaction as the Step lease and effect-dispatch record. Changing a
+limit affects new dispatches; it does not terminate remote operations. Capacity
+zero pauses new operations. `if_absent=True` seeds a host default without replacing
+operator configuration on restart. Required aggregate policy missing from storage
+stops dispatch rather than treating capacity as unlimited.
+
+A denied tool stays WAITING_ADMISSION with a durable retry time, no Attempt and
+no external dispatch. Cancel before dispatch releases that queued intent. Active
+and RECONCILING tool Steps retain logical permits, including after lease expiry
+or a cancellation whose external effect is not confirmed. Only a committed
+terminal step or verified absent effect frees that permit. A contractually safe
+retry reuses its own Step's logical permit and stable effect ID. This bounds
+Runtime-managed logical operations; it cannot prove an external process stopped
+or impose physical concurrency on systems outside Runtime's control.
+
+QuantLab freezes document tool classes for generic Agents, Team roles and the
+research conversation. Its initial shared class limits are 2 document previews
+and 4 document-authoring operations. Historical specs without class metadata
+retain name-based identity; aggregate limits still apply. Scheduler policy is
+stored in the Journal and is immediately shared across API/Worker processes.
+
+
+Cancellation ends a fenced Attempt's managed lifetime as UNKNOWN while its Step
+and external effect can remain RECONCILING. The permit remains held until the
+external fact is resolved. This is not confirmation of remote cancellation.
+On Journal open, legacy unclosed Attempts whose committed Steps are no longer
+IN_FLIGHT are audited and closed from their recorded transition boundary.
+Repair adds an interruption event, never calls a model/tool, never modifies the
+frozen plan, Step, effect or budget, and is idempotent. Runs with mismatching
+Attempt identities/counts or state/event facts are not repaired or executed.

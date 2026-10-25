@@ -7752,6 +7752,7 @@
  "确认并继续": "Confirm and continue",
  "确认核对": "Confirm reconciliation",
  "等待模型空闲": "Waiting for model capacity",
+ "等待工具空闲": "Waiting for tool capacity",
  "等待管理员核对后继续。": "Waiting for an administrator to verify before continuing.",
  "缓存写入 token": "Cache write tokens",
  "缓存读取 token": "Cache read tokens",
