@@ -1,6 +1,19 @@
 # Agent Runtime Core (early implementation)
 
 An independent Python package for durable, single-agent model/tool execution.
+SQLite journals reuse at most four idle connections; each borrower has exclusive
+use of its handle. Open transactions are rolled back and read-only mode is reset
+before reuse. `Journal.close()` drains idle handles and closes active handles
+when returned. Create a new Journal in each child process after a fork; do not
+share inherited connections. PostgreSQL still opens per-operation connections.
+
+Hosts can set `AgentSpec.metadata.max_model_calls` independently from logical
+`max_steps` and `max_tool_calls`. `metadata.finish_after_tools` names registered
+terminal tools whose committed result completes the run once the tool batch has
+finished. These policies are frozen with the run; existing runs retain their
+saved policy. A terminal tool should return the actual delivery receipt, avoiding
+an unnecessary model request to acknowledge a confirmed external effect.
+
 It does not import QuantLab. SQLite or PostgreSQL transactions are the
 execution authority; the append-only event stream is committed in the same
 transaction. API readers can use `events(run_id, after=cursor)` to replay from

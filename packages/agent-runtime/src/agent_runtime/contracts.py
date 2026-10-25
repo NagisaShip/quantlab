@@ -71,6 +71,12 @@ class AgentSpec:
                 for name, resource in classes.items()
             ):
                 raise ValueError("tool_resource_classes must map tool names to bounded resource identities")
+        model_limit = self.metadata.get("max_model_calls") if isinstance(self.metadata, dict) else None
+        if model_limit is not None and (type(model_limit) is not int or model_limit < 1):
+            raise ValueError("max_model_calls must be a positive integer")
+        finish = self.metadata.get("finish_after_tools", []) if isinstance(self.metadata, dict) else []
+        if not isinstance(finish, list) or any(name not in {tool.name for tool in self.tools} for name in finish):
+            raise ValueError("finish_after_tools must name registered tools")
         if min(self.max_children, self.max_descendants, self.max_child_depth) < 0:
             raise ValueError("child task bounds cannot be negative")
         if self.max_tool_calls is not None and self.max_tool_calls < 0:

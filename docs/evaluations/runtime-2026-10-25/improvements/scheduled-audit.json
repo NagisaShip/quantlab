@@ -1,0 +1,123 @@
+{
+  "worker_probes": [
+    {
+      "kind": "digest",
+      "delivery_state": "PAUSED",
+      "delivery_summary": {
+        "job_id": "audit",
+        "kind": "digest",
+        "status": "waiting",
+        "record_id": "long-record-d365a24e064486d0d38952af1e4a47473960ed9fbf5a9cf208ce50a422e465e9",
+        "runtime_run_id": "long-d365a24e064486d0d38952af1e4a47473960ed9fbf5a9cf208ce50a422e465e9",
+        "runtime_state": "WAITING",
+        "delivery_state": "waiting_generation"
+      },
+      "generation_runs": [
+        {
+          "id": "long-d365a24e064486d0d38952af1e4a47473960ed9fbf5a9cf208ce50a422e465e9",
+          "state": "WAITING"
+        }
+      ],
+      "notification_count": 0,
+      "provider_calls": 1,
+      "records": [
+        {
+          "run_key": "daily_digest:2026-10-25",
+          "agent_id": "daily_digest",
+          "ts": 1792935472036,
+          "input_digest": "请根据以下数据生成简报：\n{\n  \"date\": \"2026-10-25\",\n  \"nav\": 10000.0,\n  \"period_change\": 0.0,\n  \"period\": \"7d\",\n  \"max_drawdown\": 0.0,\n  \"trades\": 0,\n  \"win_rate\": 0.0,\n  \"alerts\": [\n    \"尚无实验记录\"\n  ]\n}",
+          "output": "",
+          "pushed_to": [],
+          "status": "waiting",
+          "id": "long-record-d365a24e064486d0d38952af1e4a47473960ed9fbf5a9cf208ce50a422e465e9",
+          "runtime_run_id": "long-d365a24e064486d0d38952af1e4a47473960ed9fbf5a9cf208ce50a422e465e9",
+          "runtime_state": "WAITING",
+          "delivery_effect_id": "",
+          "delivery_state": "waiting_generation",
+          "generation_source": "",
+          "runtime_event_seq": 7,
+          "created_at": 1792935472.0421405,
+          "updated_at": 1792935472.0421407
+        }
+      ],
+      "effects": []
+    },
+    {
+      "kind": "maintainer",
+      "delivery_state": "FAILED",
+      "delivery_summary": {},
+      "generation_runs": [
+        {
+          "id": "long-b55761d30e2b9d5c6d09c08b174aaada8ede9c7765d4ade95c6a1569b6ce29bb",
+          "state": "FAILED"
+        }
+      ],
+      "notification_count": 0,
+      "provider_calls": 1,
+      "records": [
+        {
+          "run_key": "strategy_maintainer:2026-W42",
+          "agent_id": "strategy_maintainer",
+          "ts": 1792935477059,
+          "input_digest": "以下是滚动前推验证与参数稳定性数据，请评估是否生成候选新版本：\n{\n  \"period\": \"2026-W42\",\n  \"strategies\": {},\n  \"note\": \"滚动前推验证窗口与样本外数据需在真实数据接入后补充；此处为已存实验的聚合。\"\n}",
+          "output": "",
+          "pushed_to": [],
+          "status": "failed",
+          "id": "long-record-b55761d30e2b9d5c6d09c08b174aaada8ede9c7765d4ade95c6a1569b6ce29bb",
+          "runtime_run_id": "long-b55761d30e2b9d5c6d09c08b174aaada8ede9c7765d4ade95c6a1569b6ce29bb",
+          "runtime_state": "FAILED",
+          "delivery_effect_id": "",
+          "delivery_state": "waiting_generation",
+          "generation_source": "",
+          "runtime_event_seq": 8,
+          "created_at": 1792935477.064802,
+          "updated_at": 1792935477.0648024
+        }
+      ],
+      "effects": []
+    }
+  ],
+  "same_run_key_new_processes": {
+    "records": [
+      {
+        "run_key": "daily_digest:2026-10-25",
+        "agent_id": "daily_digest",
+        "ts": 1792935477669,
+        "input_digest": "请根据以下数据生成简报：\n{\n  \"date\": \"2026-10-25\",\n  \"nav\": 10000,\n  \"period_change\": 0,\n  \"period\": \"7d\",\n  \"max_drawdown\": 0.0,\n  \"trades\": 0,\n  \"win_rate\": 0.0,\n  \"alerts\": []\n}",
+        "output": "Fixed digest\n\n仅为研究结果，非投资建议。",
+        "pushed_to": [
+          "capture"
+        ],
+        "status": "ok",
+        "id": "long-record-d365a24e064486d0d38952af1e4a47473960ed9fbf5a9cf208ce50a422e465e9",
+        "runtime_run_id": "long-d365a24e064486d0d38952af1e4a47473960ed9fbf5a9cf208ce50a422e465e9",
+        "runtime_state": "COMPLETED",
+        "delivery_effect_id": "ed7a3a76cf6e42dda61bad8bb5c04326",
+        "delivery_state": "sent",
+        "generation_source": "llm",
+        "runtime_event_seq": 21
+      },
+      {
+        "run_key": "daily_digest:2026-10-25",
+        "agent_id": "daily_digest",
+        "ts": 1792935477669,
+        "input_digest": "请根据以下数据生成简报：\n{\n  \"date\": \"2026-10-25\",\n  \"nav\": 10000,\n  \"period_change\": 0,\n  \"period\": \"7d\",\n  \"max_drawdown\": 0.0,\n  \"trades\": 0,\n  \"win_rate\": 0.0,\n  \"alerts\": []\n}",
+        "output": "Fixed digest\n\n仅为研究结果，非投资建议。",
+        "pushed_to": [
+          "capture"
+        ],
+        "status": "ok",
+        "id": "long-record-d365a24e064486d0d38952af1e4a47473960ed9fbf5a9cf208ce50a422e465e9",
+        "runtime_run_id": "long-d365a24e064486d0d38952af1e4a47473960ed9fbf5a9cf208ce50a422e465e9",
+        "runtime_state": "COMPLETED",
+        "delivery_effect_id": "ed7a3a76cf6e42dda61bad8bb5c04326",
+        "delivery_state": "sent",
+        "generation_source": "llm",
+        "runtime_event_seq": 21
+      }
+    ],
+    "provider": 1,
+    "notification": 1
+  },
+  "external_notifications_sent": 0
+}

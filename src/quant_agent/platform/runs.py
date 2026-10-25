@@ -450,6 +450,24 @@ class RunService:
             )
         return ok
 
+    def defer(self, run_id: str, owner: str, summary: dict[str, Any]) -> bool:
+        """Suspend only the delivery envelope; Runtime owns its dependency state."""
+        with self.db.tx() as tx:
+            row = tx.fetchone(
+                "SELECT checkpoint FROM runs WHERE id=? AND lease_owner=? AND runtime_version IS NULL", (run_id, owner)
+            )
+            if row is None:
+                return False
+            checkpoint = jload(row["checkpoint"], {})
+            checkpoint["runtime_dependency"] = summary["runtime_run_id"]
+            changed = tx.execute(
+                "UPDATE runs SET state='PAUSED',summary=?,checkpoint=?,lease_owner=NULL,lease_expires_at=NULL,updated_at=? WHERE id=? AND lease_owner=? AND runtime_version IS NULL",
+                (jdump(summary), jdump(checkpoint), now_ms(), run_id, owner),
+            )
+        if changed:
+            self.event(run_id, "state", {"state": PAUSED, "runtime_dependency": summary["runtime_run_id"]})
+        return bool(changed)
+
     def release(self, run_id: str, owner: str) -> None:
         """worker 正常退出时交还租约：任务回到 RECOVERING，由下一个 worker 立即接手。"""
         now = now_ms()

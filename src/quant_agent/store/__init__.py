@@ -190,7 +190,7 @@ class JsonStore:
                     return dict(item)
         return None
 
-    def upsert(self, collection: str, item: dict) -> dict:
+    def upsert(self, collection: str, item: dict, *, version_key: str | None = None) -> dict:
         with self._lock, self._xlock(collection):
             items = self._load(collection)
             item = dict(item)
@@ -199,6 +199,8 @@ class JsonStore:
             item["updated_at"] = time.time()
             for i, existing in enumerate(items):
                 if existing.get("id") == item["id"]:
+                    if version_key and item.get(version_key, -1) < existing.get(version_key, -1):
+                        return dict(existing)
                     items[i] = item
                     break
             else:

@@ -67,9 +67,16 @@ class AgentRunRecord:
     output: str
     pushed_to: list[str] = field(default_factory=list)
     status: str = "ok"
+    id: str = ""
+    runtime_run_id: str = ""
+    runtime_state: str = ""
+    delivery_effect_id: str = ""
+    delivery_state: str = ""
+    generation_source: str = ""
+    runtime_event_seq: int = 0
 
     def to_dict(self) -> dict[str, Any]:
-        return self.__dict__
+        return {k: v for k, v in self.__dict__.items() if k != "id" or v}
 
 
 def fallback_digest(data: DigestData) -> str:
@@ -125,6 +132,7 @@ class LongRunningAgent:
         self.channel = channel
         self.audit_log: list[AgentRunRecord] = []
         self._seen_keys: set[str] = set()
+        self.record_store: Callable[[dict], Any] | None = None
 
     def _should_run(self, run_key: str) -> bool:
         """幂等：同一 run_key 不重复执行/推送。"""
@@ -174,6 +182,13 @@ class DailyDigestAgent(LongRunningAgent):
         data = self.collect_data()
         date = date or data.date
         run_key = f"{self.agent_id}:{date}"
+        if self.agent.runtime_journal is not None or getattr(self.router, "runtime_journal", None) is not None:
+            from .long_runtime import run_once
+
+            task = "请根据以下数据生成简报：\n" + json.dumps(data.__dict__, ensure_ascii=False, indent=2)
+            record = run_once(self, task, run_key, f"策略简报 {date}", fallback_digest(data), dry_run=dry_run)
+            self.audit_log.append(record)
+            return record
         if not self._should_run(run_key):
             return AgentRunRecord(run_key, self.agent_id, int(time.time() * 1000), "", "已运行，跳过", status="skipped")
 
@@ -229,7 +244,12 @@ class StrategyMaintainerAgent(LongRunningAgent):
                 handler=lambda payload: propose_version(payload) if propose_version else {"note": "未接入版本服务"},
             )
         ]
-        self.context = ContextManager(system_prompt=MAINTAINER_PROMPT)
+        if propose_version is None:
+            tools = []
+        self.context = ContextManager(
+            system_prompt=MAINTAINER_PROMPT
+            + ("\n当前未连接候选版本服务，只能提供评估，不得声称创建版本。" if propose_version is None else "")
+        )
         self.agent = Agent(
             name="strategy_maintainer",
             role="reasoning",
@@ -244,6 +264,17 @@ class StrategyMaintainerAgent(LongRunningAgent):
         evidence = self.collect_evidence()
         period = period or evidence.get("period", time.strftime("%Y-%m-%d"))
         run_key = f"{self.agent_id}:{period}"
+        if self.agent.runtime_journal is not None or getattr(self.router, "runtime_journal", None) is not None:
+            from .long_runtime import run_once
+
+            task = "以下是滚动前推验证与参数稳定性数据，请评估是否生成候选新版本：\n" + json.dumps(
+                evidence, ensure_ascii=False, indent=2
+            )
+            record = run_once(
+                self, task, run_key, f"策略维护建议 {period}", fallback_maintainer(evidence), dry_run=dry_run
+            )
+            self.audit_log.append(record)
+            return record
         if not self._should_run(run_key):
             return AgentRunRecord(run_key, self.agent_id, int(time.time() * 1000), "", "已运行，跳过", status="skipped")
 

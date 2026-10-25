@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from . import context
-from .db import jdump, now_ms
+from .db import jdump, jload, now_ms
 from .errors import AppError, ErrorCode
 from .runs import CANCELED, COMPLETED, FAILED, LEASE_MS, PAUSED, RUNNING, RunService, worker_id
 
@@ -43,6 +43,12 @@ class LeaseLost(RuntimeError):
 
 class Canceled(RuntimeError):
     pass
+
+
+class TaskDeferred(RuntimeError):
+    def __init__(self, summary: dict[str, Any]):
+        super().__init__("等待 Agent 执行或人工核对")
+        self.summary = summary
 
 
 @dataclass
@@ -224,6 +230,7 @@ class Worker:
     def loop_once(self) -> None:
         self.refresh_config()
         self.run_periodic()
+        self._wake_deferred_agents()
         # 1) 认领新任务
         while True:
             allow = list(self.resident) if len(self.drivers) < self.max_resident else []
@@ -239,6 +246,54 @@ class Worker:
         # 2) 推进常驻任务
         for run_id in list(self.drivers):
             self.drive(run_id)
+
+    def _wake_deferred_agents(self) -> None:
+        journal = getattr(getattr(self.services, "router", None), "runtime_journal", None)
+        if journal is None:
+            return
+        from agent_runtime import AgentRuntime
+
+        engine = AgentRuntime(journal, None, None)
+        for job in self.runs.db.fetchall(
+            "SELECT id,workspace_id,created_by,checkpoint FROM runs WHERE kind='agent_job' AND state='PAUSED' AND lease_owner IS NULL"
+        ):
+            dependency = jload(job["checkpoint"], {}).get("runtime_dependency")
+            if not dependency:
+                continue
+            current = engine.get(dependency)
+            if (
+                current is None
+                or current["tenant_id"] != job["workspace_id"]
+                or current["spec"].get("metadata", {}).get("user_id") != job["created_by"]
+            ):
+                continue
+            for command in self.runs.pending_commands(job["id"]):
+                if command["command"] == "cancel":
+                    engine.signal(
+                        dependency, "cancel", {}, signal_id="job-cancel:" + command["id"], actor=command["created_by"]
+                    )
+                    self.runs.ack_command(command["id"], message="已转交 Agent 执行；未确认效果仍需核对")
+                else:
+                    self.runs.ack_command(command["id"], status="rejected", message="请从通知执行入口核对并继续")
+            current = engine.get(dependency)
+            ready = current["state"] in {"COMPLETED", "FAILED", "CANCELED"}
+            if current["state"] not in {"CANCELING", "CANCELED", "FAILED", "COMPLETED"}:
+                for step in current["steps"]:
+                    if (
+                        step["state"] == "READY"
+                        or (
+                            step["state"] == "WAITING_ADMISSION"
+                            and (step.get("admission_retry_at") or 0) <= int(time.time() * 1000)
+                        )
+                        or (step["state"] == "IN_FLIGHT" and (step.get("lease_until") or 0) <= int(time.time() * 1000))
+                    ):
+                        ready = True
+                        break
+            if ready:
+                self.runs.db.execute(
+                    "UPDATE runs SET state='QUEUED',updated_at=? WHERE id=? AND state='PAUSED' AND lease_owner IS NULL",
+                    (now_ms(), job["id"]),
+                )
 
     def _schedule_runtime(self) -> None:
         bridge = getattr(self.services, "runtime_bridge", None)
@@ -410,6 +465,8 @@ class Worker:
             log.warning("run %s 租约丢失，停止执行", run["id"])
         except Canceled:
             self.runs.set_state(run["id"], self.owner, CANCELED)
+        except TaskDeferred as exc:
+            self.runs.defer(run["id"], self.owner, exc.summary)
         except AppError as exc:
             self.runs.set_state(run["id"], self.owner, FAILED, error=exc.message, error_code=exc.code)
             self._alert_failed(run, error=exc.message, error_code=exc.code)

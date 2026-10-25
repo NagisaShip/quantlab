@@ -16,6 +16,7 @@ from ..platform.db import dstr
 from ..platform.errors import AppError, ErrorCode
 from ..store import Collections
 from .deps import get_services
+from .runtime_schemas import EffectResolutionIn, ModelUsageResolutionIn
 from .schemas import DigestRunIn, MaintainerRunIn
 
 router = APIRouter(prefix="/api", tags=["长期 Agent 与总览"])
@@ -110,6 +111,12 @@ def _std(values: list[float]) -> float:
 # ---------------------------------------------------------------------------
 # 长期 Agent 运行
 # ---------------------------------------------------------------------------
+def _save_notification(services, record):
+    return services.store.upsert(
+        Collections.NOTIFICATIONS, record, version_key="runtime_event_seq" if record.get("runtime_run_id") else None
+    )
+
+
 @router.post("/long-running/digest/run")
 def run_digest(payload: DigestRunIn) -> dict:
     s = get_services()
@@ -119,8 +126,9 @@ def run_digest(payload: DigestRunIn) -> dict:
         collect_data=collect_digest_data,
         channel=payload.channel,
     )
+    agent.record_store = lambda record: _save_notification(s, record)
     record = agent.run_once(date=payload.date, dry_run=payload.dry_run)
-    saved = s.store.upsert(Collections.NOTIFICATIONS, record.to_dict())
+    saved = _save_notification(s, record.to_dict())
     return {"record": saved, "dry_run": payload.dry_run}
 
 
@@ -133,8 +141,9 @@ def run_maintainer(payload: MaintainerRunIn) -> dict:
         collect_evidence=collect_maintainer_evidence,
         channel=payload.channel,
     )
+    agent.record_store = lambda record: _save_notification(s, record)
     record = agent.run_once(period=payload.period, dry_run=payload.dry_run)
-    saved = s.store.upsert(Collections.NOTIFICATIONS, record.to_dict())
+    saved = _save_notification(s, record.to_dict())
     return {"record": saved, "dry_run": payload.dry_run}
 
 
@@ -147,10 +156,24 @@ def preview_digest() -> dict:
 @router.get("/notifications")
 def list_notifications(limit: int = Query(50, ge=1, le=500)) -> dict:
     s = get_services()
-    return {
-        "notifications": s.store.list(Collections.NOTIFICATIONS, limit=limit),
-        "pending": [n.__dict__ for n in s.hub.pending],
-    }
+    records = s.store.list(Collections.NOTIFICATIONS, limit=limit)
+    journal = getattr(s.router, "runtime_journal", None)
+    if journal is not None:
+        from agent_runtime import AgentRuntime
+
+        from ..agents.long_runtime import project_record
+
+        engine = AgentRuntime(journal, None, None)
+        for index, record in enumerate(records):
+            if record.get("runtime_run_id"):
+                current = engine.get(record["runtime_run_id"])
+                if (
+                    current
+                    and current["tenant_id"] == _ctx.current_workspace()
+                    and current["spec"]["metadata"].get("host") == "long_running"
+                ):
+                    records[index] = _save_notification(s, project_record(current).to_dict())
+    return {"notifications": records, "pending": [n.__dict__ for n in s.hub.pending]}
 
 
 @router.post("/notifications/test")
@@ -781,3 +804,104 @@ def delete_alert_rule(rule_id: str) -> dict:
         raise AppError(ErrorCode.NOT_FOUND, "告警规则不存在")
     s.audit.record("notify.rule_delete", object_type="alert_rule", object_id=rule_id)
     return {"ok": True}
+
+
+def _notification_runtime(record_id: str):
+    from agent_runtime import AgentRuntime
+
+    s = get_services()
+    record = s.store.get(Collections.NOTIFICATIONS, record_id)
+    journal = getattr(s.router, "runtime_journal", None)
+    if not record or not record.get("runtime_run_id") or journal is None:
+        raise HTTPException(404, "没有可恢复的通知执行")
+    engine = AgentRuntime(journal, None, None)
+    run = engine.get(record["runtime_run_id"])
+    ctx = _ctx.current()
+    if not run or run["tenant_id"] != _ctx.current_workspace() or run["spec"]["metadata"].get("host") != "long_running":
+        raise HTTPException(404, "没有可恢复的通知执行")
+    owner = run["spec"]["metadata"]["business_identity"]["user"]
+    if ctx.user_id != owner and not ctx.is_ws_admin:
+        raise AppError(ErrorCode.PERMISSION_DENIED, "仅发起人或管理员可以查看该执行")
+    return record, engine, run, owner
+
+
+@router.get("/long-running/records/{record_id}/runtime", summary="查看通知生成与交付执行状态")
+def notification_runtime(record_id: str):
+    _record, _engine, run, owner = _notification_runtime(record_id)
+    return {"run": run, "can_resume": _ctx.current().user_id == owner, "can_resolve": _ctx.current().is_ws_admin}
+
+
+@router.post("/long-running/records/{record_id}/runtime/resume", summary="从原执行继续通知生成与交付")
+def resume_notification_runtime(record_id: str):
+    _record, _engine, run, owner = _notification_runtime(record_id)
+    if _ctx.current().user_id != owner:
+        raise AppError(ErrorCode.PERMISSION_DENIED, "管理员不能借用发起人的模型身份继续执行")
+    identity = run["spec"]["metadata"]["business_identity"]
+    period = identity["key"].split(":", 1)[1]
+    if identity["agent"] == "daily_digest":
+        return run_digest(DigestRunIn(date=period, channel=identity["channel"], dry_run=identity["preview"]))
+    return run_maintainer(MaintainerRunIn(period=period, channel=identity["channel"], dry_run=identity["preview"]))
+
+
+@router.post("/long-running/records/{record_id}/runtime/effect-resolution", summary="核对通知或候选操作的外部效果")
+def resolve_notification_effect(record_id: str, payload: EffectResolutionIn):
+    _record, engine, run, _owner = _notification_runtime(record_id)
+    if not _ctx.current().is_ws_admin:
+        raise AppError(ErrorCode.PERMISSION_DENIED, "仅管理员可核对外部效果")
+    data = payload.model_dump(exclude={"signal_id"})
+    step = next((s for s in run["steps"] if s["id"] == payload.step_id), None)
+    if not step or step["kind"] != "tool":
+        raise HTTPException(404, "工具步骤不存在")
+    if step["payload"]["name"] == "deliver_notification" and payload.outcome == "succeeded":
+        arguments = step["payload"]["arguments"]
+        data["result"] = {
+            "sent": True,
+            "body": arguments["body"],
+            "source": arguments["source"],
+            "effect_id": step["effect_id"],
+            "preview": False,
+            "receipt": payload.result,
+        }
+    accepted = engine.signal(
+        run["id"], "effect_resolution", data, signal_id=payload.signal_id, actor=_ctx.current().user_id
+    )
+    get_services().audit.record(
+        "notification.effect_resolution",
+        object_type="run",
+        object_id=run["id"],
+        details={"step_id": payload.step_id, "outcome": payload.outcome},
+    )
+    return {"accepted": accepted, "run": engine.get(run["id"])}
+
+
+@router.post("/long-running/records/{record_id}/runtime/model-usage", summary="核对通知生成请求的模型用量")
+def resolve_notification_model_usage(record_id: str, payload: ModelUsageResolutionIn):
+    from ..platform.runtime_adapters import reconcile_model_usage
+
+    _record, engine, run, _owner = _notification_runtime(record_id)
+    if not _ctx.current().is_ws_admin:
+        raise AppError(ErrorCode.PERMISSION_DENIED, "仅管理员可核对模型费用")
+    if not any(step["id"] == payload.step_id and step["kind"] == "model" for step in run["steps"]):
+        raise HTTPException(404, "模型步骤不存在")
+    try:
+        accepted = reconcile_model_usage(
+            engine,
+            get_services().model_hub,
+            run["id"],
+            payload.step_id,
+            actor=_ctx.current().user_id,
+            usage=payload.usage,
+            no_charge_confirmed=payload.no_charge_confirmed,
+        )
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return {"accepted": accepted, "run": engine.get(run["id"])}
+
+
+@router.post("/long-running/records/{record_id}/runtime/cancel", summary="取消通知执行并保留未确认效果")
+def cancel_notification_runtime(record_id: str):
+    _record, engine, run, _owner = _notification_runtime(record_id)
+    accepted = engine.signal(
+        run["id"], "cancel", {}, signal_id="notification-cancel:" + run["id"], actor=_ctx.current().user_id
+    )
+    return {"accepted": accepted, "run": engine.get(run["id"])}

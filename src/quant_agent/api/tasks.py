@@ -1037,12 +1037,51 @@ def handle_agent_job(ctl: TaskCtl) -> dict[str, Any]:
             return {"job_id": job["id"], "kind": "nightshift", "status": sh.get("status"), "record_id": sh.get("id")}
         b = make_brief(BriefIn(push=True, channel=job.get("channel", "console"), source="schedule"))["brief"]
         return {"job_id": job["id"], "kind": "brief", "status": "ok", "record_id": b["id"]}
-    if job["kind"] == "digest":
-        out = run_digest(DigestRunIn(channel=job.get("channel", "console"), dry_run=False))
-    else:
-        out = run_maintainer(MaintainerRunIn(channel=job.get("channel", "console"), dry_run=False))
+    from ..agents.long_runtime import scheduled_context
+
+    period = None
+    channel = job.get("channel", "console")
+    preview = False
+    dependency = (ctl.checkpoint_data or {}).get("runtime_dependency")
+    if dependency:
+        journal = getattr(ctl.services.router, "runtime_journal", None)
+        saved = journal.run(dependency) if journal is not None else None
+        identity = (saved or {}).get("spec", {}).get("metadata", {}).get("business_identity", {})
+        if (
+            saved is None
+            or saved["tenant_id"] != ctl.run["workspace_id"]
+            or identity.get("user") != ctl.run["created_by"]
+            or identity.get("agent") != {"digest": "daily_digest", "maintainer": "strategy_maintainer"}.get(job["kind"])
+        ):
+            raise AppError(ErrorCode.CONFLICT, "定时任务的原执行不可用，请核对后继续")
+        period = identity["key"].split(":", 1)[1]
+        channel, preview = identity["channel"], identity["preview"]
+    with scheduled_context(ctl):
+        if job["kind"] == "digest":
+            out = run_digest(DigestRunIn(date=period, channel=channel, dry_run=preview))
+        else:
+            out = run_maintainer(MaintainerRunIn(period=period, channel=channel, dry_run=preview))
     rec = out.get("record") or {}
-    return {"job_id": job["id"], "kind": job["kind"], "status": rec.get("status"), "record_id": rec.get("id")}
+    summary = {
+        "job_id": job["id"],
+        "kind": job["kind"],
+        "status": rec.get("status"),
+        "record_id": rec.get("id"),
+        **{
+            k: rec[k] for k in ("runtime_run_id", "runtime_state", "delivery_state", "delivery_effect_id") if rec.get(k)
+        },
+    }
+    if rec.get("runtime_state") in {"RUNNING", "QUEUED", "WAITING", "RECOVERING", "CANCELING"}:
+        from ..platform.worker import TaskDeferred
+
+        raise TaskDeferred(summary)
+    if rec.get("runtime_state") == "CANCELED":
+        from ..platform.worker import Canceled
+
+        raise Canceled("Agent 已取消")
+    if rec.get("runtime_state") == "FAILED":
+        raise AppError(ErrorCode.UPSTREAM_UNAVAILABLE, "定时 Agent 执行失败，未发送通知", details=summary)
+    return summary
 
 
 # ---------------------------------------------------------------------------

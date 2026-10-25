@@ -14,6 +14,7 @@ import {
 import { BriefView, NightShiftView } from './NightShift'
 import { Segments } from '../components/ui'
 import type { PageProps } from './types'
+import { NotificationRecovery } from '../components/lab/NotificationRecovery'
 
 type Tab = 'night' | 'brief' | 'push'
 const TABS: { value: Tab; label: string }[] = [{ value: 'night', label: '任务计划' }, { value: 'brief', label: 'AI 晨报' }, { value: 'push', label: '通知与调度' }]
@@ -69,9 +70,9 @@ function PushAndSchedule({ notify, setBusy }: Pick<PageProps, 'notify' | 'setBus
     setBusy({ title, note })
     setError('')
     try {
-      await fn()
+      const response = await fn() as { record?: { status?: string } } | undefined
       await refresh()
-      notify(label)
+      notify(response?.record?.status === 'waiting' ? '执行已暂停，请核对后继续' : response?.record?.status === 'failed' ? '执行失败，通知未发送' : label)
     } catch (e) {
       setError((e as Error).message)
       notify((e as Error).message, true)
@@ -159,11 +160,7 @@ function PushAndSchedule({ notify, setBusy }: Pick<PageProps, 'notify' | 'setBus
           )}
         </Panel>
 
-        <Panel title="策略维护型 Agent" subtitle="产出候选版本与差异报告，绝不自动上线">
-          <div className="card-body" style={{ marginBottom: 14 }}>
-            汇总已存实验的收益分布、回撤与参数，评估是否需要生成候选新版本。
-            <strong> 它永远不会直接启用实盘。</strong>
-          </div>
+        <Panel title="策略维护型 Agent" subtitle="汇总已存实验，生成维护建议">
           <div className="button-row">
             <button
               className="button"
@@ -268,13 +265,13 @@ function PushAndSchedule({ notify, setBusy }: Pick<PageProps, 'notify' | 'setBus
           <EmptyState glyph="◷" title="还没有推送记录">生成一次简报后会出现在这里。</EmptyState>
         ) : (
           records.slice(0, 10).map((r, i) => (
-            <article className="role-card" key={i} style={{ marginBottom: 14 }}>
+            <article className="role-card" key={r.id || i} style={{ marginBottom: 14 }}>
               <div className="card-tags">
                 <Tag>{r.agent_id === 'daily_digest' ? '每日简报' : '策略维护'}</Tag>
                 <Tag mono>{r.run_key}</Tag>
-                {r.status === 'ok'
+                {r.delivery_state === 'preview' ? <Tag>已生成</Tag> : r.status === 'waiting' ? <Tag tone="warn">等待核对或执行</Tag> : r.status === 'canceled' ? <Tag>已取消</Tag> : r.status === 'ok'
                   ? <Tag tone="ok">已推送</Tag>
-                  : r.status === 'skipped' ? <Tag>已跳过</Tag> : <Tag tone="warn">待重试</Tag>}
+                  : r.status === 'failed' ? <Tag tone="fail">执行失败</Tag> : r.status === 'skipped' ? <Tag>已跳过</Tag> : <Tag tone="warn">待重试</Tag>}
                 <span className="muted" style={{ fontSize: 10 }}>{shortTime(r.ts)}</span>
               </div>
               <pre style={{
@@ -284,6 +281,7 @@ function PushAndSchedule({ notify, setBusy }: Pick<PageProps, 'notify' | 'setBus
               }}>
                 {r.output}
               </pre>
+              {r.runtime_run_id && r.id && <NotificationRecovery recordId={r.id} onChanged={refresh} onError={setError} />}
             </article>
           ))
         )}

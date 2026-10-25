@@ -1,0 +1,584 @@
+{
+  "legacy_commit": "188f99744b245dac2ed0e742839186a0c0542aa4",
+  "journal_before_ref": "0f5a3df",
+  "provider": "local deterministic mock",
+  "external_cost": 0,
+  "rows": [
+    {
+      "framework": "quantlab_before",
+      "repeat": -2,
+      "warmup": true,
+      "ms": 505.23300003260374,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_after",
+      "repeat": -2,
+      "warmup": true,
+      "ms": 53.87120001250878,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_before",
+      "repeat": -1,
+      "warmup": true,
+      "ms": 146.8853999977,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_after",
+      "repeat": -1,
+      "warmup": true,
+      "ms": 53.13449999084696,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_before",
+      "repeat": 0,
+      "warmup": false,
+      "ms": 109.64879998937249,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_after",
+      "repeat": 0,
+      "warmup": false,
+      "ms": 82.79319998109713,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_before",
+      "repeat": 1,
+      "warmup": false,
+      "ms": 115.16340001253411,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_after",
+      "repeat": 1,
+      "warmup": false,
+      "ms": 46.53320001671091,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_after",
+      "repeat": 2,
+      "warmup": false,
+      "ms": 58.11500002164394,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_before",
+      "repeat": 2,
+      "warmup": false,
+      "ms": 98.75449998071417,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_before",
+      "repeat": 3,
+      "warmup": false,
+      "ms": 107.97070001717657,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_after",
+      "repeat": 3,
+      "warmup": false,
+      "ms": 67.50349997309968,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_after",
+      "repeat": 4,
+      "warmup": false,
+      "ms": 64.1075000166893,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_before",
+      "repeat": 4,
+      "warmup": false,
+      "ms": 108.40940003981814,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_before",
+      "repeat": 5,
+      "warmup": false,
+      "ms": 133.30510002560914,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_after",
+      "repeat": 5,
+      "warmup": false,
+      "ms": 67.00750003801659,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_after",
+      "repeat": 6,
+      "warmup": false,
+      "ms": 67.31070001842454,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_before",
+      "repeat": 6,
+      "warmup": false,
+      "ms": 126.93099997704849,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_before",
+      "repeat": 7,
+      "warmup": false,
+      "ms": 110.417400021106,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_after",
+      "repeat": 7,
+      "warmup": false,
+      "ms": 83.91009998740628,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_after",
+      "repeat": 8,
+      "warmup": false,
+      "ms": 60.20969996461645,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_before",
+      "repeat": 8,
+      "warmup": false,
+      "ms": 116.91569996764883,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_before",
+      "repeat": 9,
+      "warmup": false,
+      "ms": 129.32080001337454,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_after",
+      "repeat": 9,
+      "warmup": false,
+      "ms": 49.04809995787218,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_before",
+      "repeat": 10,
+      "warmup": false,
+      "ms": 134.194899990689,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_after",
+      "repeat": 10,
+      "warmup": false,
+      "ms": 69.72999998833984,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_before",
+      "repeat": 11,
+      "warmup": false,
+      "ms": 118.33820003084838,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_after",
+      "repeat": 11,
+      "warmup": false,
+      "ms": 58.80350002553314,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_before",
+      "repeat": 12,
+      "warmup": false,
+      "ms": 111.71119997743517,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_after",
+      "repeat": 12,
+      "warmup": false,
+      "ms": 70.85919997189194,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_after",
+      "repeat": 13,
+      "warmup": false,
+      "ms": 60.90739998035133,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_before",
+      "repeat": 13,
+      "warmup": false,
+      "ms": 102.86859999177977,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_after",
+      "repeat": 14,
+      "warmup": false,
+      "ms": 67.9048000019975,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_before",
+      "repeat": 14,
+      "warmup": false,
+      "ms": 117.04839998856187,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_after",
+      "repeat": 15,
+      "warmup": false,
+      "ms": 83.94290000433102,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_before",
+      "repeat": 15,
+      "warmup": false,
+      "ms": 104.1568000218831,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_before",
+      "repeat": 16,
+      "warmup": false,
+      "ms": 105.32750003039837,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_after",
+      "repeat": 16,
+      "warmup": false,
+      "ms": 69.4004999822937,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_before",
+      "repeat": 17,
+      "warmup": false,
+      "ms": 131.61089998902753,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_after",
+      "repeat": 17,
+      "warmup": false,
+      "ms": 52.991900010965765,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_before",
+      "repeat": 18,
+      "warmup": false,
+      "ms": 94.45739997318015,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_after",
+      "repeat": 18,
+      "warmup": false,
+      "ms": 92.9490000125952,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_before",
+      "repeat": 19,
+      "warmup": false,
+      "ms": 118.23660001391545,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_after",
+      "repeat": 19,
+      "warmup": false,
+      "ms": 71.15020003402606,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_before",
+      "repeat": 20,
+      "warmup": false,
+      "ms": 116.40850000549108,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_after",
+      "repeat": 20,
+      "warmup": false,
+      "ms": 59.217399975750595,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_after",
+      "repeat": 21,
+      "warmup": false,
+      "ms": 74.74299997556955,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_before",
+      "repeat": 21,
+      "warmup": false,
+      "ms": 104.58919999655336,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_after",
+      "repeat": 22,
+      "warmup": false,
+      "ms": 64.70489996718243,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_before",
+      "repeat": 22,
+      "warmup": false,
+      "ms": 105.45610002009198,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_after",
+      "repeat": 23,
+      "warmup": false,
+      "ms": 96.90250002313405,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_before",
+      "repeat": 23,
+      "warmup": false,
+      "ms": 114.65420003514737,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_after",
+      "repeat": 24,
+      "warmup": false,
+      "ms": 70.53399999858811,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_before",
+      "repeat": 24,
+      "warmup": false,
+      "ms": 106.77060001762584,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_before",
+      "repeat": 25,
+      "warmup": false,
+      "ms": 103.63079997478053,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_after",
+      "repeat": 25,
+      "warmup": false,
+      "ms": 69.7296999860555,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_before",
+      "repeat": 26,
+      "warmup": false,
+      "ms": 102.31419996125624,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_after",
+      "repeat": 26,
+      "warmup": false,
+      "ms": 44.76109996903688,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_after",
+      "repeat": 27,
+      "warmup": false,
+      "ms": 85.76929999981076,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_before",
+      "repeat": 27,
+      "warmup": false,
+      "ms": 101.88089997973293,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_after",
+      "repeat": 28,
+      "warmup": false,
+      "ms": 73.01579997874796,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_before",
+      "repeat": 28,
+      "warmup": false,
+      "ms": 112.0799999916926,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_after",
+      "repeat": 29,
+      "warmup": false,
+      "ms": 59.44959999760613,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab_before",
+      "repeat": 29,
+      "warmup": false,
+      "ms": 111.12450005020946,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    }
+  ]
+}

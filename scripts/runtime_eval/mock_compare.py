@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import random
+import subprocess
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -17,6 +20,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--repeats", type=int, default=20)
+    parser.add_argument("--compare-journal-ref")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     trials = {}
@@ -95,6 +99,22 @@ def main():
     thread.start()
     legacy = legacy_class(args.output)
     frameworks = ["legacy", "quantlab", "langgraph", "langgraph_sqlite", "pydantic"]
+    import agent_runtime
+
+    original_journal = agent_runtime.Journal
+    before_journal = original_journal
+    if args.compare_journal_ref:
+        source = subprocess.check_output(
+            ["git", "show", args.compare_journal_ref + ":packages/agent-runtime/src/agent_runtime/journal.py"]
+        )
+        path = args.output / "journal_before.py"
+        path.write_bytes(source)
+        spec = importlib.util.spec_from_file_location("agent_runtime._evaluation_journal_before", path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        before_journal = module.Journal
+        frameworks = ["quantlab_before", "quantlab_after"]
     rows = []
     rng = random.Random(112)
     try:
@@ -111,7 +131,8 @@ def main():
                 error = None
                 try:
                     task = {"prompt": "Read ledger and calculate net profit with calculator. Return JSON."}
-                    if framework in {"legacy", "quantlab"}:
+                    if framework in {"legacy", "quantlab", "quantlab_before", "quantlab_after"}:
+                        agent_runtime.Journal = before_journal if framework == "quantlab_before" else original_journal
                         output, state = quantlab_run(
                             trial, task, url, folder, legacy if framework == "legacy" else None
                         )
@@ -140,11 +161,18 @@ def main():
                     }
                 )
     finally:
+        agent_runtime.Journal = original_journal
         server.shutdown()
         server.server_close()
     (args.output / "results.json").write_text(
         json.dumps(
-            {"legacy_commit": LEGACY, "provider": "local deterministic mock", "external_cost": 0, "rows": rows},
+            {
+                "legacy_commit": LEGACY,
+                "journal_before_ref": args.compare_journal_ref,
+                "provider": "local deterministic mock",
+                "external_cost": 0,
+                "rows": rows,
+            },
             indent=2,
         ),
         encoding="utf-8",

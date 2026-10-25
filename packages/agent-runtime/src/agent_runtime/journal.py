@@ -7,8 +7,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import sqlite3
+import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -223,6 +225,10 @@ class _DB:
 
 class Journal:
     def __init__(self, path: str | Path, *, schema: str = "agent_runtime") -> None:
+        self._pool_lock = threading.Lock()
+        self._sqlite_pool = []
+        self._pool_pid = os.getpid()
+        self._closed = False
         self.path = str(path)
         self.dialect = "postgres" if urlparse(self.path).scheme in {"postgres", "postgresql"} else "sqlite"
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,62}", schema):
@@ -319,15 +325,35 @@ class Journal:
                     },
                 )
 
+    def close(self) -> None:
+        """Release idle SQLite handles; active borrowers close on return."""
+        with self._pool_lock:
+            self._closed = True
+            idle, self._sqlite_pool = self._sqlite_pool, []
+        for raw in idle:
+            raw.close()
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
+
     @contextmanager
     def connection(self) -> Iterator[_DB]:
+        if self._pool_pid != os.getpid():
+            raise RuntimeError("recreate Journal in the child process after fork")
+        with self._pool_lock:
+            if self._closed:
+                raise RuntimeError("Journal is closed")
+            raw = self._sqlite_pool.pop() if self._sqlite_pool else None
         if self.dialect == "postgres":
             import psycopg
             from psycopg.rows import dict_row
 
             raw = psycopg.connect(self.path, autocommit=True, row_factory=dict_row)
-        else:
-            raw = sqlite3.connect(self.path, timeout=30, isolation_level=None)
+        elif raw is None:
+            raw = sqlite3.connect(self.path, timeout=30, isolation_level=None, check_same_thread=False)
             raw.row_factory = sqlite3.Row
             raw.execute("PRAGMA foreign_keys=ON")
             raw.execute("PRAGMA busy_timeout=30000")
@@ -337,7 +363,22 @@ class Journal:
         try:
             yield db
         finally:
-            db.close()
+            if self.dialect == "postgres":
+                db.close()
+            else:
+                reusable = True
+                try:
+                    if raw.in_transaction:
+                        raw.rollback()
+                    raw.execute("PRAGMA query_only=OFF")
+                except sqlite3.Error:
+                    reusable = False
+                with self._pool_lock:
+                    if reusable and not self._closed and len(self._sqlite_pool) < 4:
+                        self._sqlite_pool.append(raw)
+                        raw = None
+                if raw is not None:
+                    raw.close()
 
     @contextmanager
     def read_tx(self) -> Iterator[_DB]:

@@ -242,6 +242,10 @@ export interface DigestData {
   alerts: string[]
 }
 export interface NotificationRecord {
+  id?: string
+  runtime_run_id?: string
+  runtime_state?: string
+  delivery_state?: string
   run_key: string
   agent_id: string
   ts: number

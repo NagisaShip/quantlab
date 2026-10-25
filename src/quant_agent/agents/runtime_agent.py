@@ -24,15 +24,20 @@ def prepare_agent(agent: Any, task: str, *, retrieved: list | None = None):
 
     messages = [asdict(message) for message in agent.context.build(task, retrieved=retrieved)]
     resource_classes = tool_resource_classes(agent.tools)
+    model_rounds = agent.max_steps + int(bool(agent.tools))
+    tool_budget = getattr(agent, "max_tool_calls", None)
+    tool_budget = tool_budget if tool_budget is not None else agent.max_steps * 16 if agent.tools else 0
     return ChildTask(
         task,
         AgentSpec(
             name=agent.name,
             version="1",
             tools=tuple(ToolSpec(tool.name, effect="external_effect") for tool in agent.tools.values()),
-            max_steps=agent.max_steps,
+            max_steps=model_rounds + tool_budget,
+            max_tool_calls=tool_budget,
             metadata={
                 "host": "generic_agent",
+                "max_model_calls": model_rounds,
                 **({"tool_resource_classes": resource_classes} if resource_classes else {}),
                 "role": agent.role,
                 "user_id": context.current().user_id or "system",

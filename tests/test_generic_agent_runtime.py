@@ -106,3 +106,35 @@ def test_generic_model_rebuilds_document_inspection_from_saved_tool_result(monke
     port = QuantLabAgentModelPort(Router(), workspace_id="ws", user_id="u")
     assert port.generate(messages, request_id="step").text == "layout checked"
     assert len(messages) == 1
+
+
+def test_one_model_round_with_tool_batch_still_gets_its_final_answer(tmp_path):
+    class Router:
+        calls = 0
+        runtime_journal = Journal(tmp_path / "model-rounds.sqlite")
+
+        def chat(self, messages, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return ChatResult(
+                    content="",
+                    provider="demo",
+                    model="m",
+                    tool_calls=[ToolCall("a", "lookup", {"x": 1}), ToolCall("b", "lookup", {"x": 2})],
+                )
+            return ChatResult(content="both checked", provider="demo", model="m")
+
+    router = Router()
+    used = []
+    agent = Agent(
+        name="bounded",
+        role="code_gen",
+        router=router,
+        context=ContextManager(system_prompt="Check"),
+        tools=[tool("lookup", "lookup", {}, lambda x: used.append(x) or {"value": x})],
+        max_steps=1,
+    )
+    with context.bind("ws", user_id="u", role="member"):
+        result = agent.run("Check both")
+    assert result.status == "done" and result.final == "both checked"
+    assert used == [1, 2] and router.calls == 2

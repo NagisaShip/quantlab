@@ -743,6 +743,17 @@ class AgentRuntime:
             if step["kind"] == "model" and step["state"] == "RECONCILING":
                 self.journal.set_run(db, run_id, "WAITING")
                 return False
+            model_limit = spec.get("metadata", {}).get("max_model_calls")
+            if step["kind"] == "model" and model_limit is not None:
+                model_position = db.execute(
+                    "SELECT COUNT(*) AS n FROM steps WHERE run_id=? AND kind='model' AND ordinal<=?",
+                    (run_id, step["ordinal"]),
+                ).fetchone()["n"]
+                if model_position > model_limit:
+                    self.journal.settle(db, run_id, step["id"], 0)
+                    self.journal.set_step(db, step["id"], "FAILED")
+                    self.journal.set_run(db, run_id, "FAILED", error="max_model_calls exceeded")
+                    return False
             if step["kind"] == "tool":
                 tool_spec = next(x for x in spec["tools"] if x["name"] == payload["name"])
                 approved = False
@@ -1077,9 +1088,23 @@ class AgentRuntime:
         if pending is not None:
             self.journal.set_run(db, run["id"], "RUNNING")
             return
+        if load(step["payload"])["name"] in spec.get("metadata", {}).get("finish_after_tools", []):
+            self.journal.set_run(db, run["id"], "COMPLETED", output=dump(result), error=None)
+            return
         count = db.execute("SELECT COUNT(*) AS n FROM steps WHERE run_id=?", (run["id"],)).fetchone()["n"]
-        if count >= spec["max_steps"]:
-            self.journal.set_run(db, run["id"], "FAILED", error="max_steps exceeded")
+        model_limit = spec.get("metadata", {}).get("max_model_calls")
+        model_count = db.execute(
+            "SELECT COUNT(*) AS n FROM steps WHERE run_id=? AND kind='model'", (run["id"],)
+        ).fetchone()["n"]
+        if count >= spec["max_steps"] or (model_limit is not None and model_count >= model_limit):
+            self.journal.set_run(
+                db,
+                run["id"],
+                "FAILED",
+                error="max_model_calls exceeded"
+                if model_limit is not None and model_count >= model_limit
+                else "max_steps exceeded",
+            )
         else:
             last_model = db.execute(
                 "SELECT MAX(ordinal) AS n FROM steps WHERE run_id=? AND kind='model'", (run["id"],)
