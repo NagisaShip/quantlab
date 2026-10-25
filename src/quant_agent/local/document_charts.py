@@ -67,6 +67,9 @@ def chart_png(chart):
         for name in [
             "msyh.ttc",
             "C:/Windows/Fonts/msyh.ttc",
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+            "/System/Library/Fonts/PingFang.ttc",
             "DejaVuSans.ttf",
             "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         ]:

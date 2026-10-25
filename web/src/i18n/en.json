@@ -7763,5 +7763,6 @@
  "等待核对或执行": "Waiting for review or execution",
  "执行已暂停，请核对后继续": "Execution paused; review before continuing",
  "执行失败，通知未发送": "Execution failed; notification was not sent",
- "汇总已存实验，生成维护建议": "Review saved experiments and suggest maintenance"
+ "汇总已存实验，生成维护建议": "Review saved experiments and suggest maintenance",
+ "取消执行": "Cancel execution"
 }
