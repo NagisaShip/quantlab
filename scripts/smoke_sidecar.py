@@ -18,11 +18,14 @@ def main():
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser()
     parser.add_argument("binary", type=Path)
+    parser.add_argument("--expected-commit", help="require this exact source revision in the build manifest")
     args = parser.parse_args()
     binary = args.binary.resolve(strict=True)
     manifest_path = binary.parent / "build-manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest["agent_runtime"] is True, "sidecar manifest does not include Agent Runtime"
+    if args.expected_commit:
+        assert manifest.get("source_commit") == args.expected_commit, "sidecar was built from another source revision"
     scratch = Path(__file__).resolve().parents[1] / ".tmp"
     scratch.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="quantlab-sidecar-", dir=scratch) as tmp:

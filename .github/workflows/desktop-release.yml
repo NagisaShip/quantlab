@@ -6,6 +6,11 @@ on:
         description: '要重建资产的现有 release 标签（须与应用版本一致）'
         required: false
         type: string
+      publish_assets:
+        description: '验证完成后替换 Release 资产；关闭时仅构建并保存 Actions 产物'
+        required: false
+        type: boolean
+        default: true
   push:
     tags: ['v0.1.0-preview.*']
 permissions:
@@ -26,8 +31,6 @@ jobs:
         with:
           node-version: '22'
       - uses: dtolnay/rust-toolchain@stable
-      - name: Test desktop launcher
-        run: cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked
       - name: Validate release tag version
         env:
           RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
@@ -46,7 +49,9 @@ jobs:
         run: |
           python scripts/build_sidecar.py --clean
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python scripts/smoke_sidecar.py desktop/src-tauri/resources/backend/quantlab-backend/quantlab-backend.exe
+          python scripts/smoke_sidecar.py desktop/src-tauri/resources/backend/quantlab-backend/quantlab-backend.exe --expected-commit ${{ github.sha }}
+      - name: Test desktop launcher
+        run: cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked
       - name: Package desktop installer
         working-directory: desktop
         run: |
@@ -75,7 +80,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
       - name: Create draft release with installer and checksums
-        if: startsWith(github.ref, 'refs/tags/v0.1.0-preview.') || inputs.release_tag != ''
+        if: (startsWith(github.ref, 'refs/tags/v0.1.0-preview.') || inputs.release_tag != '') && (github.event_name != 'workflow_dispatch' || inputs.publish_assets)
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
