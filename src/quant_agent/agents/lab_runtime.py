@@ -361,9 +361,19 @@ def run_chat(
         cancel_chat(lab, pid)
         raise
     current = runtime.get(run_id)
+    lab.store.patch(
+        pid,
+        runtime_wait_reason="admission"
+        if any(step["state"] == "WAITING_ADMISSION" for step in current["steps"])
+        else "",
+    )
     runtime.journal.checkpoint(run_id)
     for step in current["steps"]:
-        if step["state"] == "RECONCILING" and not step.get("result") and step["id"] in model.streams:
+        if (
+            step["state"] in {"RECONCILING", "WAITING_ADMISSION"}
+            and not step.get("result")
+            and step["id"] in model.streams
+        ):
             model.streams[step["id"]].abort()
     pending = next((step for step in current["steps"] if step["state"] == "WAITING_APPROVAL"), None)
     if pending:

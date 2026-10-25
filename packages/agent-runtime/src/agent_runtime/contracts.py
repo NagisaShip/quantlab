@@ -83,6 +83,16 @@ class ChildTask:
     dependency_policy: str = "all_success"
 
 
+class ModelAdmissionPending(RuntimeError):
+    """Temporary pre-dispatch backpressure; safe to retry the same logical Step."""
+
+    def __init__(self, message: str = "model capacity is temporarily unavailable", *, retry_after_ms: int = 1000):
+        if isinstance(retry_after_ms, bool) or not isinstance(retry_after_ms, int) or not 1 <= retry_after_ms <= 60000:
+            raise ValueError("retry_after_ms must be an integer between 1 and 60000")
+        super().__init__(message)
+        self.retry_after_ms = retry_after_ms
+
+
 class ModelUnavailable(RuntimeError):
     """The model step was rejected before any provider request was dispatched."""
 

@@ -10,7 +10,7 @@ import uuid
 from dataclasses import asdict
 from typing import Any
 
-from .contracts import AgentSpec, ChildTask, ModelPort, ModelUnavailable, ToolCall, ToolPort
+from .contracts import AgentSpec, ChildTask, ModelAdmissionPending, ModelPort, ModelUnavailable, ToolCall, ToolPort
 from .journal import Journal, JournalIntegrityError, dump, load, now_ms
 
 
@@ -332,6 +332,12 @@ class AgentRuntime:
                 self.journal.event(db, current, "run.cancel_propagated", {"root_id": run_id, "actor": actor})
             for step in db.execute("SELECT id,state FROM steps WHERE run_id=?", (current,)).fetchall():
                 if step["state"] not in {"SUCCEEDED", "FAILED", "CANCELED"}:
+                    if step["state"] not in {"IN_FLIGHT", "RECONCILING"}:
+                        if db.execute(
+                            "SELECT 1 FROM reservations WHERE step_id=? AND status='reserved'", (step["id"],)
+                        ).fetchone():
+                            self.journal.settle(db, current, step["id"], 0)
+                        db.execute("DELETE FROM admission_waits WHERE step_id=?", (step["id"],))
                     self.journal.set_step(
                         db, step["id"], "RECONCILING" if step["state"] in {"IN_FLIGHT", "RECONCILING"} else "CANCELED"
                     )
@@ -678,6 +684,10 @@ class AgentRuntime:
             ).fetchone()
             if step is None:
                 return False
+            if step["state"] == "WAITING_ADMISSION":
+                wait = db.execute("SELECT retry_at FROM admission_waits WHERE step_id=?", (step["id"],)).fetchone()
+                if wait and wait["retry_at"] > now_ms():
+                    return False
             if step["state"] == "IN_FLIGHT" and step["lease_until"] and step["lease_until"] > now_ms():
                 return False
             if step["state"] == "IN_FLIGHT":
@@ -743,6 +753,7 @@ class AgentRuntime:
                     self.journal.set_step(db, step["id"], "WAITING_ADMISSION")
                     self.journal.set_run(db, run_id, "WAITING")
                     return False
+            db.execute("DELETE FROM admission_waits WHERE step_id=?", (step["id"],))
             epoch = step["lease_epoch"] + 1
             attempt_id = uuid.uuid4().hex
             db.execute(
@@ -767,6 +778,62 @@ class AgentRuntime:
             messages = load(run["messages"])
         try:
             result = self._execute_with_lease(run_id, step, epoch, messages, payload, attempt_id)
+        except ModelAdmissionPending as exc:
+            with self.journal.tx() as db:
+                if not self._owns(db, step["id"], epoch, run_id):
+                    late = db.execute(
+                        "SELECT s.state,s.lease_epoch,s.lease_until,r.state AS run_state "
+                        "FROM steps s JOIN runs r ON r.id=s.run_id WHERE s.id=? AND r.id=?",
+                        (step["id"], run_id),
+                    ).fetchone()
+                    if (
+                        step["kind"] == "model"
+                        and late
+                        and late["run_state"] == "CANCELING"
+                        and late["state"] == "RECONCILING"
+                        and late["lease_epoch"] == epoch
+                        and (late["lease_until"] or 0) > now_ms()
+                    ):
+                        db.execute(
+                            "UPDATE attempts SET status='NOT_ADMITTED',ended_at=?,error=? WHERE id=?",
+                            (now_ms(), str(exc), attempt_id),
+                        )
+                        self.journal.settle(db, run_id, step["id"], 0)
+                        self.journal.set_step(db, step["id"], "CANCELED", lease_owner=None, lease_until=None)
+                        self._finish_cancellation(db, run_id)
+                    return False
+                if step["kind"] != "model":
+                    # A tool must never turn an unknown external effect into a retry.
+                    db.execute(
+                        "UPDATE attempts SET status='UNKNOWN',ended_at=?,error=? WHERE id=?",
+                        (now_ms(), "invalid tool admission exception", attempt_id),
+                    )
+                    self.journal.set_step(db, step["id"], "RECONCILING")
+                    self.journal.set_run(db, run_id, "WAITING", error="tool result requires reconciliation")
+                    return False
+                retry_at = now_ms() + exc.retry_after_ms
+                db.execute(
+                    "UPDATE attempts SET status='NOT_ADMITTED',ended_at=?,error=? WHERE id=?",
+                    (now_ms(), str(exc), attempt_id),
+                )
+                db.execute(
+                    "INSERT INTO admission_waits(step_id,retry_at) VALUES(?,?) "
+                    "ON CONFLICT(step_id) DO UPDATE SET retry_at=excluded.retry_at",
+                    (step["id"], retry_at),
+                )
+                self.journal.event(
+                    db,
+                    run_id,
+                    "model.admission_wait",
+                    {
+                        "step_id": step["id"],
+                        "attempt_id": attempt_id,
+                        "retry_at": retry_at,
+                    },
+                )
+                self.journal.set_step(db, step["id"], "WAITING_ADMISSION", lease_owner=None, lease_until=None)
+                self.journal.set_run(db, run_id, "WAITING", error=None)
+            return False
         except ModelUnavailable as exc:
             # These failures are definitive: admission rejected the call before
             # dispatch, or the provider result is already settled but invalid.

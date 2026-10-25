@@ -355,3 +355,112 @@ def test_state_event_divergence_stops_execution(tmp_path):
         db.execute("UPDATE runs SET state='COMPLETED' WHERE id=?", (run_id,))
     with pytest.raises(JournalIntegrityError, match="differs"):
         runtime.resume(run_id)
+
+
+def test_temporary_admission_survives_restart_without_busy_loop_or_double_reserve(tmp_path):
+    from agent_runtime import ModelAdmissionPending
+
+    journal = Journal(tmp_path / "admission.sqlite")
+
+    class Busy:
+        calls = 0
+
+        def generate(self, messages, *, request_id):
+            self.calls += 1
+            if self.calls == 1:
+                raise ModelAdmissionPending(retry_after_ms=60000)
+            return ModelResult(text="done", usage_micro=3)
+
+    model = Busy()
+    runtime = AgentRuntime(journal, model, None)
+    rid = runtime.start("go", AgentSpec("test", "1", budget_limit_micro=10, model_reservation_micro=4))
+    waiting = runtime.resume(rid)
+    step = waiting["steps"][0]
+    assert waiting["state"] == "WAITING" and waiting["error"] is None
+    assert step["state"] == "WAITING_ADMISSION" and step["lease_until"] is None
+    assert journal.budget("run:" + rid)["reserved_micro"] == 4
+    restored = AgentRuntime(Journal(journal.path), model, None)
+    assert restored.resume(rid)["seq"] == waiting["seq"] and model.calls == 1
+    with journal.tx() as db:
+        db.execute("UPDATE admission_waits SET retry_at=0 WHERE step_id=?", (step["id"],))
+    result = restored.resume(rid)
+    assert result["state"] == "COMPLETED" and len(result["steps"]) == 1
+    assert result["steps"][0]["id"] == step["id"]
+    assert journal.budget("run:" + rid)["spent_micro"] == 3
+    assert journal.budget("run:" + rid)["reserved_micro"] == 0
+    with journal.connection() as db:
+        attempts = db.execute(
+            "SELECT id,status FROM attempts WHERE step_id=? ORDER BY started_at", (step["id"],)
+        ).fetchall()
+    assert len({row["id"] for row in attempts}) == 2
+    assert {row["status"] for row in attempts} == {"NOT_ADMITTED", "SUCCEEDED"}
+    journal.audit(rid)
+
+
+@pytest.mark.parametrize("during_admission", [False, True])
+def test_cancel_admission_wait_releases_unspent_budget(tmp_path, during_admission):
+    from agent_runtime import ModelAdmissionPending
+
+    journal = Journal(tmp_path / "cancel-admission.sqlite")
+
+    class Busy:
+        def generate(self, messages, *, request_id):
+            if during_admission:
+                runtime.signal(rid, "cancel", {}, signal_id="cancel", actor="owner")
+            raise ModelAdmissionPending(retry_after_ms=60000)
+
+    runtime = AgentRuntime(journal, Busy(), None)
+    rid = runtime.start("go", AgentSpec("test", "1", budget_limit_micro=10, model_reservation_micro=4))
+    runtime.resume(rid)
+    if not during_admission:
+        runtime.signal(rid, "cancel", {}, signal_id="cancel", actor="owner")
+    assert runtime.get(rid)["state"] == "CANCELED"
+    assert journal.budget("run:" + rid)["reserved_micro"] == 0
+    assert journal.budget("run:" + rid)["spent_micro"] == 0
+    journal.audit(rid)
+
+
+def test_tool_cannot_use_model_backpressure_to_retry_unknown_effect(tmp_path):
+    from agent_runtime import ModelAdmissionPending
+
+    class ToolWithWrongException:
+        calls = 0
+
+        def execute(self, call, *, effect_id):
+            self.calls += 1
+            raise ModelAdmissionPending()
+
+        def reconcile(self, call, *, effect_id):
+            return None
+
+    tools = ToolWithWrongException()
+    journal = Journal(tmp_path / "tool-pending.sqlite")
+    runtime = AgentRuntime(journal, Model(), tools)
+    rid = runtime.start("go", AgentSpec("test", "1", tools=(ToolSpec("calculator"),)))
+    waiting = runtime.resume(rid)
+    assert waiting["state"] == "WAITING"
+    assert waiting["steps"][-1]["state"] == "RECONCILING"
+    assert tools.calls == 1
+    assert runtime.resume(rid)["steps"][-1]["state"] == "RECONCILING" and tools.calls == 1
+    journal.audit(rid)
+
+
+def test_expired_worker_cannot_commit_temporary_admission_facts(tmp_path):
+    from agent_runtime import ModelAdmissionPending
+
+    journal = Journal(tmp_path / "expired-pending.sqlite")
+
+    class Expired:
+        def generate(self, messages, *, request_id):
+            with journal.tx() as db:
+                db.execute("UPDATE steps SET lease_until=0 WHERE id=?", (request_id,))
+            raise ModelAdmissionPending()
+
+    runtime = AgentRuntime(journal, Expired(), None)
+    rid = runtime.start("go", AgentSpec("test", "1"))
+    current = runtime.resume(rid)
+    assert current["steps"][0]["state"] == "IN_FLIGHT"
+    assert not any(event["type"] == "model.admission_wait" for event in journal.events(rid))
+    recovered = AgentRuntime(Journal(journal.path), Expired(), None).resume(rid)
+    assert recovered["state"] == "WAITING" and recovered["steps"][0]["state"] == "RECONCILING"
+    journal.audit(rid)

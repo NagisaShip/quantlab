@@ -359,3 +359,26 @@ def test_regeneration_uses_new_attempt_context_in_same_trace(tmp_path):
     assert len(observed) == 2
     assert observed[0].trace_id == observed[1].trace_id
     assert observed[0].span_id != observed[1].span_id
+
+
+def test_capacity_wait_span_is_not_a_provider_error(tmp_path):
+    pytest.importorskip("opentelemetry.sdk")
+    from agent_runtime import ModelAdmissionPending
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+    from opentelemetry.trace import StatusCode
+
+    class Busy:
+        def generate(self, messages, *, request_id):
+            raise ModelAdmissionPending(retry_after_ms=60000)
+
+    journal = Journal(tmp_path / "wait-span.sqlite")
+    runtime = AgentRuntime(journal, Busy(), None)
+    rid = runtime.start("go", AgentSpec("test", "1"), tenant_id="a")
+    assert runtime.resume(rid)["state"] == "WAITING"
+    exporter = InMemorySpanExporter()
+    telemetry = RuntimeTelemetry(journal)
+    assert telemetry.export_attempts(OpenTelemetrySpanSink(exporter), consumer_id="capacity", tenant_id="a") == 1
+    span = exporter.get_finished_spans()[0]
+    assert span.attributes["agent_runtime.status"] == "NOT_ADMITTED"
+    assert span.status.status_code == StatusCode.UNSET
+    assert telemetry.snapshot(tenant_id="a")["spent_micro"] == 0

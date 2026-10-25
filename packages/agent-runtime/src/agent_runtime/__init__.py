@@ -3,6 +3,7 @@
 from .contracts import (
     AgentSpec,
     ChildTask,
+    ModelAdmissionPending,
     ModelPort,
     ModelResult,
     ModelUnavailable,
@@ -19,6 +20,7 @@ __all__ = [
     "AgentSpec",
     "ChildTask",
     "Journal",
+    "ModelAdmissionPending",
     "ModelPort",
     "ModelResult",
     "ModelUnavailable",

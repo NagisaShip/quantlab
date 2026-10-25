@@ -272,6 +272,10 @@ class Worker:
                     ]
                     if not active:
                         continue
+                    if active[0]["state"] == "WAITING_ADMISSION" and (active[0].get("admission_retry_at") or 0) > int(
+                        time.time() * 1000
+                    ):
+                        continue
                     if active[0]["state"] == "IN_FLIGHT" and (active[0]["lease_until"] or 0) > int(time.time() * 1000):
                         continue
                 with self._lock:

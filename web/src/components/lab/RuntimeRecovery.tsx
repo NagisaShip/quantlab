@@ -19,7 +19,7 @@ export function RuntimeRecovery({ projectId, runId, running, revision, canResolv
     return () => { active = false }
   }, [projectId, runId, running, revision])
   const step = run?.steps.find((step) => step.state === 'RECONCILING')
-  const resumable = run?.state === 'RUNNING' && run.steps.some((step) => ['READY', 'WAITING_ADMISSION', 'IN_FLIGHT'].includes(step.state))
+  const resumable = !!run && ['RUNNING', 'WAITING'].includes(run.state) && run.steps.some((step) => ['READY', 'WAITING_ADMISSION', 'IN_FLIGHT'].includes(step.state))
   if (!run || running || (!step && !resumable)) return null
   const resume = async () => { await lab.resumeRuntime(projectId, runId); await onChanged() }
   const resolve = async (payload: RecoveryResolution) => {

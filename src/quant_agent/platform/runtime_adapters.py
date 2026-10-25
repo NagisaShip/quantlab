@@ -72,7 +72,7 @@ class QuantLabModelPort:
         return out
 
     def generate(self, messages: list[dict[str, Any]], *, request_id: str) -> Any:
-        from agent_runtime.contracts import ModelResult, ModelUnavailable, ToolCall
+        from agent_runtime.contracts import ModelAdmissionPending, ModelResult, ModelUnavailable, ToolCall
 
         with context.bind(self.workspace_id, user_id=self.user_id, role=self.role):
             try:
@@ -106,10 +106,20 @@ class QuantLabModelPort:
                     )
                     dispatched = self.hub.mark_dispatched(request_id)
                 except Exception as exc:
+                    from .errors import AppError, ErrorCode
+
+                    if (
+                        isinstance(exc, AppError)
+                        and exc.code == ErrorCode.QUOTA_EXHAUSTED
+                        and exc.details.get("reason") == "model_concurrency"
+                    ):
+                        raise ModelAdmissionPending(
+                            "模型并发额度暂不可用", retry_after_ms=exc.details["retry_after_ms"]
+                        ) from exc
                     raise ModelUnavailable(f"模型请求在发出前被拒绝：{exc}") from exc
                 if not dispatched:
                     raise ModelUnavailable("模型请求已被派发或结算，不能再次发送")
-            except ModelUnavailable:
+            except (ModelUnavailable, ModelAdmissionPending):
                 raise
             except Exception as exc:
                 raise ModelUnavailable(f"模型准入失败：{exc}") from exc

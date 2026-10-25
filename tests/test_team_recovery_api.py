@@ -218,3 +218,77 @@ def test_billing_commit_can_be_retried_after_runtime_commit_failure(team_host, m
     assert services.model_hub.admission(item["id"])["actual_micro"] == committed["actual_micro"]
     assert not client.post(path, json=body).json()["accepted"]
     assert model.calls == 1
+
+
+def test_temporary_hub_capacity_queues_same_team_graph_without_billing_or_failure(team_host):
+    client, services, model = team_host
+    me = client.get("/api/auth/me").json()
+    hub = services.model_hub
+    hub.max_inflight = 1
+    with context.bind(me["workspace"]["id"], user_id=me["user"]["id"]):
+        provider = services.router.config.providers["fake"]
+        hub.admit(
+            provider, "m", request_id="occupied", run_id="other", step_id="other:1", reserved_tokens=1, reserved_micro=0
+        )
+    run = start(client)
+    assert run["status"] == "queued" and run["steps"][0]["status"] == "queued"
+    assert model.calls == 0
+    root = services.teams.runtime_journal.run(run["runtime_run_id"])
+    from agent_runtime import AgentRuntime
+
+    engine = AgentRuntime(services.teams.runtime_journal, None, None)
+    child = engine.children(root["id"])[0]
+    step = engine.get(child)["steps"][0]
+    assert step["state"] == "WAITING_ADMISSION" and hub.admission(step["id"]) is None
+    assert client.post(f"/api/agents/team-runs/{run['id']}/resume").json()["run"]["status"] == "queued"
+    assert engine.get(child)["steps"][0]["attempt_count"] == 1
+    assert model.calls == 0
+    hub.release_admission("occupied")
+    with engine.journal.tx() as db:
+        db.execute("UPDATE admission_waits SET retry_at=0 WHERE step_id=?", (step["id"],))
+    completed = client.post(f"/api/agents/team-runs/{run['id']}/resume")
+    assert completed.status_code == 200 and completed.json()["run"]["status"] == "done"
+    assert model.calls == 2
+    assert hub.admission(step["id"])["status"] == "SETTLED"
+    assert services.db.scalar("SELECT COUNT(*) FROM llm_usage WHERE admission_id IS NOT NULL") == 2
+    assert engine.get(child)["steps"][0]["id"] == step["id"]
+
+
+def test_synthesis_capacity_wait_is_queued_and_keeps_finished_role(team_host, monkeypatch):
+    client, services, model = team_host
+    hub = services.model_hub
+    hub.max_inflight = 1
+    original = hub.settle_admission
+    held = False
+
+    def settle(provider, model_name, request_id, usage, **kwargs):
+        nonlocal held
+        accepted = original(provider, model_name, request_id, usage, **kwargs)
+        if not held:
+            held = True
+            hub.admit(
+                provider,
+                model_name,
+                request_id="occupied-after-role",
+                run_id="other",
+                step_id="other:1",
+                reserved_tokens=1,
+                reserved_micro=0,
+            )
+        return accepted
+
+    monkeypatch.setattr(hub, "settle_admission", settle)
+    run = start(client)
+    assert run["status"] == "queued" and run["steps"][0]["status"] == "ok"
+    assert model.calls == 1
+    root_id = run["runtime_run_id"]
+    from agent_runtime import AgentRuntime
+
+    engine = AgentRuntime(services.teams.runtime_journal, None, None)
+    assert engine.get(root_id)["steps"][0]["state"] == "WAITING_ADMISSION"
+    hub.release_admission("occupied-after-role")
+    step_id = engine.get(root_id)["steps"][0]["id"]
+    with engine.journal.tx() as db:
+        db.execute("UPDATE admission_waits SET retry_at=0 WHERE step_id=?", (step_id,))
+    assert client.post(f"/api/agents/team-runs/{run['id']}/resume").json()["run"]["status"] == "done"
+    assert model.calls == 2

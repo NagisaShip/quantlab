@@ -775,7 +775,12 @@ class ModelHub:
                 raise AppError(
                     ErrorCode.QUOTA_EXHAUSTED,
                     "模型并发请求已达上限，请等待在途请求结束或核对后重试",
-                    details={"limit": self.max_inflight, "in_flight": in_flight},
+                    details={
+                        "limit": self.max_inflight,
+                        "in_flight": in_flight,
+                        "reason": "model_concurrency",
+                        "retry_after_ms": 1000,
+                    },
                 )
             quota_day = today(stamp)
             if self.quota is not None:

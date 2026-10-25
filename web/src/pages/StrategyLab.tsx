@@ -1246,10 +1246,10 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
             <b>{agentStatus.label}</b>
             <span className="lab-task-banner-detail" title={agentStatus.detail}>{agentStatus.detail}</span>
             {evidenceLink && <a className="button small" href={evidenceLink.href}>查看运行</a>}
-            <div className="lab-task-banner-actions">
+            {project.runtime_wait_reason !== 'admission' && <div className="lab-task-banner-actions">
               <button type="button" className="button small" disabled={running}
                 onClick={() => { stick.current = true; send('继续') }}>继续</button>
-            </div>
+            </div>}
           </div>
         )}
 
@@ -1291,7 +1291,11 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
 
         <div className="lab2-dock" data-tour="lab-composer">
           <RuntimeRecovery projectId={id} runId={project.runtime_pending_ids?.[0] || project.runtime_chat_id} running={running}
-            revision={project.updated_at} canResolve={canResolveRuntime} onChanged={() => pull(false)}
+            revision={project.updated_at} canResolve={canResolveRuntime} onChanged={async () => {
+              const view = await pull(false)
+              if (view.project.status === 'running') follow()
+              return view
+            }}
             onError={(message) => notify(message, true)} />
           {goalOpen && (
             <div className="lab2-goal-pop">

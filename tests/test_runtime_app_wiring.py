@@ -4,6 +4,8 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parents[1] / "packages" / "agent-runtime" / "src"))
 
 from quant_agent.api import routes_runs
@@ -78,7 +80,8 @@ def test_flagged_runtime_run_reaches_terminal_via_worker(tmp_path, monkeypatch):
             worker.shutdown()
 
 
-def test_scheduler_skips_approval_wait_without_claiming_slot(tmp_path, monkeypatch):
+@pytest.mark.parametrize("wait_state", ["WAITING_APPROVAL", "WAITING_ADMISSION"])
+def test_scheduler_skips_approval_wait_without_claiming_slot(tmp_path, monkeypatch, wait_state):
     monkeypatch.setenv("QAGENT_AGENT_RUNTIME", "1")
     services = AppServices.build(store_root=str(tmp_path))
     services.db.execute(
@@ -115,7 +118,10 @@ def test_scheduler_skips_approval_wait_without_claiming_slot(tmp_path, monkeypat
             if run_id == ready:
                 return None
             assert run_id in waiting
-            return {"state": "WAITING", "steps": [{"state": "WAITING_APPROVAL"}]}
+            return {
+                "state": "WAITING",
+                "steps": [{"state": wait_state, "admission_retry_at": int(time.time() * 1000) + 60000}],
+            }
 
     services.runtime_bridge.runtime = WaitingRuntime()
     worker = Worker(services, batch={}, resident={}, slots=1, periodic=[])

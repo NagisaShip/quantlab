@@ -427,7 +427,7 @@ export interface AgentStatus {
 }
 
 export interface StatusInput extends EvidenceOptions {
-  project: Pick<LabProject, 'status' | 'job' | 'plan' | 'updated_at'> | null | undefined
+  project: Pick<LabProject, 'status' | 'job' | 'plan' | 'updated_at' | 'runtime_wait_reason'> | null | undefined
   messages: LabMessage[]
   /** 后台 run 的实时状态（由现有只读接口探测得到），覆盖消息里可能已经过期的 state */
   live?: Record<string, RunEvidenceState>
@@ -508,6 +508,9 @@ export function deriveAgentStatus(input: StatusInput): AgentStatus {
 
   // 等待审批/回答是当前可操作状态，不能被前面的可恢复工具错误遮住。
   if (status === 'awaiting_user') {
+    if (project?.runtime_wait_reason === 'admission') return {
+      state: 'queued', label: AGENT_STATE_LABEL.queued, evidence, artifacts, phase, startedAt, detail: '等待模型空闲',
+    }
     return {
       state: 'waiting', label: AGENT_STATE_LABEL.waiting, evidence, artifacts, phase, startedAt,
       detail: scan.pendingAsk ? (scan.pendingAsk.question || '等你回答') : '等你回答',

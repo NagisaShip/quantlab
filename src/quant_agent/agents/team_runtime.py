@@ -193,7 +193,9 @@ def project(runner: Any, root: dict) -> TeamRun:
             run.status = "running"
         elif any(step.status in {"queued", "blocked"} for step in run.steps):
             run.status = "queued"
-    if root["state"] == "RUNNING" and any(step["state"] in {"READY", "WAITING_ADMISSION"} for step in root["steps"]):
+    if root["state"] in {"RUNNING", "WAITING"} and any(
+        step["state"] in {"READY", "WAITING_ADMISSION"} for step in root["steps"]
+    ):
         run.status = "queued"
     role = Role.from_dict(plan["synthesizer"])
     if root.get("output"):

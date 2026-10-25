@@ -213,3 +213,28 @@ without baggage or user data. Restored children use the root trace identity;
 regeneration uses a new Attempt span. Cached clients never retain per-request
 headers. A custom threaded transport should capture the context explicitly before
 handing off work. Core execution remains independent of OpenTelemetry SDKs.
+
+
+## Temporary model admission waits
+
+A ModelPort that definitively has not dispatched a request may raise
+`ModelAdmissionPending(retry_after_ms=1000)`. Runtime preserves the logical Step,
+records the rejected admission Attempt as NOT_ADMITTED, clears its lease and
+persists WAITING_ADMISSION with a retry deadline. Resume before that deadline
+has no effect. A later wake creates a new Attempt on the same Step; Run budget
+reservation is retained once, not duplicated. Cancel releases the unspent
+reservation. An admission rejection that arrives during cancellation can close
+that canceled model step only while the original lease and epoch are valid.
+Expired workers still cannot write.
+
+Use ModelUnavailable for definitive pre-dispatch failures (such as missing
+configuration or a hard quota denial), not temporary capacity pressure. Never
+raise ModelAdmissionPending after a provider request was dispatched: uncertain
+requests require reconciliation. Tools cannot use this model exception to make
+an unknown external effect automatically retryable.
+
+QuantLab ModelHub remains the single actual provider admission authority. It
+marks only concurrent-capacity exhaustion as retryable; it creates no admission
+row and sends no request for that denial. Worker polling skips retry deadlines
+without claiming an execution slot. Research conversations and Team cards expose
+queued status and an explicit resume action; they do not ask for billing review.

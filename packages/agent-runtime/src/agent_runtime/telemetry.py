@@ -280,7 +280,13 @@ class OpenTelemetrySpanSink:
                 attributes=span.attributes,
                 start_time=span.start_ns,
                 end_time=span.end_ns,
-                status=Status(StatusCode.OK if span.status == "SUCCEEDED" else StatusCode.ERROR),
+                status=Status(
+                    StatusCode.UNSET
+                    if span.status == "NOT_ADMITTED"
+                    else StatusCode.OK
+                    if span.status == "SUCCEEDED"
+                    else StatusCode.ERROR
+                ),
             )
             for span in spans
         ]

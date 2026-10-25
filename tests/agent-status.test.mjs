@@ -55,3 +55,10 @@ test('durable Team identity is not completion evidence while waiting for reconci
   assert.equal(messageTag(message, { live: { 'team:team-run': 'canceling' } }).label, '取消中')
   assert.equal(messageTag(message, { live: { 'team:team-run': 'done' } }).label, '已生成')
 })
+
+
+test('temporary model admission is queued rather than asking for human input', () => {
+  const result = deriveAgentStatus({ project: { status: 'awaiting_user', runtime_wait_reason: 'admission' }, messages: [] })
+  assert.equal(result.state, 'queued')
+  assert.equal(result.detail, '等待模型空闲')
+})

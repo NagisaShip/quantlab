@@ -61,6 +61,10 @@ CREATE TABLE IF NOT EXISTS steps (
 );
 CREATE INDEX IF NOT EXISTS idx_runs_parent ON runs(parent_id);
 CREATE INDEX IF NOT EXISTS idx_steps_ready ON steps(state, run_id, ordinal);
+CREATE TABLE IF NOT EXISTS admission_waits (
+    step_id TEXT PRIMARY KEY REFERENCES steps(id),
+    retry_at BIGINT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS attempts (
     id TEXT PRIMARY KEY,
     step_id TEXT NOT NULL REFERENCES steps(id),
@@ -379,7 +383,11 @@ class Journal:
 
     def steps(self, run_id: str) -> list[dict[str, Any]]:
         with self.connection() as db:
-            rows = db.execute("SELECT * FROM steps WHERE run_id=? ORDER BY ordinal", (run_id,)).fetchall()
+            rows = db.execute(
+                "SELECT s.*,w.retry_at AS admission_retry_at FROM steps s LEFT JOIN admission_waits w ON w.step_id=s.id "
+                "WHERE s.run_id=? ORDER BY s.ordinal",
+                (run_id,),
+            ).fetchall()
             return [{**dict(row), "payload": load(row["payload"]), "result": load(row["result"])} for row in rows]
 
     def events(self, run_id: str, after: int = 0) -> list[dict[str, Any]]:

@@ -230,6 +230,15 @@ jobs:
           QAGENT_AGENT_RUNTIME_DB: ${{ matrix.storage == 'postgres' && 'postgresql://postgres:ci@localhost:5432/postgres' || '' }}
           QAGENT_AGENT_RUNTIME_SCHEMA: agent_runtime_e2e
 
+      - name: Agent Runtime 模型准入等待验收
+        run: npx playwright test tests/e2e/21-model-capacity.spec.ts --workers=1
+        env:
+          CI: "true"
+          QAGENT_AGENT_RUNTIME: "1"
+          QAGENT_MODEL_MAX_IN_FLIGHT: "1"
+          QAGENT_AGENT_RUNTIME_DB: ${{ matrix.storage == 'postgres' && 'postgresql://postgres:ci@localhost:5432/postgres' || '' }}
+          QAGENT_AGENT_RUNTIME_SCHEMA: agent_runtime_capacity_e2e
+
       - name: 上传 trace / 截图 / 报告（失败也上传）
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4

@@ -27,7 +27,7 @@
 | 单次模型返回工具数超出本轮工具预算 | 不让多调用响应绕过宿主硬上限，整批工具均不派发 | `test_tool_budget_cannot_be_exceeded_by_a_single_multi_call_response` |
 | 父子 / 共享预算竞争 | 同一账本原子预留，不复制可用额度 | `test_shared_budget_atomic_reservations` |
 | 模型正文已确认但用量缺失 | 保留正文、预算不释放；确认费用后无需重新生成 | `test_confirmed_model_output_waits_for_usage_then_completes_without_regeneration` |
-| 派发前模型准入失败 | 明确失败并释放预算，不误判外部结果不确定 | `test_pre_dispatch_model_rejection_fails_and_releases_budget` |
+| 派发前模型硬配额或配置拒绝 | 明确失败并释放预算，不误判外部结果不确定 | `test_pre_dispatch_model_rejection_fails_and_releases_budget` |
 | 旧检查点 / 校验和损坏 | 不能覆盖新事件；可退回已验证检查点或完整日志 | `test_stale_or_corrupt_checkpoint_cannot_override_new_events` |
 | 压缩检查点后最新快照损坏 | 保留回退快照；执行事件不删除，序号连续 | `test_checkpoint_compaction_retains_fallback_and_all_execution_facts` |
 | 状态表与事件不一致 | 停止推进，不能从不一致记录派发动作 | `test_state_event_divergence_stops_execution` |
@@ -167,3 +167,14 @@ npx playwright test tests/e2e/19-runtime-recovery.spec.ts --workers=1
 `tests/test_team_visibility_api.py` 对 Runtime 开启和旧执行器分别验证新评审的来源权限：私有会话详情与评审详情均拒绝未授权成员；列表不泄露议题；Runtime 恢复与核对视图拒绝；删掉 JSON 索引后从权威图重建仍保留限制；改为工作区或指定群组共享后可读；撤回共享或移除群成员后再次拒绝；来源项目缺失不默认公开。所有只读访问不增加模型调用。
 
 相关后端回归 68 项通过；Runtime 开启后的研究室、Team 与协作回归 85 项通过；三种 Team 浏览器 3 项通过；补充群组成员撤销后权限专项 3 项通过。历史记录若从未保存来源字段，仍需独立迁移或安全降级验证，当前测试不证明这类历史来源完整。
+
+
+## 临时准入等待与取消（2026-10-25）
+
+`test_temporary_admission_survives_restart_without_busy_loop_or_double_reserve` 在 SQLite/PG 验证冷却窗口内重复 resume 不增加事件或 Attempt，重建宿主后沿用原 Step，额度可用时创建新 Attempt，Run 预算预留与结算各计一次。`test_cancel_admission_wait_releases_unspent_budget` 覆盖等待中取消及取消与准入拒绝的竞态，仍只接受有效租约/epoch 提交“未派发”事实。工具误抛模型准入异常仍走效果核对，不据此自动重试。
+
+ModelHub HTTP 接入验证角色与汇总两种额度等待均展示 queued，未获许可时零 provider 调用、无模型账本占用，释放后只调用尚未完成的阶段；研究室无需人工费用核对即可恢复。Worker 测试在 33 个审批/冷却等待任务之前仍调度后续 READY，不先占执行槽。实际 SDK 将 NOT_ADMITTED 记录为 UNSET，不误报 provider 执行失败。
+
+`tests/e2e/21-model-capacity.spec.ts` 限制真实 ModelHub 为一个槽：第一条本地 HTTP 模型请求保持未结束，第二个会话进入 WAITING_ADMISSION；UI 显示排队和恢复按钮，无费用核对表单或发送新消息的误导入口；释放首请求后，第二条从原 Step 完成，合计 provider 调用恰好两次。测试保留无需刷新即可看到回答的断言，复现并修复了恢复后未重建事件流跟随的问题。
+
+双数据库内核、依赖/父子、故障矩阵、ModelHub 与宿主准入综合回归 167 项通过；Runtime 开启后的宿主/API 回归 48 项通过；新增遥测语义与跨数据库收尾 64 项通过，状态单测 8 项通过。前端构建、类型、Ruff 与翻译抽取通过。浏览器主对话、三种 Team 模式和真实单槽准入共 5 项通过；最后补强的内核工具异常/失效租约边界双数据库 40 项通过。测试选择有重叠，不累加为唯一覆盖数。

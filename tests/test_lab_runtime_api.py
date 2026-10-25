@@ -228,3 +228,43 @@ def test_event_cursor_does_not_advance_beyond_its_state_snapshot(host, monkeypat
     second = client.get(f"/api/lab/projects/{pid}/runtime", params={"after": first["cursor"]}).json()
     assert second["events"][0]["seq"] == first["cursor"] + 1
     assert second["cursor"] == second["run"]["seq"]
+
+
+def test_model_capacity_wait_has_resume_without_usage_reconciliation(host):
+    from quant_agent.api.deps import get_services
+
+    client, model, pid = host
+    services = get_services()
+    me = client.get("/api/auth/me").json()
+    hub = services.model_hub
+    hub.max_inflight = 1
+    with context.bind(me["workspace"]["id"], user_id=me["user"]["id"]):
+        provider = services.router.config.providers["fake"]
+        hub.admit(
+            provider,
+            "model",
+            request_id="occupied",
+            run_id="other",
+            step_id="other:1",
+            reserved_tokens=1,
+            reserved_micro=0,
+        )
+    before = model.calls
+    model.replies.append(_reply("saved after capacity frees", usage={"input_tokens": 2, "output_tokens": 1}))
+    response = client.post(f"/api/lab/projects/{pid}/messages", json={"text": "hello", "wait": True})
+    assert response.status_code == 200, response.text
+    current = client.get(f"/api/lab/projects/{pid}/runtime").json()["run"]
+    step = current["steps"][0]
+    assert current["state"] == "WAITING" and step["state"] == "WAITING_ADMISSION"
+    assert model.calls == before and hub.admission(step["id"]) is None
+    view = client.get(f"/api/lab/projects/{pid}").json()
+    assert view["project"]["runtime_wait_reason"] == "admission"
+    assert "核对后才能继续" not in str(view["messages"])
+    hub.release_admission("occupied")
+    with services.teams.runtime_journal.tx() as db:
+        db.execute("UPDATE admission_waits SET retry_at=0 WHERE step_id=?", (step["id"],))
+    resumed = client.post(f"/api/lab/projects/{pid}/runtime/resume", json={"wait": True})
+    assert resumed.status_code == 200, resumed.text
+    completed = client.get(f"/api/lab/projects/{pid}/runtime").json()["run"]
+    assert completed["state"] == "COMPLETED" and model.calls == before + 1
+    assert len(completed["steps"]) == 1 and completed["steps"][0]["id"] == step["id"]
