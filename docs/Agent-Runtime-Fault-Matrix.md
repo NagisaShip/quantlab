@@ -146,3 +146,12 @@ npx playwright test tests/e2e/19-runtime-recovery.spec.ts --workers=1
 `tests/e2e/20-team-runtime.spec.ts` 为三种 Team 模式增加卡片内人工核对验收：取消中确认未计费后进入已取消，刷新仍一致，模型调用保持一次。主对话原有恢复用例继续覆盖共享表单。
 
 本阶段宿主与 API 回归 39 项通过，状态单测 7 项通过；主对话与 Team 浏览器 4 项通过，补强页头/消息标签同步断言后三种 Team 模式再验收 3 项通过。Windows 前端构建、类型检查、Ruff 与翻译提取检查通过。本机首次浏览器运行因系统代理导致本地模型请求 502，设置本地地址 NO_PROXY 后完成真实调用验收；未放宽调用次数断言。
+
+
+## 跨度树与首 token 故障验证（2026-10-25）
+
+`packages/agent-runtime/tests/test_telemetry.py` 新增 SQLite/PostgreSQL 共用验证：父任务未完成时先导出子跨度，恢复后使用原标识补齐整树；批次上限不改变标识；错误租户或非根入口拒绝；外部导出成功但 ACK 事务失败后补发相同 parent context；真实 OpenTelemetry SDK 验证 Run/Step/Attempt 关系。正文、参数和输出不进入遥测。
+
+首 token 验证跨线程回调、重复增量只计一次、非流式及已完成后的迟到回调不写、失效租约不写、采集器重启与租户隔离。宿主协议验证 OpenAI-compatible、Responses 与 Anthropic 流式增量，最终响应模拟 UI delta 不计首 token，观察器存储失败不破坏模型结果。
+
+双数据库内核/父子/依赖回归 120 项通过，故障矩阵与协议综合回归 64 项通过；后续补强成功终态断言及跨线程验证，遥测专项双数据库 22 项通过，协议与研究室接口综合 47 项通过。各选择有重叠，不累加为唯一用例数。Ruff 通过。provider HTTP trace-context 传播仍未接线，不能据此宣称整个重构完成。

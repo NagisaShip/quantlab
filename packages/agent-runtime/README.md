@@ -179,3 +179,32 @@ another's new opinions. These declarations, role bindings, rounds and system
 messages are committed up front. Host reconstruction never recompiles a live
 plan from editable role definitions. Existing graph/fork identity checks retain
 compatibility with the previous no-dependency request shape.
+
+
+## Hierarchical traces and first-token facts
+
+`telemetry.export_trace(sink, root_run_id=root, consumer_id="tree-collector", tenant_id=tenant, limit=100)`
+exports completed Run, Step and Attempt spans from one authoritative root tree.
+Run/Step/Attempt IDs and parent contexts are stable across collector restart;
+child runs attach to the parent's persisted Join step. Parent spans can arrive
+later than completed children while a root is still running. A failed sink or
+failed acknowledgement commit redelivers identical span IDs without executing
+Agent work. Use this instead of the legacy flat `export_attempts` for new
+collectors, with its own consumer ID. Batch size is bounded; each call scans one
+bounded execution tree. No prompts, arguments, output or provider secrets are
+included. Exporters are host supplied and no global OpenTelemetry provider is installed.
+
+Inside `ModelPort.generate`, capture `agent_runtime.observations.first_token_observer()`
+and invoke it upon the first nonempty streaming content, reasoning or tool delta.
+The callback can be carried to a streaming reader thread. It records once per
+Attempt and checks the current lease and Run state; late/expired callbacks cannot
+write observations. Observation storage failures do not fail the model call.
+Nonstreaming responses retain an unknown first-token time, including providers
+that emulate UI deltas after receiving the complete response. QuantLab's three
+provider protocols report actual streaming deltas only and never force streaming
+for otherwise nonstreaming requests.
+
+Durable first-token count and total duration are available in `snapshot` and
+OpenTelemetry observable gauges; attempt spans include `agent_runtime.model.first_token_ms`
+only when observed. Collection and restart cannot increment these totals.
+Provider HTTP trace-context propagation is a separate host concern and is not yet wired.

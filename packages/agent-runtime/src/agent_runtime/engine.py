@@ -766,7 +766,7 @@ class AgentRuntime:
             self.journal.set_run(db, run_id, "RUNNING")
             messages = load(run["messages"])
         try:
-            result = self._execute_with_lease(run_id, step, epoch, messages, payload)
+            result = self._execute_with_lease(run_id, step, epoch, messages, payload, attempt_id)
         except ModelUnavailable as exc:
             # These failures are definitive: admission rejected the call before
             # dispatch, or the provider result is already settled but invalid.
@@ -871,7 +871,9 @@ class AgentRuntime:
             and (row["lease_until"] or 0) > now_ms()
         )
 
-    def _execute_with_lease(self, run_id: str, step: Any, epoch: int, messages: Any, payload: Any) -> Any:
+    def _execute_with_lease(
+        self, run_id: str, step: Any, epoch: int, messages: Any, payload: Any, attempt_id: str
+    ) -> Any:
         stopped = threading.Event()
 
         def renew():
@@ -892,7 +894,27 @@ class AgentRuntime:
         heartbeat.start()
         try:
             if step["kind"] == "model":
-                return self.model.generate(messages, request_id=step["id"])
+                from .observations import model_observation
+
+                recorded = False
+
+                def first_token() -> bool:
+                    nonlocal recorded
+                    if recorded:
+                        return True
+                    with self.journal.tx() as db:
+                        if not self._owns(db, step["id"], epoch, run_id):
+                            return False
+                        db.execute(
+                            "INSERT INTO attempt_timings(attempt_id,first_token_at) VALUES(?,?) "
+                            "ON CONFLICT(attempt_id) DO NOTHING",
+                            (attempt_id, now_ms()),
+                        )
+                    recorded = True
+                    return True
+
+                with model_observation(first_token):
+                    return self.model.generate(messages, request_id=step["id"])
             return self.tools.execute(ToolCall(**payload), effect_id=step["effect_id"])
         finally:
             stopped.set()

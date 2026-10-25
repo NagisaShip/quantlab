@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import json
+import sys
+from pathlib import Path
 
 import httpx
+
+sys.path.insert(0, str(Path(__file__).parents[1] / "packages" / "agent-runtime" / "src"))
 
 from quant_agent.llm.base import Message, Tool, ToolCall
 from quant_agent.llm.providers import AnthropicProvider, OpenAICompatibleProvider
@@ -236,3 +240,109 @@ def test_context_windows():
     assert context_window("claude-opus-5-5") == 1_000_000
     assert context_window("claude-haiku-4-5") == 200_000
     assert context_window("unknown-local") == 32_000
+
+
+def test_runtime_first_token_observes_only_stream_deltas():
+    from agent_runtime.observations import model_observation
+
+    observed = []
+
+    def mark():
+        observed.append(True)
+        return True
+
+    provider = OpenAICompatibleProvider("test", "https://example.test/v1", "key")
+    content = _sse(
+        [
+            {"choices": [{"delta": {"role": "assistant"}}]},
+            {"choices": [{"delta": {"content": "first"}}]},
+        ],
+        done=True,
+    )
+    with model_observation(mark):
+        provider._collect_stream(httpx.Response(200, content=content), "m", None)
+    assert len(observed) == 1
+    observed.clear()
+    with model_observation(mark):
+        provider._parse(
+            httpx.Response(200, json={"choices": [{"message": {"content": "final"}}]}), "m", lambda kind, text: None
+        )
+    assert observed == []  # final-response UI callback is not streaming evidence
+
+
+def test_runtime_observer_failure_cannot_break_model_stream():
+    from agent_runtime.observations import model_observation
+
+    def unavailable():
+        raise OSError("telemetry storage unavailable")
+
+    provider = OpenAICompatibleProvider("test", "https://example.test/v1", "key")
+    with model_observation(unavailable):
+        result = provider._collect_stream(
+            httpx.Response(
+                200,
+                content=_sse(
+                    [
+                        {"choices": [{"delta": {"content": "saved"}}]},
+                    ],
+                    done=True,
+                ),
+            ),
+            "m",
+            None,
+        )
+    assert result.content == "saved"
+
+
+def test_runtime_observes_responses_and_anthropic_tool_streams():
+    from agent_runtime.observations import model_observation
+
+    from quant_agent.llm.providers import OpenAIResponsesProvider
+
+    observed = []
+
+    def mark():
+        observed.append(True)
+        return True
+
+    responses = OpenAIResponsesProvider("test", "https://example.test/v1", "key")
+    with model_observation(mark):
+        responses._collect_events(
+            httpx.Response(
+                200,
+                content=_sse(
+                    [
+                        {"type": "response.function_call_arguments.delta", "delta": "{}"},
+                        {"type": "response.completed", "response": {"output": [], "model": "m"}},
+                    ]
+                ),
+            ),
+            "m",
+            None,
+        )
+    assert len(observed) == 1
+    observed.clear()
+    anthropic = AnthropicProvider("test", "https://example.test", "key")
+    with model_observation(mark):
+        anthropic._collect_stream(
+            httpx.Response(
+                200,
+                content=_sse(
+                    [
+                        {
+                            "type": "content_block_start",
+                            "index": 0,
+                            "content_block": {"type": "tool_use", "id": "t", "name": "calc"},
+                        },
+                        {
+                            "type": "content_block_delta",
+                            "index": 0,
+                            "delta": {"type": "input_json_delta", "partial_json": "{}"},
+                        },
+                    ]
+                ),
+            ),
+            "m",
+            None,
+        )
+    assert len(observed) == 1

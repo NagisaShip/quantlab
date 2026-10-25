@@ -32,6 +32,15 @@ def _resolve_env(value: str) -> str:
     return value
 
 
+def _runtime_first_token() -> None:
+    # Optional runtime package; ordinary model clients have no observer bound.
+    try:
+        from agent_runtime.observations import observe_first_token
+    except ImportError:
+        return
+    observe_first_token()
+
+
 def _iter_sse(resp: httpx.Response):
     """把 text/event-stream 拆成 data 载荷（字符串）。"""
     for line in resp.iter_lines():
@@ -310,6 +319,8 @@ class OpenAICompatibleProvider:
                 usage = chunk["usage"]
             for choice in chunk.get("choices") or []:
                 delta = choice.get("delta") or {}
+                if delta.get("reasoning_content") or delta.get("content") or delta.get("tool_calls"):
+                    _runtime_first_token()
                 if delta.get("reasoning_content"):
                     thinking.append(delta["reasoning_content"])
                     if on_delta:
@@ -527,6 +538,12 @@ class OpenAIResponsesProvider(OpenAICompatibleProvider):
             except json.JSONDecodeError:
                 continue
             kind = ev.get("type", "")
+            if kind in {
+                "response.output_text.delta",
+                "response.reasoning_summary_text.delta",
+                "response.function_call_arguments.delta",
+            } and ev.get("delta"):
+                _runtime_first_token()
             if kind == "response.output_text.delta":
                 text.append(ev.get("delta", ""))
                 if on_delta:
@@ -720,6 +737,8 @@ class AnthropicProvider:
                 block = blocks.setdefault(idx, {"type": "text", "text": ""})
                 delta = ev.get("delta") or {}
                 dt = delta.get("type")
+                if any(delta.get(key) for key in ("text", "thinking", "partial_json")):
+                    _runtime_first_token()
                 if dt == "text_delta":
                     block["text"] = block.get("text", "") + delta.get("text", "")
                     if on_delta:

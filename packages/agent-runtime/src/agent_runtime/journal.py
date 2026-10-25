@@ -70,6 +70,10 @@ CREATE TABLE IF NOT EXISTS attempts (
     ended_at BIGINT,
     error TEXT
 );
+CREATE TABLE IF NOT EXISTS attempt_timings (
+    attempt_id TEXT PRIMARY KEY REFERENCES attempts(id),
+    first_token_at BIGINT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS effects (
     id TEXT PRIMARY KEY,
     step_id TEXT NOT NULL UNIQUE REFERENCES steps(id),
@@ -117,6 +121,12 @@ CREATE TABLE IF NOT EXISTS reservations (
     amount_micro BIGINT NOT NULL,
     status TEXT NOT NULL,
     PRIMARY KEY(step_id, account_id)
+);
+CREATE TABLE IF NOT EXISTS telemetry_span_exports (
+    consumer_id TEXT NOT NULL,
+    span_key TEXT NOT NULL,
+    exported_at BIGINT NOT NULL,
+    PRIMARY KEY(consumer_id, span_key)
 );
 CREATE TABLE IF NOT EXISTS telemetry_exports (
     consumer_id TEXT NOT NULL,
