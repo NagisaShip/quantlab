@@ -67,22 +67,93 @@ class RuntimeTelemetry:
                 "JOIN steps s ON s.id=a.step_id JOIN runs r ON r.id=s.run_id" + where,
                 args,
             ).fetchone()
-            # Count each reservation once, not once per shared budget account.
-            fees = db.execute(
-                "SELECT e.type,e.data FROM events e JOIN runs r ON r.id=e.run_id"
+            retries = db.execute(
+                "SELECT s.kind,COALESCE(SUM(s.attempt_count-1),0) AS n "
+                "FROM steps s JOIN runs r ON r.id=s.run_id"
                 + (where + " AND " if where else " WHERE ")
-                + "e.type='budget.settled' ORDER BY e.run_id,e.seq",
+                + "s.attempt_count>1 GROUP BY s.kind",
                 args,
             ).fetchall()
+            # Only state/operation facts are projected; no prompt or tool payload.
+            facts = db.execute(
+                "SELECT e.run_id,e.type,e.data,e.created_at FROM events e JOIN runs r ON r.id=e.run_id"
+                + (where + " AND " if where else " WHERE ")
+                + "e.type IN ('budget.settled','step.created','step.state','run.state',"
+                "'attempt.lease_expired','effect.reconciled','model.usage_reconciled') ORDER BY e.run_id,e.seq",
+                args,
+            ).fetchall()
+            observed_at = now_ms()
+        lifecycle = self._lifecycle(facts, observed_at)
         # Settlement events may be replayed by administrative recovery. The
         # most recent confirmed amount for a logical step is counted once.
-        settled = {data["step_id"]: data["actual_micro"] for data in (load(row["data"]) for row in fees)}
+        settled = {
+            data["step_id"]: data["actual_micro"]
+            for data in (load(row["data"]) for row in facts if row["type"] == "budget.settled")
+        }
         return {
             "runs": [dict(row) for row in runs],
             "steps": [dict(row) for row in steps],
             "attempts": [{**dict(row), "duration_ms": int(row["duration_ms"])} for row in attempts],
             "spent_micro": sum(settled.values()),
+            "retries": [dict(row) for row in retries],
+            **lifecycle,
             "first_token": {"n": timing["n"], "total_ms": int(timing["total_ms"])},
+        }
+
+    @staticmethod
+    def _lifecycle(facts: list, observed_at: int) -> dict[str, Any]:
+        # Waiting intervals are measured from transitions, never from polling.
+        # Active durations are gauges as of observed_at, not completed counters.
+        waiting: dict[tuple[str, str], dict] = {}
+        current: dict[str, tuple[str, str, int]] = {}
+        canceled: dict[str, list[int | None]] = {}
+        recoveries: dict[str, int] = {}
+
+        def wait(kind, state, start, end, *, active=False):
+            key = kind, state
+            row = waiting.setdefault(key, {"kind": kind, "state": state, "n": 0, "total_ms": 0, "active": 0})
+            row["n"] += 1
+            row["active"] += int(active)
+            row["total_ms"] += max(0, end - start)
+
+        states = {
+            "READY",
+            "WAITING_ADMISSION",
+            "WAITING_APPROVAL",
+            "RECONCILING",
+            "WAITING_DEPENDENCIES",
+            "WAITING_CHILDREN",
+            "WAITING_INPUT",
+            "WAITING_TIMER",
+        }
+        for event in facts:
+            data, at, rid = load(event["data"]), event["created_at"], event["run_id"]
+            if event["type"] in {"step.created", "step.state"}:
+                sid, state = data["step_id"], data["state"]
+                previous = current.get(sid)
+                if previous and previous[1] == state:
+                    continue
+                if previous and previous[1] in states:
+                    wait(*previous, at)
+                current[sid] = (data.get("kind", previous[0] if previous else "unknown"), state, at)
+            elif event["type"] == "run.state" and data["state"] in {"CANCELING", "CANCELED"}:
+                interval = canceled.setdefault(rid, [at, None])
+                if data["state"] == "CANCELED":
+                    interval[1] = at
+            elif event["type"] in {"attempt.lease_expired", "effect.reconciled", "model.usage_reconciled"}:
+                recoveries[event["type"]] = recoveries.get(event["type"], 0) + 1
+        for kind, state, at in current.values():
+            if state in states:
+                wait(kind, state, at, observed_at, active=True)
+        return {
+            "waiting": [waiting[key] for key in sorted(waiting)],
+            "recoveries": [{"reason": key, "n": recoveries[key]} for key in sorted(recoveries)],
+            "cancellation": {
+                "n": len(canceled),
+                "completed": sum(end is not None for start, end in canceled.values()),
+                "duration_ms": sum(max(0, end - start) for start, end in canceled.values() if end is not None),
+                "pending_ms": sum(max(0, observed_at - start) for start, end in canceled.values() if end is None),
+            },
         }
 
     def export_attempts(self, sink: SpanSink, *, consumer_id: str, tenant_id: str, limit: int = 100) -> int:
@@ -318,6 +389,12 @@ class OpenTelemetryMetrics:
         def first_token_total(options: Any):
             yield Observation(telemetry.snapshot(tenant_id=tenant_id)["first_token"]["total_ms"])
 
+        def scalar(section: str, value: str):
+            def observe(options: Any):
+                yield Observation(telemetry.snapshot(tenant_id=tenant_id)[section][value])
+
+            return observe
+
         self.instruments = [
             meter.create_observable_gauge("agent_runtime.runs", [callback("runs", "n", ("state",))]),
             meter.create_observable_gauge("agent_runtime.steps", [callback("steps", "n", ("kind", "state"))]),
@@ -327,6 +404,28 @@ class OpenTelemetryMetrics:
                 [callback("attempts", "duration_ms", ("kind", "status"))],
                 unit="ms",
             ),
+            meter.create_observable_gauge("agent_runtime.retry.count", [callback("retries", "n", ("kind",))]),
+            meter.create_observable_gauge("agent_runtime.wait.count", [callback("waiting", "n", ("kind", "state"))]),
+            meter.create_observable_gauge(
+                "agent_runtime.wait.active", [callback("waiting", "active", ("kind", "state"))]
+            ),
+            meter.create_observable_gauge(
+                "agent_runtime.wait.duration_total", [callback("waiting", "total_ms", ("kind", "state"))], unit="ms"
+            ),
+            meter.create_observable_gauge("agent_runtime.recovery.count", [callback("recoveries", "n", ("reason",))]),
+            *[
+                meter.create_observable_gauge(
+                    "agent_runtime.cancel." + name,
+                    [scalar("cancellation", key)],
+                    **({"unit": "ms"} if key.endswith("ms") else {}),
+                )
+                for name, key in (
+                    ("count", "n"),
+                    ("completed", "completed"),
+                    ("duration_total", "duration_ms"),
+                    ("pending_duration_total", "pending_ms"),
+                )
+            ],
             meter.create_observable_gauge("agent_runtime.model.spent_micro", [spent]),
             meter.create_observable_gauge("agent_runtime.model.first_token.count", [first_token_count]),
             meter.create_observable_gauge(

@@ -134,7 +134,7 @@ def test_real_opentelemetry_export_and_observable_metrics(tmp_path):
     reader = InMemoryMetricReader()
     provider = MeterProvider(metric_readers=[reader])
     instrumentation = OpenTelemetryMetrics(telemetry, provider.get_meter("test"), tenant_id="a")
-    assert len(instrumentation.instruments) == 7
+    assert len(instrumentation.instruments) == 16
     data = reader.get_metrics_data()
     metrics = {
         metric.name: metric
@@ -143,6 +143,9 @@ def test_real_opentelemetry_export_and_observable_metrics(tmp_path):
         for metric in scope.metrics
     }
     assert metrics["agent_runtime.runs"].data.data_points[0].value == 1
+    assert metrics["agent_runtime.wait.count"].data.data_points[0].value == 1
+    assert metrics["agent_runtime.wait.active"].data.data_points[0].value == 0
+    assert metrics["agent_runtime.cancel.count"].data.data_points[0].value == 0
     # A second collection observes durable totals instead of incrementing again.
     assert reader.get_metrics_data().resource_metrics[0].scope_metrics[0].metrics[0].data.data_points[0].value == 1
     provider.shutdown()
@@ -382,3 +385,89 @@ def test_capacity_wait_span_is_not_a_provider_error(tmp_path):
     assert span.attributes["agent_runtime.status"] == "NOT_ADMITTED"
     assert span.status.status_code == StatusCode.UNSET
     assert telemetry.snapshot(tenant_id="a")["spent_micro"] == 0
+
+
+def test_durable_wait_retry_and_cancellation_metrics(tmp_path, monkeypatch):
+    import agent_runtime.engine as engine
+    import agent_runtime.journal as journal_module
+    import agent_runtime.telemetry as telemetry_module
+    from agent_runtime import ModelAdmissionPending
+
+    clock = [10]
+    for module in (engine, journal_module, telemetry_module):
+        monkeypatch.setattr(module, "now_ms", lambda: clock[0])
+
+    class BusyThenUnknown:
+        calls = 0
+
+        def generate(self, messages, *, request_id):
+            self.calls += 1
+            if self.calls == 1:
+                raise ModelAdmissionPending(retry_after_ms=1000)
+            raise OSError("provider result uncertain")
+
+    journal = Journal(tmp_path / "metrics.sqlite")
+    port = BusyThenUnknown()
+    runtime = AgentRuntime(journal, port, None)
+    rid = runtime.start("secret", AgentSpec("test", "1"), tenant_id="a")
+    clock[0] = 100
+    assert runtime.resume(rid)["state"] == "WAITING"
+    clock[0] = 500
+    before = runtime.get(rid)
+    snapshot = RuntimeTelemetry(journal).snapshot(tenant_id="a")
+    waits = {(r["kind"], r["state"]): r for r in snapshot["waiting"]}
+    assert waits["model", "READY"]["total_ms"] == 90
+    assert waits["model", "WAITING_ADMISSION"] == dict(
+        kind="model", state="WAITING_ADMISSION", n=1, total_ms=400, active=1
+    )
+    assert snapshot["retries"] == []
+    assert runtime.resume(rid) == before  # polling does not create a wait interval
+    assert RuntimeTelemetry(Journal(journal.path)).snapshot(tenant_id="a") == snapshot
+    clock[0] = 1200
+    assert runtime.resume(rid)["state"] == "WAITING"
+    clock[0] = 1300
+    runtime.signal(rid, "cancel", {}, signal_id="cancel", actor="owner")
+    assert runtime.get(rid)["state"] == "CANCELING"
+    clock[0] = 1500
+    snapshot = RuntimeTelemetry(journal).snapshot(tenant_id="a")
+    assert snapshot["retries"] == [dict(kind="model", n=1)]
+    assert snapshot["cancellation"] == dict(n=1, completed=0, duration_ms=0, pending_ms=200)
+    clock[0] = 1800
+    step = runtime.get(rid)["steps"][0]
+    assert runtime.settle_model_uncertainty(rid, step["id"], usage_micro=0, actor="reviewer")
+    assert runtime.get(rid)["state"] == "CANCELED"
+    snapshot = RuntimeTelemetry(Journal(journal.path)).snapshot(tenant_id="a")
+    assert snapshot["cancellation"] == dict(n=1, completed=1, duration_ms=500, pending_ms=0)
+    assert snapshot["recoveries"] == [dict(reason="model.usage_reconciled", n=1)]
+    waits = {r["state"]: r for r in snapshot["waiting"]}
+    assert waits["WAITING_ADMISSION"]["total_ms"] == 1100
+    assert waits["RECONCILING"]["total_ms"] == 600
+    assert all(row["active"] == 0 for row in waits.values())
+    assert runtime.signal(rid, "cancel", {}, signal_id="cancel", actor="owner") is False
+    assert RuntimeTelemetry(journal).snapshot(tenant_id="a") == snapshot
+    other = RuntimeTelemetry(journal).snapshot(tenant_id="b")
+    assert other["waiting"] == other["recoveries"] == other["retries"] == []
+    assert other["cancellation"]["n"] == 0
+    assert "secret" not in repr(snapshot)
+    assert port.calls == 2
+    journal.audit(rid)
+
+
+def test_child_join_wait_is_separate_from_model_admission(tmp_path, monkeypatch):
+    import agent_runtime.journal as journal_module
+    import agent_runtime.telemetry as telemetry_module
+
+    clock = [10]
+    monkeypatch.setattr(journal_module, "now_ms", lambda: clock[0])
+    monkeypatch.setattr(telemetry_module, "now_ms", lambda: clock[0])
+    journal = Journal(tmp_path / "join-metrics.sqlite")
+    runtime = AgentRuntime(journal, Model(), None)
+    root = runtime.start("parent", AgentSpec("parent", "1"), tenant_id="a")
+    clock[0] = 20
+    runtime.fork_children(root, [("child", AgentSpec("child", "1"))], idempotency_key="join")
+    clock[0] = 100
+    rows = RuntimeTelemetry(journal).snapshot(tenant_id="a")["waiting"]
+    join = next(row for row in rows if row["state"] == "WAITING_CHILDREN")
+    assert join["total_ms"] == 80 and join["active"] == 1
+    assert not any(row["state"] == "WAITING_ADMISSION" for row in rows)
+    journal.audit(root)

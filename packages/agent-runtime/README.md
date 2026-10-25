@@ -290,3 +290,9 @@ IN_FLIGHT are audited and closed from their recorded transition boundary.
 Repair adds an interruption event, never calls a model/tool, never modifies the
 frozen plan, Step, effect or budget, and is idempotent. Runs with mismatching
 Attempt identities/counts or state/event facts are not repaired or executed.
+
+## 生命周期指标口径（2026-10-25）
+
+只读快照补齐原方案指标：`waiting` 按步骤种类和状态记录连续等待区间数量、总毫秒数及当前等待数，覆盖 READY、额度、审批、输入、计时、子任务、依赖和结果核对；活动区间计算到采集时刻，重复同状态事件不拆分区间。生成/工具耗时沿用已结束 Attempt 的时长，首 token 单独统计。`retries` 是同一逻辑 Step 超过第一次的 Attempt 数，包含未获模型准入后的再申请，不等于 provider 实际请求数；重新生成的新 Step 可由费用核对事件与跨度关联辨认。
+
+`cancellation` 按 Run 首次 CANCELING（直接取消则 CANCELED）起算，分别输出请求数、完成数、完成耗时及未确认取消的当前时长；根与子 Run 分别计量。`recoveries` 仅计已提交的租约失效、效果核对与模型费用核对事实，幂等 resume 或只读查询不伪装恢复次数。所有值均可从持久记录重新计算，按租户隔离；OpenTelemetry 使用有限种类/状态标签，不把 Run ID、参数或正文作为指标标签。快照用于运维采集，不参与执行或计费。

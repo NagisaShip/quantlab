@@ -210,3 +210,9 @@ SQLite 宿主、队列、Worker、运行 API 与配额综合回归 78 项通过�
 共享策略收尾专项：默认策略行缺失时，即使重启也不重新放宽为默认额度；未知版本拒绝派发。策略专项与冷启动双数据库 15 项通过。取消场景现检查 Attempt 已结束为 UNKNOWN、未知 Step 仍占名额；历史收尾修复验证重复打开不追加第二份事件、原计划不变、工具零执行及跨度可导出。孤立 Attempt 或计数与已提交事件不符时，修复和执行均拒绝。取消/故障及冷启动定向双数据库 75 项通过；最后的完整身份审计回归结果另列。
 
 最终身份审计：SQLite/PostgreSQL 内核 Scheduler、engine、故障矩阵、真实进程崩溃、父子与遥测回归 152 项通过。补充未知策略版本后，Scheduler 与 PostgreSQL 研究室/Team/通用 Agent 集成回归 40 项通过。以上为有重叠的定向证据，不替代最终全量验收。
+
+## 生命周期指标验收（2026-10-25）
+
+`test_durable_wait_retry_and_cancellation_metrics` 在 SQLite/PostgreSQL 通过真实模型准入等待、冷却重试、结果未知、取消与人工费用核对，核对已知时钟下每段等待和取消时长。重建 Journal、重复 resume、重复取消均不重复计数；不同租户读不到数据；读取不触发模型执行。现有真实 OpenTelemetry SDK 验证新增 gauge 的值，全部标签保持有限类别。遥测与父子/依赖综合回归 98 项通过；新增 Join 等待专项结果另列。
+
+Join 等待补充修正测试对既有模型边界的假设后，SQLite/PostgreSQL 遥测专项 32 项全部通过；验证 WAITING_CHILDREN 计入自己的等待状态，不误作模型额度等待。Ruff 通过。
