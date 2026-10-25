@@ -377,10 +377,10 @@ def _rest(out: dict, result: dict, eq: list, step: int, metrics: dict) -> dict:
     }
 
 
-def _team(topic: str, *, team_id: str | None = None, context: str = "") -> dict:
+def _team(topic: str, *, team_id: str | None = None, context: str = "", source_project_id: str = "") -> dict:
     s = get_services()
     team = s.teams.get_team(team_id or LAB_REVIEW_TEAM) or s.teams.get_team("review_board") or s.teams.default_team()
-    return s.teams.run(team, topic, context=context).to_dict()
+    return s.teams.run(team, topic, context=context, source_project_id=source_project_id).to_dict()
 
 
 def _discuss(project: dict[str, Any], topic: str) -> dict:
@@ -511,6 +511,7 @@ def _lab() -> StrategyLab:
         market=lambda sym, tf, bars=1500: s.market_summary(sym, tf, bars),
         templates=s.search_templates,
         team=_team,
+        team_for_project=lambda pid, topic, **kwargs: _team(topic, source_project_id=pid, **kwargs),
         save_strategy=_save_strategy,
         registry=s.teams.tools,
         discuss=_discuss,

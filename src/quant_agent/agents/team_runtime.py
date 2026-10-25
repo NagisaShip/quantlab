@@ -33,6 +33,7 @@ def _load(runner: Any, run_id: str, *, write: bool = False):
     metadata = root["spec"].get("metadata", {})
     if "team_plan" not in metadata or metadata["team_plan"]["run"]["id"] != run_id:
         raise ValueError("invalid Team Runtime identity")
+    runner._assert_source_visible(metadata["team_plan"]["run"].get("source_project_id", ""))
     if write and metadata["user_id"] != (context.current().user_id or "system"):
         raise AppError(ErrorCode.PERMISSION_DENIED, "仅原发起人可继续或取消团队运行")
     if write and not context.current().can_write:
@@ -137,6 +138,7 @@ def project(runner: Any, root: dict) -> TeamRun:
         topic=record["topic"],
         mode=record["mode"],
         context=record.get("context", ""),
+        source_project_id=record.get("source_project_id", ""),
         created_at=record["created_at"],
         runtime_run_id=root["id"],
         runtime_event_seq=root["seq"],
@@ -278,7 +280,13 @@ def recover_indexes(runner: Any, records: list[dict], limit: int) -> list[dict]:
     merged = {record["id"]: record for record in records}
     for row in roots:
         run_id = row["id"].removeprefix("team-root-")
-        run = get_run(runner, run_id)
+        try:
+            run = get_run(runner, run_id)
+        except AppError as exc:
+            if exc.code != ErrorCode.PERMISSION_DENIED:
+                raise
+            merged.pop(run_id, None)
+            continue
         if run:
             merged[run_id] = run.to_dict()
     return sorted(merged.values(), key=lambda item: item.get("created_at", 0), reverse=True)[:limit]

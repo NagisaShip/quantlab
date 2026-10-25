@@ -304,6 +304,7 @@ class LabTools:
     # bt_id -> 完整回测结果（净值、成交明细、完整交易），用于分段切片、成本核对与稳定性报告
     load_result: Callable[[str], dict[str, Any] | None] | None = None
     runtime_journal: Any = None
+    team_for_project: Callable[..., dict[str, Any]] | None = None
 
 
 class _PinnedRouter:
@@ -2707,7 +2708,7 @@ class StrategyLab:
 
     # ---------------- 团队 ----------------
     def _convene(self, pid: str, topic: str, *, team_id: str | None = None) -> dict[str, Any]:
-        if self.tools.team is None:
+        if self.tools.team is None and self.tools.team_for_project is None:
             return {"ok": False, "error": "团队功能不可用"}
         project = self.store.get(pid) or {}
         # 与单 Agent 共享同一份状态：数据窗口、全部版本的改动说明与回测成绩、研究者最近的要求
@@ -2718,7 +2719,11 @@ class StrategyLab:
             "convene_team",
             "召集团队评审",
             {"议题": topic[:40]},
-            lambda: self.tools.team(topic, team_id=team_id, context=context),
+            lambda: (
+                self.tools.team_for_project(pid, topic, team_id=team_id, context=context)
+                if self.tools.team_for_project
+                else self.tools.team(topic, team_id=team_id, context=context)
+            ),
         )
         self._post(
             pid,

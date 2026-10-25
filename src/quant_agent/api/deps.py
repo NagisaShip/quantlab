@@ -145,6 +145,23 @@ class AppServices:
         from ..platform.social import SocialService
 
         services.collab = CollabService(db, home)
+
+        def team_source_visible(pid: str) -> bool:
+            from ..platform import context
+
+            ctx = context.current()
+            if store.get("lab_projects", pid) is None:
+                return False
+            if not ctx.user_id or ctx.user_id == "system":
+                return True
+            return services.collab.visible_to(
+                services.collab.share(context.current_workspace(), "project", pid),
+                ctx.user_id,
+                ws_admin=ctx.is_ws_admin,
+                my_groups=set(services.collab.user_groups(context.current_workspace(), ctx.user_id)),
+            )
+
+        services.teams.source_visible = team_source_visible
         services.collab_bot = CollabBot(db)
         services.social = SocialService(db, store)
         services.auth.settings_reader = lambda: global_store.get(Collections.SETTINGS, "platform_settings")
