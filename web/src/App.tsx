@@ -6,6 +6,7 @@ import { RoleDrawer } from './components/roles'
 import { Icon, LogoMark } from './components/icons'
 import { UserAvatar } from './components/UserAvatar'
 import Tape from './components/Tape'
+import AppTopBar from './components/AppTopBar'
 import DataCenterPage from './pages/DataCenter'
 import FactorsPage from './pages/Factors'
 import ModelLibPage from './pages/ModelLib'
@@ -735,7 +736,7 @@ function Workbench({ me, onMeChanged, onOnboardingChanged }: {
       </aside>
 
       <div className="shell">
-        <header className="topbar">
+        <AppTopBar>
           <div>
             <button type="button" className="drawer-open-btn" onClick={() => setDrawer(true)} aria-label={t('打开导航')} aria-expanded={drawer}>
               <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden><path d="M3 5h12M3 9h12M3 13h8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>
@@ -761,7 +762,7 @@ function Workbench({ me, onMeChanged, onOnboardingChanged }: {
             <Tape />
             <RunBanner onNavigate={go} llmReady={keyedProviders > 0} />
           </div>
-        </header>
+        </AppTopBar>
 
         <PlatformBanner />
         <main className={FULL_BLEED.has(page) ? 'full' : undefined}>

@@ -34,7 +34,7 @@ jobs:
           sudo DEBIAN_FRONTEND=noninteractive apt-get "${apt_opts[@]}" install -y --no-install-recommends libreoffice-writer libreoffice-impress fonts-noto-cjk
           python -m pip install -e '.[dev,deliverables]'
       - name: 真实 Office 导出、截图与模型图片消息
-        run: python -m pytest tests/test_local_agent_deliverables.py -q
+        run: python -m pytest tests/test_local_agent_deliverables.py tests/test_document_charts.py -q
   backend:
     name: 后端（lint + 测试，SQLite）
     runs-on: ubuntu-latest
@@ -79,6 +79,7 @@ jobs:
         run: >-
           pytest -q packages/agent-runtime/tests tests/test_runtime_admission.py tests/test_lab_runtime.py tests/test_lab_runtime_api.py
           tests/test_team_runtime.py tests/test_team_structured_runtime.py tests/test_team_modes_runtime.py tests/test_team_runtime_api.py tests/test_team_recovery_api.py tests/test_team_visibility_api.py tests/test_generic_agent_runtime.py tests/test_strategy_lab.py tests/test_factor_research.py tests/test_model_research.py
+          tests/test_long_runtime.py tests/test_notification_recovery_api.py
 
       - name: 测试
         run: pytest -q

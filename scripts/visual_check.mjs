@@ -50,6 +50,7 @@ function usage() {
   --baseline <dir>         与此目录的基准截图做像素比较；缺失基准视为失败
   --update-baseline        显式更新基准（须指定 --baseline）
   --max-diff-ratio <n>     允许变化的像素比例，默认 0.001
+  --pixel-threshold <n>    pixelmatch 单像素颜色阈值，默认 0.1
 
 环境变量:
   QUANTLAB_BASE            同 --base
@@ -105,6 +106,7 @@ function parseArgs(argv) {
     baseline: '',
     updateBaseline: false,
     maxDiffRatio: 0.001,
+    pixelThreshold: 0.1,
   }
   const requireValue = (index, flag) => {
     const value = argv[index]
@@ -127,6 +129,9 @@ function parseArgs(argv) {
         break
       case '--max-diff-ratio':
         options.maxDiffRatio = Number(value())
+        break
+      case '--pixel-threshold':
+        options.pixelThreshold = Number(value())
         break
       case '-h':
       case '--help':
@@ -294,8 +299,10 @@ async function main() {
     return 0
   }
   const base = normalizeBase(options.base)
-  if ((options.updateBaseline && !options.baseline) || !Number.isFinite(options.maxDiffRatio) || options.maxDiffRatio < 0 || options.maxDiffRatio > 1) {
-    console.error('基准更新须指定 --baseline；--max-diff-ratio 须介于 0 和 1 之间')
+  if ((options.updateBaseline && !options.baseline)
+    || !Number.isFinite(options.maxDiffRatio) || options.maxDiffRatio < 0 || options.maxDiffRatio > 1
+    || !Number.isFinite(options.pixelThreshold) || options.pixelThreshold < 0 || options.pixelThreshold > 1) {
+    console.error('基准更新须指定 --baseline；--max-diff-ratio 与 --pixel-threshold 须介于 0 和 1 之间')
     return 2
   }
   let baseUrl
@@ -391,7 +398,11 @@ async function main() {
         const overflow = await collectPageIssues(page)
         const screenshot = path.join(outDir, `${key}-${options.width}x${options.height}.png`)
         await page.screenshot({ path: screenshot, animations: 'disabled', caret: 'hide' })
-        const pixelDiff = options.baseline ? await compareScreenshot(screenshot, path.resolve(options.baseline), { update: options.updateBaseline, maxRatio: options.maxDiffRatio }) : null
+        const pixelDiff = options.baseline ? await compareScreenshot(screenshot, path.resolve(options.baseline), {
+          update: options.updateBaseline,
+          maxRatio: options.maxDiffRatio,
+          threshold: options.pixelThreshold,
+        }) : null
         pages.push({
           key,
           title: meta.title,
@@ -436,6 +447,7 @@ async function main() {
         page_errors: pages.reduce((total, item) => total + item.page_errors.length, 0),
         overflow: pages.filter((item) => item.horizontal_overflow?.overflow).length,
         console_errors: pages.reduce((total, item) => total + item.console_errors.length, 0),
+        pixel_diffs: pages.filter((item) => item.pixel_diff && !item.pixel_diff.ok).length,
       },
       ok: failed.length === 0,
     }
@@ -446,7 +458,8 @@ async function main() {
         console.log(`  ✓ ${item.key}${item.console_errors.length ? `（${item.console_errors.length} 条 console error，已记录）` : ''}`)
         continue
       }
-      console.error(`  ✖ ${item.key}：${item.page_errors.length} 个 pageerror，横向溢出=${item.horizontal_overflow?.overflow ?? '未知'}，像素比较=${item.pixel_diff?.status ?? '未启用'}`)
+      const ratio = item.pixel_diff?.ratio == null ? '' : ` (${(item.pixel_diff.ratio * 100).toFixed(4)}% > ${(item.pixel_diff.maxRatio * 100).toFixed(4)}%)`
+      console.error(`  ✖ ${item.key}：${item.page_errors.length} 个 pageerror，横向溢出=${item.horizontal_overflow?.overflow ?? '未知'}，像素比较=${item.pixel_diff?.status ?? '未启用'}${ratio}`)
       for (const message of item.page_errors.slice(0, 3)) console.error(`     pageerror: ${message.split('\n')[0]}`)
       for (const offender of item.horizontal_overflow?.offenders || []) {
         console.error(`     溢出元素: <${offender.tag} class="${offender.class}"> right=${offender.right} width=${offender.width}`)
@@ -454,7 +467,7 @@ async function main() {
     }
     for (const warning of warnings) console.warn(`  ! ${warning}`)
     console.log(`截图与报告：${path.relative(process.cwd(), outDir)}（已自忽略，不进入 git）`)
-    console.log(`结果：${report.ok ? 'PASS' : 'FAIL'} · pages=${report.summary.pages} failed=${report.summary.failed} pageerrors=${report.summary.page_errors} overflow=${report.summary.overflow}`)
+    console.log(`结果：${report.ok ? 'PASS' : 'FAIL'} · pages=${report.summary.pages} failed=${report.summary.failed} pageerrors=${report.summary.page_errors} overflow=${report.summary.overflow} pixel_diffs=${report.summary.pixel_diffs}`)
     return report.ok ? 0 : 1
   } finally {
     await context?.close().catch(() => {})

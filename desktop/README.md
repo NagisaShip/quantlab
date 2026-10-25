@@ -70,7 +70,9 @@ powershell -ExecutionPolicy Bypass -File desktop/build.ps1            # release 
 
 ## 更新与打包
 
-发布版本以 GitHub Releases 为准。推送 `v0.1.0-preview.*` 标签后，Windows CI 构建 sidecar 与 NSIS 安装包，验收启动并上传安装包和 SHA-256。发布前检查草稿中的资产，随后发布预览版。托盘「检查更新」打开发布页。
+发布版本以 GitHub Releases 为准。推送 `v0.1.0-preview.*` 标签后，Windows CI 构建 sidecar 与 NSIS 安装包，
+启动冻结后端验收 Agent Runtime、内置网页与文档依赖，并上传安装包、便携 sidecar ZIP 和各自的 SHA-256。
+发布前检查草稿中的资产，随后发布预览版。托盘「检查更新」打开发布页。
 
 ## 环境要求
 
@@ -90,6 +92,10 @@ powershell -ExecutionPolicy Bypass -File desktop/build.ps1            # release 
 | `QUANTLAB_SRC` | 后端源码目录（等价于 `--src`） |
 | `QUANTLAB_WEBVIEW_DATA_DIR` | 覆盖 WebView2 用户数据目录；默认按项目分目录，避免多实例冲突 |
 | `QUANTLAB_WEBVIEW_DEBUG_PORT` | 给 WebView2 加 `--remote-debugging-port`，可用 CDP/DevTools 连窗口排查 |
+
+托盘启动日志中的 `visible=Ok` 表示图标已向 Shell 注册；Windows 11 的折叠区可能让 `rect=None`，
+工具提示更新也可能短暂返回权限错误，这两种情况不再阻止“隐藏到托盘”。若 `visible` 本身失败，
+窗口会保留并提示改为最小化。
 
 ## 已知限制
 

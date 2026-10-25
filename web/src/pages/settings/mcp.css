@@ -1,1 +1,30 @@
-.mcp-settings{max-width:960px}.mcp-toolbar,.mcp-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.mcp-toolbar{justify-content:space-between}.mcp-server{border:1px solid var(--border,#ddd);border-radius:12px;padding:20px;margin:16px 0;min-width:0}.mcp-server code,.mcp-server pre{display:block;overflow:auto;max-width:100%;white-space:pre-wrap;overflow-wrap:anywhere}.mcp-form{display:grid;gap:16px}.mcp-form label{display:grid;gap:6px}.mcp-form label:has([type=checkbox]){display:flex;align-items:center}.mcp-form input:not([type=checkbox]),.mcp-form textarea,.mcp-form select{width:100%;box-sizing:border-box;padding:9px;background:var(--bg);color:inherit;border:1px solid var(--border,#ddd);border-radius:6px}
+.mcp-settings{max-width:960px}
+.mcp-toolbar,.mcp-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.mcp-toolbar{justify-content:space-between}
+.mcp-toolbar p{margin:0}
+.mcp-title{display:flex;align-items:center;gap:8px;min-width:0;flex-wrap:wrap}
+.mcp-title strong{overflow-wrap:anywhere}
+.mcp-title>span{font-size:11px;padding:2px 7px;border:1px solid var(--border,#d8dee9);border-radius:999px;color:var(--muted,#64748b)}
+.mcp-title .mcp-status.on{border-color:color-mix(in srgb,var(--green,#16a34a) 40%,transparent);color:var(--green,#15803d);background:color-mix(in srgb,var(--green,#16a34a) 9%,transparent)}
+.mcp-count,.mcp-health{color:var(--muted,#64748b);font-size:12px}
+.mcp-note{margin:8px 0;padding:8px 12px;border-radius:8px;background:color-mix(in srgb,var(--accent,#2563eb) 7%,transparent);color:var(--muted,#475569)}
+.mcp-server{border:1px solid var(--border,#ddd);border-radius:12px;padding:20px;margin:16px 0;min-width:0;background:var(--panel,transparent)}
+.mcp-server>p{margin:10px 0}
+.mcp-server code,.mcp-server pre{display:block;overflow:auto;max-width:100%;white-space:pre-wrap;overflow-wrap:anywhere}
+.mcp-server code{padding:9px 11px;border-radius:7px;background:color-mix(in srgb,var(--muted,#64748b) 8%,transparent);font-size:12px}
+.mcp-probe,.mcp-call{margin-top:14px;padding-top:14px;border-top:1px solid var(--border,#e2e8f0)}
+.mcp-tool{margin-top:8px;border:1px solid var(--border,#e2e8f0);border-radius:8px;overflow:hidden}
+.mcp-tool-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 11px}
+.mcp-tool-head code{background:none;padding:0}
+.mcp-tool summary{padding:0 11px 8px;cursor:pointer;color:var(--muted,#64748b);font-size:12px}
+.mcp-tool>p,.mcp-tool>details{margin:8px 11px}
+.mcp-tool pre{margin:8px 0}
+.mcp-call{display:grid;gap:10px}
+.mcp-call label,.mcp-form label{display:grid;gap:6px}
+.mcp-call textarea{width:100%;min-height:96px;box-sizing:border-box;padding:9px;background:var(--bg);color:inherit;border:1px solid var(--border,#ddd);border-radius:6px;font-family:var(--mono,monospace)}
+.mcp-call .button.primary{justify-self:start}
+.mcp-call pre{max-height:360px;padding:10px;border-radius:7px;background:color-mix(in srgb,var(--muted,#64748b) 8%,transparent)}
+.mcp-form{display:grid;gap:16px}
+.mcp-form label:has([type=checkbox]){display:flex;align-items:center}
+.mcp-form input:not([type=checkbox]),.mcp-form textarea,.mcp-form select{width:100%;box-sizing:border-box;padding:9px;background:var(--bg);color:inherit;border:1px solid var(--border,#ddd);border-radius:6px}
+@media(max-width:640px){.mcp-server{padding:14px}.mcp-actions{width:100%}.mcp-actions .button{flex:1 1 auto}}

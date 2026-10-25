@@ -104,3 +104,9 @@ desktop/src-tauri/resources/backend/*
 # PyInstaller/本地构建临时目录
 /.tmp/
 
+# ---- local generated directories ----
+/pip-*/
+/.quantlab/
+*.tsbuildinfo
+/.runtime-*/
+/web/.runtime-build-temp/

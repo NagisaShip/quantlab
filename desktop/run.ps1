@@ -1,4 +1,4 @@
-# 启动 QuantLab 桌面端（Tauri 开发版）
+﻿# 启动 QuantLab 桌面端（Tauri 开发版）
 #
 # 用法：
 #   powershell -ExecutionPolicy Bypass -File desktop\run.ps1 -Project "D:\Research\ProjectA"
@@ -27,6 +27,12 @@ if ((Test-Path (Join-Path $cargoHome "bin\cargo.exe")) -and -not $env:CARGO_HOME
 if (-not $Python) { $Python = "python" }
 $env:QUANTLAB_PYTHON = $Python
 $env:QUANTLAB_SRC = (Join-Path $repo "src")
+# Some Windows profiles deny WebView2's default LocalAppData directory. Keep the
+# cache in a writable project-local path unless the caller explicitly overrides it.
+if (-not $env:QUANTLAB_WEBVIEW_DATA_DIR) {
+    $dataProject = if ($Project) { $Project } else { $repo }
+    $env:QUANTLAB_WEBVIEW_DATA_DIR = Join-Path $dataProject ".quantlab\webview"
+}
 
 if (-not $Exe) {
     $Exe = Join-Path $here "src-tauri\target\debug\quantlab-desktop.exe"

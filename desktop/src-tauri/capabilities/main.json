@@ -18,6 +18,7 @@
     "core:window:allow-toggle-maximize",
     "core:window:allow-close",
     "core:window:allow-is-maximized",
+    "allow-native-close-choice",
     "allow-native-choose-folder",
     "allow-native-choose-files",
     "allow-native-desktop-info",

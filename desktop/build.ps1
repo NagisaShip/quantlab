@@ -1,4 +1,4 @@
-# 构建 QuantLab 桌面端（Tauri release 可执行文件）
+﻿# 构建 QuantLab 桌面端（Tauri release 可执行文件）
 #
 # 用法：
 #   powershell -ExecutionPolicy Bypass -File desktop\build.ps1

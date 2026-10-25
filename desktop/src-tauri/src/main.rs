@@ -26,11 +26,11 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use tauri::{
-    menu::{Menu, MenuItem, PredefinedMenuItem},
-    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    menu::{IconMenuItem, Menu, MenuItem, PredefinedMenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
-use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogResult};
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 
 const APP_TITLE: &str = "QuantLab · 本地研究";
 const APP_ID: &str = "main";
@@ -169,6 +169,7 @@ fn merge_fallback_config(cfg: &mut DesktopConfig, project: &Path) {
 
 /// 托盘菜单里“取消退出”的句柄：只有处于“等待任务完成后退出”时才可用。
 struct TrayHandles {
+    icon: TrayIcon<tauri::Wry>,
     cancel_quit: MenuItem<tauri::Wry>,
 }
 
@@ -908,32 +909,9 @@ fn show_busy_quit_dialog(app: &AppHandle, tasks: Vec<TaskInfo>) {
     if count > 5 {
         lines.push_str(&format!("…另有 {} 个任务\n", count - 5));
     }
-    let app2 = app.clone();
-    app.dialog()
-        .message(format!(
-            "还有 {count} 个任务正在运行：\n\n{lines}\n可以隐藏到托盘继续研究，或等任务全部完成后自动退出。"
-        ))
-        .title("退出 QuantLab")
-        .buttons(MessageDialogButtons::YesNoCancelCustom(
-            "隐藏到托盘".into(),
-            "完成后退出".into(),
-            "取消".into(),
-        ))
-        .show_with_result(move |result| {
-            // YesNoCancelCustom 在 Windows 上返回 Custom(按钮文案)，不是 Yes/No。
-            let choice = match result {
-                MessageDialogResult::Custom(label) => label,
-                MessageDialogResult::Yes => "隐藏到托盘".into(),
-                MessageDialogResult::No => "完成后退出".into(),
-                MessageDialogResult::Cancel => "取消".into(),
-                _ => String::new(),
-            };
-            match choice.as_str() {
-                "隐藏到托盘" => hide_window(&app2),
-                "完成后退出" => begin_pending_quit(app2.clone()),
-                _ => {}
-            }
-        });
+    show_close_prompt(app, "busy", &format!(
+        "还有 {count} 个任务正在运行：\n\n{lines}\n隐藏到托盘可继续研究，也可以等任务完成后自动退出。"
+    ));
 }
 
 fn begin_pending_quit(app: AppHandle) {
@@ -1034,9 +1012,55 @@ fn show_window(app: &AppHandle) {
 }
 
 fn hide_window(app: &AppHandle) {
+    let available = app.try_state::<Backend>().is_some_and(|state| {
+        let icon = state.tray.lock().ok().and_then(|guard| guard.as_ref().map(|tray| tray.icon.clone()));
+        icon.is_some_and(|icon| {
+            // set_visible is the authoritative availability check. Tooltip and
+            // rect are cosmetic/geometry probes and can legitimately fail while
+            // the icon is in the Windows 11 overflow flyout or Shell is briefly
+            // busy. Treating those as "no tray" made hide-to-tray always fail.
+            if let Err(error) = icon.set_visible(true) {
+                append_log(&state.project, &format!("tray unavailable before hide: {error}"));
+                return false;
+            }
+            if !matches!(icon.rect(), Ok(Some(_))) {
+                append_log(&state.project, "tray geometry unavailable; hiding anyway after set_visible succeeded");
+            }
+            true
+        })
+    });
+    if !available {
+        show_window(app);
+        show_close_prompt(app, "error", "系统托盘暂不可用，窗口已保留。你可以最小化到任务栏继续研究，随时点击任务栏图标返回。");
+        return;
+    }
     if let Some(win) = window(app) {
         let _ = win.hide();
     }
+}
+
+fn show_close_prompt(app: &AppHandle, kind: &str, message: &str) {
+    show_window(app);
+    if let Some(win) = window(app) {
+        let _ = win.emit("quantlab://close-prompt", serde_json::json!({ "kind": kind, "message": message }));
+    }
+}
+
+#[tauri::command]
+fn native_close_choice(app: AppHandle, choice: String) -> Result<(), String> {
+    match choice.as_str() {
+        "hide" => hide_window(&app),
+        "exit" => request_quit(app),
+        "wait" => begin_pending_quit(app),
+        "cancel-quit" => cancel_pending_quit(&app),
+        "minimize" => {
+            if let Some(win) = window(&app) {
+                win.minimize().map_err(|error| error.to_string())?;
+            }
+        }
+        _ => return Err("未知的窗口操作".into()),
+    }
+    Ok(())
 }
 
 fn on_close_requested(app: AppHandle) {
@@ -1045,19 +1069,7 @@ fn on_close_requested(app: AppHandle) {
     }
     if app.state::<Backend>().pending_quit.load(Ordering::SeqCst) {
         show_window(&app);
-        let app2 = app.clone();
-        app.dialog()
-            .message("正在等待任务完成后退出。你可以取消退出，继续在窗口里工作。")
-            .title("QuantLab 正在退出")
-            .buttons(MessageDialogButtons::OkCancelCustom(
-                "取消退出".into(),
-                "继续等待".into(),
-            ))
-            .show(move |cancel| {
-                if cancel {
-                    cancel_pending_quit(&app2);
-                }
-            });
+        show_close_prompt(&app, "pending", "正在等待任务完成后退出。你可以取消退出，继续在窗口里工作。");
         return;
     }
     let action = {
@@ -1067,31 +1079,7 @@ fn on_close_requested(app: AppHandle) {
     match action.as_str() {
         "background" => hide_window(&app),
         "exit" => request_quit(app),
-        _ => {
-            let app2 = app.clone();
-            app.dialog()
-                .message("关闭窗口后 QuantLab 可以继续在托盘后台研究。要隐藏到托盘，还是退出？")
-                .title("关闭 QuantLab")
-                .buttons(MessageDialogButtons::YesNoCancelCustom(
-                    "隐藏到托盘".into(),
-                    "退出".into(),
-                    "取消".into(),
-                ))
-                .show_with_result(move |result| {
-                    let choice = match result {
-                        MessageDialogResult::Custom(label) => label,
-                        MessageDialogResult::Yes => "隐藏到托盘".into(),
-                        MessageDialogResult::No => "退出".into(),
-                        MessageDialogResult::Cancel => "取消".into(),
-                        _ => String::new(),
-                    };
-                    match choice.as_str() {
-                        "隐藏到托盘" => hide_window(&app2),
-                        "退出" => request_quit(app2.clone()),
-                        _ => {}
-                    }
-                });
-        }
+        _ => show_close_prompt(&app, "close", "隐藏后，研究任务会继续运行。点击任务栏右侧的 QuantLab 图标即可返回；图标也可能位于「显示隐藏的图标」中。"),
     }
 }
 
@@ -1287,7 +1275,8 @@ fn create_window(app: &AppHandle, base_url: &str, first_run: bool, project: &Pat
 }
 
 fn create_tray(app: &AppHandle) -> tauri::Result<()> {
-    let show = MenuItem::with_id(app, "show", "打开 QuantLab 窗口", true, None::<&str>)?;
+    let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/32x32.png"))?;
+    let show = IconMenuItem::with_id(app, "show", "打开 QuantLab", true, Some(icon.clone()), None::<&str>)?;
     let update = MenuItem::with_id(app, "update", "检查更新", true, None::<&str>)?;
     let cancel_quit = MenuItem::with_id(app, "cancel-quit", "取消退出，继续运行", false, None::<&str>)?;
     let quit_item = MenuItem::with_id(app, "quit", "退出 QuantLab", true, None::<&str>)?;
@@ -1302,7 +1291,8 @@ fn create_tray(app: &AppHandle) -> tauri::Result<()> {
         ],
     )?;
 
-    let mut builder = TrayIconBuilder::new()
+    let builder = TrayIconBuilder::with_id("quantlab")
+        .icon(icon)
         .tooltip(APP_TITLE)
         .menu(&menu)
         .show_menu_on_left_click(false)
@@ -1323,13 +1313,19 @@ fn create_tray(app: &AppHandle) -> tauri::Result<()> {
                 show_window(tray.app_handle());
             }
         });
-    if let Some(icon) = app.default_window_icon() {
-        builder = builder.icon(icon.clone());
+    let icon = builder.build(app)?;
+    if let Some(state) = app.try_state::<Backend>() {
+        let visible = icon.set_visible(true);
+        let tooltip = icon.set_tooltip(Some(APP_TITLE));
+        append_log(
+            &state.project,
+            &format!("tray probe: visible={visible:?}; tooltip={tooltip:?}; rect={:?}", icon.rect()),
+        );
     }
-    builder.build(app)?;
     if let Some(state) = app.try_state::<Backend>() {
         if let Ok(mut guard) = state.tray.lock() {
             *guard = Some(TrayHandles {
+                icon,
                 cancel_quit: cancel_quit.clone(),
             });
         }
@@ -1342,6 +1338,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
+            native_close_choice,
             native_choose_folder,
             native_choose_files,
             native_desktop_info,

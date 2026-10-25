@@ -104,7 +104,8 @@ function draftFromPreset(p: Preset, scope: ProviderScope, prev?: Draft): Draft {
   }
 }
 
-export default function ModelConfigPage({ notify, onNavigate }: PageProps) {
+export default function ModelConfigPage({ notify, onNavigate, me: session }: PageProps) {
+  const local = session?.mode === 'local'
   const [config, setConfig] = useState<ModelConfigView | null>(null)
   const [presets, setPresets] = useState<Preset[]>([])
   const [usage, setUsage] = useState<ModelUsage | null>(null)
@@ -131,10 +132,10 @@ export default function ModelConfigPage({ notify, onNavigate }: PageProps) {
     setConfig(c)
     setPresets(p.presets)
     setUsage(u)
-    const which: ProviderScope = c.me.is_ws_admin ? 'workspace' : 'personal'
+    const which: ProviderScope = !local && c.me.is_ws_admin ? 'workspace' : 'personal'
     setLayer(which)
     loadRouting(c, which)
-  }, [loadRouting])
+  }, [loadRouting, local])
 
   useEffect(() => { refresh().catch((e: Error) => setError(e.message)) }, [refresh])
 
@@ -168,7 +169,7 @@ export default function ModelConfigPage({ notify, onNavigate }: PageProps) {
   }
 
   const remove = async (p: ProviderView) => {
-    const who = p.scope === 'workspace' ? '工作区共享服务商（所有成员都将不能再用它）' : '你的个人服务商'
+    const who = local ? '模型服务商' : p.scope === 'workspace' ? '工作区共享服务商（所有成员都将不能再用它）' : '你的个人服务商'
     if (!await appConfirm(`删除${who}「${p.label || p.name}」与它的密钥？`)) return
     try {
       await v3.deleteProvider(p.name, p.scope)
@@ -183,7 +184,7 @@ export default function ModelConfigPage({ notify, onNavigate }: PageProps) {
     try {
       await v3.saveRouting({ default: routing.default, code_gen: routing.code_gen, reasoning: routing.reasoning, report: routing.report, fallback, retries: retries === '' ? null : Number(retries) }, layer)
       await refresh()
-      notify(layer === 'workspace' ? '工作区默认路由已保存' : '你的路由已保存')
+      notify(local ? '模型用途已保存' : layer === 'workspace' ? '工作区默认路由已保存' : '你的路由已保存')
     } catch (e) {
       notify((e as Error).message, true)
     }
@@ -197,7 +198,7 @@ export default function ModelConfigPage({ notify, onNavigate }: PageProps) {
         <div className="prov-main">
           <div className="prov-name">
             <b>{p.label || (pre ? presetLabel(pre) : p.name)}</b>
-            <span className={`scope-tag ${p.scope}`}>{p.scope === 'workspace' ? '工作区共享' : '我的'}</span>
+            {(!local || shared.length > 0) && <span className={`scope-tag ${p.scope}`}>{local ? (p.scope === 'workspace' ? '项目默认' : '个人优先') : p.scope === 'workspace' ? '工作区共享' : '我的'}</span>}
             <i className={`prov-dot${p.has_key ? ' ok' : ''}`} title={p.has_key ? '已配置密钥' : '未配置密钥'} />
           </div>
           <small>
@@ -222,21 +223,30 @@ export default function ModelConfigPage({ notify, onNavigate }: PageProps) {
     <>
       <Heading
         title="模型"
-        description={me.is_ws_admin
+        description={local ? '连接模型服务商后即可开始研究对话。密钥加密保存在本机。' : me.is_ws_admin
           ? '平台不内置模型。你登记的「工作区共享」服务商会提供给成员使用（调用走你的 API，可按成员设置权限与限额）；也可以添加只给自己用的服务商。'
           : '平台不内置模型。使用管理员共享给工作区的模型，或添加你自己的服务商。没有可用模型时，AI 功能走模板与规则降级。'}
       />
 
       {draft ? (
         <ProviderEditor
-          draft={draft} setDraft={setDraft} presets={presets} existing={config.providers} isAdmin={me.is_ws_admin}
+          draft={draft} setDraft={setDraft} presets={presets} existing={config.providers} isAdmin={me.is_ws_admin} local={local}
           onCancel={() => setDraft(null)}
           onSaved={async (msg) => { setDraft(null); await refresh(); notify(msg) }}
           notify={notify}
         />
       ) : (
         <div className="prov-groups anim-fade">
-          {(me.is_ws_admin || shared.length > 0 || me.use_workspace_models) && (
+          {local ? (
+            <div className="prov-group">
+              <div className="prov-group-head"><h3>模型服务商</h3><small>为当前项目提供对话与研究能力</small></div>
+              <div className="prov-list">
+                {config.providers.map(card)}
+                {!config.providers.length && <div className="prov-empty">添加一个服务商，开始第一段研究对话。</div>}
+                <button className="prov-add" onClick={() => startNew('personal')}>＋ 添加服务商</button>
+              </div>
+            </div>
+          ) : (me.is_ws_admin || shared.length > 0 || me.use_workspace_models) && (
             <div className="prov-group">
               <div className="prov-group-head">
                 <h3>工作区共享</h3>
@@ -249,7 +259,7 @@ export default function ModelConfigPage({ notify, onNavigate }: PageProps) {
               </div>
             </div>
           )}
-          {(me.allow_personal_models || mine.length > 0) && (
+          {!local && (me.allow_personal_models || mine.length > 0) && (
             <div className="prov-group">
               <div className="prov-group-head">
                 <h3>我的</h3>
@@ -261,7 +271,7 @@ export default function ModelConfigPage({ notify, onNavigate }: PageProps) {
               </div>
             </div>
           )}
-          {!me.allow_personal_models && !shared.length && (
+          {!local && !me.allow_personal_models && !shared.length && (
             <Callout tone="warn">管理员没有开放共享模型，也没有允许添加个人服务商。请联系工作区管理员。</Callout>
           )}
         </div>
@@ -271,9 +281,9 @@ export default function ModelConfigPage({ notify, onNavigate }: PageProps) {
         <div className="set-section-head">
           <h3>用途路由</h3>
           <div className="set-inline">
-            {me.is_ws_admin && (
+            {me.is_ws_admin && (!local || shared.length > 0) && (
               <div className="seg seg-sm" role="tablist" aria-label="编辑哪一层路由">
-                <button role="tab" aria-selected={layer === 'workspace'} onClick={() => { setLayer('workspace'); loadRouting(config, 'workspace') }}>工作区默认</button>
+                <button role="tab" aria-selected={layer === 'workspace'} onClick={() => { setLayer('workspace'); loadRouting(config, 'workspace') }}>{local ? '项目默认' : '工作区默认'}</button>
                 <button role="tab" aria-selected={layer === 'personal'} onClick={() => { setLayer('personal'); loadRouting(config, 'personal') }}>我的覆盖</button>
               </div>
             )}
@@ -281,14 +291,14 @@ export default function ModelConfigPage({ notify, onNavigate }: PageProps) {
           </div>
         </div>
         <p className="set-section-note">
-          {layer === 'workspace' ? '工作区所有成员的默认路由；成员可以在「我的覆盖」里改成自己的模型。' : '只影响你自己；留空的用途使用工作区默认。'}
+          {local ? '为不同研究用途选择模型；留空时沿用项目默认模型。' : layer === 'workspace' ? '工作区所有成员的默认路由；成员可以在「我的覆盖」里改成自己的模型。' : '只影响你自己；留空的用途使用工作区默认。'}
           主模型失败、没有密钥或超出限额时，按降级链依次尝试；整条链都失败则走模板降级。
         </p>
         {ROLES.map(([k, label, hint]) => (
           <div key={k} className="set-row">
             <div><b>{label}</b><small>{hint}</small></div>
             <select value={routing[k] ?? ''} onChange={(e) => setRouting({ ...routing, [k]: e.target.value })}>
-              <option value="">{layer === 'personal' && effective[k] && !routing[k] ? `（工作区默认：${effective[k]}）` : '（使用默认）'}</option>
+              <option value="">{layer === 'personal' && effective[k] && !routing[k] ? `（${local ? '项目' : '工作区'}默认：${effective[k]}）` : '（使用默认）'}</option>
               {allModels.map((m) => <option key={m} value={m}>{labelOf(m)}{keyed.some((p) => m.startsWith(p.name + '/')) ? '' : '（无密钥）'}</option>)}
             </select>
           </div>
@@ -313,7 +323,7 @@ export default function ModelConfigPage({ notify, onNavigate }: PageProps) {
             <small>同一个模型遇到限流、服务端错误、超时或断流时，等一会儿（1、2、4 秒…，或按服务商要求的时间）再试；仍失败才换降级链里的下一个</small>
           </div>
           <select value={retries} onChange={(e) => setRetries(e.target.value)} aria-label="失败自动重试次数">
-            <option value="">{layer === 'personal' && typeof effective.retries === 'number' ? `（工作区默认：${effective.retries} 次）` : '（默认：2 次）'}</option>
+            <option value="">{layer === 'personal' && typeof effective.retries === 'number' ? `（${local ? '项目' : '工作区'}默认：${effective.retries} 次）` : '（默认：2 次）'}</option>
             {[0, 1, 2, 3, 4, 5].map((n) => <option key={n} value={n}>{n === 0 ? '不重试' : `${n} 次`}</option>)}
           </select>
         </div>
@@ -325,7 +335,7 @@ export default function ModelConfigPage({ notify, onNavigate }: PageProps) {
             <h3>我的用量</h3>
             <button className="button small ghost" onClick={() => onNavigate('settings/quota')}>额度与用量 →</button>
           </div>
-          <p className="set-section-note">近 30 天，按服务商上填写的价格折算成人民币。{usage.my_limits.length ? '' : '你使用工作区共享模型目前不限额。'}</p>
+          <p className="set-section-note">近 30 天，按服务商上填写的价格折算成人民币。{local || usage.my_limits.length ? '' : '你使用工作区共享模型目前不限额。'}</p>
           <LimitBars items={usage.my_limits} />
           <UsageSummary data={usage} />
         </section>
@@ -342,9 +352,9 @@ export default function ModelConfigPage({ notify, onNavigate }: PageProps) {
 }
 
 /** 内嵌编辑卡：第三方预设只需选服务商、填密钥；自定义 API 填完整连接信息；下面是模型目录、计费与限额。 */
-function ProviderEditor({ draft, setDraft, presets, existing, isAdmin, onCancel, onSaved, notify }: {
+function ProviderEditor({ draft, setDraft, presets, existing, isAdmin, local, onCancel, onSaved, notify }: {
   draft: Draft; setDraft: (d: Draft) => void; presets: Preset[]; existing: ProviderView[]; isAdmin: boolean
-  onCancel: () => void; onSaved: (msg: string) => void; notify: PageProps['notify']
+  local: boolean; onCancel: () => void; onSaved: (msg: string) => void; notify: PageProps['notify']
 }) {
   const [busy, setBusy] = useState(false)
   const [discovering, setDiscovering] = useState(false)
@@ -387,7 +397,7 @@ function ProviderEditor({ draft, setDraft, presets, existing, isAdmin, onCancel,
         api_key: draft.api_key.trim(), models, model_settings, currency: draft.currency, fx_rate: draft.fx_rate.trim(),
         limits: draft.limits.filter((r) => Number(r.limit) > 0),
       })
-      onSaved(draft.editing ? '已保存' : draft.scope === 'workspace' ? '已添加工作区共享服务商，成员现在可以使用了' : '已添加你的服务商')
+      onSaved(draft.editing ? '已保存' : local ? '已添加模型服务商' : draft.scope === 'workspace' ? '已添加工作区共享服务商，成员现在可以使用了' : '已添加你的服务商')
     } catch (e) {
       notify((e as Error).message, true)
     } finally {
@@ -403,12 +413,12 @@ function ProviderEditor({ draft, setDraft, presets, existing, isAdmin, onCancel,
         <h3 className="prov-editor-title">
           {draft.editing ? `编辑 ${draft.label || (pre ? presetLabel(pre) : draft.name)}` : '添加模型服务商'}
         </h3>
-        {!draft.editing && isAdmin ? (
+        {!local && (!draft.editing && isAdmin ? (
           <div className="seg seg-sm" role="tablist" aria-label="归属">
             <button role="tab" aria-selected={draft.scope === 'workspace'} onClick={() => set({ scope: 'workspace' })}>工作区共享</button>
             <button role="tab" aria-selected={draft.scope === 'personal'} onClick={() => set({ scope: 'personal' })}>只给我用</button>
           </div>
-        ) : <span className={`scope-tag ${draft.scope}`}>{draft.scope === 'workspace' ? '工作区共享' : '我的'}</span>}
+        ) : <span className={`scope-tag ${draft.scope}`}>{draft.scope === 'workspace' ? '工作区共享' : '我的'}</span>)}
       </div>
       {!draft.editing && (
         <div className="seg" role="tablist">

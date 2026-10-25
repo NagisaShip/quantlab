@@ -123,6 +123,7 @@ def main() -> int:
         "executable": executable.name,
         "agent_runtime": True,
         "frontend": "web/dist",
+        "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
     }
     (executable.parent / "build-manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"

@@ -2,7 +2,7 @@
 
 [English](API-Reference.en.md) | [文档索引](README.md) | [返回 README](../README.md)
 
-平台共 **716 个端点**。本文件由 `scripts/gen_api_doc.py` 从 FastAPI 的 OpenAPI 规范生成，
+平台共 **723 个端点**。本文件由 `scripts/gen_api_doc.py` 从 FastAPI 的 OpenAPI 规范生成，
 与运行中服务的 `/docs`（可交互调试）来自同一份定义。
 
 机器可读版本：`docs/openapi.json`（同一次生成）。
@@ -335,11 +335,11 @@
 | `GET` | `/api/agents/store-stats` | 存储内容统计 |
 | `GET` | `/api/agents/team-runs` | 团队调研记录列表 |
 | `GET` | `/api/agents/team-runs/{run_id}` | 团队调研详情（各角色产出与结论） |
-| `POST` | `/api/agents/team-runs/{run_id}/cancel` | Cancel Team Run |
-| `POST` | `/api/agents/team-runs/{run_id}/resume` | Resume Team Run |
-| `GET` | `/api/agents/team-runs/{run_id}/runtime` | Team Runtime Recovery |
-| `POST` | `/api/agents/team-runs/{run_id}/runtime/effect-resolution` | Resolve Team Effect |
-| `POST` | `/api/agents/team-runs/{run_id}/runtime/model-usage` | Resolve Team Usage |
+| `POST` | `/api/agents/team-runs/{run_id}/cancel` | 取消团队执行 |
+| `POST` | `/api/agents/team-runs/{run_id}/resume` | 恢复团队执行 |
+| `GET` | `/api/agents/team-runs/{run_id}/runtime` | 查询团队恢复状态 |
+| `POST` | `/api/agents/team-runs/{run_id}/runtime/effect-resolution` | 核对团队工具效果 |
+| `POST` | `/api/agents/team-runs/{run_id}/runtime/model-usage` | 核对团队模型用量 |
 | `GET` | `/api/agents/teams` | 调研团队列表 |
 | `POST` | `/api/agents/teams` | 新建团队 |
 | `DELETE` | `/api/agents/teams/{team_id}` | 删除团队 |
@@ -363,6 +363,11 @@
 | `POST` | `/api/long-running/digest/run` | 生成并（可选）推送策略简报 |
 | `POST` | `/api/long-running/maintainer/run` | 生成并（可选）推送策略维护评估 |
 | `GET` | `/api/long-running/preview` | 预览简报与维护评估所需的结构化数据 |
+| `GET` | `/api/long-running/records/{record_id}/runtime` | 查看通知生成与交付执行状态 |
+| `POST` | `/api/long-running/records/{record_id}/runtime/cancel` | 取消通知执行并保留未确认效果 |
+| `POST` | `/api/long-running/records/{record_id}/runtime/effect-resolution` | 核对通知或候选操作的外部效果 |
+| `POST` | `/api/long-running/records/{record_id}/runtime/model-usage` | 核对通知生成请求的模型用量 |
+| `POST` | `/api/long-running/records/{record_id}/runtime/resume` | 从原执行继续通知生成与交付 |
 | `GET` | `/api/notifications` | 推送记录与待发队列 |
 | `POST` | `/api/notifications/flush` | 重试待发队列 |
 | `POST` | `/api/notifications/test` | 测试通知通道 |
@@ -720,6 +725,8 @@
 | `POST` | `/api/local/project/open` | 打开本地项目 |
 | `GET` | `/api/local/resources` | 读取本地资源 |
 | `GET` | `/api/local/runtime` | 受管 Python 运行时探测（仅本地模式，只读诊断） |
+| `POST` | `/api/local/runtime-artifacts/cleanup` | 清理过期交付快照缓存 |
+| `GET` | `/api/local/runtime-artifacts/{effect_id}/{digest}` | 读取已提交文档交付快照 |
 | `POST` | `/api/local/shutdown` | 关闭本地项目服务 |
 | `GET` | `/api/local/tasks` | 读取本地任务 |
 

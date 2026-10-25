@@ -3270,6 +3270,74 @@
     }
    }
   },
+  "/api/local/runtime-artifacts/{effect_id}/{digest}": {
+   "get": {
+    "tags": [
+     "本地项目"
+    ],
+    "summary": "读取已提交文档交付快照",
+    "operationId": "runtime_artifact_download_api_local_runtime_artifacts__effect_id___digest__get",
+    "parameters": [
+     {
+      "name": "effect_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Effect Id"
+      }
+     },
+     {
+      "name": "digest",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Digest"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/local/runtime-artifacts/cleanup": {
+   "post": {
+    "tags": [
+     "本地项目"
+    ],
+    "summary": "清理过期交付快照缓存",
+    "operationId": "cleanup_runtime_artifacts_api_local_runtime_artifacts_cleanup_post",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     }
+    }
+   }
+  },
   "/api/workflows/environment": {
    "get": {
     "tags": [
@@ -9896,7 +9964,7 @@
     "tags": [
      "Agent 角色与团队"
     ],
-    "summary": "Resume Team Run",
+    "summary": "恢复团队执行",
     "operationId": "resume_team_run_api_agents_team_runs__run_id__resume_post",
     "parameters": [
      {
@@ -9940,7 +10008,7 @@
     "tags": [
      "Agent 角色与团队"
     ],
-    "summary": "Cancel Team Run",
+    "summary": "取消团队执行",
     "operationId": "cancel_team_run_api_agents_team_runs__run_id__cancel_post",
     "parameters": [
      {
@@ -9994,7 +10062,7 @@
     "tags": [
      "Agent 角色与团队"
     ],
-    "summary": "Team Runtime Recovery",
+    "summary": "查询团队恢复状态",
     "operationId": "team_runtime_recovery_api_agents_team_runs__run_id__runtime_get",
     "parameters": [
      {
@@ -10038,7 +10106,7 @@
     "tags": [
      "Agent 角色与团队"
     ],
-    "summary": "Resolve Team Effect",
+    "summary": "核对团队工具效果",
     "operationId": "resolve_team_effect_api_agents_team_runs__run_id__runtime_effect_resolution_post",
     "parameters": [
      {
@@ -10092,7 +10160,7 @@
     "tags": [
      "Agent 角色与团队"
     ],
-    "summary": "Resolve Team Usage",
+    "summary": "核对团队模型用量",
     "operationId": "resolve_team_usage_api_agents_team_runs__run_id__runtime_model_usage_post",
     "parameters": [
      {
@@ -29337,6 +29405,226 @@
          "additionalProperties": true,
          "title": "Response Delete Alert Rule Api Alert Rules  Rule Id  Delete"
         }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/long-running/records/{record_id}/runtime": {
+   "get": {
+    "tags": [
+     "长期 Agent 与总览"
+    ],
+    "summary": "查看通知生成与交付执行状态",
+    "operationId": "notification_runtime_api_long_running_records__record_id__runtime_get",
+    "parameters": [
+     {
+      "name": "record_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Record Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/long-running/records/{record_id}/runtime/resume": {
+   "post": {
+    "tags": [
+     "长期 Agent 与总览"
+    ],
+    "summary": "从原执行继续通知生成与交付",
+    "operationId": "resume_notification_runtime_api_long_running_records__record_id__runtime_resume_post",
+    "parameters": [
+     {
+      "name": "record_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Record Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/long-running/records/{record_id}/runtime/effect-resolution": {
+   "post": {
+    "tags": [
+     "长期 Agent 与总览"
+    ],
+    "summary": "核对通知或候选操作的外部效果",
+    "operationId": "resolve_notification_effect_api_long_running_records__record_id__runtime_effect_resolution_post",
+    "parameters": [
+     {
+      "name": "record_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Record Id"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/EffectResolutionIn"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/long-running/records/{record_id}/runtime/model-usage": {
+   "post": {
+    "tags": [
+     "长期 Agent 与总览"
+    ],
+    "summary": "核对通知生成请求的模型用量",
+    "operationId": "resolve_notification_model_usage_api_long_running_records__record_id__runtime_model_usage_post",
+    "parameters": [
+     {
+      "name": "record_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Record Id"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/ModelUsageResolutionIn"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/long-running/records/{record_id}/runtime/cancel": {
+   "post": {
+    "tags": [
+     "长期 Agent 与总览"
+    ],
+    "summary": "取消通知执行并保留未确认效果",
+    "operationId": "cancel_notification_runtime_api_long_running_records__record_id__runtime_cancel_post",
+    "parameters": [
+     {
+      "name": "record_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Record Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
        }
       }
      },

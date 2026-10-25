@@ -1362,6 +1362,14 @@ def local_chart(kind: str, title: str, labels: list, values: list, path: str, wi
         lo = min(0.0, min(v for _, v in clean))
         hi = max(0.0, max(v for _, v in clean)) or 1.0
         span = hi - lo or 1.0
+        # 只画折线没有纵轴数值时无法读出量级；柱图与折线共用清晰的数值刻度。
+        for tick in range(6):
+            value = lo + span * tick / 5
+            y = margin_t + plot_h - tick * plot_h / 5
+            label = f"{value:.4g}"
+            box = draw.textbbox((0, 0), label, font=value_font)
+            draw.line((margin_l, y, w - margin_r, y), fill="#F1F5F9", width=1)
+            draw.text((margin_l - (box[2] - box[0]) - 10, y - 8), label, fill="#475569", font=value_font)
         zero_y = margin_t + plot_h - (0 - lo) / span * plot_h
         draw.line((margin_l, zero_y, w - margin_r, zero_y), fill="#CBD5E1", width=1)
         points: list[tuple[float, float]] = []
@@ -1644,9 +1652,13 @@ def tool_specs():
         (
             "workflow_import_data",
             import_data,
-            "将显式表格或CSV文本导入工作区，无需已有文件；data/csv_text二选一",
+            "将显式表格或CSV文本导入工作区，无需已有文件；name必须以.csv结尾；data/csv_text二选一，不覆盖已有文件",
             {
-                "name": {"type": "string"},
+                "name": {
+                    "type": "string",
+                    "pattern": "\\.[cC][sS][vV]$",
+                    "description": "新的CSV文件名，例如 demo_prices.csv",
+                },
                 "data": {"type": "array", "items": {"type": "object"}, "maxItems": 5000},
                 "csv_text": {"type": "string", "maxLength": 2000000},
             },

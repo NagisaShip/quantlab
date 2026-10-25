@@ -1,6 +1,6 @@
 # MCP、文档预览与发布验收
 
-设置 → MCP 服务支持新增、编辑、启停、删除，以及连接测试与工具 schema 查看。保存配置不会启动服务。连接测试仍要求本地模式、`QUANTLAB_ALLOW_MCP=1` 与服务启用；账号部署由工作区管理员管理配置，不能调用本机进程。
+设置 → MCP 服务支持新增、编辑、启停、删除、连接测试、工具 schema 查看，以及以 JSON 参数直接调用工具。保存配置不会启动服务。连接测试仍要求本地模式、`QUANTLAB_ALLOW_MCP=1` 与服务启用；账号部署由工作区管理员管理配置，不能调用本机进程。
 
 Word 导出采用 A4、中文字体、标题层级、行距、页码、重复表头和基本强调样式；PPT 的长要点自动拆页。超出输入上限会明确报错，不再静默截断要点。
 
@@ -24,4 +24,4 @@ CI 手动运行时，先勾选 `visual_update_baseline` 生成候选基准，检
 
 `documents` CI 作业安装 LibreOffice、中文字体与交付物依赖，执行真实 Word/PPT 渲染及模型图片消息回传测试。本机缺少 LibreOffice 时该真实转换用例跳过，PDF 渲染、授权、缓存失效、缺依赖反馈与导出测试仍可独立运行。
 
-桌面发布步骤：构建网页 → PyInstaller sidecar → 从独立临时项目启动二进制，验收本地 API 和内置网页 → Tauri NSIS → SHA-256 → 上传安装产物；`v0.1.0-preview.*` 标签额外创建草稿发布。当前通过 GitHub Release 手动下载安装更新。
+桌面发布步骤：构建网页 → PyInstaller sidecar（包含独立 Agent Runtime）→ 从独立临时项目启动二进制，验收本地 API、内置网页、文档依赖与 Runtime → Tauri NSIS → 生成安装包和便携 sidecar ZIP 的 SHA-256 → 上传产物；`v0.1.0-preview.*` 标签额外创建草稿发布。当前通过 GitHub Release 手动下载安装更新。

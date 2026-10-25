@@ -26,6 +26,8 @@ jobs:
         with:
           node-version: '22'
       - uses: dtolnay/rust-toolchain@stable
+      - name: Test desktop launcher
+        run: cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked
       - name: Validate release tag version
         env:
           RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
@@ -49,17 +51,27 @@ jobs:
         working-directory: desktop
         run: |
           npx --yes @tauri-apps/cli@2 build --ci --bundles nsis
-      - name: Generate checksums
+      - name: Package portable sidecar and generate checksums
         shell: pwsh
         run: |
-          Get-ChildItem desktop/src-tauri/target/release/bundle/nsis/*.exe | ForEach-Object {
-            $digest = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLower()
-            "$digest  $($_.Name)" | Set-Content -LiteralPath ($_.FullName + '.sha256') -Encoding ascii
+          $version = (Get-Content desktop/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          $installers = Get-ChildItem desktop/src-tauri/target/release/bundle/nsis/*.exe
+          foreach ($installer in $installers) {
+            $digest = (Get-FileHash -LiteralPath $installer.FullName -Algorithm SHA256).Hash.ToLower()
+            "$digest  $($installer.Name)" | Set-Content -LiteralPath ($installer.FullName + '.sha256') -Encoding ascii
           }
+          $sidecar = Resolve-Path -LiteralPath desktop/src-tauri/resources/backend/quantlab-backend
+          $portable = Join-Path desktop/src-tauri/target/release "quantlab-backend-$version-win-x64.zip"
+          Compress-Archive -LiteralPath $sidecar.Path -DestinationPath $portable -CompressionLevel Optimal -Force
+          $digest = (Get-FileHash -LiteralPath $portable -Algorithm SHA256).Hash.ToLower()
+          "$digest  $([IO.Path]::GetFileName($portable))" | Set-Content -LiteralPath ($portable + '.sha256') -Encoding ascii
       - uses: actions/upload-artifact@v4
         with:
           name: quantlab-windows-installer
-          path: desktop/src-tauri/target/release/bundle/nsis/*
+          path: |
+            desktop/src-tauri/target/release/bundle/nsis/*
+            desktop/src-tauri/target/release/quantlab-backend-*.zip
+            desktop/src-tauri/target/release/quantlab-backend-*.zip.sha256
           if-no-files-found: error
           retention-days: 30
       - name: Create draft release with installer and checksums
@@ -76,5 +88,9 @@ jobs:
           }
           $draft = gh release view $env:RELEASE_TAG --json isDraft --jq '.isDraft'
           if ($draft -ne 'true' -and '${{ github.event_name }}' -ne 'workflow_dispatch') { throw 'Refusing to replace assets in a published release' }
-          $assets = Get-ChildItem desktop/src-tauri/target/release/bundle/nsis/* -File | Select-Object -ExpandProperty FullName
-          gh release upload $env:RELEASE_TAG @assets --clobber
+          $assets = @(
+            Get-ChildItem desktop/src-tauri/target/release/bundle/nsis/* -File
+            Get-ChildItem desktop/src-tauri/target/release/quantlab-backend-*.zip -File
+            Get-ChildItem desktop/src-tauri/target/release/quantlab-backend-*.zip.sha256 -File
+          ) | Select-Object -ExpandProperty FullName
+          gh release upload $env:RELEASE_TAG $assets --clobber

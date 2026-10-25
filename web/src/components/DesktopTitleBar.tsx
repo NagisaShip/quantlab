@@ -12,6 +12,7 @@ import { desktopKind } from '../native'
 import { request } from '../http'
 import { useRecentResult } from '../features/workflows/recentResult'
 import RecentResultAction from './RecentResultAction'
+import { appChoose, appConfirm } from './dialog'
 
 type TauriWindow = {
   minimize: () => Promise<void>
@@ -33,6 +34,35 @@ export default function DesktopTitleBar() {
   const [local, setLocal] = useState(false)
   const [projectName, setProjectName] = useState('')
   const recent = useRecentResult(isTauri && local)
+
+  useEffect(() => {
+    if (!isTauri) return
+    let disposed = false
+    let open = false
+    let stop: (() => void) | undefined
+    window.__TAURI__?.event?.listen('quantlab://close-prompt', async ({ payload }) => {
+      if (disposed || open) return
+      const prompt = payload as { kind: string; message: string }
+      if (!prompt || typeof prompt.message !== 'string') return
+      open = true
+      const choices = prompt.kind === 'pending'
+        ? [{ value: 'cancel-quit', label: '取消退出，继续研究' }]
+        : prompt.kind === 'error'
+          ? [{ value: 'minimize', label: '最小化到任务栏' }]
+          : [{ value: 'hide', label: '隐藏到托盘' },
+              { value: prompt.kind === 'busy' ? 'wait' : 'exit', label: prompt.kind === 'busy' ? '任务完成后退出' : '退出 QuantLab' }]
+      try {
+        const choice = await appChoose(prompt.message, choices, { title: prompt.kind === 'pending' ? '等待任务完成' : '关闭 QuantLab' })
+        // 先释放状态，退出检查可能立即返回“仍有任务”的新提示。
+        open = false
+        if (choice && !disposed) await window.__TAURI__?.core?.invoke('native_close_choice', { choice })
+      } catch {
+        open = false
+        await appConfirm('窗口操作未完成，请重试。', { title: 'QuantLab', okLabel: '知道了' })
+      }
+    }).then((unlisten) => { if (disposed) unlisten(); else stop = unlisten }).catch(() => undefined)
+    return () => { disposed = true; stop?.() }
+  }, [isTauri])
 
   useEffect(() => {
     if (!isTauri) return
@@ -63,6 +93,7 @@ export default function DesktopTitleBar() {
         <LogoMark size={15} />
         <span className="dtb-name" data-tauri-drag-region>QuantLab</span>
       </div>
+      <div id="desktop-topbar-slot" className="dtb-content" data-tauri-drag-region />
       <div className="dtb-spacer" data-tauri-drag-region />
       {local && <RecentResultAction summary={recent.summary} phase={recent.phase} error={recent.error} projectName={projectName} onReload={() => { void recent.reload() }} />}
       <div className="dtb-actions">

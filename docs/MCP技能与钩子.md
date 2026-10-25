@@ -1,10 +1,10 @@
 # MCP、技能（skills）与钩子（hooks）
 
-本文说明 QuantLab 后端「扩展能力」的最小闭环：**技能只读加载**、**hooks 只登记**、
-**MCP 只保存配置与静态健康检查**。三者都不执行外部命令，也不启动任意进程。
+本文说明 QuantLab 的「扩展能力」边界：**技能只读加载**、**hooks 仅运行进程内受信 handler**、
+**MCP 配置可管理，并在本地模式显式授权后探测和调用**。
 
-> 这不是完整的第三方 MCP 执行器，也不是任意脚本插件系统。遇到需要执行外部程序的能力，
-> 必须走显式、受信任的后续实现，不能通过本页接口绕过审批直接运行。
+> 这不是任意脚本插件系统。MCP stdio 只能启动白名单可执行文件，HTTP 不自动跟随重定向，
+> 两者都要求本地模式、`QUANTLAB_ALLOW_MCP=1` 与服务已启用；账号部署不能调用成员机器上的进程。
 
 ## 一、技能（skills）
 
@@ -87,10 +87,10 @@
 
 - 触发点：`before_tool`（工具调用前）、`after_tool`（工具调用后）；
 - 内置两条审计类 hook（`builtin.audit_before_tool`、`builtin.audit_after_tool`），
-  **默认 `enabled=false`**，当前不会在工具调用时运行；
-- HTTP 只提供只读列表，没有注册/启用/删除接口；只有后端受信任代码可以调用
+  **默认 `enabled=false`**；启用后由 Lab 工具执行器在调用前后运行；
+- HTTP 只允许列出和切换内置 hook，没有注册任意 handler / 删除接口；只有后端受信任代码可以调用
   `quant_agent.agents.hooks.register_hook()` 做进程内登记；
-- 不读配置文件里的命令行，不启动子进程，不访问网络。
+- 不读配置文件里的命令行，不启动子进程，不访问网络；handler 异常只记录，不影响工具结果。
 
 ### `GET /api/hooks`
 
@@ -115,31 +115,28 @@
     "before_tool": {"label": "工具调用前", "description": "..."},
     "after_tool": {"label": "工具调用后", "description": "..."}
   },
-  "execution": "not_implemented",
+  "execution": "in_process",
   "external_commands": false,
-  "note": "hooks 当前只做进程内注册与只读展示：默认全部关闭，不执行外部命令……"
+  "events": [],
+  "note": "hooks 只运行进程内受信 handler：默认关闭，不启动进程、不执行外部命令。"
 }
 ```
 
-其它方法（POST/DELETE 等）返回 `405`。
+`POST /api/hooks/{id}/toggle` 的 body 为 `{"enabled": true|false}`，仅本地项目或工作区管理员可切换。
 
-## 三、MCP（配置 / 目录 / 健康检查）
+## 三、MCP（配置 / 探测 / 调用）
 
-MCP 部分**只做配置管理**：
+MCP 设置页支持完整的本地管理工作流：
 
-- 保存 server 名称、传输方式、命令 / 参数 / URL、描述、启用标记；
-- 读取配置目录并给出静态健康状态；
-- **未实现完整 MCP 调用与传输**：不会启动 stdio 进程、不会连接 HTTP 端点、不会握手、
-  不会拉取工具列表。
-
-### 配置存储
+- 新增、编辑、删除和快速启停 server；
+- 测试连接并查看 `tools/list` 返回的工具名、说明和 input schema；
+- 从工具列表打开调用面板，以 JSON 对象填写参数并查看 `tools/call` 原始结果；
+- 所有写操作仍受本地模式 / 工作区管理员权限约束；账号模式只能管理配置，不能调用本机进程。
 
 配置保存在当前工作区的本地 JSON 集合 `mcp_servers`（`<工作区数据目录>/store/mcp_servers.json`），
-不写系统配置、不改 PATH、不生成可执行文件。最多 50 条。
+最多 50 条。保存配置本身不会启动进程或连接网络；探测和调用必须由用户显式点击或在 API 中显式请求。
 
-### 接口
-
-#### `GET /api/mcp/servers`
+### `GET /api/mcp/servers`
 
 ```json
 {
@@ -148,44 +145,43 @@ MCP 部分**只做配置管理**：
       "id": "demo-local",
       "name": "demo-local",
       "transport": "stdio",
-      "command": "python -m demo_mcp",
-      "args": ["--stdio"],
+      "command": "python",
+      "args": ["-m", "demo_mcp"],
       "url": "",
-      "description": "仅配置",
-      "enabled": false,
-      "created_at": 1760000000.0,
-      "updated_at": 1760000000.0,
+      "description": "本地演示服务",
+      "enabled": true,
       "health": {
-        "status": "disabled",
+        "status": "not_probed",
         "started": false,
-        "implemented": false,
-        "detail": "MCP 目前只做配置 / 目录 / 健康检查：未实现完整 MCP 调用与传输，不启动任意进程、不建立连接。"
+        "implemented": true,
+        "detail": "每次 probe 结束后会关闭子进程，不保持常驻连接。"
       },
       "executes_processes": false
     }
   ],
   "count": 1,
+  "calls_allowed": true,
   "max_servers": 50,
   "transports": [
-    {"id": "stdio", "label": "本地进程（仅保存配置）", "implemented": false},
-    {"id": "http", "label": "HTTP 端点（仅保存配置）", "implemented": false}
+    {"id": "stdio", "label": "本地 stdio 进程", "implemented": true},
+    {"id": "http", "label": "HTTP JSON / SSE 端点", "implemented": true}
   ],
-  "implemented": false,
+  "implemented": true,
   "executes_processes": false,
-  "note": "MCP 目前只做配置 / 目录 / 健康检查：未实现完整 MCP 调用与传输，不启动任意进程、不建立连接。"
+  "note": "默认只保存 MCP 配置，不启动进程；设置 QUANTLAB_ALLOW_MCP=1 且 server enabled 后，可用 /probe 与 /call。"
 }
 ```
 
-健康状态取值：
+`calls_allowed` 只有在本地模式且 `QUANTLAB_ALLOW_MCP=1` 时为 `true`。健康状态：
 
 | status | 含义 |
 | --- | --- |
-| `disabled` | 配置未启用（默认），从未探测 |
-| `not_probed` | 已启用配置，但当前版本不做真实探测 |
+| `disabled` | 配置未启用，尚未探测 |
+| `not_probed` | 已启用，但本次进程启动后尚未探测 |
 
-`started` 恒为 `false`：后端没有启动任何 MCP 进程。
+`started=false` 表示没有常驻连接；探测子进程在请求结束前会被清理。
 
-#### `POST /api/mcp/servers`
+### `POST /api/mcp/servers`
 
 请求体：
 
@@ -193,35 +189,46 @@ MCP 部分**只做配置管理**：
 {
   "name": "demo-local",
   "transport": "stdio",
-  "command": "python -m demo_mcp",
-  "args": ["--stdio"],
+  "command": "python",
+  "args": ["-m", "demo_mcp"],
   "url": "",
-  "description": "仅配置",
-  "enabled": false
+  "description": "本地演示服务",
+  "enabled": true
 }
 ```
 
-校验：
+校验规则：
 
 - `name`：`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`；
 - `transport`：`stdio` / `http`；
 - `stdio` 必须有 `command`；`http` 的 `url` 必须以 `http://` / `https://` 开头；
 - `args` 最多 32 项、单项 ≤200 字符；`command` ≤500；`url` ≤1000；描述 ≤500；
-- 不允许空字符；超过 50 条配置返回 `400`。
+- 不允许空字符；超过 50 条配置返回 `400`。同名提交为更新（`created_at` 保留）。
 
-保存只写 JSON，返回 `{"server": {...}, "note": "未实现完整 MCP 调用……"}`。
-重复提交同名配置为更新（`created_at` 保留、`updated_at` 刷新）。
+### `POST /api/mcp/servers/{name}/probe`
 
-### 明确未实现
+执行 `initialize`、`notifications/initialized` 和 `tools/list`，返回：
 
-- 不启动 stdio 子进程、不执行 `command` / `args`；
-- 不建立 HTTP/SSE 连接，不做 MCP initialize / tools/list / tools/call；
-- 不加载第三方 MCP SDK，不运行任何远程代码；
-- 健康检查是静态的：不会因为保存配置而产生网络或进程副作用。
+```json
+{"ok": true, "server": "demo-local", "tool_count": 1, "tools": [{"name": "echo", "inputSchema": {}}]}
+```
 
-后续若要实现完整调用，需要单独设计：受信任 server 白名单、显式启用、进程生命周期与
-停止清理、超时与输出上限、审计与审批。当前接口通过 `implemented=false`、
-`executes_processes=false`、`health.started=false` 与 `note` 字段显式标注这些限制。
+### `POST /api/mcp/servers/{name}/call`
+
+```json
+{"tool": "echo", "arguments": {"text": "hello"}}
+```
+
+返回 `{"ok": true, "server": "demo-local", "tool": "echo", "result": {...}}`。
+
+### 安全边界
+
+- 仅本地项目模式可 probe/call；账号模式返回 `403`；
+- 必须同时满足 `QUANTLAB_ALLOW_MCP=1`、server 已启用、传输方式为 `stdio` / `http`；
+- stdio 命令 basename 只允许 `python` / `python3` / `node` / `uvx` / `uv`，使用参数数组且 `shell=False`；
+- stdio 每次 probe/call 都是短生命周期子进程，带超时、输出行数和 stderr 上限；
+- HTTP 只接受 `http(s)`，不跟随重定向，支持 JSON 与 `text/event-stream` 的 `data:` 行；
+- 探测和调用结果按不可信外部输入处理，不自动执行返回内容。
 
 ## 测试
 
@@ -229,27 +236,5 @@ MCP 部分**只做配置管理**：
 python -m pytest tests/test_skills_hooks_mcp.py -q
 ```
 
-覆盖：技能空目录 / 列表 / 详情 / 路径穿越与非法名 / 超大文件（413）/ 账号模式工作区级目录 /
-技能注入项目 instructions / hooks 只读且默认关闭 / MCP 空配置 / 保存配置不执行命令（marker 文件不存在）/
-配置校验 / 健康状态静态标注。
-
-## MCP stdio probe/call（新增）
-
-设置 QUANTLAB_ALLOW_MCP=1 并重启本地服务后，已启用（enabled=true）的 stdio server 可：
-
-- POST /api/mcp/servers/{name}/probe：启动子进程，走 initialize + 	ools/list，返回 tools 后立即关闭；
-- POST /api/mcp/servers/{name}/call：body {tool, arguments}，返回 	ools/call 结果。
-
-安全限制：
-
-- 仅本地项目模式；账号模式 403；
-- 命令 basename 只允许 python/python3/node/uvx/uv，不使用 shell；
-- 每次调用短生命周期，不常驻；HTTP JSON/SSE 已支持，其他传输仍未实现；
-- 未设置 allow 时，probe/call 返回 403 并提示环境变量。
-
-## hooks 执行（新增）
-
-- 内置 `builtin.audit_before_tool` / `builtin.audit_after_tool` 默认关闭；`POST /api/hooks/{id}/toggle` 仅本地项目或管理员可切换。
-- Lab 工具执行器在每次工具调用前后运行已启用 hook；hook 异常只记录，不影响工具。
-- `GET /api/hooks` 返回 `execution: "in_process"`、`enabled` 与最近 `events`；不启动进程、不执行外部命令。
-
+覆盖技能目录、路径穿越、大小限制、工作区隔离、instructions 注入、hooks 切换与执行、
+MCP 配置校验、未授权拒绝、stdio/HTTP probe/call 和保存配置不执行命令。

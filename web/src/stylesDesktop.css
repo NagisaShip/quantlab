@@ -1,12 +1,15 @@
 /* 无边框桌面窗口：自绘标题栏 + 布局让位。仅在 Tauri 桌面壳里生效（html[data-desktop-frame="tauri"]）。 */
 
 html[data-desktop-frame="tauri"] {
-  --dtb-h: 38px;
+  --dtb-h: 44px;
+  --top-h: var(--dtb-h);
 }
 
 html[data-desktop-frame="tauri"] body {
   padding-top: var(--dtb-h);
 }
+
+html[data-desktop-frame="tauri"] .app-dialog-backdrop { z-index: 4000; }
 
 /* 固定/吸顶元素让出标题栏高度 */
 html[data-desktop-frame="tauri"] .sidebar {
@@ -68,8 +71,48 @@ html[data-desktop-frame="tauri"] .side-top {
 }
 
 .dtb-spacer {
-  flex: 1;
+  flex: 0 0 28px;
   height: 100%;
+}
+
+.dtb-content { flex: 1; min-width: 0; }
+html[data-desktop-frame="tauri"] .dtb .topbar {
+  position: static;
+  height: var(--dtb-h);
+  padding: 0 4px;
+  border: 0;
+  gap: 12px;
+  flex-wrap: nowrap;
+}
+.dtb .topbar > div:first-child {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.dtb .topbar > div:first-child > span:not(.separator),
+.dtb .topbar .breadcrumb {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 140px;
+}
+.dtb .topbar-right { flex: 0 1 auto; gap: 8px; overflow: visible; }
+.dtb .tape-tools, .dtb .status-anchor, .dtb-actions, .dtb-brand { flex-shrink: 0; }
+html[data-desktop-frame="tauri"] .shell { min-height: calc(100vh - var(--dtb-h)); }
+@media (max-width: 1400px) {
+  .dtb .tape-quotes .quote:nth-child(n + 3) { display: none; }
+}
+@media (max-width: 1150px) {
+  .dtb .tape-quotes { display: none; }
+  .dtb .topbar > div:first-child .breadcrumb,
+  .dtb .topbar > div:first-child .separator { display: none; }
+}
+@media (max-width: 900px) {
+  .dtb-name { display: none; }
+  .dtb .tape-btn { font-size: 0; gap: 0; padding: 0 7px; }
+  .dtb .dtb-recent { max-width: 110px; }
 }
 
 /* 项目级最近结果：只占窗口按钮左侧一小段，不进入拖动区。 */

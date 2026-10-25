@@ -108,6 +108,12 @@ node scripts/visual_check.mjs --help
 node scripts/visual_check.mjs --base http://127.0.0.1:8399 --headed
 node scripts/visual_check.mjs --pages home,lab --width 1100 --height 800
 node scripts/visual_check.mjs --channel chromium      # CI：先 npx playwright install chromium
+
+# MCP 页面像素回归：先显式生成候选基准并人工检查截图
+node scripts/visual_check.mjs --pages mcp --out .tmp/visual-mcp --baseline .tmp/visual-baseline --update-baseline
+
+# 再与已验收基准比较；changed/size_mismatch/missing_baseline 均失败
+node scripts/visual_check.mjs --pages mcp --out .tmp/visual-mcp --baseline .tmp/visual-baseline
 ```
 
 本地桌面模式也可以起 8399 后端（项目目录换成实际项目）：
@@ -129,6 +135,10 @@ python -m quant_agent.cli serve --local --project C:\path\to\项目 --port 8399
 | `--headed` | 关 | 显示浏览器窗口 |
 | `--no-login` | 关 | 不尝试注册/登录 |
 | `--allow-overflow` | 关 | 只记录横向溢出，不判失败 |
+| `--baseline <dir>` | 关 | 与基准目录中同名截图做像素比较 |
+| `--update-baseline` | 关 | 显式写入基准，必须同时指定 `--baseline` |
+| `--max-diff-ratio <n>` | `0.001` | 允许变化的像素比例上限（0–1） |
+| `--pixel-threshold <n>` | `0.1` | pixelmatch 单像素颜色阈值（0–1） |
 
 登录：脚本先用 `/api/auth/me` 检查会话；未登录时用 `QUANTLAB_VISUAL_EMAIL` /
 `QUANTLAB_VISUAL_PASSWORD`（默认 `qa-admin@example.com` / `Passw0rd!`）尝试注册、再登录。
@@ -164,12 +174,23 @@ python -m quant_agent.cli serve --local --project C:\path\to\项目 --port 8399
       "ok": true
     }
   ],
-  "summary": { "pages": 3, "failed": 0, "page_errors": 0, "overflow": 0, "console_errors": 0 },
+  "pixel_diff": {
+    "status": "matched",
+    "changed_pixels": 12,
+    "total_pixels": 1296000,
+    "ratio": 0.00000926,
+    "maxRatio": 0.001,
+    "threshold": 0.1,
+    "diff": ".tmp/visual-mcp/mcp-1440x900-diff.png"
+  },
+  "summary": { "pages": 1, "failed": 0, "page_errors": 0, "overflow": 0, "console_errors": 0, "pixel_diffs": 0 },
   "ok": true
 }
 ```
 
-`console_errors` 只记录不判失败（例如第三方资源 404），失败判据是 pageerror、横向溢出与导航失败。
+`console_errors` 只记录不判失败（例如第三方资源 404），失败判据是 pageerror、横向溢出、导航失败与像素比较。
+尺寸不一致时仍会输出左右并排的 `*-diff.png`，并在 `expected` / `actual` 中记录双方尺寸；缺失基准不会被自动创建，
+避免意外变化被悄悄接受。CI 手动运行只有填写 `visual_baseline_run_id` 或勾选 `visual_update_baseline` 时才执行像素步骤。
 
 ## 4. 排障
 
