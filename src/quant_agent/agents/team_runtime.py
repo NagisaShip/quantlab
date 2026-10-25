@@ -33,7 +33,7 @@ def _load(runner: Any, run_id: str, *, write: bool = False):
     metadata = root["spec"].get("metadata", {})
     if "team_plan" not in metadata or metadata["team_plan"]["run"]["id"] != run_id:
         raise ValueError("invalid Team Runtime identity")
-    runner._assert_source_visible(metadata["team_plan"]["run"].get("source_project_id", ""))
+    runner._assert_record_visible(metadata["team_plan"]["run"], metadata.get("user_id"))
     if write and metadata["user_id"] != (context.current().user_id or "system"):
         raise AppError(ErrorCode.PERMISSION_DENIED, "仅原发起人可继续或取消团队运行")
     if write and not context.current().can_write:
@@ -138,7 +138,8 @@ def project(runner: Any, root: dict) -> TeamRun:
         topic=record["topic"],
         mode=record["mode"],
         context=record.get("context", ""),
-        source_project_id=record.get("source_project_id", ""),
+        source_project_id=record.get("source_project_id"),
+        source_policy_version=record.get("source_policy_version", 0),
         created_at=record["created_at"],
         runtime_run_id=root["id"],
         runtime_event_seq=root["seq"],
@@ -275,9 +276,9 @@ def cancel(runner: Any, run_id: str, *, signal_id: str) -> TeamRun:
 def recover_indexes(runner: Any, records: list[dict], limit: int) -> list[dict]:
     with runner.runtime_journal.connection() as db:
         roots = db.execute(
-            "SELECT id FROM runs WHERE tenant_id=? AND parent_id IS NULL AND id LIKE 'team-root-%' "
+            "SELECT id FROM runs WHERE tenant_id=? AND parent_id IS NULL AND id LIKE ? "
             "ORDER BY created_at DESC LIMIT ?",
-            (context.current_workspace(), limit),
+            (context.current_workspace(), "team-root-%", limit),
         ).fetchall()
     merged = {record["id"]: record for record in records}
     for row in roots:

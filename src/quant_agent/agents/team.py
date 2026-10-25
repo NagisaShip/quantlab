@@ -96,7 +96,8 @@ class TeamRun:
     runtime_run_id: str = ""
     runtime_event_seq: int = 0
     can_manage: bool = False
-    source_project_id: str = ""
+    source_project_id: str | None = None
+    source_policy_version: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -106,7 +107,8 @@ class TeamRun:
             "topic": self.topic,
             "mode": self.mode,
             "context": self.context,
-            "source_project_id": self.source_project_id,
+            **({"source_project_id": self.source_project_id} if self.source_project_id is not None else {}),
+            "source_policy_version": self.source_policy_version,
             "steps": [s.to_dict() for s in self.steps],
             "synthesis": self.synthesis,
             "status": self.status,
@@ -210,6 +212,7 @@ class TeamRunner:
         # sequential dependencies and round-specific debate snapshots.
         self.runtime_journal: Any = None
         self.source_visible: Callable[[str], bool] | None = None
+        self.run_visible: Callable[[dict, str | None], bool] | None = None
 
     # ---------------- 团队 CRUD ----------------
     def list_teams(self) -> list[Team]:
@@ -260,6 +263,7 @@ class TeamRunner:
             mode=team.mode,
             context=context,
             source_project_id=source_project_id,
+            source_policy_version=1,
         )
         roles = [r for r in (self.roles.get(rid) for rid in team.role_ids) if r is not None]
         if not roles:
@@ -308,11 +312,20 @@ class TeamRunner:
 
             raise AppError(ErrorCode.PERMISSION_DENIED, "团队评审的来源会话未向你公开")
 
+    def _record_is_visible(self, record: dict, owner_id: str | None = None) -> bool:
+        if self.run_visible is not None:
+            return self.run_visible(record, owner_id)
+        return self._source_is_visible(record.get("source_project_id", ""))
+
+    def _assert_record_visible(self, record: dict, owner_id: str | None = None) -> None:
+        if not self._record_is_visible(record, owner_id):
+            from ..platform.errors import AppError, ErrorCode
+
+            raise AppError(ErrorCode.PERMISSION_DENIED, "团队评审来源未公开或历史来源尚未确认")
+
     def list_runs(self, *, limit: int = 30) -> list[dict]:
         records = [
-            item
-            for item in self.store.list(Collections.TEAM_RUNS, limit=limit)
-            if self._source_is_visible(item.get("source_project_id", ""))
+            item for item in self.store.list(Collections.TEAM_RUNS, limit=limit) if self._record_is_visible(item)
         ]
         if self.runtime_journal is not None:
             from .team_runtime import recover_indexes
@@ -329,7 +342,7 @@ class TeamRunner:
                 return result.to_dict()
         record = self.store.get(Collections.TEAM_RUNS, run_id)
         if record:
-            self._assert_source_visible(record.get("source_project_id", ""))
+            self._assert_record_visible(record)
         return record
 
     def resume_run(self, run_id: str) -> TeamRun:

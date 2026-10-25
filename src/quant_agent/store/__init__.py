@@ -244,6 +244,13 @@ class JsonStore:
                     raise
                 time.sleep(0.02 * (attempt + 1))
 
+    def blob_ids(self, kind: str) -> list[str]:
+        """List persisted blob identities without reading or rehydrating contents."""
+        if not kind or not all(c.isalnum() or c in "-_" for c in kind):
+            raise ValueError("invalid blob kind")
+        folder = self.root / "blobs" / kind
+        return sorted(path.stem for path in folder.glob("*.json") if path.is_file())
+
     def get_blob(self, kind: str, item_id: str) -> dict | None:
         """读一个 blob（**面向调用方的完整视图**）。
 

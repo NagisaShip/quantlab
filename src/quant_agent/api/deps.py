@@ -161,7 +161,10 @@ class AppServices:
                 my_groups=set(services.collab.user_groups(context.current_workspace(), ctx.user_id)),
             )
 
+        from ..platform.team_visibility import TeamRunVisibility
+
         services.teams.source_visible = team_source_visible
+        services.teams.run_visible = TeamRunVisibility(db, store, team_source_visible)
         services.collab_bot = CollabBot(db)
         services.social = SocialService(db, store)
         services.auth.settings_reader = lambda: global_store.get(Collections.SETTINGS, "platform_settings")
