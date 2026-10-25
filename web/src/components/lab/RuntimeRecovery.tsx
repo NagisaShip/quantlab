@@ -2,12 +2,45 @@ import { useEffect, useRef, useState } from 'react'
 import { lab } from '../../apiLab'
 
 type Run = Awaited<ReturnType<typeof lab.runtime>>['run']
+export type RecoveryStep = { id: string; kind: string; payload: Record<string, any> }
+export type RecoveryResolution =
+  | { kind: 'tool'; step_id: string; signal_id: string; outcome: 'succeeded' | 'absent'; result?: unknown }
+  | { kind: 'model'; step_id: string; no_charge_confirmed?: boolean; usage?: { input_tokens: number; output_tokens: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number } }
 
 export function RuntimeRecovery({ projectId, runId, running, revision, canResolve, onChanged, onError }: {
   projectId: string; runId?: string; running: boolean; revision: number; canResolve: boolean
   onChanged: () => Promise<unknown>; onError: (message: string) => void
 }) {
   const [run, setRun] = useState<Run | null>(null)
+  useEffect(() => {
+    let active = true
+    if (!runId || running) { setRun(null); return }
+    lab.runtime(projectId, runId).then(({ run }) => { if (active) setRun(run) }).catch(() => { if (active) setRun(null) })
+    return () => { active = false }
+  }, [projectId, runId, running, revision])
+  const step = run?.steps.find((step) => step.state === 'RECONCILING')
+  const resumable = run?.state === 'RUNNING' && run.steps.some((step) => ['READY', 'WAITING_ADMISSION', 'IN_FLIGHT'].includes(step.state))
+  if (!run || running || (!step && !resumable)) return null
+  const resume = async () => { await lab.resumeRuntime(projectId, runId); await onChanged() }
+  const resolve = async (payload: RecoveryResolution) => {
+    let state: string
+    if (payload.kind === 'tool') {
+      state = (await lab.resolveEffect(projectId, { step_id: payload.step_id, signal_id: payload.signal_id,
+        outcome: payload.outcome, result: payload.result }, runId)).state
+    } else {
+      state = (await lab.resolveModelUsage(projectId, { step_id: payload.step_id, usage: payload.usage,
+        no_charge_confirmed: payload.no_charge_confirmed }, runId)).state
+    }
+    if (!['COMPLETED', 'CANCELED', 'FAILED'].includes(state)) await lab.resumeRuntime(projectId, runId)
+    await onChanged()
+  }
+  return <RecoveryControls step={step} canResolve={canResolve} onResume={resume} onResolve={resolve} onError={onError} />
+}
+
+export function RecoveryControls({ step, canResolve, onResume, onResolve, onError, confirmLabel = '确认并继续' }: {
+  step?: RecoveryStep; canResolve: boolean; onResume?: () => Promise<unknown>
+  onResolve: (payload: RecoveryResolution) => Promise<unknown>; onError: (message: string) => void; confirmLabel?: string
+}) {
   const [busy, setBusy] = useState(false)
   const [verified, setVerified] = useState(false)
   const [outcome, setOutcome] = useState<'succeeded' | 'absent'>('succeeded')
@@ -19,40 +52,29 @@ export function RuntimeRecovery({ projectId, runId, running, revision, canResolv
   const [noCharge, setNoCharge] = useState(false)
   const signal = useRef(crypto.randomUUID())
   useEffect(() => {
-    let active = true
-    if (!runId || running) { setRun(null); return }
-    lab.runtime(projectId, runId).then(({ run }) => { if (active) setRun(run) }).catch(() => { if (active) setRun(null) })
-    return () => { active = false }
-  }, [projectId, runId, running, revision])
-  const step = run?.steps.find((step) => step.state === 'RECONCILING')
-  useEffect(() => {
     setVerified(false); setResult(''); setInputTokens(''); setOutputTokens(''); setNoCharge(false)
     setCacheRead('0'); setCacheWrite('0')
     signal.current = crypto.randomUUID()
   }, [step?.id])
-  const resumable = run?.state === 'RUNNING' && run.steps.some((step) => step.state === 'READY' || step.state === 'WAITING_ADMISSION' || step.state === 'IN_FLIGHT')
-  if (!run || running || (!step && !resumable)) return null
+  if (!step && !onResume) return null
   async function resume() {
     setBusy(true)
-    try { await lab.resumeRuntime(projectId, runId); await onChanged() }
-    catch (error) { onError((error as Error).message) }
+    try { await onResume?.() } catch (error) { onError((error as Error).message) }
     finally { setBusy(false) }
   }
   async function resolve() {
     if (!step) return
     setBusy(true)
     try {
-      let state: string
       if (step.kind === 'tool') {
-        state = (await lab.resolveEffect(projectId, { step_id: step.id, signal_id: signal.current, outcome,
-          result: outcome === 'succeeded' ? result : undefined }, runId)).state
-      } else {
-        state = (await lab.resolveModelUsage(projectId, { step_id: step.id,
-          ...(noCharge ? { no_charge_confirmed: true } : { usage: { input_tokens: Number(inputTokens), output_tokens: Number(outputTokens),
-            cache_read_input_tokens: Number(cacheRead), cache_creation_input_tokens: Number(cacheWrite) } }) }, runId)).state
+        let confirmed: unknown = result
+        try { confirmed = JSON.parse(result) } catch { /* Plain text results remain text. */ }
+        await onResolve({ kind: 'tool', step_id: step.id, signal_id: signal.current, outcome,
+          result: outcome === 'succeeded' ? confirmed : undefined })
       }
-      if (!['COMPLETED', 'CANCELED', 'FAILED'].includes(state)) await lab.resumeRuntime(projectId, runId)
-      await onChanged()
+      else await onResolve({ kind: 'model', step_id: step.id, ...(noCharge ? { no_charge_confirmed: true } : {
+        usage: { input_tokens: Number(inputTokens), output_tokens: Number(outputTokens),
+          cache_read_input_tokens: Number(cacheRead), cache_creation_input_tokens: Number(cacheWrite) } }) })
     } catch (error) { onError((error as Error).message) }
     finally { setBusy(false) }
   }
@@ -78,7 +100,7 @@ export function RuntimeRecovery({ projectId, runId, running, revision, canResolv
         <label><input type="checkbox" checked={verified} disabled={busy} onChange={(event) => setVerified(event.target.checked)} />我已在外部系统核实</label>
         <button className="button small" disabled={busy || !verified || (step.kind === 'model' && !noCharge &&
           [inputTokens, outputTokens, cacheRead, cacheWrite].some((value) => value === '' || !Number.isSafeInteger(Number(value)) || Number(value) < 0))}
-          onClick={resolve}>确认并继续</button>
+          onClick={resolve}>{confirmLabel}</button>
       </>}
     </>}
   </section>

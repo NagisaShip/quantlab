@@ -352,30 +352,55 @@ class QuantLabRuntimeFacade:
         A retry after a crash between the two SQLite commits is safe: ModelHub's
         admission is idempotent, and Runtime only settles a reconciling step.
         """
-        if not actor or (usage is None and not no_charge_confirmed):
-            raise ValueError("actor and confirmed usage or no-charge evidence are required")
-        if usage is not None and no_charge_confirmed:
-            raise ValueError("usage and no-charge confirmation are mutually exclusive")
-        engine = self._engine(run_id)
-        current = engine.get(run_id)
-        step = next((item for item in current["steps"] if item["id"] == step_id), None) if current else None
-        if step is None or step["kind"] != "model" or step["state"] != "RECONCILING":
-            return False
-        admission = self.hub.admission(step_id)
-        if admission is None or admission["run_id"] != run_id or admission["step_id"] != step_id:
-            raise ValueError("model admission does not belong to this Runtime step")
-        if admission["workspace_id"] != current["tenant_id"]:
-            raise ValueError("model admission tenant mismatch")
-        if usage is None:
-            if admission["status"] == "SETTLED":
-                raise ValueError("settled usage cannot be replaced with no-charge confirmation")
-            self.hub.release_admission(step_id)
-        else:
-            if admission["status"] == "RELEASED":
-                raise ValueError("released admission cannot be charged")
-            # Pricing is read from the admission snapshot, even if this provider
-            # has since been removed from the workspace's current configuration.
-            provider = ProviderConfig(name=admission["provider"], type="openai_compatible", base_url="", api_key="")
-            self.hub.settle_admission(provider, admission["model"], step_id, usage)
-        confirmed = self.hub.admission(step_id)
-        return engine.settle_model_uncertainty(run_id, step_id, usage_micro=confirmed["actual_micro"], actor=actor)
+        return reconcile_model_usage(
+            self._engine(run_id),
+            self.hub,
+            run_id,
+            step_id,
+            actor=actor,
+            usage=usage,
+            no_charge_confirmed=no_charge_confirmed,
+        )
+
+
+def reconcile_model_usage(
+    engine: Any,
+    hub: ModelHub,
+    run_id: str,
+    step_id: str,
+    *,
+    actor: str,
+    usage: dict[str, Any] | None = None,
+    no_charge_confirmed: bool = False,
+) -> bool:
+    """Settle the single host ledger before closing the durable execution step."""
+    if not actor or (usage is None and not no_charge_confirmed):
+        raise ValueError("actor and confirmed usage or no-charge evidence are required")
+    if usage is not None and no_charge_confirmed:
+        raise ValueError("usage and no-charge confirmation are mutually exclusive")
+    current = engine.get(run_id)
+    step = next((item for item in current["steps"] if item["id"] == step_id), None) if current else None
+    if step is None or step["kind"] != "model" or step["state"] != "RECONCILING":
+        return False
+    admission = hub.admission(step_id)
+    if admission is None or admission["run_id"] != run_id or admission["step_id"] != step_id:
+        raise ValueError("model admission does not belong to this Runtime step")
+    if admission["workspace_id"] != current["tenant_id"]:
+        raise ValueError("model admission tenant mismatch")
+    if usage is None:
+        if admission["status"] == "SETTLED":
+            raise ValueError("settled usage cannot be replaced with no-charge confirmation")
+        hub.release_admission(step_id)
+    else:
+        if admission["status"] == "RELEASED":
+            raise ValueError("released admission cannot be charged")
+        if not admission["pricing_json"]:
+            raise ValueError("missing original pricing snapshot")
+        # Pricing is read from the admission snapshot, even if this provider
+        # has since been removed from the workspace's current configuration.
+        provider = ProviderConfig(name=admission["provider"], type="openai_compatible", base_url="", api_key="")
+        hub.settle_admission(provider, admission["model"], step_id, usage)
+    confirmed = hub.admission(step_id)
+    if confirmed["actual_micro"] is None:
+        raise ValueError("confirmed provider usage is still missing")
+    return engine.settle_model_uncertainty(run_id, step_id, usage_micro=confirmed["actual_micro"], actor=actor)

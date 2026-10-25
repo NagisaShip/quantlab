@@ -9,6 +9,7 @@ from ..agents.roles import RoleDesigner
 from ..agents.team import Team
 from ..store import Collections
 from .deps import get_services
+from .runtime_schemas import EffectResolutionIn, ModelUsageResolutionIn
 from .schemas import RoleDraftIn, RoleIn, TeamIn, TeamRunIn
 
 router = APIRouter(prefix="/api/agents", tags=["Agent 角色与团队"])
@@ -16,6 +17,14 @@ router = APIRouter(prefix="/api/agents", tags=["Agent 角色与团队"])
 
 class TeamCancelIn(BaseModel):
     signal_id: str = Field(min_length=1, max_length=160)
+
+
+class TeamEffectResolutionIn(EffectResolutionIn):
+    execution_id: str = Field(min_length=1, max_length=200)
+
+
+class TeamUsageResolutionIn(ModelUsageResolutionIn):
+    execution_id: str = Field(min_length=1, max_length=200)
 
 
 # ---------------- 角色 ----------------
@@ -226,6 +235,51 @@ def cancel_team_run(run_id: str, payload: TeamCancelIn) -> dict:
         raise HTTPException(404, "团队运行记录不存在") from exc
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
+
+
+@router.get("/team-runs/{run_id}/runtime")
+def team_runtime_recovery(run_id: str) -> dict:
+    from ..agents.team_runtime import recovery_view
+
+    try:
+        return recovery_view(get_services().teams, run_id)
+    except KeyError as exc:
+        raise HTTPException(404, "团队运行记录不存在") from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+def _resolve_team(run_id: str, execution_id: str, payload: dict, *, model: bool = False) -> dict:
+    from ..agents.team_runtime import resolve_pending
+
+    services = get_services()
+    try:
+        result = resolve_pending(
+            services.teams, run_id, execution_id, payload, hub=services.model_hub if model else None
+        )
+    except KeyError as exc:
+        raise HTTPException(404, "步骤不属于该团队运行") from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    services.audit.record(
+        "team.runtime.model_usage" if model else "team.runtime.effect_resolution",
+        object_type="team_run",
+        object_id=run_id,
+        details={"execution_id": execution_id, "step_id": payload["step_id"], "accepted": result["accepted"]},
+    )
+    return result
+
+
+@router.post("/team-runs/{run_id}/runtime/effect-resolution")
+def resolve_team_effect(run_id: str, payload: TeamEffectResolutionIn) -> dict:
+    return _resolve_team(run_id, payload.execution_id, payload.model_dump(exclude={"execution_id"}))
+
+
+@router.post("/team-runs/{run_id}/runtime/model-usage")
+def resolve_team_usage(run_id: str, payload: TeamUsageResolutionIn) -> dict:
+    if (payload.usage is None) == (not payload.no_charge_confirmed):
+        raise HTTPException(422, "必须提供已确认用量，或明确确认未计费，两者不可同时提供")
+    return _resolve_team(run_id, payload.execution_id, payload.model_dump(exclude={"execution_id"}), model=True)
 
 
 @router.post("/roles/{role_id}/run")

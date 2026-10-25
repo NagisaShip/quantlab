@@ -160,7 +160,7 @@ def project(runner: Any, root: dict) -> TeamRun:
                 status = "waiting"
             elif "WAITING_DEPENDENCIES" in states:
                 status = "blocked"
-            elif "WAITING_ADMISSION" in states:
+            elif "WAITING_ADMISSION" in states or "READY" in states:
                 status = "queued"
             elif child["state"] == "RUNNING":
                 status = "running"
@@ -187,10 +187,12 @@ def project(runner: Any, root: dict) -> TeamRun:
         "WAITING": "waiting",
     }.get(root["state"], "running")
     if root["state"] == "WAITING" and run.steps and not any(step.status == "waiting" for step in run.steps):
-        if any(step.status in {"running", "blocked"} for step in run.steps):
+        if any(step.status == "running" for step in run.steps):
             run.status = "running"
-        elif any(step.status == "queued" for step in run.steps):
+        elif any(step.status in {"queued", "blocked"} for step in run.steps):
             run.status = "queued"
+    if root["state"] == "RUNNING" and any(step["state"] in {"READY", "WAITING_ADMISSION"} for step in root["steps"]):
+        run.status = "queued"
     role = Role.from_dict(plan["synthesizer"])
     if root.get("output"):
         run.synthesis = _decorate(root["output"], role, plan["metrics"])
@@ -280,3 +282,82 @@ def recover_indexes(runner: Any, records: list[dict], limit: int) -> list[dict]:
         if run:
             merged[run_id] = run.to_dict()
     return sorted(merged.values(), key=lambda item: item.get("created_at", 0), reverse=True)[:limit]
+
+
+def _execution_scope(runner: Any, run_id: str):
+    root = _load(runner, run_id)
+    if root is None:
+        raise KeyError(run_id)
+    engine = _engine(runner)
+    ids, seen = [root["id"]], {root["id"]}
+    for execution in ids:
+        for child in engine.children(execution):
+            if child in seen or engine.get(child)["tenant_id"] != root["tenant_id"]:
+                raise ValueError("invalid Team execution scope")
+            seen.add(child)
+            ids.append(child)
+    return engine, root, ids
+
+
+def recovery_view(runner: Any, run_id: str) -> dict:
+    engine, root, ids = _execution_scope(runner, run_id)
+    can_resolve = context.current().is_ws_admin or context.current().is_admin
+    pending = []
+    for execution in ids:
+        for step in engine.get(execution)["steps"]:
+            if step["state"] == "RECONCILING":
+                pending.append(
+                    {
+                        "execution_id": execution,
+                        "id": step["id"],
+                        "kind": step["kind"],
+                        "payload": step["payload"] if can_resolve else {"name": step["payload"].get("name", "")},
+                    }
+                )
+    return {
+        "state": root["state"],
+        "pending": pending,
+        "can_resolve": can_resolve,
+        "can_manage": project(runner, root).can_manage,
+    }
+
+
+def resolve_pending(runner: Any, run_id: str, execution_id: str, payload: dict, *, hub: Any = None) -> dict:
+    ctx = context.current()
+    if not (ctx.is_ws_admin or ctx.is_admin):
+        raise AppError(ErrorCode.PERMISSION_DENIED, "只有管理员可以核对外部效果与费用")
+    engine, root, ids = _execution_scope(runner, run_id)
+    if execution_id not in ids:
+        raise KeyError(execution_id)
+    actor = ctx.user_id or "system"
+    step = next((item for item in engine.get(execution_id)["steps"] if item["id"] == payload["step_id"]), None)
+    if step is None:
+        raise KeyError(payload["step_id"])
+    if hub is None:
+        if step["kind"] != "tool":
+            raise ValueError("effect resolution requires a tool step")
+        accepted = engine.signal(
+            execution_id,
+            "effect_resolution",
+            {key: value for key, value in payload.items() if key != "signal_id"},
+            signal_id=payload["signal_id"],
+            actor=actor,
+        )
+    else:
+        if step["kind"] != "model":
+            raise ValueError("usage resolution requires a model step")
+        from ..platform.runtime_adapters import reconcile_model_usage
+
+        accepted = reconcile_model_usage(
+            engine,
+            hub,
+            execution_id,
+            payload["step_id"],
+            actor=actor,
+            usage=payload.get("usage"),
+            no_charge_confirmed=payload.get("no_charge_confirmed", False),
+        )
+    engine.refresh(root["id"])
+    run = project(runner, engine.get(root["id"]))
+    runner._persist(run)
+    return {"accepted": accepted, "run": run.to_dict()}

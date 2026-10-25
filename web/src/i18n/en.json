@@ -7750,6 +7750,7 @@
  "核实结果": "Verified outcome",
  "模型用量待核对": "Model usage needs verification",
  "确认并继续": "Confirm and continue",
+ "确认核对": "Confirm reconciliation",
  "等待管理员核对后继续。": "Waiting for an administrator to verify before continuing.",
  "缓存写入 token": "Cache write tokens",
  "缓存读取 token": "Cache read tokens",

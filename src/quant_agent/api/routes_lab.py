@@ -33,6 +33,7 @@ from ..store import Collections
 from ..strategies.sdk_templates import TEMPLATES, get_template
 from ..timeframes import TimeframeStr
 from .deps import get_services
+from .runtime_schemas import EffectResolutionIn, ModelUsageResolutionIn
 
 try:  # 因子研究依赖 numpy；没装时平台其余功能照常可用，因子相关接口给出明确提示
     from ..agents import factor_lab as FL
@@ -61,6 +62,7 @@ except ImportError:  # pragma: no cover - 只在缺少 numpy 的环境里走到
 
 
 NUMPY_HINT = "因子研究需要 numpy，请先执行 pip install numpy（或 pip install -e .）后重启服务"
+
 
 router = APIRouter(prefix="/api/lab", tags=["AI 策略室"])
 
@@ -1625,13 +1627,6 @@ def resume_project_runtime(pid: str, payload: WaitIn, run_id: str | None = None)
     return _start(lab, pid, "runtime_recover", lambda: run_chat(lab, pid, run_id=current["id"]), payload.wait)
 
 
-class EffectResolutionIn(BaseModel):
-    step_id: str = Field(min_length=1, max_length=200)
-    signal_id: str = Field(min_length=1, max_length=200)
-    outcome: Literal["succeeded", "absent"]
-    result: Any = None
-
-
 def _runtime_admin() -> str:
     from ..platform import context
 
@@ -1685,43 +1680,6 @@ def _resolution_reply(lab, runtime, current, accepted):
             )
             lab.store.patch(pid, status="awaiting_user" if waiting else "idle", job=None)
     return {"accepted": accepted, "state": state}
-
-
-class ModelUsageResolutionIn(BaseModel):
-    step_id: str = Field(min_length=1, max_length=200)
-    usage: dict[str, Any] | None = None
-    no_charge_confirmed: bool = False
-
-    @field_validator("usage")
-    @classmethod
-    def confirmed_usage(cls, value):
-        if value is None:
-            return value
-        counters = {
-            "input_tokens",
-            "output_tokens",
-            "prompt_tokens",
-            "completion_tokens",
-            "cached_tokens",
-            "cache_read_input_tokens",
-            "cache_creation_input_tokens",
-            "prompt_cache_hit_tokens",
-        }
-
-        def validate(items):
-            found = False
-            for key, count in items.items():
-                if isinstance(count, dict):
-                    found = validate(count) or found
-                elif key in counters:
-                    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
-                        raise ValueError("已确认的 token 用量必须是非负整数")
-                    found = True
-            return found
-
-        if not validate(value):
-            raise ValueError("缺少已确认的 token 用量")
-        return value
 
 
 @router.post("/projects/{pid}/runtime/model-usage", summary="管理员记录服务商已确认的模型用量")

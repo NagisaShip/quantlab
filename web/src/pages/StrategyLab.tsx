@@ -10,6 +10,7 @@ import { get } from '../http'
 import { api, type TeamRun } from '../api/core'
 import { AgentStatePill, MessageStateTag } from '../components/chat/LabStatus'
 import { RuntimeRecovery } from '../components/lab/RuntimeRecovery'
+import { TeamRecovery } from '../components/lab/TeamRecovery'
 import {
   clearObservedFailure, deriveAgentStatus, evidenceProbes, messageTag, normalizeRunState, normalizeTeamState, rememberObservedFailure,
   type RunEvidenceState,
@@ -2077,6 +2078,7 @@ function TeamCard({ m, concise }: { m: LabMessage; concise?: boolean }) {
           ))}
         </div>
       )}
+      {durable && ['waiting', 'canceling'].includes(status) && <TeamRecovery runId={id} revision={current?.runtime_event_seq || 0} onRun={setCurrent} onError={setError} />}
       {error && <div role="alert" className="lab2-faint">{error}</div>}
       {summary && <div className="lab2-team-sum"><Markdown text={summary} compact /></div>}
     </div>

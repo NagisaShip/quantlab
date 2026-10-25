@@ -9989,6 +9989,158 @@
     }
    }
   },
+  "/api/agents/team-runs/{run_id}/runtime": {
+   "get": {
+    "tags": [
+     "Agent 角色与团队"
+    ],
+    "summary": "Team Runtime Recovery",
+    "operationId": "team_runtime_recovery_api_agents_team_runs__run_id__runtime_get",
+    "parameters": [
+     {
+      "name": "run_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Run Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "additionalProperties": true,
+         "title": "Response Team Runtime Recovery Api Agents Team Runs  Run Id  Runtime Get"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/agents/team-runs/{run_id}/runtime/effect-resolution": {
+   "post": {
+    "tags": [
+     "Agent 角色与团队"
+    ],
+    "summary": "Resolve Team Effect",
+    "operationId": "resolve_team_effect_api_agents_team_runs__run_id__runtime_effect_resolution_post",
+    "parameters": [
+     {
+      "name": "run_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Run Id"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/TeamEffectResolutionIn"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "additionalProperties": true,
+         "title": "Response Resolve Team Effect Api Agents Team Runs  Run Id  Runtime Effect Resolution Post"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/agents/team-runs/{run_id}/runtime/model-usage": {
+   "post": {
+    "tags": [
+     "Agent 角色与团队"
+    ],
+    "summary": "Resolve Team Usage",
+    "operationId": "resolve_team_usage_api_agents_team_runs__run_id__runtime_model_usage_post",
+    "parameters": [
+     {
+      "name": "run_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Run Id"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/TeamUsageResolutionIn"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "additionalProperties": true,
+         "title": "Response Resolve Team Usage Api Agents Team Runs  Run Id  Runtime Model Usage Post"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
   "/api/agents/roles/{role_id}/run": {
    "post": {
     "tags": [
@@ -40308,6 +40460,47 @@
     ],
     "title": "TeamCancelIn"
    },
+   "TeamEffectResolutionIn": {
+    "properties": {
+     "step_id": {
+      "type": "string",
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Step Id"
+     },
+     "signal_id": {
+      "type": "string",
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Signal Id"
+     },
+     "outcome": {
+      "type": "string",
+      "enum": [
+       "succeeded",
+       "absent"
+      ],
+      "title": "Outcome"
+     },
+     "result": {
+      "title": "Result"
+     },
+     "execution_id": {
+      "type": "string",
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Execution Id"
+     }
+    },
+    "type": "object",
+    "required": [
+     "step_id",
+     "signal_id",
+     "outcome",
+     "execution_id"
+    ],
+    "title": "TeamEffectResolutionIn"
+   },
    "TeamIn": {
     "properties": {
      "id": {
@@ -40412,6 +40605,45 @@
      "topic"
     ],
     "title": "TeamRunIn"
+   },
+   "TeamUsageResolutionIn": {
+    "properties": {
+     "step_id": {
+      "type": "string",
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Step Id"
+     },
+     "usage": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Usage"
+     },
+     "no_charge_confirmed": {
+      "type": "boolean",
+      "title": "No Charge Confirmed",
+      "default": false
+     },
+     "execution_id": {
+      "type": "string",
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Execution Id"
+     }
+    },
+    "type": "object",
+    "required": [
+     "step_id",
+     "execution_id"
+    ],
+    "title": "TeamUsageResolutionIn"
    },
    "TotpDisableIn": {
     "properties": {
