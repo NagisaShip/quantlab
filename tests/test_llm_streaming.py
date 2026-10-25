@@ -346,3 +346,57 @@ def test_runtime_observes_responses_and_anthropic_tool_streams():
             None,
         )
     assert len(observed) == 1
+
+
+def test_provider_trace_headers_are_request_scoped_for_all_protocols():
+    from agent_runtime.observations import model_observation, model_trace_context
+
+    from quant_agent.llm.providers import OpenAIResponsesProvider
+
+    seen = []
+
+    def handler(request):
+        seen.append(request.headers.get("traceparent"))
+        if request.url.path.endswith("/messages"):
+            body = {"content": [{"type": "text", "text": "done"}], "model": "m"}
+        elif request.url.path.endswith("/responses"):
+            body = {"output": [{"type": "message", "content": [{"type": "output_text", "text": "done"}]}]}
+        else:
+            body = {"choices": [{"message": {"content": "done"}}]}
+        return httpx.Response(200, json=body)
+
+    trace = model_trace_context("root", "attempt")
+    for provider_type in (OpenAICompatibleProvider, OpenAIResponsesProvider, AnthropicProvider):
+        provider = provider_type("test", "https://example.test/v1", "key", transport=httpx.MockTransport(handler))
+        with model_observation(lambda: True, trace_context=trace):
+            assert provider.chat([Message(role="user", content="hi")], model="m").content == "done"
+        assert seen[-1] == trace.traceparent
+        provider.chat([Message(role="user", content="hi")], model="m")
+        assert seen[-1] is None  # the same cached HTTP client does not retain headers
+
+
+def test_concurrent_models_do_not_share_trace_headers():
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from agent_runtime.observations import model_observation, model_trace_context
+
+    barrier = threading.Barrier(2)
+
+    def handler(request):
+        barrier.wait(timeout=5)
+        return httpx.Response(200, json={"choices": [{"message": {"content": request.headers["traceparent"]}}]})
+
+    provider = OpenAICompatibleProvider(
+        "test", "https://example.test/v1", "key", transport=httpx.MockTransport(handler)
+    )
+
+    def call(name):
+        trace = model_trace_context(name, name)
+        with model_observation(lambda: True, trace_context=trace):
+            return provider.chat([Message(role="user", content="hi")], model="m").content, trace.traceparent
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(call, ("a", "b")))
+    assert all(actual == expected for actual, expected in outcomes)
+    assert outcomes[0][0] != outcomes[1][0]

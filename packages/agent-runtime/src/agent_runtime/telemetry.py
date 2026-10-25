@@ -7,15 +7,11 @@ redeliver identical trace/span IDs, never regenerate model or tool work.
 
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 from .journal import Journal, load, now_ms
-
-
-def _identity(value: str, size: int) -> int:
-    return int.from_bytes(hashlib.sha256(value.encode()).digest()[:size], "big") or 1
+from .observations import span_identity as _identity
 
 
 @dataclass(frozen=True)

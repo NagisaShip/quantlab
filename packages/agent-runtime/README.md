@@ -207,4 +207,9 @@ for otherwise nonstreaming requests.
 Durable first-token count and total duration are available in `snapshot` and
 OpenTelemetry observable gauges; attempt spans include `agent_runtime.model.first_token_ms`
 only when observed. Collection and restart cannot increment these totals.
-Provider HTTP trace-context propagation is a separate host concern and is not yet wired.
+`current_model_trace()` exposes the current model Attempt's immutable trace context
+inside generate. QuantLab adds its W3C `traceparent` to each provider request,
+without baggage or user data. Restored children use the root trace identity;
+regeneration uses a new Attempt span. Cached clients never retain per-request
+headers. A custom threaded transport should capture the context explicitly before
+handing off work. Core execution remains independent of OpenTelemetry SDKs.

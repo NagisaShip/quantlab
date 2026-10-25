@@ -305,3 +305,57 @@ def test_sdk_exports_real_parent_contexts(tmp_path):
     assert step.parent.span_id == root_span.context.span_id
     assert attempt.parent.span_id == step.context.span_id
     assert len({span.context.trace_id for span in spans}) == 1
+
+
+def test_live_model_context_matches_restored_child_attempt_span(tmp_path):
+    from agent_runtime.observations import current_model_trace
+
+    observed = {}
+
+    class Traced:
+        def generate(self, messages, *, request_id):
+            observed[request_id] = current_model_trace()
+            return ModelResult(text="done", usage_micro=0)
+
+    journal = Journal(tmp_path / "propagation.sqlite")
+    runtime = AgentRuntime(journal, Traced(), None)
+    root = runtime.start("parent", AgentSpec("root", "1"), tenant_id="a")
+    child = runtime.fork_children(root, [("child", AgentSpec("child", "1"))], idempotency_key="context")[0]
+    restored = AgentRuntime(Journal(journal.path), Traced(), None)
+    assert restored.resume(child)["state"] == "COMPLETED"
+    assert restored.resume(root)["state"] == "COMPLETED"
+    assert current_model_trace() is None
+    sink = Sink()
+    RuntimeTelemetry(journal).export_trace(sink, root_run_id=root, consumer_id="context", tenant_id="a")
+    attempts = [span for span in sink.batches[0] if "agent_runtime.attempt_id" in span.attributes]
+    assert len(attempts) == 2
+    for span in attempts:
+        live = observed[span.attributes["agent_runtime.step_id"]]
+        assert live.trace_id == span.trace_id and live.span_id == span.span_id
+        assert live.traceparent == f"00-{span.trace_id:032x}-{span.span_id:016x}-01"
+    assert len({trace.trace_id for trace in observed.values()}) == 1
+    assert len({trace.span_id for trace in observed.values()}) == 2
+
+
+def test_regeneration_uses_new_attempt_context_in_same_trace(tmp_path):
+    from agent_runtime.observations import current_model_trace
+
+    observed = []
+
+    class Flaky:
+        def generate(self, messages, *, request_id):
+            observed.append(current_model_trace())
+            if len(observed) == 1:
+                raise OSError("provider result unknown")
+            return ModelResult(text="regenerated", usage_micro=0)
+
+    journal = Journal(tmp_path / "retry-context.sqlite")
+    runtime = AgentRuntime(journal, Flaky(), None)
+    root = runtime.start("request", AgentSpec("test", "1"), tenant_id="a")
+    waiting = runtime.resume(root)
+    assert waiting["state"] == "WAITING"
+    assert runtime.settle_model_uncertainty(root, waiting["steps"][0]["id"], usage_micro=0, actor="reviewer")
+    assert AgentRuntime(Journal(journal.path), Flaky(), None).resume(root)["state"] == "COMPLETED"
+    assert len(observed) == 2
+    assert observed[0].trace_id == observed[1].trace_id
+    assert observed[0].span_id != observed[1].span_id

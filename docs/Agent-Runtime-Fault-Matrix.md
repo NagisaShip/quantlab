@@ -155,3 +155,8 @@ npx playwright test tests/e2e/19-runtime-recovery.spec.ts --workers=1
 首 token 验证跨线程回调、重复增量只计一次、非流式及已完成后的迟到回调不写、失效租约不写、采集器重启与租户隔离。宿主协议验证 OpenAI-compatible、Responses 与 Anthropic 流式增量，最终响应模拟 UI delta 不计首 token，观察器存储失败不破坏模型结果。
 
 双数据库内核/父子/依赖回归 120 项通过，故障矩阵与协议综合回归 64 项通过；后续补强成功终态断言及跨线程验证，遥测专项双数据库 22 项通过，协议与研究室接口综合 47 项通过。各选择有重叠，不累加为唯一用例数。Ruff 通过。provider HTTP trace-context 传播仍未接线，不能据此宣称整个重构完成。
+
+
+## provider 请求追踪关联（2026-10-25）
+
+内核验证恢复后的子 Agent 实时 trace/span 身份与持久跨度导出一致；模型结果不确定，经人工费用核对再生成时，trace ID 不变、Attempt span ID 改变。宿主通过三种真实协议的 HTTP MockTransport 检查 traceparent；同一客户端后续普通调用无追踪头，两线程并发调用各带自己的头。双数据库内核/崩溃恢复与宿主协议/API 综合回归 91 项通过；补充重新生成关联测试的结果另列。权限审计另发现来源私有会话的 Team 可见范围缺口，尚待修复，不宣称整体完成。

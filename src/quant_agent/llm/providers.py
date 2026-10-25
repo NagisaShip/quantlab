@@ -32,6 +32,15 @@ def _resolve_env(value: str) -> str:
     return value
 
 
+def _runtime_trace_headers() -> dict[str, str]:
+    try:
+        from agent_runtime.observations import current_model_trace
+    except ImportError:
+        return {}
+    trace = current_model_trace()
+    return {"traceparent": trace.traceparent} if trace else {}
+
+
 def _runtime_first_token() -> None:
     # Optional runtime package; ordinary model clients have no observer bound.
     try:
@@ -102,7 +111,7 @@ def openai_headers(base_url: str, api_key: str, messages: list[Message] | None =
         headers["Accept-Encoding"] = "identity"
         if messages is not None:
             headers["x-opencode-session"] = _opencode_session(messages)
-    return headers
+    return {**headers, **_runtime_trace_headers()}
 
 
 # ---------------------------------------------------------------------------
@@ -659,6 +668,7 @@ class AnthropicProvider:
             effort=effort,
             show_thinking=bool(on_delta),
         )
+        headers.update(_runtime_trace_headers())
         try:
             if on_delta or stream:
                 payload["stream"] = True

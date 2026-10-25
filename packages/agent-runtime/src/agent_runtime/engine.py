@@ -894,7 +894,7 @@ class AgentRuntime:
         heartbeat.start()
         try:
             if step["kind"] == "model":
-                from .observations import model_observation
+                from .observations import model_observation, model_trace_context
 
                 recorded = False
 
@@ -913,7 +913,26 @@ class AgentRuntime:
                     recorded = True
                     return True
 
-                with model_observation(first_token):
+                trace_context = None
+                try:
+                    with self.journal.read_tx() as db:
+                        origin = db.execute("SELECT id,parent_id,tenant_id FROM runs WHERE id=?", (run_id,)).fetchone()
+                        root = origin
+                        seen = set()
+                        while root and root["parent_id"]:
+                            if root["id"] in seen or len(seen) >= 4096:
+                                raise ValueError("invalid trace ancestry")
+                            seen.add(root["id"])
+                            root = db.execute(
+                                "SELECT id,parent_id,tenant_id FROM runs WHERE id=?", (root["parent_id"],)
+                            ).fetchone()
+                            if root is None or root["tenant_id"] != origin["tenant_id"]:
+                                raise ValueError("invalid trace tenant ancestry")
+                        if root:
+                            trace_context = model_trace_context(root["id"], attempt_id)
+                except Exception:
+                    logging.getLogger(__name__).exception("model trace context unavailable")
+                with model_observation(first_token, trace_context=trace_context):
                     return self.model.generate(messages, request_id=step["id"])
             return self.tools.execute(ToolCall(**payload), effect_id=step["effect_id"])
         finally:
