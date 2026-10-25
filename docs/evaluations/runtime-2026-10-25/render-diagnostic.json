@@ -1,0 +1,27 @@
+{
+  "diagnostic": [
+    {
+      "command": [
+        "C:\\Users\\Xiao\\AppData\\Local\\Programs\\LibreOffice\\program\\soffice.exe",
+        "-env:UserInstallation=file:///C:/Users/Xiao/Desktop/%E6%9C%AC%E7%A7%91/%E5%8C%BA%E5%9D%97%E9%93%BE%E9%87%91%E8%9E%8D/QuantLab/quantlab-office-2ps_nfw8/profile",
+        "--headless",
+        "--convert-to",
+        "pdf",
+        "--outdir",
+        "C:\\Users\\Xiao\\Desktop\\本科\\区块链金融\\QuantLab\\quantlab-office-2ps_nfw8",
+        "C:\\Users\\Xiao\\Desktop\\本科\\区块链金融\\QuantLab\\.tmp\\runtime-evaluation\\documents-final\\document-quantlab\\memo.docx"
+      ],
+      "returncode": 1,
+      "stdout": "",
+      "stderr": "Error: source file could not be loaded\r\n",
+      "files": [
+        "profile"
+      ]
+    }
+  ],
+  "python": "C:\\Users\\Xiao\\Desktop\\本科\\区块链金融\\QuantLab\\.tmp\\runtime-evaluation\\venv\\Scripts\\python.exe",
+  "python_env": {
+    "TEMP": "C:\\Users\\Xiao\\AppData\\Local\\Temp",
+    "TMP": "C:\\Users\\Xiao\\AppData\\Local\\Temp"
+  }
+}

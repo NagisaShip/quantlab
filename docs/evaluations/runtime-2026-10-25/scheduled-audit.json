@@ -1,0 +1,103 @@
+{
+  "worker_probes": [
+    {
+      "kind": "digest",
+      "delivery_state": "COMPLETED",
+      "delivery_summary": {
+        "job_id": "audit",
+        "kind": "digest",
+        "status": "ok",
+        "record_id": "dbdb0c5c300e"
+      },
+      "generation_runs": [
+        {
+          "id": "agent-51cc1d44fa024aadbc6baebec97f5c13",
+          "state": "WAITING"
+        }
+      ],
+      "notification_count": 1,
+      "provider_calls": 1,
+      "records": [
+        {
+          "run_key": "daily_digest:2026-10-25",
+          "agent_id": "daily_digest",
+          "ts": 1792931323170,
+          "input_digest": "{\n  \"date\": \"2026-10-25\",\n  \"nav\": 10000.0,\n  \"period_change\": 0.0,\n  \"period\": \"7d\",\n  \"max_drawdown\": 0.0,\n  \"trades\": 0,\n  \"win_rate\": 0.0,\n  \"alerts\": [\n    \"尚无实验记录\"\n  ]\n}",
+          "output": "【策略简报】2026-10-25\n· 净值：10,000.00（7d：+0.00%）\n· 最大回撤：0.00%\n· 交易：0 笔，胜率 0%\n· 异常：尚无实验记录\n（本条由数据模板直接生成：当前无可用大模型）\n仅为研究结果，非投资建议。",
+          "pushed_to": [
+            "capture"
+          ],
+          "status": "ok",
+          "id": "dbdb0c5c300e",
+          "created_at": 1792931323.171031,
+          "updated_at": 1792931323.1710312
+        }
+      ],
+      "effects": []
+    },
+    {
+      "kind": "maintainer",
+      "delivery_state": "COMPLETED",
+      "delivery_summary": {
+        "job_id": "audit",
+        "kind": "maintainer",
+        "status": "ok",
+        "record_id": "d5e27f0a8a21"
+      },
+      "generation_runs": [
+        {
+          "id": "team-4ceb01b9cf5444c290e1f991a159f799",
+          "state": "COMPLETED"
+        }
+      ],
+      "notification_count": 1,
+      "provider_calls": 2,
+      "records": [
+        {
+          "run_key": "strategy_maintainer:2026-W42",
+          "agent_id": "strategy_maintainer",
+          "ts": 1792931328077,
+          "input_digest": "以下是滚动前推验证与参数稳定性数据，请评估是否生成候选新版本：\n{\n  \"period\": \"2026-W42\",\n  \"strategies\": {},\n  \"note\": \"滚动前推验证窗口与样本外数据需在真实数据接入后补充；此处为已存实验的聚合。\"\n}",
+          "output": "candidate ready\n\n仅为研究结果，非投资建议。",
+          "pushed_to": [
+            "capture"
+          ],
+          "status": "ok",
+          "id": "d5e27f0a8a21",
+          "created_at": 1792931328.0776963,
+          "updated_at": 1792931328.0776966
+        }
+      ],
+      "effects": []
+    }
+  ],
+  "same_run_key_new_processes": {
+    "records": [
+      {
+        "run_key": "daily_digest:2026-10-25",
+        "agent_id": "daily_digest",
+        "ts": 1792931328713,
+        "input_digest": "{\n  \"date\": \"2026-10-25\",\n  \"nav\": 10000,\n  \"period_change\": 0,\n  \"period\": \"7d\",\n  \"max_drawdown\": 0.0,\n  \"trades\": 0,\n  \"win_rate\": 0.0,\n  \"alerts\": []\n}",
+        "output": "Fixed digest\n\n仅为研究结果，非投资建议。",
+        "pushed_to": [
+          "capture"
+        ],
+        "status": "ok"
+      },
+      {
+        "run_key": "daily_digest:2026-10-25",
+        "agent_id": "daily_digest",
+        "ts": 1792931329340,
+        "input_digest": "{\n  \"date\": \"2026-10-25\",\n  \"nav\": 10000,\n  \"period_change\": 0,\n  \"period\": \"7d\",\n  \"max_drawdown\": 0.0,\n  \"trades\": 0,\n  \"win_rate\": 0.0,\n  \"alerts\": []\n}",
+        "output": "Fixed digest\n\n仅为研究结果，非投资建议。",
+        "pushed_to": [
+          "capture"
+        ],
+        "status": "ok"
+      }
+    ],
+    "provider": 2,
+    "notification": 2
+  },
+  "external_notifications_sent": 0
+}

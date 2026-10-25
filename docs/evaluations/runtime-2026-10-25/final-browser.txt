@@ -1,0 +1,25 @@
+[WebServer] INFO:     127.0.0.1:62251 - "POST /api/collab/presence HTTP/1.1" 200 OK
+[WebServer] INFO:     127.0.0.1:52393 - "GET /api/ai/tools HTTP/1.1" 200 OK
+[WebServer] INFO:     127.0.0.1:62783 - "POST /api/collab/presence HTTP/1.1" 200 OK
+[WebServer] INFO:     127.0.0.1:62251 - "GET /assets/inter-latin-wght-normal-Dx4kXJAl.woff2 HTTP/1.1" 200 OK
+[WebServer] INFO:     127.0.0.1:63453 - "GET /api/runs?limit=50 HTTP/1.1" 200 OK
+[WebServer] INFO:     127.0.0.1:52393 - "GET /assets/jetbrains-mono-latin-wght-normal-B9CIFXIH.woff2 HTTP/1.1" 200 OK
+[WebServer] INFO:     127.0.0.1:62783 - "GET /fonts/IBMPlexSans-Medium.woff2 HTTP/1.1" 200 OK
+[WebServer] INFO:     127.0.0.1:63453 - "GET /fonts/IBMPlexMono-Regular.woff2 HTTP/1.1" 200 OK
+[WebServer] INFO:     127.0.0.1:62251 - "GET /fonts/IBMPlexSans-Regular.woff2 HTTP/1.1" 200 OK
+[WebServer] INFO:     127.0.0.1:54163 - "GET /api/market/banner HTTP/1.1" 200 OK
+[WebServer] INFO:     127.0.0.1:62783 - "GET /api/agents/roles HTTP/1.1" 200 OK
+[WebServer] INFO:     127.0.0.1:63453 - "GET /api/inbox/mutes HTTP/1.1" 200 OK
+[WebServer] INFO:     127.0.0.1:52393 - "GET /api/lab/meta HTTP/1.1" 200 OK
+[WebServer] INFO:     127.0.0.1:57653 - "GET /api/inbox/summary HTTP/1.1" 200 OK
+[WebServer] INFO:     127.0.0.1:62251 - "GET /api/collab/groups HTTP/1.1" 200 OK
+[WebServer] INFO:     127.0.0.1:63453 - "GET /api/workspace/features HTTP/1.1" 200 OK
+[WebServer] INFO:     127.0.0.1:52393 - "GET /api/auth/research-plugins HTTP/1.1" 200 OK
+[WebServer] INFO:     127.0.0.1:62783 - "GET /api/config HTTP/1.1" 200 OK
+[WebServer] INFO:     127.0.0.1:57653 - "GET /api/collab/editors/project HTTP/1.1" 200 OK
+[WebServer] INFO:     127.0.0.1:52255 - "GET /api/lab/projects/b56085710ba0?after=0&since=0 HTTP/1.1" 200 OK
+[WebServer] INFO:     127.0.0.1:57653 - "GET /api/market/symbols HTTP/1.1" 200 OK
+[WebServer] INFO:     127.0.0.1:62783 - "GET /api/collab/shares/project/b56085710ba0 HTTP/1.1" 200 OK
+  ok 6 [chromium] › tests\e2e\22-runtime-artifacts.spec.ts:4:1 › 对话展示交付快照下载与页面，拒绝外部链接 (7.2s)
+
+  6 passed (1.1m)

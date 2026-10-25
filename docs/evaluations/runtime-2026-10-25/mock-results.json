@@ -1,0 +1,997 @@
+{
+  "legacy_commit": "188f99744b245dac2ed0e742839186a0c0542aa4",
+  "provider": "local deterministic mock",
+  "external_cost": 0,
+  "rows": [
+    {
+      "framework": "legacy",
+      "repeat": -2,
+      "warmup": true,
+      "ms": 404.0347000118345,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab",
+      "repeat": -2,
+      "warmup": true,
+      "ms": 119.04590000631288,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "pydantic",
+      "repeat": -2,
+      "warmup": true,
+      "ms": 1174.9150999821723,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "langgraph",
+      "repeat": -2,
+      "warmup": true,
+      "ms": 597.6990999770351,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "langgraph_sqlite",
+      "repeat": -2,
+      "warmup": true,
+      "ms": 39.540600031614304,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "langgraph",
+      "repeat": -1,
+      "warmup": true,
+      "ms": 53.172399988397956,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "legacy",
+      "repeat": -1,
+      "warmup": true,
+      "ms": 32.91710000485182,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "pydantic",
+      "repeat": -1,
+      "warmup": true,
+      "ms": 18.870299973059446,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab",
+      "repeat": -1,
+      "warmup": true,
+      "ms": 116.34799995226786,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "langgraph_sqlite",
+      "repeat": -1,
+      "warmup": true,
+      "ms": 37.51009999541566,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "langgraph",
+      "repeat": 0,
+      "warmup": false,
+      "ms": 43.80799998762086,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab",
+      "repeat": 0,
+      "warmup": false,
+      "ms": 96.7108000186272,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "legacy",
+      "repeat": 0,
+      "warmup": false,
+      "ms": 59.74130000686273,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "langgraph_sqlite",
+      "repeat": 0,
+      "warmup": false,
+      "ms": 25.300399982370436,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "pydantic",
+      "repeat": 0,
+      "warmup": false,
+      "ms": 15.266000002156943,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "legacy",
+      "repeat": 1,
+      "warmup": false,
+      "ms": 36.10989998560399,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "langgraph_sqlite",
+      "repeat": 1,
+      "warmup": false,
+      "ms": 21.911699965130538,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "langgraph",
+      "repeat": 1,
+      "warmup": false,
+      "ms": 11.866000015288591,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab",
+      "repeat": 1,
+      "warmup": false,
+      "ms": 117.49150004470721,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "pydantic",
+      "repeat": 1,
+      "warmup": false,
+      "ms": 19.74209997570142,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "pydantic",
+      "repeat": 2,
+      "warmup": false,
+      "ms": 14.92129999678582,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "legacy",
+      "repeat": 2,
+      "warmup": false,
+      "ms": 57.75410000933334,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab",
+      "repeat": 2,
+      "warmup": false,
+      "ms": 111.7017000215128,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "langgraph",
+      "repeat": 2,
+      "warmup": false,
+      "ms": 45.32409994862974,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "langgraph_sqlite",
+      "repeat": 2,
+      "warmup": false,
+      "ms": 24.936600006185472,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "legacy",
+      "repeat": 3,
+      "warmup": false,
+      "ms": 36.74860001774505,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "langgraph_sqlite",
+      "repeat": 3,
+      "warmup": false,
+      "ms": 22.52480003517121,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "langgraph",
+      "repeat": 3,
+      "warmup": false,
+      "ms": 40.51770002115518,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "pydantic",
+      "repeat": 3,
+      "warmup": false,
+      "ms": 14.322100032586604,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab",
+      "repeat": 3,
+      "warmup": false,
+      "ms": 106.61389998858795,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "legacy",
+      "repeat": 4,
+      "warmup": false,
+      "ms": 48.19770000176504,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "langgraph_sqlite",
+      "repeat": 4,
+      "warmup": false,
+      "ms": 51.18180002318695,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab",
+      "repeat": 4,
+      "warmup": false,
+      "ms": 144.35040001990274,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "langgraph",
+      "repeat": 4,
+      "warmup": false,
+      "ms": 51.87979998299852,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "pydantic",
+      "repeat": 4,
+      "warmup": false,
+      "ms": 14.477099990472198,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab",
+      "repeat": 5,
+      "warmup": false,
+      "ms": 121.5754000004381,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "pydantic",
+      "repeat": 5,
+      "warmup": false,
+      "ms": 17.430100007914007,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "langgraph_sqlite",
+      "repeat": 5,
+      "warmup": false,
+      "ms": 53.369900037068874,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "legacy",
+      "repeat": 5,
+      "warmup": false,
+      "ms": 60.19290001131594,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "langgraph",
+      "repeat": 5,
+      "warmup": false,
+      "ms": 33.53259997675195,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "langgraph_sqlite",
+      "repeat": 6,
+      "warmup": false,
+      "ms": 44.70440000295639,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "legacy",
+      "repeat": 6,
+      "warmup": false,
+      "ms": 9.435499960090965,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "pydantic",
+      "repeat": 6,
+      "warmup": false,
+      "ms": 18.259700038470328,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "langgraph",
+      "repeat": 6,
+      "warmup": false,
+      "ms": 62.564400024712086,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab",
+      "repeat": 6,
+      "warmup": false,
+      "ms": 119.19350002426654,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab",
+      "repeat": 7,
+      "warmup": false,
+      "ms": 118.39059996418655,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "langgraph",
+      "repeat": 7,
+      "warmup": false,
+      "ms": 59.28230000426993,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "langgraph_sqlite",
+      "repeat": 7,
+      "warmup": false,
+      "ms": 52.00679996050894,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "legacy",
+      "repeat": 7,
+      "warmup": false,
+      "ms": 28.689500002656132,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "pydantic",
+      "repeat": 7,
+      "warmup": false,
+      "ms": 17.13500003097579,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "pydantic",
+      "repeat": 8,
+      "warmup": false,
+      "ms": 13.989500002935529,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab",
+      "repeat": 8,
+      "warmup": false,
+      "ms": 180.63829996390268,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "legacy",
+      "repeat": 8,
+      "warmup": false,
+      "ms": 51.41710001043975,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "langgraph_sqlite",
+      "repeat": 8,
+      "warmup": false,
+      "ms": 64.53299999702722,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "langgraph",
+      "repeat": 8,
+      "warmup": false,
+      "ms": 32.058100041467696,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "legacy",
+      "repeat": 9,
+      "warmup": false,
+      "ms": 44.96759996982291,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "langgraph",
+      "repeat": 9,
+      "warmup": false,
+      "ms": 59.05400001211092,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "pydantic",
+      "repeat": 9,
+      "warmup": false,
+      "ms": 15.870599949266762,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab",
+      "repeat": 9,
+      "warmup": false,
+      "ms": 137.55499996477738,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "langgraph_sqlite",
+      "repeat": 9,
+      "warmup": false,
+      "ms": 40.50400003325194,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "langgraph",
+      "repeat": 10,
+      "warmup": false,
+      "ms": 41.68530000606552,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "pydantic",
+      "repeat": 10,
+      "warmup": false,
+      "ms": 18.652200000360608,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "langgraph_sqlite",
+      "repeat": 10,
+      "warmup": false,
+      "ms": 45.091800042428076,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "legacy",
+      "repeat": 10,
+      "warmup": false,
+      "ms": 61.16860004840419,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab",
+      "repeat": 10,
+      "warmup": false,
+      "ms": 100.28740001143888,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "legacy",
+      "repeat": 11,
+      "warmup": false,
+      "ms": 39.787699992302805,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "langgraph",
+      "repeat": 11,
+      "warmup": false,
+      "ms": 62.831100018229336,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "langgraph_sqlite",
+      "repeat": 11,
+      "warmup": false,
+      "ms": 33.3282999927178,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "pydantic",
+      "repeat": 11,
+      "warmup": false,
+      "ms": 17.91400002548471,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab",
+      "repeat": 11,
+      "warmup": false,
+      "ms": 131.6091999760829,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "langgraph_sqlite",
+      "repeat": 12,
+      "warmup": false,
+      "ms": 68.24179994873703,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "legacy",
+      "repeat": 12,
+      "warmup": false,
+      "ms": 61.958499951288104,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "langgraph",
+      "repeat": 12,
+      "warmup": false,
+      "ms": 62.85079999361187,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "pydantic",
+      "repeat": 12,
+      "warmup": false,
+      "ms": 16.000400006305426,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab",
+      "repeat": 12,
+      "warmup": false,
+      "ms": 117.86140000913292,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab",
+      "repeat": 13,
+      "warmup": false,
+      "ms": 174.16759999468923,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "langgraph_sqlite",
+      "repeat": 13,
+      "warmup": false,
+      "ms": 22.87290000822395,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "pydantic",
+      "repeat": 13,
+      "warmup": false,
+      "ms": 15.391699969768524,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "legacy",
+      "repeat": 13,
+      "warmup": false,
+      "ms": 59.810199949424714,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "langgraph",
+      "repeat": 13,
+      "warmup": false,
+      "ms": 47.79099998995662,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "langgraph_sqlite",
+      "repeat": 14,
+      "warmup": false,
+      "ms": 50.82289996789768,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab",
+      "repeat": 14,
+      "warmup": false,
+      "ms": 120.14620000263676,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "legacy",
+      "repeat": 14,
+      "warmup": false,
+      "ms": 46.24570003943518,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "langgraph",
+      "repeat": 14,
+      "warmup": false,
+      "ms": 47.052100009750575,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "pydantic",
+      "repeat": 14,
+      "warmup": false,
+      "ms": 15.442200005054474,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab",
+      "repeat": 15,
+      "warmup": false,
+      "ms": 82.16910000192001,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "pydantic",
+      "repeat": 15,
+      "warmup": false,
+      "ms": 17.41020003100857,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "langgraph",
+      "repeat": 15,
+      "warmup": false,
+      "ms": 39.984800037927926,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "langgraph_sqlite",
+      "repeat": 15,
+      "warmup": false,
+      "ms": 52.197500015608966,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "legacy",
+      "repeat": 15,
+      "warmup": false,
+      "ms": 40.329999988898635,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab",
+      "repeat": 16,
+      "warmup": false,
+      "ms": 118.2977999560535,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "pydantic",
+      "repeat": 16,
+      "warmup": false,
+      "ms": 16.860099975019693,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "langgraph_sqlite",
+      "repeat": 16,
+      "warmup": false,
+      "ms": 67.69970001187176,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "legacy",
+      "repeat": 16,
+      "warmup": false,
+      "ms": 42.95049997745082,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "langgraph",
+      "repeat": 16,
+      "warmup": false,
+      "ms": 32.05569996498525,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "legacy",
+      "repeat": 17,
+      "warmup": false,
+      "ms": 45.76050001196563,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "langgraph_sqlite",
+      "repeat": 17,
+      "warmup": false,
+      "ms": 39.35019997879863,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab",
+      "repeat": 17,
+      "warmup": false,
+      "ms": 114.14929997408763,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "pydantic",
+      "repeat": 17,
+      "warmup": false,
+      "ms": 19.836199993733317,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "langgraph",
+      "repeat": 17,
+      "warmup": false,
+      "ms": 62.741499976255,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab",
+      "repeat": 18,
+      "warmup": false,
+      "ms": 119.59140002727509,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "legacy",
+      "repeat": 18,
+      "warmup": false,
+      "ms": 50.61000003479421,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "pydantic",
+      "repeat": 18,
+      "warmup": false,
+      "ms": 15.523399983067065,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "langgraph",
+      "repeat": 18,
+      "warmup": false,
+      "ms": 46.25620000297204,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "langgraph_sqlite",
+      "repeat": 18,
+      "warmup": false,
+      "ms": 26.72969998093322,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "quantlab",
+      "repeat": 19,
+      "warmup": false,
+      "ms": 125.79690001439303,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "pydantic",
+      "repeat": 19,
+      "warmup": false,
+      "ms": 14.886200020555407,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "langgraph_sqlite",
+      "repeat": 19,
+      "warmup": false,
+      "ms": 52.75750003056601,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "legacy",
+      "repeat": 19,
+      "warmup": false,
+      "ms": 45.82419997313991,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    },
+    {
+      "framework": "langgraph",
+      "repeat": 19,
+      "warmup": false,
+      "ms": 46.687299967743456,
+      "passed": true,
+      "requests": 3,
+      "error": null
+    }
+  ]
+}

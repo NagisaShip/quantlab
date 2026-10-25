@@ -1,0 +1,26 @@
+{
+  "model": "deepseek-v4.1-flash",
+  "endpoint": "https://opencode.ai/zen/go/v1",
+  "legacy_commit": "188f99744b245dac2ed0e742839186a0c0542aa4",
+  "current_commit": "241cc19236b1792981333f89b83bbd286fd34fdb",
+  "versions": {
+    "langgraph": "1.2.17",
+    "pydantic-ai-slim": "2.61.0",
+    "httpx": "0.28.1"
+  },
+  "repeats": 3,
+  "max_requests": 240,
+  "temperature": 0,
+  "max_tokens": 3072,
+  "streaming": false,
+  "seed": 8127,
+  "cases_sha256": "41568b87b0ff16a22d5f784390740440b050cf1e16abdef76a2020761c9ba7d6",
+  "harness_sha256": "a065818d6676216ae3f916de1cf45ef426b9cb3566bc0a81d086f3cc23a4bb1f",
+  "persistence": {
+    "legacy": "none",
+    "quantlab": "SQLite durable journal",
+    "langgraph": "none",
+    "langgraph_sqlite": "SQLite checkpointer",
+    "pydantic": "none"
+  }
+}

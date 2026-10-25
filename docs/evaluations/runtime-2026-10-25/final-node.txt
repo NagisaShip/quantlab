@@ -1,0 +1,19 @@
+✔ a recovered import and local chart are real output evidence (1.6449ms)
+✔ pending approval takes precedence over a recoverable tool failure (0.1151ms)
+✔ unresolved failure and failed artifact tools do not become success (0.1515ms)
+✔ plain assistant claims, truncated previews and untrusted URLs are not artifacts (0.1734ms)
+✔ previous-turn artifacts cannot hide a new failure (0.0892ms)
+✔ running work retains generating status even after a chart is ready (0.0839ms)
+✔ durable Team identity is not completion evidence while waiting for reconciliation (0.6188ms)
+✔ temporary model admission is queued rather than asking for human input (0.0734ms)
+✔ shared tool capacity waits are queued and do not request billing review (0.0857ms)
+✔ pixel comparison detects missing, changed and resized images without replacing baselines (80.1879ms)
+✔ invalid comparison tolerances are rejected instead of silently changing policy (0.435ms)
+ℹ tests 11
+ℹ suites 0
+ℹ pass 11
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 148.2516

@@ -1,0 +1,288 @@
+[
+  {
+    "framework": "document-langgraph",
+    "file": "memo.docx",
+    "pages": {
+      "kind": "document",
+      "path": "C:\\Users\\Xiao\\Desktop\\本科\\区块链金融\\QuantLab\\.tmp\\runtime-evaluation\\documents-final\\document-langgraph\\memo.docx",
+      "source_hash": "f0b967c4bb755773045e3918557eb65fbb82541e3f45ef2a1b0c3820cd2b5c6a",
+      "pages": [
+        {
+          "page": 1,
+          "path": "C:\\Users\\Xiao\\Desktop\\本科\\区块链金融\\QuantLab\\.tmp\\runtime-evaluation\\documents-final\\document-langgraph\\.preview-f0b967c4bb755773045e\\page-1.png",
+          "url": "/api/local/files/image?path=C%3A%5CUsers%5CXiao%5CDesktop%5C%E6%9C%AC%E7%A7%91%5C%E5%8C%BA%E5%9D%97%E9%93%BE%E9%87%91%E8%9E%8D%5CQuantLab%5C.tmp%5Cruntime-evaluation%5Cdocuments-final%5Cdocument-langgraph%5C.preview-f0b967c4bb755773045e%5Cpage-1.png",
+          "text": "1\n策略研究\n收\n忘：\n据不足，\n不\n入\n验\n备\n证\n暂\n进\n实盘验证\n结论先行：现有材料不足以支持实盘验证，建议暂缓。样本仅覆盖12 个交易日、8 笔交易，记录\n净收益12%、最大回撤8%，但逐笔成交时间、滑点假设与基准收益三项关键证据缺失，无法判\n断收益是否可复现、是否已扣除交易成本。\n事\n观测\n实\n\n样本区间长度为12 个交易日，共记录8 笔交易，交易频次偏低。\n\n净收益为12%，最大回撤为8%，两者均为百分比口径，材料未提供绝对金额。\n\n单边费率假设为5 个基点；一次往返买入加卖出合计10 个基点（约0.1%）。按简单算术，8\n笔往返的成本量级约为0.8%，但材料未说明该成本是否已计入12%。\n\n材料标注为样本内结果，未提供样本外区间。\n据限制\n证\n\n缺失逐笔成交时间，无法核验成交价可得性，也无法排除前视偏差。\n\n缺失滑点假设与基准收益，无法评估冲击成本与相对表现。\n\n12%的统计口径不明，无法区分是费前还是费后、简单加总还是复利。\n\n“8 笔样本不足以支撑稳健性推断”属于判断性假设，并非实测结论。\n下一步验证\n1.\n补录逐笔成交时间与成交价来源，核查是否存在未来信息。\n2.\n明确滑点模型与费前费后口径，重算往返10 个基点费用的影响。\n3.\n引入基准收益并补齐样本外区间，再决定是否进入实盘。\n指标\n数值\n单位\n样本区间长度\n12\n交易日\n交易笔数\n8\n笔\n净收益\n12\n%\n最大回撤\n8\n%\n单边费率\n5\n基点/边（往返合计10 基点）\n数据来源：synthetic-research-fixture-v1\n"
+        }
+      ],
+      "total_pages": 1,
+      "next_page": null,
+      "rendered": true,
+      "visual_review": "pending",
+      "renderer": "LibreOffice/PyMuPDF"
+    },
+    "condition": "diagnostic host-Python rendering with user temporary directory; product source unchanged"
+  },
+  {
+    "framework": "document-langgraph",
+    "file": "brief.pptx",
+    "pages": {
+      "kind": "document",
+      "path": "C:\\Users\\Xiao\\Desktop\\本科\\区块链金融\\QuantLab\\.tmp\\runtime-evaluation\\documents-final\\document-langgraph\\brief.pptx",
+      "source_hash": "e7ce37f6adf16199cd5809429e3631d96f60be0e3ef9f5e7097926aabffcd404",
+      "pages": [
+        {
+          "page": 1,
+          "path": "C:\\Users\\Xiao\\Desktop\\本科\\区块链金融\\QuantLab\\.tmp\\runtime-evaluation\\documents-final\\document-langgraph\\.preview-e7ce37f6adf16199cd58\\page-1.png",
+          "url": "/api/local/files/image?path=C%3A%5CUsers%5CXiao%5CDesktop%5C%E6%9C%AC%E7%A7%91%5C%E5%8C%BA%E5%9D%97%E9%93%BE%E9%87%91%E8%9E%8D%5CQuantLab%5C.tmp%5Cruntime-evaluation%5Cdocuments-final%5Cdocument-langgraph%5C.preview-e7ce37f6adf16199cd58%5Cpage-1.png",
+          "text": "研究报告\nQuantLab Bot · 本地 Agent 生成\n2026-10-25\n"
+        },
+        {
+          "page": 2,
+          "path": "C:\\Users\\Xiao\\Desktop\\本科\\区块链金融\\QuantLab\\.tmp\\runtime-evaluation\\documents-final\\document-langgraph\\.preview-e7ce37f6adf16199cd58\\page-2.png",
+          "url": "/api/local/files/image?path=C%3A%5CUsers%5CXiao%5CDesktop%5C%E6%9C%AC%E7%A7%91%5C%E5%8C%BA%E5%9D%97%E9%93%BE%E9%87%91%E8%9E%8D%5CQuantLab%5C.tmp%5Cruntime-evaluation%5Cdocuments-final%5Cdocument-langgraph%5C.preview-e7ce37f6adf16199cd58%5Cpage-2.png",
+          "text": "01 / 04\n决策：暂不进入实盘验证\n•  基于现有材料，证据不足\n•  建议暂缓实盘验证\n•  补齐关键证据后再评估\n•  不承诺任何收益目标\nQuantLab\n1\n"
+        },
+        {
+          "page": 3,
+          "path": "C:\\Users\\Xiao\\Desktop\\本科\\区块链金融\\QuantLab\\.tmp\\runtime-evaluation\\documents-final\\document-langgraph\\.preview-e7ce37f6adf16199cd58\\page-3.png",
+          "url": "/api/local/files/image?path=C%3A%5CUsers%5CXiao%5CDesktop%5C%E6%9C%AC%E7%A7%91%5C%E5%8C%BA%E5%9D%97%E9%93%BE%E9%87%91%E8%9E%8D%5CQuantLab%5C.tmp%5Cruntime-evaluation%5Cdocuments-final%5Cdocument-langgraph%5C.preview-e7ce37f6adf16199cd58%5Cpage-3.png",
+          "text": "02 / 04\n观测证据：样本内数据\n•  12 个交易日，8 笔交易\n•  净收益12% ，最大回撤8%\n•  单边费率5 基点\n•  往返一次合计10 基点（约0.1% ）\nQuantLab\n2\n"
+        },
+        {
+          "page": 4,
+          "path": "C:\\Users\\Xiao\\Desktop\\本科\\区块链金融\\QuantLab\\.tmp\\runtime-evaluation\\documents-final\\document-langgraph\\.preview-e7ce37f6adf16199cd58\\page-4.png",
+          "url": "/api/local/files/image?path=C%3A%5CUsers%5CXiao%5CDesktop%5C%E6%9C%AC%E7%A7%91%5C%E5%8C%BA%E5%9D%97%E9%93%BE%E9%87%91%E8%9E%8D%5CQuantLab%5C.tmp%5Cruntime-evaluation%5Cdocuments-final%5Cdocument-langgraph%5C.preview-e7ce37f6adf16199cd58%5Cpage-4.png",
+          "text": "03 / 04\n证据限制：三项关键缺失\n•  缺失逐笔成交时间\n•  缺失滑点假设\n•  缺失基准收益\n•  净收益费前费后口径不明\nQuantLab\n3\n"
+        },
+        {
+          "page": 5,
+          "path": "C:\\Users\\Xiao\\Desktop\\本科\\区块链金融\\QuantLab\\.tmp\\runtime-evaluation\\documents-final\\document-langgraph\\.preview-e7ce37f6adf16199cd58\\page-5.png",
+          "url": "/api/local/files/image?path=C%3A%5CUsers%5CXiao%5CDesktop%5C%E6%9C%AC%E7%A7%91%5C%E5%8C%BA%E5%9D%97%E9%93%BE%E9%87%91%E8%9E%8D%5CQuantLab%5C.tmp%5Cruntime-evaluation%5Cdocuments-final%5Cdocument-langgraph%5C.preview-e7ce37f6adf16199cd58%5Cpage-5.png",
+          "text": "04 / 04\n下一步验证：补证据\n•  补录逐笔成交时间与价源\n•  明确滑点与费用口径\n•  重算往返10 基点成本\n•  引入基准并做样本外验证\nQuantLab\n4\n"
+        }
+      ],
+      "total_pages": 5,
+      "next_page": null,
+      "rendered": true,
+      "visual_review": "pending",
+      "renderer": "LibreOffice/PyMuPDF"
+    },
+    "condition": "diagnostic host-Python rendering with user temporary directory; product source unchanged"
+  },
+  {
+    "framework": "document-legacy",
+    "file": "memo.docx",
+    "pages": {
+      "kind": "document",
+      "path": "C:\\Users\\Xiao\\Desktop\\本科\\区块链金融\\QuantLab\\.tmp\\runtime-evaluation\\documents-final\\document-legacy\\memo.docx",
+      "source_hash": "21ac5ba75eb71fefca8b025d01612149ad987cb50d33b066d375dc5eb3448ff7",
+      "pages": [
+        {
+          "page": 1,
+          "path": "C:\\Users\\Xiao\\Desktop\\本科\\区块链金融\\QuantLab\\.tmp\\runtime-evaluation\\documents-final\\document-legacy\\.preview-21ac5ba75eb71fefca8b\\page-1.png",
+          "url": "/api/local/files/image?path=C%3A%5CUsers%5CXiao%5CDesktop%5C%E6%9C%AC%E7%A7%91%5C%E5%8C%BA%E5%9D%97%E9%93%BE%E9%87%91%E8%9E%8D%5CQuantLab%5C.tmp%5Cruntime-evaluation%5Cdocuments-final%5Cdocument-legacy%5C.preview-21ac5ba75eb71fefca8b%5Cpage-1.png",
+          "text": "1\n策略研究\n收\n忘\n：\n据不足，\n验\n备\n录\n证\n暂缓实盘验证\n结论先行：本批策略信号仅完成样本内回测，尚不具备进入实盘验证的条件。建议维持研究阶\n段，先补齐逐笔成交时间、滑点假设与基准收益三项缺失证据，再重新评估。表中数值来自单一\n合成夹具，仅描述已记录的回测结果，不构成业绩承诺。\n事\n观测\n实\n\n回测覆盖 12 个交易日，共成交 8 笔，平均每日不足 1 笔。\n\n净收益率 12%，最大回撤 8%。\n\n单边手续费 5 bps，往返（双边）合计 10 bps，即 0.1%，已在净收益中计入。\n\n8 笔交易的样本量偏小，统计功效有限，上述数值不宜外推。\n指标\n数值\n单位\n样本天数\n12\n交易日\n成交笔数\n8\n笔\n净收益率\n12\n%\n最大回撤\n8\n%\n单边手续费\n5\nbps\n往返手续费\n10\nbps\n据限制\n证\n以下为事实项：本结果的样本外标志为“否”，即样本外验证尚未完成；缺失项包括逐笔成交时\n间、滑点假设与基准收益。据此可判断的是，当前无法核对成交时点、无法与基准比较超额收\n益、也无法确认滑点后的真实成本（推断）。若将滑点计入，净收益可能低于 12%——这一说法\n属于假设，尚无观测支持，不作结论。\n下一步验证\n1.\n补齐逐笔成交时间戳，重建可复核的成交序列。\n2.\n明确滑点假设，重算含成本净收益。\n3.\n提供基准收益，做超额收益对照。\n4.\n扩大样本并完成样本外测试，观察 8 笔以上交易的分布与回撤稳定性。\n"
+        },
+        {
+          "page": 2,
+          "path": "C:\\Users\\Xiao\\Desktop\\本科\\区块链金融\\QuantLab\\.tmp\\runtime-evaluation\\documents-final\\document-legacy\\.preview-21ac5ba75eb71fefca8b\\page-2.png",
+          "url": "/api/local/files/image?path=C%3A%5CUsers%5CXiao%5CDesktop%5C%E6%9C%AC%E7%A7%91%5C%E5%8C%BA%E5%9D%97%E9%93%BE%E9%87%91%E8%9E%8D%5CQuantLab%5C.tmp%5Cruntime-evaluation%5Cdocuments-final%5Cdocument-legacy%5C.preview-21ac5ba75eb71fefca8b%5Cpage-2.png",
+          "text": "2\n来源：synthetic-research-fixture-v1\n"
+        }
+      ],
+      "total_pages": 2,
+      "next_page": null,
+      "rendered": true,
+      "visual_review": "pending",
+      "renderer": "LibreOffice/PyMuPDF"
+    },
+    "condition": "diagnostic host-Python rendering with user temporary directory; product source unchanged"
+  },
+  {
+    "framework": "document-legacy",
+    "file": "brief.pptx",
+    "pages": {
+      "kind": "document",
+      "path": "C:\\Users\\Xiao\\Desktop\\本科\\区块链金融\\QuantLab\\.tmp\\runtime-evaluation\\documents-final\\document-legacy\\brief.pptx",
+      "source_hash": "a3e6bde8e0e97211d4c71ebb3963481c37dcfdd7f95b6812e0965d93da1a8689",
+      "pages": [
+        {
+          "page": 1,
+          "path": "C:\\Users\\Xiao\\Desktop\\本科\\区块链金融\\QuantLab\\.tmp\\runtime-evaluation\\documents-final\\document-legacy\\.preview-a3e6bde8e0e97211d4c7\\page-1.png",
+          "url": "/api/local/files/image?path=C%3A%5CUsers%5CXiao%5CDesktop%5C%E6%9C%AC%E7%A7%91%5C%E5%8C%BA%E5%9D%97%E9%93%BE%E9%87%91%E8%9E%8D%5CQuantLab%5C.tmp%5Cruntime-evaluation%5Cdocuments-final%5Cdocument-legacy%5C.preview-a3e6bde8e0e97211d4c7%5Cpage-1.png",
+          "text": "研究报告\nQuantLab Bot · 本地 Agent 生成\n2026-10-25\n"
+        },
+        {
+          "page": 2,
+          "path": "C:\\Users\\Xiao\\Desktop\\本科\\区块链金融\\QuantLab\\.tmp\\runtime-evaluation\\documents-final\\document-legacy\\.preview-a3e6bde8e0e97211d4c7\\page-2.png",
+          "url": "/api/local/files/image?path=C%3A%5CUsers%5CXiao%5CDesktop%5C%E6%9C%AC%E7%A7%91%5C%E5%8C%BA%E5%9D%97%E9%93%BE%E9%87%91%E8%9E%8D%5CQuantLab%5C.tmp%5Cruntime-evaluation%5Cdocuments-final%5Cdocument-legacy%5C.preview-a3e6bde8e0e97211d4c7%5Cpage-2.png",
+          "text": "01 / 04\n决策：证据不足，暂不进入实盘验证\n•  证据不足，暂不进入实盘验证\n•  维持研究阶段，先补缺失证据\n•  12 日 8 笔，样本量偏小\n•  不构成任何业绩承诺\nQuantLab\n1\n"
+        },
+        {
+          "page": 3,
+          "path": "C:\\Users\\Xiao\\Desktop\\本科\\区块链金融\\QuantLab\\.tmp\\runtime-evaluation\\documents-final\\document-legacy\\.preview-a3e6bde8e0e97211d4c7\\page-3.png",
+          "url": "/api/local/files/image?path=C%3A%5CUsers%5CXiao%5CDesktop%5C%E6%9C%AC%E7%A7%91%5C%E5%8C%BA%E5%9D%97%E9%93%BE%E9%87%91%E8%9E%8D%5CQuantLab%5C.tmp%5Cruntime-evaluation%5Cdocuments-final%5Cdocument-legacy%5C.preview-a3e6bde8e0e97211d4c7%5Cpage-3.png",
+          "text": "02 / 04\n观测证据：样本内回测结果\n•  12 个交易日，成交 8 笔\n•  净收益率 12%\n•  最大回撤 8%\n•  单边手续费 5 bps ，往返 10 bps\nQuantLab\n2\n"
+        },
+        {
+          "page": 4,
+          "path": "C:\\Users\\Xiao\\Desktop\\本科\\区块链金融\\QuantLab\\.tmp\\runtime-evaluation\\documents-final\\document-legacy\\.preview-a3e6bde8e0e97211d4c7\\page-4.png",
+          "url": "/api/local/files/image?path=C%3A%5CUsers%5CXiao%5CDesktop%5C%E6%9C%AC%E7%A7%91%5C%E5%8C%BA%E5%9D%97%E9%93%BE%E9%87%91%E8%9E%8D%5CQuantLab%5C.tmp%5Cruntime-evaluation%5Cdocuments-final%5Cdocument-legacy%5C.preview-a3e6bde8e0e97211d4c7%5Cpage-4.png",
+          "text": "03 / 04\n证据限制：缺口与不可外推\n•  样本外标志为否，未做样本外验证\n•  缺逐笔成交时间，无法复核时点\n•  缺滑点假设，净收益可能高估\n•  缺基准收益，无法判断超额\nQuantLab\n3\n"
+        },
+        {
+          "page": 5,
+          "path": "C:\\Users\\Xiao\\Desktop\\本科\\区块链金融\\QuantLab\\.tmp\\runtime-evaluation\\documents-final\\document-legacy\\.preview-a3e6bde8e0e97211d4c7\\page-5.png",
+          "url": "/api/local/files/image?path=C%3A%5CUsers%5CXiao%5CDesktop%5C%E6%9C%AC%E7%A7%91%5C%E5%8C%BA%E5%9D%97%E9%93%BE%E9%87%91%E8%9E%8D%5CQuantLab%5C.tmp%5Cruntime-evaluation%5Cdocuments-final%5Cdocument-legacy%5C.preview-a3e6bde8e0e97211d4c7%5Cpage-5.png",
+          "text": "04 / 04\n下一步验证：补齐证据再评估\n•  补齐逐笔成交时间戳\n•  明确滑点假设并重算净收益\n•  补基准收益做超额对照\n•  扩大样本并完成样本外测试\nQuantLab\n4\n"
+        }
+      ],
+      "total_pages": 5,
+      "next_page": null,
+      "rendered": true,
+      "visual_review": "pending",
+      "renderer": "LibreOffice/PyMuPDF"
+    },
+    "condition": "diagnostic host-Python rendering with user temporary directory; product source unchanged"
+  },
+  {
+    "framework": "document-pydantic",
+    "file": "memo.docx",
+    "pages": {
+      "kind": "document",
+      "path": "C:\\Users\\Xiao\\Desktop\\本科\\区块链金融\\QuantLab\\.tmp\\runtime-evaluation\\documents-final\\document-pydantic\\memo.docx",
+      "source_hash": "77bdedbabc1826d20a224c53f67f5ed77c21da4542e371a51a726e7c6d2210ed",
+      "pages": [
+        {
+          "page": 1,
+          "path": "C:\\Users\\Xiao\\Desktop\\本科\\区块链金融\\QuantLab\\.tmp\\runtime-evaluation\\documents-final\\document-pydantic\\.preview-77bdedbabc1826d20a22\\page-1.png",
+          "url": "/api/local/files/image?path=C%3A%5CUsers%5CXiao%5CDesktop%5C%E6%9C%AC%E7%A7%91%5C%E5%8C%BA%E5%9D%97%E9%93%BE%E9%87%91%E8%9E%8D%5CQuantLab%5C.tmp%5Cruntime-evaluation%5Cdocuments-final%5Cdocument-pydantic%5C.preview-77bdedbabc1826d20a22%5Cpage-1.png",
+          "text": "1\n策略研究\n收\n忘：\n据不足，\n入\n验\n备\n证\n暂缓进\n实盘验证\n结论：现有证据仅覆盖 12 个观测日、8 笔交易，且为样本内结果，不足以支持进入实盘验证。建\n议维持研究阶段，先补齐逐笔成交时间、滑点假设与基准收益，再评估是否推进。\n事\n观测\n实\n下表数值直接取自简报，未作调整。往返手续费按“单边 5 个基点 × 双边”推算为 10 个基点\n（约 0.10%），此处为按参数推算，非原始披露口径。\n指标\n数值\n单位\n样本天数\n12\n天\n交易笔数\n8\n笔\n净收益率\n12\n%\n最大回撤\n8\n%\n单边手续费\n5\n基点（bps/单边）\n往返手续费（推算）\n10\n基点（bps，双边合计）\n事实层面：本次结果标记为样本内（out_of_sample = false）。\n据限制\n证\n样本天数短、交易笔数少，12% 净收益与 8% 最大回撤缺少统计稳健性支撑。简报缺失逐笔成交\n时间、滑点假设与基准收益三项证据，因此无法复现成交价格，也无法判断 12% 是否为相对基准\n的超额收益。手续费与净收益的口径是否对齐未作说明，往返 10 个基点对净收益的侵蚀程度尚\n未披露。以上缺失均按“未知”处理，不做填补。\n下一步验证\n1.\n补齐逐笔成交时间、滑点假设与基准收益三项缺失证据。\n2.\n明确净收益是否已扣除往返 10 个基点手续费。\n3.\n复核最大回撤的计算口径与区间。\n假设（待验证，非结论）：若滑点与费用可控且净收益显著高于基准，则可进入样本外测试。本\n备忘不作任何收益承诺。源：synthetic-research-fixture-v1。\n"
+        }
+      ],
+      "total_pages": 1,
+      "next_page": null,
+      "rendered": true,
+      "visual_review": "pending",
+      "renderer": "LibreOffice/PyMuPDF"
+    },
+    "condition": "diagnostic host-Python rendering with user temporary directory; product source unchanged"
+  },
+  {
+    "framework": "document-pydantic",
+    "file": "brief.pptx",
+    "pages": {
+      "kind": "document",
+      "path": "C:\\Users\\Xiao\\Desktop\\本科\\区块链金融\\QuantLab\\.tmp\\runtime-evaluation\\documents-final\\document-pydantic\\brief.pptx",
+      "source_hash": "c8a1e7ae6e2fe40d1b7da33013adf2af0aef4d308d92dd714957983f3d4e1470",
+      "pages": [
+        {
+          "page": 1,
+          "path": "C:\\Users\\Xiao\\Desktop\\本科\\区块链金融\\QuantLab\\.tmp\\runtime-evaluation\\documents-final\\document-pydantic\\.preview-c8a1e7ae6e2fe40d1b7d\\page-1.png",
+          "url": "/api/local/files/image?path=C%3A%5CUsers%5CXiao%5CDesktop%5C%E6%9C%AC%E7%A7%91%5C%E5%8C%BA%E5%9D%97%E9%93%BE%E9%87%91%E8%9E%8D%5CQuantLab%5C.tmp%5Cruntime-evaluation%5Cdocuments-final%5Cdocument-pydantic%5C.preview-c8a1e7ae6e2fe40d1b7d%5Cpage-1.png",
+          "text": "研究报告\nQuantLab Bot · 本地 Agent 生成\n2026-10-25\n"
+        },
+        {
+          "page": 2,
+          "path": "C:\\Users\\Xiao\\Desktop\\本科\\区块链金融\\QuantLab\\.tmp\\runtime-evaluation\\documents-final\\document-pydantic\\.preview-c8a1e7ae6e2fe40d1b7d\\page-2.png",
+          "url": "/api/local/files/image?path=C%3A%5CUsers%5CXiao%5CDesktop%5C%E6%9C%AC%E7%A7%91%5C%E5%8C%BA%E5%9D%97%E9%93%BE%E9%87%91%E8%9E%8D%5CQuantLab%5C.tmp%5Cruntime-evaluation%5Cdocuments-final%5Cdocument-pydantic%5C.preview-c8a1e7ae6e2fe40d1b7d%5Cpage-2.png",
+          "text": "01 / 04\n决策：暂不进入实盘验证\n•  证据不足，维持研究阶段\n•  本轮不进入实盘验证\n•  补齐缺失证据后再评估\nQuantLab\n1\n"
+        },
+        {
+          "page": 3,
+          "path": "C:\\Users\\Xiao\\Desktop\\本科\\区块链金融\\QuantLab\\.tmp\\runtime-evaluation\\documents-final\\document-pydantic\\.preview-c8a1e7ae6e2fe40d1b7d\\page-3.png",
+          "url": "/api/local/files/image?path=C%3A%5CUsers%5CXiao%5CDesktop%5C%E6%9C%AC%E7%A7%91%5C%E5%8C%BA%E5%9D%97%E9%93%BE%E9%87%91%E8%9E%8D%5CQuantLab%5C.tmp%5Cruntime-evaluation%5Cdocuments-final%5Cdocument-pydantic%5C.preview-c8a1e7ae6e2fe40d1b7d%5Cpage-3.png",
+          "text": "02 / 04\n观测事实\n•  样本 12 天，共 8 笔交易\n•  净收益 12% ，最大回撤 8%\n•  单边费用 5 bps ，往返合计 10 bps\n•  结果属样本内，未做样本外检验\nQuantLab\n2\n"
+        },
+        {
+          "page": 4,
+          "path": "C:\\Users\\Xiao\\Desktop\\本科\\区块链金融\\QuantLab\\.tmp\\runtime-evaluation\\documents-final\\document-pydantic\\.preview-c8a1e7ae6e2fe40d1b7d\\page-4.png",
+          "url": "/api/local/files/image?path=C%3A%5CUsers%5CXiao%5CDesktop%5C%E6%9C%AC%E7%A7%91%5C%E5%8C%BA%E5%9D%97%E9%93%BE%E9%87%91%E8%9E%8D%5CQuantLab%5C.tmp%5Cruntime-evaluation%5Cdocuments-final%5Cdocument-pydantic%5C.preview-c8a1e7ae6e2fe40d1b7d%5Cpage-4.png",
+          "text": "03 / 04\n证据限制\n•  样本短、笔数少，稳健性不足\n•  缺逐笔成交时间与滑点假设\n•  缺基准收益，无法判断超额\n•  净收益是否已扣费未说明\nQuantLab\n3\n"
+        },
+        {
+          "page": 5,
+          "path": "C:\\Users\\Xiao\\Desktop\\本科\\区块链金融\\QuantLab\\.tmp\\runtime-evaluation\\documents-final\\document-pydantic\\.preview-c8a1e7ae6e2fe40d1b7d\\page-5.png",
+          "url": "/api/local/files/image?path=C%3A%5CUsers%5CXiao%5CDesktop%5C%E6%9C%AC%E7%A7%91%5C%E5%8C%BA%E5%9D%97%E9%93%BE%E9%87%91%E8%9E%8D%5CQuantLab%5C.tmp%5Cruntime-evaluation%5Cdocuments-final%5Cdocument-pydantic%5C.preview-c8a1e7ae6e2fe40d1b7d%5Cpage-5.png",
+          "text": "04 / 04\n下一步验证\n•  补齐逐笔成交时间与滑点假设\n•  补充基准收益并计算超额\n•  核对往返 10 bps 的费用口径\n•  再安排样本外测试，不作承诺\nQuantLab\n4\n"
+        }
+      ],
+      "total_pages": 5,
+      "next_page": null,
+      "rendered": true,
+      "visual_review": "pending",
+      "renderer": "LibreOffice/PyMuPDF"
+    },
+    "condition": "diagnostic host-Python rendering with user temporary directory; product source unchanged"
+  },
+  {
+    "framework": "document-quantlab",
+    "file": "memo.docx",
+    "pages": {
+      "kind": "document",
+      "path": "C:\\Users\\Xiao\\Desktop\\本科\\区块链金融\\QuantLab\\.tmp\\runtime-evaluation\\documents-final\\document-quantlab\\memo.docx",
+      "source_hash": "1ce7b43bb185749b4c62a0e860b3266248fb3244e47cb64297cc0aca3561399c",
+      "pages": [
+        {
+          "page": 1,
+          "path": "C:\\Users\\Xiao\\Desktop\\本科\\区块链金融\\QuantLab\\.tmp\\runtime-evaluation\\documents-final\\document-quantlab\\.preview-1ce7b43bb185749b4c62\\page-1.png",
+          "url": "/api/local/files/image?path=C%3A%5CUsers%5CXiao%5CDesktop%5C%E6%9C%AC%E7%A7%91%5C%E5%8C%BA%E5%9D%97%E9%93%BE%E9%87%91%E8%9E%8D%5CQuantLab%5C.tmp%5Cruntime-evaluation%5Cdocuments-final%5Cdocument-quantlab%5C.preview-1ce7b43bb185749b4c62%5Cpage-1.png",
+          "text": "1\n策略研究\n收\n忘：\n据不足，\n不\n入\n验\n备\n证\n暂\n进\n实盘验证\n结论：现有证据不足以支持进入实盘验证，建议维持研究阶段。该判断针对证据充分性，不代表\n策略无效；样本外表现尚未验证。\n事\n观测\n实\n本次回放样本共 12 个交易日、8 笔交易，净收益率为 12%，最大回撤为 8%。费用按单边 5 bps \n计，买卖往返合计 10 bps（0.10%）；净收益是否已扣除费用尚未说明。样本量小、交易频次\n低，单笔结果对总体指标的影响可能较大，这一点属于推测。\n指标\n数值\n单位\n样本天数\n12\n天\n交易笔数\n8\n笔\n净收益率\n12\n%\n最大回撤\n8\n%\n单边费率\n5\nbps/边\n往返费用（推算）\n10\nbps（0.10%）\n据限制\n证\n缺失证据包括逐笔成交时间、滑点假设与基准收益。缺少逐笔成交时间，无法复核成交时点与持\n仓路径；缺少滑点假设，费用测算可能偏低；缺少基准收益，无法判断 12% 净收益来自策略本身\n还是市场暴露。此外，本次为样本内结果，样本外检验尚未进行。表中数值为记录事实，关于费\n用影响与收益归因的判断均为待验证假设。\n下一步验证\n第一，补齐逐笔成交时间与滑点假设，明确净收益口径并复算往返费用；第二，补充基准收益，\n进行相对比较；第三，开展样本外回测，报告交易笔数与回撤分布。在上述证据补齐前，不进入\n实盘验证，也不对收益作任何承诺。\n来源 ID：synthetic-research-fixture-v1\n"
+        }
+      ],
+      "total_pages": 1,
+      "next_page": null,
+      "rendered": true,
+      "visual_review": "pending",
+      "renderer": "LibreOffice/PyMuPDF"
+    },
+    "condition": "diagnostic host-Python rendering with user temporary directory; product source unchanged"
+  },
+  {
+    "framework": "document-quantlab",
+    "file": "brief.pptx",
+    "pages": {
+      "kind": "document",
+      "path": "C:\\Users\\Xiao\\Desktop\\本科\\区块链金融\\QuantLab\\.tmp\\runtime-evaluation\\documents-final\\document-quantlab\\brief.pptx",
+      "source_hash": "175e08417f6a53a588f6b7cdcf206303b091c9d576c778e217183057d223c421",
+      "pages": [
+        {
+          "page": 1,
+          "path": "C:\\Users\\Xiao\\Desktop\\本科\\区块链金融\\QuantLab\\.tmp\\runtime-evaluation\\documents-final\\document-quantlab\\.preview-175e08417f6a53a588f6\\page-1.png",
+          "url": "/api/local/files/image?path=C%3A%5CUsers%5CXiao%5CDesktop%5C%E6%9C%AC%E7%A7%91%5C%E5%8C%BA%E5%9D%97%E9%93%BE%E9%87%91%E8%9E%8D%5CQuantLab%5C.tmp%5Cruntime-evaluation%5Cdocuments-final%5Cdocument-quantlab%5C.preview-175e08417f6a53a588f6%5Cpage-1.png",
+          "text": "研究报告\nQuantLab Bot · 本地 Agent 生成\n2026-10-25\n"
+        },
+        {
+          "page": 2,
+          "path": "C:\\Users\\Xiao\\Desktop\\本科\\区块链金融\\QuantLab\\.tmp\\runtime-evaluation\\documents-final\\document-quantlab\\.preview-175e08417f6a53a588f6\\page-2.png",
+          "url": "/api/local/files/image?path=C%3A%5CUsers%5CXiao%5CDesktop%5C%E6%9C%AC%E7%A7%91%5C%E5%8C%BA%E5%9D%97%E9%93%BE%E9%87%91%E8%9E%8D%5CQuantLab%5C.tmp%5Cruntime-evaluation%5Cdocuments-final%5Cdocument-quantlab%5C.preview-175e08417f6a53a588f6%5Cpage-2.png",
+          "text": "01 / 04\n决策：证据不足，暂不进入实盘验证\n•  结论为暂缓实盘验证\n•  不代表策略已被证伪\n•  补齐证据后再评估\nQuantLab\n1\n"
+        },
+        {
+          "page": 3,
+          "path": "C:\\Users\\Xiao\\Desktop\\本科\\区块链金融\\QuantLab\\.tmp\\runtime-evaluation\\documents-final\\document-quantlab\\.preview-175e08417f6a53a588f6\\page-3.png",
+          "url": "/api/local/files/image?path=C%3A%5CUsers%5CXiao%5CDesktop%5C%E6%9C%AC%E7%A7%91%5C%E5%8C%BA%E5%9D%97%E9%93%BE%E9%87%91%E8%9E%8D%5CQuantLab%5C.tmp%5Cruntime-evaluation%5Cdocuments-final%5Cdocument-quantlab%5C.preview-175e08417f6a53a588f6%5Cpage-3.png",
+          "text": "02 / 04\n观测证据：12 日 8 笔，净收益 12%\n•  样本 12 个交易日、8 笔交易\n•  净收益率 12% ，最大回撤 8%\n•  单边费率 5 bps\n•  往返费用 0.10% （10 bps ）\nQuantLab\n2\n"
+        },
+        {
+          "page": 4,
+          "path": "C:\\Users\\Xiao\\Desktop\\本科\\区块链金融\\QuantLab\\.tmp\\runtime-evaluation\\documents-final\\document-quantlab\\.preview-175e08417f6a53a588f6\\page-4.png",
+          "url": "/api/local/files/image?path=C%3A%5CUsers%5CXiao%5CDesktop%5C%E6%9C%AC%E7%A7%91%5C%E5%8C%BA%E5%9D%97%E9%93%BE%E9%87%91%E8%9E%8D%5CQuantLab%5C.tmp%5Cruntime-evaluation%5Cdocuments-final%5Cdocument-quantlab%5C.preview-175e08417f6a53a588f6%5Cpage-4.png",
+          "text": "03 / 04\n限制：关键证据缺失，归因未成立\n•  缺失逐笔成交时间与滑点假设\n•  缺失基准收益，无法归因\n•  样本内结果，样本外未验证\n•  费用与净收益口径待确认\nQuantLab\n3\n"
+        },
+        {
+          "page": 5,
+          "path": "C:\\Users\\Xiao\\Desktop\\本科\\区块链金融\\QuantLab\\.tmp\\runtime-evaluation\\documents-final\\document-quantlab\\.preview-175e08417f6a53a588f6\\page-5.png",
+          "url": "/api/local/files/image?path=C%3A%5CUsers%5CXiao%5CDesktop%5C%E6%9C%AC%E7%A7%91%5C%E5%8C%BA%E5%9D%97%E9%93%BE%E9%87%91%E8%9E%8D%5CQuantLab%5C.tmp%5Cruntime-evaluation%5Cdocuments-final%5Cdocument-quantlab%5C.preview-175e08417f6a53a588f6%5Cpage-5.png",
+          "text": "04 / 04\n下一步：补齐数据后再评估\n•  补齐逐笔成交时间与滑点假设\n•  补充基准收益并做相对比较\n•  开展样本外回测与回撤分析\n•  证据补齐前不进入实盘\nQuantLab\n4\n"
+        }
+      ],
+      "total_pages": 5,
+      "next_page": null,
+      "rendered": true,
+      "visual_review": "pending",
+      "renderer": "LibreOffice/PyMuPDF"
+    },
+    "condition": "diagnostic host-Python rendering with user temporary directory; product source unchanged"
+  }
+]
