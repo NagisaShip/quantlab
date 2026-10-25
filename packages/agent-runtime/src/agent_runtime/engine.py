@@ -61,6 +61,9 @@ class AgentRuntime:
         initial_messages: list[dict[str, Any]] | None = None,
         parent_id: str | None = None,
     ) -> None:
+        from .scheduler import RuntimeScheduler
+
+        RuntimeScheduler.admit_run(db, tenant_id)
         stamp = now_ms()
         db.execute(
             "INSERT INTO runs(id,tenant_id,state,spec,messages,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",

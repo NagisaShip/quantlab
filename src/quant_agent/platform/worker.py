@@ -265,6 +265,14 @@ class Worker:
             for row in rows:
                 run_id = row["run_id"]
                 current = bridge.runtime.get(run_id)
+                if current is None:
+                    from agent_runtime import RuntimeCapacityError, RuntimeScheduler
+
+                    try:
+                        with bridge.runtime.journal.read_tx() as db:
+                            RuntimeScheduler.admit_run(db, row["workspace_id"])
+                    except RuntimeCapacityError:
+                        continue  # Not yet admitted: do not consume a worker slot.
                 if current is not None:
                     if current["state"] in {"COMPLETED", "FAILED", "CANCELED", "CANCELING"}:
                         bridge.project(run_id)
@@ -338,8 +346,13 @@ class Worker:
             bridge.deliver(run_id)
             bridge.runtime.resume(run_id)
             bridge.project(run_id)
-        except Exception:
-            log.exception("Agent Runtime 运行推进失败：%s", run_id)
+        except Exception as exc:
+            from agent_runtime import RuntimeCapacityError
+
+            if isinstance(exc, RuntimeCapacityError):
+                log.debug("Agent Runtime 等待积压名额：%s", run_id)
+            else:
+                log.exception("Agent Runtime 运行推进失败：%s", run_id)
         finally:
             with self._lock:
                 self.busy.pop(run_id, None)

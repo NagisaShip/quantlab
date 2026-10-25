@@ -115,6 +115,8 @@ def test_scheduler_skips_approval_wait_without_claiming_slot(tmp_path, monkeypat
     services.db.execute("UPDATE runs SET created_at=2 WHERE id=?", (ready,))
 
     class WaitingRuntime:
+        journal = services.runtime_bridge.runtime.journal
+
         def get(self, run_id):
             if run_id == ready:
                 return None

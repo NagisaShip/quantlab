@@ -7,6 +7,10 @@ from typing import Any
 from .journal import Journal, JournalIntegrityError, load
 
 
+class RuntimeCapacityError(ValueError):
+    """No durable run was admitted; a host may report retryable backpressure."""
+
+
 class RuntimeScheduler:
     def __init__(self, journal: Journal):
         self.journal = journal
@@ -39,6 +43,32 @@ class RuntimeScheduler:
                 ),
                 (scope, tenant_id or "", resource, capacity),
             )
+
+    @staticmethod
+    def admit_run(db: Any, tenant_id: str) -> None:
+        """Bound all nonterminal Runs, including suspended and child executions.
+
+        Must share the write transaction with Run and graph creation. Unknown
+        external effects are not removed from this backlog by cancellation.
+        """
+        policy = db.execute("SELECT version FROM resource_policy_meta WHERE id=2").fetchone()
+        if policy is None or policy["version"] != 1:
+            raise JournalIntegrityError("run admission policy version is missing or unsupported")
+        rows = db.execute(
+            "SELECT scope,capacity FROM resource_limits WHERE resource='runs' "
+            "AND (scope IN ('global','tenant_default') OR (scope='tenant' AND tenant_id=?))",
+            (tenant_id,),
+        ).fetchall()
+        limits = {row["scope"]: row["capacity"] for row in rows}
+        if not {"global", "tenant_default"}.issubset(limits):
+            raise JournalIntegrityError("required run admission policy is missing")
+        counts = db.execute(
+            "SELECT COUNT(*) AS total,COALESCE(SUM(CASE WHEN tenant_id=? THEN 1 ELSE 0 END),0) AS tenant "
+            "FROM runs WHERE state NOT IN ('COMPLETED','FAILED','CANCELED')",
+            (tenant_id,),
+        ).fetchone()
+        if counts["total"] >= limits["global"] or counts["tenant"] >= limits.get("tenant", limits["tenant_default"]):
+            raise RuntimeCapacityError("Runtime pending run capacity exhausted; retry after existing work completes")
 
     @staticmethod
     def tool_resource(spec: dict, payload: dict) -> str:

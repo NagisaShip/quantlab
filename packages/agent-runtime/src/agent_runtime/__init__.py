@@ -14,7 +14,7 @@ from .contracts import (
 )
 from .engine import AgentRuntime
 from .journal import Journal
-from .scheduler import RuntimeScheduler
+from .scheduler import RuntimeCapacityError, RuntimeScheduler
 from .telemetry import RuntimeTelemetry
 
 __all__ = [
@@ -28,6 +28,7 @@ __all__ = [
     "ModelResult",
     "ModelUnavailable",
     "RuntimeArtifacts",
+    "RuntimeCapacityError",
     "RuntimeScheduler",
     "RuntimeTelemetry",
     "ToolCall",

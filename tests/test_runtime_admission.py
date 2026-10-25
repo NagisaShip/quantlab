@@ -130,7 +130,9 @@ def capturing_worker(services, slots):
 
     from quant_agent.platform.worker import Worker
 
-    services.runtime_bridge.runtime = SimpleNamespace(get=lambda rid: None)
+    services.runtime_bridge.runtime = SimpleNamespace(
+        get=lambda rid: None, journal=services.runtime_bridge.runtime.journal
+    )
     worker = Worker(services, batch={}, resident={}, slots=slots, periodic=[])
     worker.pool.shutdown(wait=True)
 
@@ -331,3 +333,22 @@ def test_invalid_spec_never_consumes_queue_capacity(ingress, spec):
     assert services.db.scalar("SELECT COUNT(*) FROM runtime_tickets") == 0
     assert services.db.scalar("SELECT COUNT(*) FROM run_events") == 0
     assert submit(services)["state"] == "QUEUED"
+
+
+def test_worker_does_not_claim_pending_ticket_while_runtime_backlog_is_full(ingress):
+    from agent_runtime import RuntimeScheduler
+
+    services = ingress
+    rid = submit(services)["id"]
+    scheduler = RuntimeScheduler(services.runtime_bridge.runtime.journal)
+    scheduler.set_limit("runs", 0)
+    worker = capturing_worker(services, 1)
+    try:
+        worker.loop_once()
+        assert not worker.pool.submitted and not worker.busy
+        assert services.runs.get(rid)["state"] == "QUEUED"
+        scheduler.set_limit("runs", 1)
+        worker.loop_once()
+        assert worker.pool.submitted == [rid]
+    finally:
+        worker.shutdown()

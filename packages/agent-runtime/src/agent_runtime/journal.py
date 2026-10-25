@@ -77,6 +77,11 @@ SELECT 'global','','tools',32 WHERE NOT EXISTS (SELECT 1 FROM resource_policy_me
 INSERT INTO resource_limits(scope,tenant_id,resource,capacity)
 SELECT 'tenant_default','','tools',8 WHERE NOT EXISTS (SELECT 1 FROM resource_policy_meta WHERE id=1) ON CONFLICT DO NOTHING;
 INSERT INTO resource_policy_meta(id,version) VALUES(1,1) ON CONFLICT DO NOTHING;
+INSERT INTO resource_limits(scope,tenant_id,resource,capacity)
+SELECT 'global','','runs',4096 WHERE NOT EXISTS (SELECT 1 FROM resource_policy_meta WHERE id=2) ON CONFLICT DO NOTHING;
+INSERT INTO resource_limits(scope,tenant_id,resource,capacity)
+SELECT 'tenant_default','','runs',256 WHERE NOT EXISTS (SELECT 1 FROM resource_policy_meta WHERE id=2) ON CONFLICT DO NOTHING;
+INSERT INTO resource_policy_meta(id,version) VALUES(2,1) ON CONFLICT DO NOTHING;
 CREATE TABLE IF NOT EXISTS admission_waits (
     step_id TEXT PRIMARY KEY REFERENCES steps(id),
     retry_at BIGINT NOT NULL

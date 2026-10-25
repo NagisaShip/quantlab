@@ -344,3 +344,88 @@ def test_unsupported_policy_version_cannot_dispatch(tmp_path):
     with pytest.raises(JournalIntegrityError, match="unsupported"):
         runtime.resume(rid)
     assert tools.calls == [] and runtime.get(rid)["steps"][-1]["attempt_count"] == 0
+
+
+def test_run_backpressure_is_atomic_across_hosts_and_releases_only_at_terminal(tmp_path):
+    from agent_runtime import RuntimeCapacityError
+
+    journal = Journal(tmp_path / "run-capacity.sqlite")
+    RuntimeScheduler(journal).set_limit("runs", 1)
+
+    def create(index):
+        try:
+            return AgentRuntime(Journal(journal.path), None, None).start(
+                str(index), AgentSpec("test", "1"), tenant_id="a"
+            )
+        except RuntimeCapacityError:
+            return None
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        admitted = [rid for rid in pool.map(create, range(8)) if rid]
+    assert len(admitted) == 1
+    runtime = AgentRuntime(journal, None, None)
+    rid = admitted[0]
+    runtime.signal(rid, "cancel", {}, signal_id="cancel", actor="owner")
+    assert runtime.get(rid)["state"] == "CANCELED"
+    replacement = runtime.start("replacement", AgentSpec("test", "1"), tenant_id="b")
+    assert replacement != rid
+    with journal.connection() as db:
+        assert db.execute("SELECT COUNT(*) AS n FROM runs").fetchone()["n"] == 2
+    journal.audit(rid)
+    journal.audit(replacement)
+
+
+def test_run_tenant_override_and_child_graph_admission_are_transactional(tmp_path):
+    from agent_runtime import RuntimeCapacityError
+
+    journal = Journal(tmp_path / "run-tenant.sqlite")
+    scheduler = RuntimeScheduler(journal)
+    scheduler.set_limit("runs", 1, tenant_default=True)
+    runtime = AgentRuntime(journal, None, None)
+    root = runtime.start("parent", AgentSpec("parent", "1"), tenant_id="a")
+    other = runtime.start("other", AgentSpec("other", "1"), tenant_id="b")
+    with pytest.raises(RuntimeCapacityError):
+        runtime.fork_children(
+            root, [("one", AgentSpec("child", "1")), ("two", AgentSpec("child", "1"))], idempotency_key="join"
+        )
+    assert runtime.get(root)["steps"][0]["state"] == "READY"
+    with journal.connection() as db:
+        assert db.execute("SELECT COUNT(*) AS n FROM run_joins").fetchone()["n"] == 0
+        assert db.execute("SELECT COUNT(*) AS n FROM runs").fetchone()["n"] == 2
+    scheduler.set_limit("runs", 3, tenant_id="a")
+    children = runtime.fork_children(
+        root, [("one", AgentSpec("child", "1")), ("two", AgentSpec("child", "1"))], idempotency_key="join"
+    )
+    assert len(children) == 2
+    assert (
+        runtime.fork_children(
+            root, [("one", AgentSpec("child", "1")), ("two", AgentSpec("child", "1"))], idempotency_key="join"
+        )
+        == children
+    )
+    with pytest.raises(RuntimeCapacityError):
+        runtime.start("no", AgentSpec("test", "1"), tenant_id="a")
+    for rid in [root, other, *children]:
+        journal.audit(rid)
+
+
+def test_canceling_unknown_model_still_counts_toward_run_backlog(tmp_path):
+    from agent_runtime import RuntimeCapacityError
+
+    class Unknown:
+        def generate(self, messages, *, request_id):
+            raise OSError("provider response missing")
+
+    journal = Journal(tmp_path / "run-unknown.sqlite")
+    RuntimeScheduler(journal).set_limit("runs", 1)
+    runtime = AgentRuntime(journal, Unknown(), None)
+    rid = runtime.start("go", AgentSpec("test", "1"), tenant_id="a")
+    runtime.resume(rid)
+    runtime.signal(rid, "cancel", {}, signal_id="cancel", actor="owner")
+    assert runtime.get(rid)["state"] == "CANCELING"
+    with pytest.raises(RuntimeCapacityError):
+        runtime.start("blocked", AgentSpec("test", "1"), tenant_id="b")
+    step = runtime.get(rid)["steps"][0]
+    runtime.settle_model_uncertainty(rid, step["id"], usage_micro=0, actor="reviewer")
+    assert runtime.get(rid)["state"] == "CANCELED"
+    assert runtime.start("allowed", AgentSpec("test", "1"), tenant_id="b")
