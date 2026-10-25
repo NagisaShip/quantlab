@@ -756,48 +756,91 @@ def _build_docx(markdown, title="", base_dir=None, allowed_root=None):
         if name.startswith("Heading"):
             style.paragraph_format.keep_with_next = True
     document.styles["Normal"].font.size = Pt(11)
+    from docx.shared import RGBColor
+
+    title_style = document.styles["Title"]
+    title_style.font.color.rgb = RGBColor(0, 0, 0)
+    title_style.font.underline = False
+    for border in title_style.element.xpath("./w:pPr/w:pBdr"):
+        border.getparent().remove(border)
+    document.styles["Caption"].font.size = Pt(9)
+    document.styles["Caption"].font.color.rgb = RGBColor.from_string("475569")
     document.styles["Normal"].paragraph_format.line_spacing = 1.25
     footer = section.footer.paragraphs[0]
     footer.alignment = 2
     field = OxmlElement("w:fldSimple")
     field.set(qn("w:instr"), "PAGE")
     footer._p.append(field)
-    counts = {"headings": 0, "paragraphs": 0, "bullets": 0, "tables": 0, "code_blocks": 0, "images": 0}
+    counts = {"headings": 0, "paragraphs": 0, "bullets": 0, "tables": 0, "code_blocks": 0, "images": 0, "charts": 0}
     if title and str(title).strip():
         document.add_heading(str(title).strip()[:200], level=0)
     lines = str(markdown).replace("\r\n", "\n").replace("\r", "\n").split("\n")
     index = 0
     while index < len(lines):
         line = lines[index].strip()
-        image = re.match(r"^!\[([^\]]*)\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)$", line)
+        if not line.startswith("```"):
+            inline_images = list(re.finditer(r"!\[[^\]]*\]\((?:<[^>]+>|[^)]+)\)", line))
+            if inline_images and not (len(inline_images) == 1 and inline_images[0].group() == line):
+                fragments, previous = [], 0
+                for match in inline_images:
+                    fragments.extend([line[previous : match.start()], match.group()])
+                    previous = match.end()
+                fragments.append(line[previous:])
+                lines[index : index + 1] = [fragment for fragment in fragments if fragment.strip()]
+                continue
+        image = re.fullmatch(r"!\[([^\]]*)\]\((.+?)\)", line)
         if image:
-            path = _resolve_md_image(image.group(2), base_dir, allowed_root)
+            src = re.sub(r'\s+"[^"]*"$', "", image.group(2)).strip().removeprefix("<").removesuffix(">")
+            path = _resolve_md_image(src, base_dir, allowed_root)
             if path is not None:
                 try:
                     from PIL import Image
 
                     with Image.open(path) as image_size:
                         image_width, image_height = image_size.size
-                    document.add_picture(str(path), width=Cm(min(16.4, 20 * image_width / image_height)))
+                    picture = document.add_picture(str(path), width=Cm(min(16.4, 19 * image_width / image_height)))
+                    picture._inline.docPr.set("descr", image.group(1))
+                    document.paragraphs[-1].paragraph_format.keep_with_next = bool(image.group(1).strip())
                     counts["images"] += 1
                     if image.group(1).strip():
                         caption = document.add_paragraph(image.group(1).strip()[:200])
+                        caption.paragraph_format.keep_with_next = False
                         for run in caption.runs:
                             run.italic = True
                             run.font.size = Pt(9)
-                except (OSError, ValueError):
-                    document.add_paragraph(f"[图片无法插入：{image.group(1)}]")
+                except (OSError, ValueError) as exc:
+                    raise WorkflowError(f"图片无法插入：{image.group(1)}") from exc
             else:
-                document.add_paragraph(f"[图片未找到或不在项目目录：{image.group(1)}]")
+                raise WorkflowError(f"图片未找到或不在项目目录：{image.group(1)}")
             index += 1
             continue
         if line.startswith("```"):
+            language = line[3:].strip().lower()
             index += 1
             code = []
             while index < len(lines) and not lines[index].strip().startswith("```"):
                 code.append(lines[index])
                 index += 1
+            if language == "chart" and index >= len(lines):
+                raise WorkflowError("chart 代码块缺少结束围栏，请补齐后重新导出")
             index += 1
+            if language == "chart":
+                import json
+
+                from ..local.document_charts import chart_caption, chart_png, normalize_chart
+
+                try:
+                    chart = normalize_chart(json.loads("\n".join(code)))
+                except ValueError as exc:
+                    raise WorkflowError("chart 代码块须为有效 JSON") from exc
+                figure = document.add_picture(chart_png({**chart, "title": "", "source": ""}), width=Cm(16.4))
+                figure._inline.docPr.set("descr", chart_caption(chart))
+                document.paragraphs[-1].paragraph_format.keep_with_next = bool(chart_caption(chart))
+                caption = document.add_paragraph(chart_caption(chart), style="Caption")
+                caption.paragraph_format.keep_with_next = False
+                counts["charts"] += 1
+                counts["images"] += 1
+                continue
             paragraph = document.add_paragraph()
             run = paragraph.add_run("\n".join(code))
             run.font.name = "Consolas"
@@ -885,10 +928,27 @@ def _normalize_slides(slides):
         if not isinstance(notes, str):
             raise WorkflowError(f"第{position + 1}页的notes须为字符串")
         image = item.get("image") or ""
+        chart = item.get("chart")
+        if chart is not None:
+            from ..local.document_charts import normalize_chart
+
+            chart = normalize_chart(chart)
+            if image:
+                raise WorkflowError(f"第{position + 1}页不能同时使用 image 和 chart，请拆页")
         if image and not isinstance(image, str):
             raise WorkflowError(f"第{position + 1}页的image须为路径字符串")
-        layout = str(item.get("layout") or ("image" if image else "bullets")).lower()
-        if layout not in ("bullets", "image", "section", "closing"):
+        layout = str(item.get("layout") or ("chart" if chart else "image" if image else "bullets")).lower()
+        if (chart or image) and layout in ("section", "closing"):
+            raise WorkflowError(f"第{position + 1}页含图表或图片，不能使用章节或结束页布局")
+        if chart:
+            layout = "chart"
+        elif image:
+            layout = "image"
+        if layout == "chart" and chart is None:
+            raise WorkflowError(f"第{position + 1}页缺少 chart 数据")
+        if layout == "image" and not image:
+            raise WorkflowError(f"第{position + 1}页缺少 image 路径")
+        if layout not in ("bullets", "image", "chart", "section", "closing"):
             layout = "bullets"
         if len(bullets) > 12 or any(len(str(bullet)) > 1000 for bullet in bullets):
             raise WorkflowError(f"第{position + 1}页内容过长：最多12条要点，每条最多1000字，请分批拆页")
@@ -898,18 +958,19 @@ def _normalize_slides(slides):
                 "bullets": [str(bullet)[:1000] for bullet in bullets][:12],
                 "notes": notes[:4000],
                 "image": image[:1000],
+                "chart": chart,
                 "layout": layout,
                 "kicker": str(item.get("kicker") or "")[:120],
             }
         )
     paginated = []
     for slide in result:
-        if slide["layout"] not in ("bullets", "image"):
+        if slide["layout"] not in ("bullets", "image", "chart"):
             paginated.append(slide)
             continue
-        chunk_size = 70 if slide["layout"] == "image" else 140
+        chunk_size = 70 if slide["layout"] in ("image", "chart") else 140
         chunks = [bullet[i : i + chunk_size] for bullet in slide["bullets"] for i in range(0, len(bullet), chunk_size)]
-        per_page = 2 if slide["layout"] == "image" else 4
+        per_page = 2 if slide["layout"] in ("image", "chart") else 4
         for offset in range(0, max(1, len(chunks)), per_page):
             paginated.append(
                 {
@@ -1029,7 +1090,7 @@ def _pptx_image(slide, path, left, top, max_w, max_h):
     return True
 
 
-def _build_pptx(slides, title="", base_dir=None, allowed_root=None):
+def _build_pptx(slides, title="", base_dir=None, allowed_root=None, include_cover=None):
     """生成 16:9 汇报 PPT：深色封面/章节页、浅色内容页、图表页与页脚，尽量不依赖模板。"""
     from datetime import date
 
@@ -1044,34 +1105,36 @@ def _build_pptx(slides, title="", base_dir=None, allowed_root=None):
     dark, light, ink, muted, accent = "0F172A", "F8FAFC", "0F172A", "64748B", "16A34A"
     title_text = str(title or "").strip()[:200]
 
-    # 封面
-    cover = presentation.slides.add_slide(blank)
-    _pptx_bg(cover, dark)
-    _pptx_rule(cover, Inches(0.9), Inches(1.35), Inches(0.9), accent, 8)
-    _pptx_text(
-        cover,
-        title_text or "研究报告",
-        Inches(0.9),
-        Inches(1.65),
-        Inches(11.4),
-        Inches(2.0),
-        size=40,
-        bold=True,
-        color="FFFFFF",
-    )
-    _pptx_text(
-        cover,
-        "QuantLab Bot · 本地 Agent 生成",
-        Inches(0.94),
-        Inches(3.9),
-        Inches(8),
-        Inches(0.5),
-        size=18,
-        color="CBD5E1",
-    )
-    _pptx_text(
-        cover, date.today().isoformat(), Inches(0.94), Inches(6.4), Inches(4), Inches(0.4), size=12, color="94A3B8"
-    )
+    # Only an explicit title (or host policy) adds an extra cover.
+    include_cover = bool(title_text) if include_cover is None else include_cover
+    cover = presentation.slides.add_slide(blank) if include_cover else None
+    if cover is not None:
+        _pptx_bg(cover, dark)
+        _pptx_rule(cover, Inches(0.9), Inches(1.35), Inches(0.9), accent, 8)
+        _pptx_text(
+            cover,
+            title_text or "研究报告",
+            Inches(0.9),
+            Inches(1.65),
+            Inches(11.4),
+            Inches(2.0),
+            size=40,
+            bold=True,
+            color="FFFFFF",
+        )
+        _pptx_text(
+            cover,
+            "QuantLab Bot · 本地 Agent 生成",
+            Inches(0.94),
+            Inches(3.9),
+            Inches(8),
+            Inches(0.5),
+            size=18,
+            color="CBD5E1",
+        )
+        _pptx_text(
+            cover, date.today().isoformat(), Inches(0.94), Inches(6.4), Inches(4), Inches(0.4), size=12, color="94A3B8"
+        )
 
     for index, item in enumerate(slides, 1):
         layout = item.get("layout") or "bullets"
@@ -1159,8 +1222,16 @@ def _build_pptx(slides, title="", base_dir=None, allowed_root=None):
                 bold=True,
                 color=ink,
             )
-            if layout == "image" and item.get("image"):
+            if layout == "chart" and item.get("chart"):
+                from ..local.document_charts import add_pptx_chart, chart_caption
+
+                add_pptx_chart(slide, item["chart"], Inches(0.9), Inches(1.85), Inches(11.5), Inches(4.15))
+                caption = "\n".join(filter(None, [" · ".join(item["bullets"]), chart_caption(item["chart"])]))
+                _pptx_text(slide, caption, Inches(0.9), Inches(6.15), Inches(11.5), Inches(0.75), size=12, color=muted)
+            elif layout == "image" and item.get("image"):
                 image_path = _resolve_md_image(item["image"], base_dir, allowed_root)
+                if image_path is None:
+                    raise WorkflowError(f"图片未找到或不在项目目录：{item['image']}")
                 _pptx_image(
                     slide, image_path, Inches(0.9), Inches(1.85), Inches(11.5), Inches(4.3)
                 ) if image_path else None
@@ -1368,10 +1439,28 @@ def local_export_docx(markdown: str, path: str, title: str = "", base_dir: str =
     }
 
 
-def local_export_pptx(slides: list[dict], path: str, title: str = "", base_dir: str = ""):
+def local_export_pptx(
+    slides: list[dict],
+    path: str,
+    title: str = "",
+    base_dir: str = "",
+    include_cover: bool | None = None,
+    expected_slides: int | None = None,
+):
     """把 [{title,bullets,notes}] 写成 16:9 .pptx；python-pptx 缺失时明确提示。"""
     _s, profile = _local_profile()
     normalized = _normalize_slides(slides)
+    if include_cover is not None and not isinstance(include_cover, bool):
+        raise WorkflowError("include_cover 须为布尔值")
+    cover = bool(str(title or "").strip()) if include_cover is None else include_cover
+    physical = len(normalized) + int(cover)
+    if expected_slides is not None:
+        if isinstance(expected_slides, bool) or not isinstance(expected_slides, int) or not 1 <= expected_slides <= 81:
+            raise WorkflowError("expected_slides 须为1—81的整数")
+        if physical != expected_slides:
+            raise WorkflowError(
+                f"实际共{physical}页（含封面和拆页），与要求的{expected_slides}页不符；请调整内容或 include_cover"
+            )
     target = _export_target(profile, path, ".pptx")
     existed = target.exists()
     try:
@@ -1380,7 +1469,11 @@ def local_export_pptx(slides: list[dict], path: str, title: str = "", base_dir: 
         raise WorkflowError(_missing_library("python-pptx", "PPT 汇报")) from exc
     try:
         presentation = _build_pptx(
-            normalized, title, base_dir=(Path(base_dir) if base_dir else target.parent), allowed_root=profile.root
+            normalized,
+            title,
+            base_dir=(Path(base_dir) if base_dir else target.parent),
+            allowed_root=profile.root,
+            include_cover=cover,
         )
         tmp = _temp_beside(target)
         try:
@@ -1395,7 +1488,10 @@ def local_export_pptx(slides: list[dict], path: str, title: str = "", base_dir: 
         "bytes": target.stat().st_size,
         "format": "pptx",
         "title": str(title or ""),
-        "slides": len(normalized),
+        "slides": len(presentation.slides),
+        "content_slides": len(normalized),
+        "charts": sum(bool(item.get("chart")) for item in normalized),
+        "images": sum(bool(item.get("image")) for item in normalized),
         "aspect": "16:9",
         "overwritten": existed,
         "library": "python-pptx",
@@ -1444,7 +1540,9 @@ def local_export_docx_file(markdown_path: str, path: str, title: str = ""):
     return local_export_docx(markdown, path, title, base_dir=str(source.parent))
 
 
-def local_export_pptx_file(slides_path: str, path: str, title: str = ""):
+def local_export_pptx_file(
+    slides_path: str, path: str, title: str = "", include_cover: bool | None = None, expected_slides: int | None = None
+):
     """把已授权目录内的 JSON 幻灯片文件（[{title,bullets,notes}]）导出为 .pptx。"""
     import json
 
@@ -1457,7 +1555,13 @@ def local_export_pptx_file(slides_path: str, path: str, title: str = ""):
     slides = raw.get("slides") if isinstance(raw, dict) else raw
     if not isinstance(slides, list):
         raise WorkflowError("幻灯片 JSON 须为数组，或含 slides 数组的对象")
-    return local_export_pptx(slides, path, title, base_dir=str(source.parent))
+    if isinstance(raw, dict):
+        title = title or raw.get("title", "")
+        include_cover = raw.get("include_cover") if include_cover is None else include_cover
+        expected_slides = raw.get("expected_slides") if expected_slides is None else expected_slides
+    return local_export_pptx(
+        slides, path, title, base_dir=str(source.parent), include_cover=include_cover, expected_slides=expected_slides
+    )
 
 
 def child_evidence(child_run_id: str, node_id: str = ""):
@@ -1861,12 +1965,16 @@ LOCAL_DELIVERABLE_SPECS = [
         "title": "Markdown 导出 Word",
         "description": (
             "把简单 Markdown（标题、正文、列表、表格、代码块、本地图片 ![](路径)）写成 .docx 到已授权可写目录；"
+            "支持 ```chart JSON 代码块直接嵌入图表，数据字段 kind、title、labels、series:[{name,values}]、unit、source；"
             "优先使用 python-docx，缺失时返回可执行的安装提示；只写授权目录，不读写平台数据目录与密钥目录，"
             "不执行 shell / Python"
         ),
         "when": "需要交付 Word 报告、作业文档或说明书时",
         "params": {
-            "markdown": {"type": "string", "description": "Markdown 文本"},
+            "markdown": {
+                "type": "string",
+                "description": "Markdown 文本；图表用独立的 ```chart JSON 代码块，或 ![图注](本地图片路径)",
+            },
             "path": {"type": "string", "description": "目标 .docx 路径；须位于已授权可写目录"},
             "title": {"type": "string", "description": "可选文档标题"},
         },
@@ -1910,7 +2018,9 @@ LOCAL_DELIVERABLE_SPECS = [
         "handler": local_export_pptx,
         "title": "导出 16:9 汇报 PPT",
         "description": (
-            "把 [{title,bullets,notes,layout?,image?}] 生成为 16:9 .pptx 到已授权可写目录；"
+            "把 [{title,bullets,notes,layout?,image?,chart?}] 生成为 16:9 .pptx 到已授权可写目录；"
+            "chart 直接生成可编辑图表，包含 kind、labels、series:[{name,values}]、unit、source；"
+            "有数据时优先嵌入 chart，而不是只列数值要点；expected_slides 校验含封面在内的实际页数；"
             "内置深色封面/章节页、浅色内容页、图表页与页脚；image 可传本地 PNG 路径，layout 可选 bullets/section/image/closing；"
             "优先使用 python-pptx，缺失时返回可执行的安装提示；只写授权目录，不读写平台数据目录与密钥目录，不执行 shell / Python"
         ),
@@ -1930,11 +2040,46 @@ LOCAL_DELIVERABLE_SPECS = [
                         "notes": {"type": "string"},
                         "layout": {"type": "string", "description": "bullets / section / image / closing"},
                         "image": {"type": "string", "description": "本地图片路径，如 图表.png"},
+                        "chart": {
+                            "type": "object",
+                            "description": "嵌入可编辑图表，与 image 二选一；仅用真实数据，注明单位和来源",
+                            "required": ["kind", "labels", "series"],
+                            "properties": {
+                                "kind": {"type": "string", "enum": ["bar", "line", "pie"]},
+                                "title": {"type": "string"},
+                                "unit": {"type": "string"},
+                                "source": {"type": "string"},
+                                "labels": {"type": "array", "items": {"type": "string"}, "minItems": 2, "maxItems": 40},
+                                "series": {
+                                    "type": "array",
+                                    "minItems": 1,
+                                    "maxItems": 6,
+                                    "items": {
+                                        "type": "object",
+                                        "required": ["name", "values"],
+                                        "properties": {
+                                            "name": {"type": "string"},
+                                            "values": {"type": "array", "items": {"type": "number"}},
+                                        },
+                                    },
+                                },
+                            },
+                        },
                     },
                 },
             },
             "path": {"type": "string", "description": "目标 .pptx 路径；须位于已授权可写目录"},
             "title": {"type": "string", "description": "可选封面标题"},
+            "include_cover": {
+                "type": "boolean",
+                "description": "是否额外加封面；默认有 title 才添加。要求固定总页数时显式设置",
+            },
+            "expected_slides": {
+                "type": "integer",
+                "description": "要求的实际总页数，含封面和自动拆页；不一致时拒绝保存",
+                "minimum": 1,
+                "maximum": 81,
+            },
         },
         "summary": lambda args: f"导出 PPT {args.get('path', '')}（{len(args.get('slides') or [])}页）",
     },
@@ -1951,6 +2096,13 @@ LOCAL_DELIVERABLE_SPECS = [
             "slides_path": {"type": "string", "description": "已授权目录内的 JSON 文件路径"},
             "path": {"type": "string", "description": "目标 .pptx 路径；须位于已授权可写目录"},
             "title": {"type": "string", "description": "可选封面标题"},
+            "include_cover": {"type": "boolean", "description": "是否额外加封面；也可在 JSON 根对象中设置"},
+            "expected_slides": {
+                "type": "integer",
+                "description": "含封面在内的要求总页数；也可在 JSON 根对象中设置",
+                "minimum": 1,
+                "maximum": 81,
+            },
         },
         "summary": lambda args: f"从 JSON 导出 PPT {args.get('path', '')}",
     },

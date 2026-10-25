@@ -244,7 +244,7 @@ def test_append_long_report_then_export_docx_and_pptx(local_project):
     }
     workflow_agent.local_write_text("交付物/slides.json", __import__("json").dumps(slides, ensure_ascii=False))
     pptx_out = workflow_agent.local_export_pptx_file("交付物/slides.json", "交付物/汇报.pptx", "汇报")
-    assert Path(pptx_out["path"]).is_file() and pptx_out["slides"] == 2
+    assert Path(pptx_out["path"]).is_file() and pptx_out["slides"] == 3 and pptx_out["content_slides"] == 2
 
 
 def test_local_read_text_paginates_by_chars(local_project):
@@ -443,7 +443,7 @@ def test_export_pptx_with_notes_and_16_9(local_project):
     result = workflow_agent.local_export_pptx(slides, "交付物/答辩.pptx", title="作业2 答辩")
     path = Path(result["path"])
     assert path.is_file() and path.is_relative_to(project) and path.suffix == ".pptx"
-    assert result["slides"] == 2 and result["aspect"] == "16:9" and result["library"] == "python-pptx"
+    assert result["slides"] == 3 and result["aspect"] == "16:9" and result["library"] == "python-pptx"
 
     presentation = pptx.Presentation(str(path))
     assert len(presentation.slides) == 3  # 封面 + 两页
@@ -587,7 +587,7 @@ def test_local_chart_and_embeds_into_docx_pptx(local_project):
         {"layout": "image", "title": "风险分布", "bullets": ["高/中/低三档"], "image": "交付物/图表.png"},
     ]
     pptx_out = workflow_agent.local_export_pptx(slides, "交付物/带图汇报.pptx", "带图汇报")
-    assert pptx_out["slides"] == 2 and Path(pptx_out["path"]).stat().st_size > 0
+    assert pptx_out["slides"] == 3 and Path(pptx_out["path"]).stat().st_size > 0
     from pptx import Presentation
 
     deck = Presentation(pptx_out["path"])

@@ -64,6 +64,12 @@ RESEARCH_TOOL_GUIDE = (
     "- 本地交付：local_*（读写研究者指定的本地文件、local_chart 生成本地图表、导出 Word/PPT）；"
     "只操作研究者明确指定的路径，不读取与本任务无关的目录；图表用 local_chart 后把返回的 url 以 "
     "`![标题](url)` 写进回复，Word 用 `![标题](本地 png 路径)`，PPT 用 image 字段指向本地 png；交付文件前说明路径与内容\n"
+    "- 文件内图表：有来源明确的比较、趋势或构成数据时，应把适合的图表嵌入 Word/PPT，不只在回复里贴图。"
+    '统一数据格式示例：{"kind":"bar","title":"实验收益","labels":["A","B"],'
+    '"series":[{"name":"收益","values":[1.2,2.1]}],"unit":"%","source":"实际实验ID"}。'
+    "Word 在 Markdown 的 ```chart 代码块中写此 JSON；PPT 在页面对象的 chart 字段写此对象，自动生成可编辑图表。"
+    "kind 支持 bar/line/pie；不得编造数据或来源，不同单位拆图，缺数据时说明缺失。"
+    "用户指定总页数时 PPT 设置 expected_slides，并明确 include_cover；slides 返回实际总页数。\n"
     "- 文档排版：Word 使用清晰标题层级、表格、图注与分页；PPT 每页一个论点，优先图表、少量要点，长内容拆页。"
     "导出后调用 local_preview_document 分批查看所有页面截图，检查文字截断、重叠、空白页、图表和字体；"
     "有问题先修正重导再预览。截图会进入视觉上下文；仅在实际看过后才能声称已检查。"

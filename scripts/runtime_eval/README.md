@@ -12,6 +12,7 @@ python -m venv --system-site-packages .tmp/runtime-evaluation/venv
 .tmp/runtime-evaluation/venv/Scripts/python.exe scripts/runtime_eval/mock_compare.py --output .tmp/my-mock-run --repeats 20
 .tmp/runtime-evaluation/venv/Scripts/python.exe scripts/runtime_eval/mock_compare.py --output .tmp/my-journal-pair --compare-journal-ref 0f5a3df --repeats 30
 python scripts/runtime_eval/audit_scheduled.py --output .tmp/my-schedule-audit
+python -X utf8 scripts/runtime_eval/document_smoke.py --output .tmp/my-chart-documents
 .tmp/runtime-evaluation/venv/Scripts/python.exe scripts/runtime_eval/document_compare.py --output .tmp/my-document-run
 ```
 

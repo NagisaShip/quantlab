@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import quote
 
@@ -20,7 +21,31 @@ def office_binary():
             candidates.append(str(Path(os.environ[variable]) / "LibreOffice/program/soffice.exe"))
     if os.environ.get("LOCALAPPDATA"):
         candidates.append(str(Path(os.environ["LOCALAPPDATA"]) / "Programs/LibreOffice/program/soffice.exe"))
-    return next((str(p) for p in candidates if p and Path(p).is_file()), None)
+    for candidate in candidates:
+        if candidate and Path(candidate).is_file():
+            console = Path(candidate).with_suffix(".com")
+            return str(console if os.name == "nt" and console.is_file() else candidate)
+    return None
+
+
+@contextmanager
+def _office_workspace():
+    # tempfile caches its selected root. Invalid TEMP/TMP in a child interpreter
+    # must not make Office stage its input in an arbitrary current directory.
+    roots = [Path(os.environ["LOCALAPPDATA"]) / "Temp"] if os.environ.get("LOCALAPPDATA") else []
+    roots += [Path(os.environ[name]) for name in ("TEMP", "TMP", "TMPDIR") if os.environ.get(name)]
+    roots.append(Path(tempfile.gettempdir()).resolve())
+    for root in roots:
+        if not root.is_absolute() or not root.is_dir():
+            continue
+        try:
+            workspace = tempfile.TemporaryDirectory(prefix="quantlab-office-", dir=root, ignore_cleanup_errors=True)
+        except OSError:
+            continue
+        with workspace as temporary:
+            yield Path(temporary)
+        return
+    raise WorkflowError("无法创建 Office 渲染临时目录；请配置可写的绝对 TEMP 路径，原文件已保留")
 
 
 def render_document(profile, path: str, start: int = 1, limit: int = 4):
@@ -48,8 +73,12 @@ def render_document(profile, path: str, start: int = 1, limit: int = 4):
             raise WorkflowError("已生成文件；真实页面预览需要 LibreOffice。安装后可重新预览，当前尚未检查排版")
         pdf = _authorized_target(profile, str(folder / "document.pdf"), write=True)
         if not pdf.is_file():
-            with tempfile.TemporaryDirectory(prefix="quantlab-office-") as tmp:
-                temporary = Path(tmp)
+            # LibreOffice can keep a profile lock briefly after the process exits on Windows.
+            # A cleanup failure must not turn a successfully rendered document into a tool error.
+            with _office_workspace() as temporary:
+                # Stable ASCII input names also avoid converter filename/URL ambiguity.
+                staged = temporary / ("input" + source.suffix.lower())
+                shutil.copyfile(source, staged)
                 command = [
                     binary,
                     "-env:UserInstallation=" + (temporary / "profile").as_uri(),
@@ -58,15 +87,25 @@ def render_document(profile, path: str, start: int = 1, limit: int = 4):
                     "pdf",
                     "--outdir",
                     str(temporary),
-                    str(source),
+                    str(staged),
                 ]
                 try:
-                    result = subprocess.run(command, capture_output=True, timeout=90, check=False)
+                    result = subprocess.run(
+                        command,
+                        capture_output=True,
+                        timeout=90,
+                        check=False,
+                        cwd=str(temporary),
+                        env={**os.environ, "TEMP": str(temporary), "TMP": str(temporary)},
+                    )
                 except (OSError, subprocess.TimeoutExpired) as exc:
                     raise WorkflowError("页面渲染失败或超时；文件已保留，可在系统应用中打开") from exc
-                converted = temporary / (source.stem + ".pdf")
+                converted = temporary / "input.pdf"
                 if result.returncode or not converted.is_file():
-                    raise WorkflowError("LibreOffice 未输出 PDF；文件已保留，尚未检查排版")
+                    detail = (result.stderr or result.stdout or b"").decode("utf-8", errors="replace").strip()[-400:]
+                    raise WorkflowError(
+                        "LibreOffice 未输出 PDF；文件已保留，尚未检查排版" + (f"：{detail}" if detail else "")
+                    )
                 from ..workflows.agent import _atomic_write
 
                 _atomic_write(pdf, converted.read_bytes())
