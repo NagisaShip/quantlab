@@ -12,7 +12,7 @@ from typing import Any, Protocol
 
 from .db import IntegrityError, jdump, now_ms
 from .errors import AppError, ErrorCode
-from .runs import RunService
+from .runs import ACTIVE, RunService
 
 
 class RuntimePort(Protocol):
@@ -50,35 +50,106 @@ class RuntimeBridge:
         if not idempotency_key:
             raise ValueError("runtime ingress requires an idempotency key")
         run_id = f"run-{uuid.uuid4().hex[:16]}"
-        stamp = now_ms()
         try:
             with self.runs.db.tx() as tx:
-                tx.execute(
-                    "INSERT INTO runs(id,workspace_id,created_by,mode,kind,state,title,manifest,"
-                    "idempotency_key,created_at,updated_at,runtime_version) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (
-                        run_id,
-                        workspace_id,
-                        user_id,
-                        "agent",
-                        "runtime_agent",
-                        "QUEUED",
-                        title[:200],
-                        jdump({"runtime_version": self.version}),
-                        idempotency_key,
-                        stamp,
-                        stamp,
-                        self.version,
-                    ),
+                # Serialize admission and idempotency for one workspace. SQLite
+                # already holds BEGIN IMMEDIATE; PG needs an explicit row lock.
+                workspace = tx.fetchone(
+                    "SELECT settings FROM workspaces WHERE id=?"
+                    + (" FOR UPDATE" if self.runs.db.dialect == "postgres" else ""),
+                    (workspace_id,),
                 )
-                tx.execute(
-                    "INSERT INTO runtime_tickets(run_id,runtime_version,prompt,spec,status,created_at) VALUES(?,?,?,?,?,?)",
-                    (run_id, self.version, prompt, jdump(spec), "PENDING", stamp),
+                if workspace is None:
+                    raise AppError(ErrorCode.NOT_FOUND, "工作区不存在")
+                existing = tx.fetchone(
+                    "SELECT r.id,r.kind,r.runtime_version,t.prompt,t.spec FROM runs r "
+                    "LEFT JOIN runtime_tickets t ON t.run_id=r.id WHERE r.workspace_id=? AND r.idempotency_key=?",
+                    (workspace_id, idempotency_key),
                 )
-                tx.insert_id(
-                    "INSERT INTO run_events(run_id,workspace_id,ts,type,data) VALUES(?,?,?,?,?)",
-                    (run_id, workspace_id, stamp, "state", jdump({"state": "QUEUED"})),
-                )
+                if existing:
+                    self._check_existing(existing, prompt, spec)
+                    run_id = existing["id"]
+                else:
+                    self.spec_loader(spec)
+                    metadata = spec.get("metadata", {})
+                    if not isinstance(metadata, dict):
+                        raise ValueError("Agent metadata must be an object")
+                    priority = metadata.get("dispatch_priority", 0)
+                    if type(priority) is not int or not -100 <= priority <= 100:
+                        raise ValueError("dispatch_priority must be an integer between -100 and 100")
+                    stamp = now_ms()
+                    quotas = json.loads(workspace["settings"] or "{}").get("quotas") or {}
+                    active = int(
+                        tx.scalar(
+                            "SELECT COUNT(*) FROM runs WHERE workspace_id=? AND state IN ("
+                            + ",".join("?" for _ in ACTIVE)
+                            + ")",
+                            (workspace_id, *ACTIVE),
+                        )
+                        or 0
+                    )
+                    active_limit = int(quotas.get("max_concurrent_runs", 4))
+                    if active >= active_limit:
+                        raise AppError(
+                            ErrorCode.QUOTA_EXHAUSTED,
+                            "工作区同时运行的任务已达上限",
+                            details={"active": active, "limit": active_limit},
+                        )
+                    pending = int(
+                        tx.scalar(
+                            "SELECT COUNT(*) FROM runtime_tickets t JOIN runs r ON r.id=t.run_id "
+                            "WHERE r.workspace_id=? AND r.state IN (" + ",".join("?" for _ in ACTIVE) + ")",
+                            (workspace_id, *ACTIVE),
+                        )
+                        or 0
+                    )
+                    pending_limit = int(quotas.get("max_pending_runtime_runs", 128))
+                    if pending >= pending_limit:
+                        raise AppError(
+                            ErrorCode.QUOTA_EXHAUSTED,
+                            "Agent 等待队列已满，请等待完成或取消后重试",
+                            details={"pending": pending, "limit": pending_limit},
+                        )
+                    today = int(
+                        tx.scalar(
+                            "SELECT COUNT(*) FROM runs WHERE workspace_id=? AND created_at>=?",
+                            (workspace_id, stamp // 86400000 * 86400000),
+                        )
+                        or 0
+                    )
+                    daily_limit = int(quotas.get("max_runs_per_day", 200))
+                    if today >= daily_limit:
+                        raise AppError(
+                            ErrorCode.QUOTA_EXHAUSTED,
+                            "今日运行次数已达上限",
+                            details={"today": today, "limit": daily_limit},
+                        )
+                    tx.execute(
+                        "INSERT INTO runs(id,workspace_id,created_by,mode,kind,state,title,manifest,"
+                        "idempotency_key,created_at,updated_at,runtime_version) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (
+                            run_id,
+                            workspace_id,
+                            user_id,
+                            "agent",
+                            "runtime_agent",
+                            "QUEUED",
+                            title[:200],
+                            jdump({"runtime_version": self.version}),
+                            idempotency_key,
+                            stamp,
+                            stamp,
+                            self.version,
+                        ),
+                    )
+                    tx.execute(
+                        "INSERT INTO runtime_tickets(run_id,runtime_version,prompt,spec,status,created_at) VALUES(?,?,?,?,?,?)",
+                        (run_id, self.version, prompt, jdump(spec), "PENDING", stamp),
+                    )
+                    tx.insert_id(
+                        "INSERT INTO run_events(run_id,workspace_id,ts,type,data) VALUES(?,?,?,?,?)",
+                        (run_id, workspace_id, stamp, "state", jdump({"state": "QUEUED"})),
+                    )
         except IntegrityError:
             existing = self.runs.db.fetchone(
                 "SELECT r.id,r.kind,r.runtime_version,t.prompt,t.spec FROM runs r "
@@ -87,13 +158,16 @@ class RuntimeBridge:
             )
             if not existing:
                 raise
-            if existing["kind"] != "runtime_agent" or existing["runtime_version"] != self.version:
-                raise ValueError("idempotency key belongs to a different run kind or version") from None
-            if existing["prompt"] != prompt or existing["spec"] != jdump(spec):
-                raise ValueError("idempotency key belongs to different runtime input") from None
+            self._check_existing(existing, prompt, spec)
             run_id = existing["id"]
         self.runs._wake()
         return self.runs.get(run_id, workspace_id=workspace_id)
+
+    def _check_existing(self, existing: dict, prompt: str, spec: dict) -> None:
+        if existing["kind"] != "runtime_agent" or existing["runtime_version"] != self.version:
+            raise ValueError("idempotency key belongs to a different run kind or version")
+        if existing["prompt"] != prompt or existing["spec"] != jdump(spec):
+            raise ValueError("idempotency key belongs to different runtime input")
 
     def deliver(self, run_id: str) -> bool:
         ticket = self.runs.db.fetchone(

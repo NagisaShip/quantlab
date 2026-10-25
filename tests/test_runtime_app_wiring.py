@@ -80,7 +80,7 @@ def test_flagged_runtime_run_reaches_terminal_via_worker(tmp_path, monkeypatch):
             worker.shutdown()
 
 
-@pytest.mark.parametrize("wait_state", ["WAITING_APPROVAL", "WAITING_ADMISSION"])
+@pytest.mark.parametrize("wait_state", ["WAITING_APPROVAL", "WAITING_ADMISSION", "RECONCILING"])
 def test_scheduler_skips_approval_wait_without_claiming_slot(tmp_path, monkeypatch, wait_state):
     monkeypatch.setenv("QAGENT_AGENT_RUNTIME", "1")
     services = AppServices.build(store_root=str(tmp_path))
@@ -91,6 +91,7 @@ def test_scheduler_skips_approval_wait_without_claiming_slot(tmp_path, monkeypat
     services.db.execute(
         "INSERT INTO workspaces(id,name,owner_id,created_at) VALUES(?,?,?,?)", ("ws", "Workspace", "user", 1)
     )
+    services.db.execute("UPDATE workspaces SET settings=? WHERE id=?", ('{"quotas":{"max_concurrent_runs":128}}', "ws"))
     waiting = [
         services.runtime_bridge.create(
             workspace_id="ws",
@@ -120,7 +121,9 @@ def test_scheduler_skips_approval_wait_without_claiming_slot(tmp_path, monkeypat
             assert run_id in waiting
             return {
                 "state": "WAITING",
-                "steps": [{"state": wait_state, "admission_retry_at": int(time.time() * 1000) + 60000}],
+                "steps": [
+                    {"state": wait_state, "kind": "model", "admission_retry_at": int(time.time() * 1000) + 60000}
+                ],
             }
 
     services.runtime_bridge.runtime = WaitingRuntime()

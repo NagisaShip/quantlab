@@ -16,12 +16,14 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import socket
 import threading
 import time
 import traceback
+from collections import deque
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -135,6 +137,7 @@ class Worker:
         self.periodic = [[interval, fn, 0.0] for interval, fn in (periodic or [])]
         self.max_resident = int(os.environ.get("QAGENT_WORKER_MAX_RESIDENT", "50"))
         self._config_checked_at = 0.0
+        self._runtime_last_workspace = ""
 
     # ------------------------------------------------------------------ 主循环
     def run_forever(self) -> None:
@@ -247,9 +250,10 @@ class Worker:
         cursor_created_at = -1
         cursor_id = ""
         page_size = 32
-        while len(self.busy) < self.slots:
+        candidates = []
+        while True:
             rows = self.runs.db.fetchall(
-                "SELECT t.run_id,r.created_at FROM runtime_tickets t JOIN runs r ON r.id=t.run_id "
+                "SELECT t.run_id,t.spec,r.created_at,r.workspace_id FROM runtime_tickets t JOIN runs r ON r.id=t.run_id "
                 "WHERE r.state IN ('QUEUED','RUNNING','PAUSED','RECOVERING') "
                 "AND (r.created_at>? OR (r.created_at=? AND r.id>?)) "
                 "ORDER BY r.created_at,r.id LIMIT ?",
@@ -272,18 +276,61 @@ class Worker:
                     ]
                     if not active:
                         continue
+                    if active[0]["state"] == "RECONCILING":
+                        tool = next(
+                            (
+                                item
+                                for item in current.get("spec", {}).get("tools", [])
+                                if item["name"] == active[0].get("payload", {}).get("name")
+                            ),
+                            {},
+                        )
+                        if active[0].get("kind") != "tool" or not (
+                            tool.get("retry_safe") or tool.get("effect") == "idempotent_write"
+                        ):
+                            continue
                     if active[0]["state"] == "WAITING_ADMISSION" and (active[0].get("admission_retry_at") or 0) > int(
                         time.time() * 1000
                     ):
                         continue
                     if active[0]["state"] == "IN_FLIGHT" and (active[0]["lease_until"] or 0) > int(time.time() * 1000):
                         continue
-                with self._lock:
-                    if run_id in self.busy or len(self.busy) >= self.slots:
-                        continue
-                    self.busy[run_id] = self.pool.submit(self._execute_runtime, run_id)
+                candidates.append(row)
             if len(rows) < page_size:
                 break
+        groups = {}
+        for row in candidates:
+            groups.setdefault(row["workspace_id"], []).append(row)
+
+        def priority(row):
+            metadata = json.loads(row["spec"]).get("metadata") or {}
+            value = metadata.get("dispatch_priority", 0) if isinstance(metadata, dict) else 0
+            return value if type(value) is int and -100 <= value <= 100 else 0
+
+        queues = {
+            workspace: deque(sorted(items, key=lambda row: (-priority(row), row["created_at"], row["run_id"])))
+            for workspace, items in groups.items()
+        }
+        tenants = list(queues)
+        if self._runtime_last_workspace in tenants:
+            index = tenants.index(self._runtime_last_workspace) + 1
+            tenants = tenants[index:] + tenants[:index]
+        submitted = 0
+        while tenants and submitted < capacity:
+            remaining = []
+            for workspace in tenants:
+                row = queues[workspace].popleft()
+                run_id = row["run_id"]
+                with self._lock:
+                    if run_id not in self.busy and len(self.busy) < self.slots:
+                        self.busy[run_id] = self.pool.submit(self._execute_runtime, run_id)
+                        self._runtime_last_workspace = workspace
+                        submitted += 1
+                if queues[workspace]:
+                    remaining.append(workspace)
+                if submitted >= capacity:
+                    break
+            tenants = remaining
 
     def _execute_runtime(self, run_id: str) -> None:
         bridge = self.services.runtime_bridge

@@ -77,7 +77,7 @@ jobs:
         env:
           QAGENT_AGENT_RUNTIME: "1"
         run: >-
-          pytest -q packages/agent-runtime/tests tests/test_lab_runtime.py tests/test_lab_runtime_api.py
+          pytest -q packages/agent-runtime/tests tests/test_runtime_admission.py tests/test_lab_runtime.py tests/test_lab_runtime_api.py
           tests/test_team_runtime.py tests/test_team_structured_runtime.py tests/test_team_modes_runtime.py tests/test_team_runtime_api.py tests/test_team_recovery_api.py tests/test_team_visibility_api.py tests/test_generic_agent_runtime.py tests/test_strategy_lab.py tests/test_factor_research.py tests/test_model_research.py
 
       - name: 测试
