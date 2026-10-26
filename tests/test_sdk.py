@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import pytest
 
 from quant_agent.data.service import synthetic_bars
@@ -320,16 +322,26 @@ def tick(ctx):
     assert 2 <= result.globals["count"] <= 5, result.globals
 
 
-def test_run_monthly_only_fires_on_that_day(bars):
+@pytest.mark.parametrize("count,expected", [(600, 1), (100, 0)])
+def test_run_monthly_only_fires_on_that_day(count, expected):
     source = """
 def initialize(ctx):
+    g.count = 0
+    g.calls = []
     run_monthly(tick, monthday=1)
 
 def tick(ctx):
-    g.count = (g.count + 1) if hasattr(g, "count") else 1
+    g.count += 1
+    g.calls.append(ctx.current_dt)
 """
+    # A fixed interval must cover the month boundary after warmup; the wall clock
+    # can otherwise put the entire first day in the excluded warmup window.
+    end = int(datetime(2024, 1, 20, tzinfo=timezone.utc).timestamp() * 1000)
+    bars = synthetic_bars("BTC/USDT", "1h", count, end=end)
     result = run(source, bars, warmup_bars=10)
-    assert 0 <= result.globals["count"] <= 2, result.globals
+    assert not result.errors
+    assert result.globals["count"] == expected, result.globals
+    assert all(datetime.fromtimestamp(ts / 1000, tz=timezone.utc).day == 1 for ts in result.globals["calls"])
 
 
 def test_handle_data_is_default_when_no_schedule(bars):
