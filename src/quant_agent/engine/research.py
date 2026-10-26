@@ -16,13 +16,14 @@ import time
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from .. import __version__
 from ..data.quality import TIMEFRAME_MS
 from ..data.service import DataUnavailable
 from ..exchanges.base import Bar
 from ..sdk import RuntimeCost, run_backtest
 from ..sdk.runtimes import LocalRunResult, RiskConfig
 
-PLATFORM_VERSION = "0.1.0-preview.1"
+PLATFORM_VERSION = __version__
 BACKTEST_TIME_LIMIT = 60.0
 OPT_RUN_TIME_LIMIT = 20.0
 MAX_COMBINATIONS = 150

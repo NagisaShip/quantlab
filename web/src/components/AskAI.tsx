@@ -144,7 +144,7 @@ function pageSnapshot(route: string): AskAIContext | null {
   clone.querySelectorAll('button, nav, script, style, svg, .ask-fab-group, .hub-tabs').forEach((n) => n.remove())
   const text = (clone.innerText || clone.textContent || '').replace(/\n{3,}/g, '\n\n').trim()
   if (!text) return null
-  const title = document.title.replace(/ · QuantLab v0.1.0-preview.1$/, '') || route
+  const title = document.title.replace(/ · QuantLab v0.1.0-preview.2$/, '') || route
   return { kind: 'page', title: `「${title}」页面内容`, text: `页面：${title}（#/${window.location.hash.replace(/^#\/?/, '')}）\n\n${text.slice(0, 6000)}` }
 }
 

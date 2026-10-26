@@ -45,7 +45,7 @@ export default function PublicSharePage({ token, onLogin, onOpen }: {
   const [loggedIn, setLoggedIn] = useState(false)
   const [copied, setCopied] = useState(false)
   useEffect(() => {
-    document.title = '公开分享 · QuantLab v0.1.0-preview.1'
+    document.title = '公开分享 · QuantLab v0.1.0-preview.2'
     let alive = true
     setData(null); setError('')
     publicApi.share(token).then((r) => { if (alive) setData(r) }).catch((e: Error) => { if (alive) setError(e.message) })
@@ -70,7 +70,7 @@ export default function PublicSharePage({ token, onLogin, onOpen }: {
   return (
     <div className="public-share-page">
       <header className="pub-top">
-        <a className="pub-brand" href="#/home" aria-label="QuantLab 首页"><LogoMark size={24} /><span className="pub-brand-copy"><span>QuantLab</span><small>v0.1.0-preview.1</small></span></a>
+        <a className="pub-brand" href="#/home" aria-label="QuantLab 首页"><LogoMark size={24} /><span className="pub-brand-copy"><span>QuantLab</span><small>v0.1.0-preview.2</small></span></a>
         <div className="pub-top-actions">
           <span className="pub-public-pill"><i />公开预览</span>
           {loggedIn
@@ -177,7 +177,7 @@ export default function PublicSharePage({ token, onLogin, onOpen }: {
         <div className="pub-trust"><span>◈</span>受限预览不含私聊、群消息、任务详情、邮箱与策略源码。内容所有者可随时撤销分享。</div>
       </main>
 
-      <footer className="pub-footer"><span><LogoMark size={16} /> QuantLab v0.1.0-preview.1 · 让策略研究可复核、可协作</span><span>公开分享页</span></footer>
+      <footer className="pub-footer"><span><LogoMark size={16} /> QuantLab v0.1.0-preview.2 · 让策略研究可复核、可协作</span><span>公开分享页</span></footer>
     </div>
   )
 }

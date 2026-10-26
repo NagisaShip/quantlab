@@ -29,7 +29,7 @@ export function ReadmePage({ onClose }: { onClose: () => void }) {
     <section className="lp-readme" role="dialog" aria-modal="true" aria-label={copy.aria} data-no-i18n>
       <header className="lp-readme-bar">
         <button type="button" className="lp-readme-back" onClick={onClose}>{copy.back}</button>
-        <div className="lp-readme-title"><b>QuantLab v0.1.0-preview.1 README</b><span>{copy.sub}</span></div>
+        <div className="lp-readme-title"><b>QuantLab v0.1.0-preview.2 README</b><span>{copy.sub}</span></div>
         <div className="lp-readme-lang" role="tablist" aria-label={copy.langAria}>
           <button type="button" role="tab" aria-selected={lang === 'zh'} className={lang === 'zh' ? 'on' : ''} onClick={() => setLang('zh')}>中文</button>
           <button type="button" role="tab" aria-selected={lang === 'en'} className={lang === 'en' ? 'on' : ''} onClick={() => setLang('en')}>English</button>

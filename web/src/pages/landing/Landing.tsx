@@ -1050,7 +1050,7 @@ export default function Landing({ auth, autoOpen }: { auth: (close: () => void) 
     try { return sessionStorage.getItem('qa.docsOverlay') === '1' } catch { return false }
   })
   useEffect(() => { try { sessionStorage.removeItem('qa.docsOverlay') } catch { /* private mode */ } }, [])
-  useEffect(() => { document.title = t('QuantLab v0.1.0-preview.1') }, [])
+  useEffect(() => { document.title = t('QuantLab v0.1.0-preview.2') }, [])
   const [closing, setClosing] = useState(false)
   const { bars, state } = useLive('BTC/USDT', '1h', 168)
   const multi = useMultiLive('1h', 168)
@@ -1276,7 +1276,7 @@ export default function Landing({ auth, autoOpen }: { auth: (close: () => void) 
       <nav ref={navRef} className="lp-nav">
         <i ref={progressRef} className="lp-progress" aria-hidden />
         <a className="lp-brand" href="#top" title="关于 QuantLab" aria-haspopup="dialog" onClick={(e) => { e.preventDefault(); setAbout(true) }}>
-          <QuantBot size={26} state="idle" title="QuantLab" /> <span className="lp-brand-copy"><b>QuantLab</b><em>v0.1.0-preview.1</em></span>
+          <QuantBot size={26} state="idle" title="QuantLab" /> <span className="lp-brand-copy"><b>QuantLab</b><em>v0.1.0-preview.2</em></span>
         </a>
         <span className="lp-grow" />
         <button type="button" className="lp-link" onClick={() => go('features')}>能力</button>
@@ -1381,7 +1381,7 @@ export default function Landing({ auth, autoOpen }: { auth: (close: () => void) 
         </div>
         <footer className="lp-foot">
           <div className="lp-foot-main">
-            <span className="lp-foot-brand"><QuantBot size={18} state="idle" /> QuantLab v0.1.0-preview.1 · 私有部署 · 仅用于研究，不构成投资建议</span>
+            <span className="lp-foot-brand"><QuantBot size={18} state="idle" /> QuantLab v0.1.0-preview.2 · 私有部署 · 仅用于研究，不构成投资建议</span>
             <div className="lp-foot-links">
               <button type="button" className="lp-link" onClick={() => setDocsOpen(true)}>API 文档</button>
               <button type="button" className="lp-link" onClick={() => setReadmeOpen(true)}>项目 README</button>

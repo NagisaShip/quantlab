@@ -277,7 +277,7 @@ export function SettingsShell({ current, onNavigate, onClose, badges, children, 
           {!groups.length && !entries.length && <div className="set-none">没有匹配的设置</div>}
         </nav>
         <div className="set-nav-foot">
-          <small>{localMode ? '本机模式 · 数据只保存在这台设备' : 'QuantLab v0.1.0-preview.1'}</small>
+          <small>{localMode ? '本机模式 · 数据只保存在这台设备' : 'QuantLab v0.1.0-preview.2'}</small>
           <button type="button" className="set-about" onClick={() => window.dispatchEvent(new CustomEvent('qa:about'))}>关于 QuantLab</button>
         </div>
       </aside>

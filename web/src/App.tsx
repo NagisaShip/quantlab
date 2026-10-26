@@ -391,7 +391,7 @@ function Workbench({ me, onMeChanged, onOnboardingChanged }: {
       const prev = (e.oldURL.split('#')[1] || '').replace(/^\/?/, '')
       if (next.page === 'lab') setReturnTo(null)
       else if (/^lab\/[\w-]+/.test(prev) && !SETTINGS_PAGES.has(next.page)) {
-        setReturnTo({ route: prev.split('?')[0], title: document.title.replace(/ · QuantLab v0.1.0-preview.1$/, '') })
+        setReturnTo({ route: prev.split('?')[0], title: document.title.replace(/ · QuantLab v0.1.0-preview.2$/, '') })
       }
       setRoute(next)
       // AI 研究室有自己的消息滚动容器：对话之间切换时保留窗口滚动；从其他页面进入时回到顶部。
@@ -440,7 +440,7 @@ function Workbench({ me, onMeChanged, onOnboardingChanged }: {
   }, [page, me.workspace?.id])
 
   useEffect(() => {
-    document.title = `${t(PAGE_TITLES[page])} · QuantLab v0.1.0-preview.1`
+    document.title = `${t(PAGE_TITLES[page])} · QuantLab v0.1.0-preview.2`
   }, [page])
 
   const reachable = health ? Object.entries(health.adapters).filter(([, v]) => v.reachable).map(([k]) => k) : []
@@ -661,7 +661,7 @@ function Workbench({ me, onMeChanged, onOnboardingChanged }: {
       <aside className={`sidebar${drawer ? ' open' : ''}`} aria-hidden={side.collapsed || undefined}>
         <div className="side-top">
           <button type="button" className="side-brand" onClick={() => setAbout(true)} title="关于 QuantLab" aria-label="关于 QuantLab">
-            <LogoMark size={20} /><span className="side-brand-copy"><span>QuantLab</span><small>v0.1.0-preview.1</small></span>
+            <LogoMark size={20} /><span className="side-brand-copy"><span>QuantLab</span><small>v0.1.0-preview.2</small></span>
           </button>
           <SearchButton onNavigate={go} />
           <SideToggle collapsed={false} onToggle={side.toggle} />

@@ -1008,7 +1008,7 @@ function ProjectView({ id, meta, notify, onNavigate, onChanged, onDeleted, onOpe
   // 多人协作：谁也在看这个对话；有人在输入（草稿非空）时显示为「正在编辑」
   const presence = usePresence('project', id, !!input.trim())
   // 浏览器标题用对话名：从对话跳到其他页面时，「返回对话」能写出是哪个对话
-  useEffect(() => { if (project?.title) document.title = `${project.title} · QuantLab v0.1.0-preview.1` }, [project?.title])
+  useEffect(() => { if (project?.title) document.title = `${project.title} · QuantLab v0.1.0-preview.2` }, [project?.title])
   // 必须在任何条件 return 之前注册，避免 hooks 数量在加载前后不一致（React #310）。
   useEffect(() => {
     if (nowRunning || sendingQueued.current || !sendQueue.length) return
