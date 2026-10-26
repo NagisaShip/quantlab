@@ -9,6 +9,6 @@ export default function AppTopBar({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (desktop) setHost(document.getElementById('desktop-topbar-slot'))
   }, [desktop])
-  const bar = <div className="topbar" role="navigation" aria-label="页面与状态">{children}</div>
+  const bar = <div className="topbar" role="navigation" aria-label="主导航">{children}</div>
   return desktop ? (host ? createPortal(bar, host) : null) : bar
 }

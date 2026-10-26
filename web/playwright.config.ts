@@ -27,11 +27,15 @@ import path from 'node:path'
 import { ARTIFACTS, BASE_URL, E2E_HOME, PORT, REPO_ROOT, SECRET_KEY } from '../tests/e2e/run-env'
 
 const PYTHON = process.env.QAGENT_E2E_PYTHON || (process.platform === 'win32' ? 'python' : 'python3')
+const noProxy = [process.env.NO_PROXY || process.env.no_proxy, '127.0.0.1', 'localhost', '::1'].filter(Boolean).join(',')
 
 const serverEnv: Record<string, string> = {
   ...(process.env as Record<string, string>),
   PYTHONPATH: [path.join(REPO_ROOT, 'src'), path.join(REPO_ROOT, 'packages', 'agent-runtime', 'src')].join(path.delimiter),
   PYTHONUTF8: '1',
+  // Mock providers are real loopback HTTP servers; never send them through a workstation proxy.
+  NO_PROXY: noProxy,
+  no_proxy: noProxy,
   QAGENT_HOME: E2E_HOME,
   QAGENT_SECRET_KEY: SECRET_KEY,
   // 验收要求回测由后台 worker 产出，而不是在请求线程里同步跑完。
