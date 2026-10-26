@@ -1,0 +1,1 @@
+{"name": "verified_model_active_rejected", "method": "PATCH", "path": "/api/models/m_e87016c5", "request": {"status": "active"}, "http": 409, "seconds": 0.036, "body": {"code": "CONFLICT", "message": "费后收益未为正或缺少收益证据，请保存为候选", "trace_id": "01861e91db9442df", "details": {}}}

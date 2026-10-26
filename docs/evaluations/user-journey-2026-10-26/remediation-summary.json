@@ -1,0 +1,316 @@
+{
+  "model": "deepseek-v4.1-flash",
+  "factor": {
+    "project_id": "43cdb87093df",
+    "current_version": 6,
+    "version_count": 10,
+    "budget": {
+      "user_seq": 96,
+      "used": 4
+    },
+    "execution": {
+      "state": "idle",
+      "errors": []
+    },
+    "saved": [],
+    "errors": [],
+    "tool_events": [
+      "calculator",
+      "calculator",
+      "calculator"
+    ],
+    "answer": "# 只读核对完成：v6 已恢复，未做任何新评估\n\n## 1. 恢复结果【事实】\n\n`restore_version(version=6)` 返回 `ok: true`、`recomputed: false`，即直接读取归档报告，**没有重新计算、没有调用 evaluate_factor、没有新增试验**（`trials` 仍为 6，`t_required` 仍为 2.638）。\n\n| 项目 | 值 |\n|:--|:--|\n| 表达式 | `-decay_linear(ts_std(ret, 60), 5)` |\n| 模式 / 持有期 / 期数 | cross / 1 期 / 1133 |\n| RankIC | 0.04491 |\n| IC 均值 | 0.05404 |\n| IC 标准差 | 0.54278 |\n| ICIR | 0.08275 |\n| IC t 值（门槛） | 2.785（2.638）✓ |\n| IC 为正比例 | 52.69% |\n| 样本内 / 样本外 RankIC | 0.03677 / 0.06417 |\n| 样本外保留率 | 174.52% |\n| 换手（半 L1） | 1.170% |\n| 覆盖率 | 100% |\n| 库内最大相关 | 0.000（库内多条因子缺评估摘要，此值不作相关性证据） |\n| 多空夏普 | 0.4358 |\n| 多空最大回撤 | 15.42% |\n| 成本口径 | cost_bps = 10.0 |\n\n## 2. ls_return 与 ls_total_return 的口径【事实，照抄 metric_contract】\n\n平台 `metric_contract` 字段原文如下：\n\n- `ls_return`：`period = annualized`、`costs = included`、`unit = fraction` —— **年化、已扣 10bps 成本**\n- `ls_total_return`：`period = cumulative`、`costs = included`、`unit = fraction` —— **累计、已扣 10bps 成本**\n- `ls_sharpe`：`period = annualized`、`costs = included`\n- `turnover`：`definition = half_L1_weight_change`，但 `cost_basis = full_L1_weight_change` —— 换手显示为权重变化 L1 的一半，**计费按完整 L1**\n- `admitted`：`meaning = research_checks_passed`、`live_approval = false`\n\n对应到 v6 的实际读数：\n\n$$\\text{多空年化费后收益} = +6.666\\%,\\qquad \\text{多空累计费后收益} = +3.395\\%$$\n\n两者都是**费后**数字，不需要、也不允许再减一次成本。我此前一轮写的「毛 +6.67% − 1.33% = 净 +5.34%」是双重计费 + 把年化当累计，该说法已作废，以本次 `metric_contract` 原文为准。\n\n## 3. ICIR 差距：绝对与相对\n\n$$目标\\ \\text{ICIR} = 0.15,\\qquad 实测\\ \\text{ICIR} = 0.08275$$\n\n- **绝对差距**：$0.15 - 0.08275 = 0.06725$\n- **相对差距**：$\\dfrac{0.08275}{0.15} = 55.16\\%$，即只达到目标的 **55.2%**，尚差 **44.8%**\n\n这只是一个描述性的实测差距。**我不据此推断目标不可达**：我没有做任何关于 IC 序列方差结构、抽样噪声或截面宽度与 ICIR 上限关系的推断——那类推断需要独立验证，本次是只读核对，没有验证。\n\n## 4. 现状与边界\n\n- 当前因子 = v6（`-decay_linear(ts_std(ret, 60), 5)`），与库内 `f_490325b0` 同表达式。\n- **未启用任何资产**：本次只执行了恢复，没有调用启用 / 晋级 / 模拟盘相关工具；`admitted = research_checks_passed` 不构成可交易或实盘批准。\n- 未扩大币池、未改数据区间 / 周期 / 标签、未调调参、未新增试验。\n- 只读结论：v6 在 6 标的 4h 面板上 RankIC、样本外保留、换手三项达标，ICIR 与目标差 0.06725（相对差 44.8%），**不达标，如实记录**。"
+  },
+  "models": {
+    "project_id": "d9d4f5f1f38f",
+    "current_version": 2,
+    "version_count": 11,
+    "budget": {
+      "user_seq": 120,
+      "used": 4
+    },
+    "execution": {
+      "state": "idle",
+      "errors": []
+    },
+    "saved": [
+      {
+        "model_id": "m_029f6a43",
+        "name": "真实体验_model_6a43",
+        "status": "candidate",
+        "kind": "model"
+      },
+      {
+        "model_id": "m_88361661",
+        "name": "真实体验_model_1661",
+        "status": "candidate",
+        "kind": "model"
+      }
+    ],
+    "errors": [],
+    "tool_events": [
+      "save_model",
+      "save_model"
+    ],
+    "answer": "明白：只用 restore_version 恢复已有版本并归档，不做任何训练。先恢复 version=1。\nv1 已恢复（`recomputed: false`，即直接读取归档报告，未重算）。基线字段：`\"特征等权合成\"`。现在归档。\nv1 归档为 **`m_029f6a43`**（6 标的、6828 样本，原始 v1 的报告，未重算）。现在恢复 version=2。\nv2 已恢复（`recomputed: false`）。基线字段：`\"线性模型\"`，其 `baseline_rank_ic` = 0.02593696095342638，与 v1 的 `oos_rank_ic` 逐位相等。现在归档。\n## 结论\n\n**两个候选都已归档，改用 restore_version 恢复归档报告，全程没有训练、没有改规格。** `restore_version` 两次都返回 `recomputed: false`，即直接读取归档报告、未重算；`save_work` 只是把恢复出的报告存为候选。两次调用 `restore_version` 和两次调用 `save_work`，没有调用 `write_model_spec` 或 `train_model`。恢复出的报告 `trials` 分别为 3 与 4，与原始记录相同，试验台账未增加。\n\n```ql:data_table\n{\"title\":\"两个归档候选（restore_version 恢复的原始报告，6 标的 4h，6828 样本，扩张窗口 4 折，purge 1 根，成本 10 bps）\",\"columns\":[{\"key\":\"n\",\"label\":\"候选\"},{\"key\":\"id\",\"label\":\"候选 ID\"},{\"key\":\"run\",\"label\":\"run\"},{\"key\":\"m\",\"label\":\"学习器\"},{\"key\":\"bn\",\"label\":\"baseline 字段\"},{\"key\":\"bic\",\"label\":\"基线 RankIC\",\"format\":\"ratio\"},{\"key\":\"ic\",\"label\":\"OOS RankIC\",\"format\":\"ratio\"},{\"key\":\"beat\",\"label\":\"超出基线\",\"format\":\"ratio\"},{\"key\":\"adm\",\"label\":\"admitted\"}],\"rows\":[{\"n\":\"v1 ridge\",\"id\":\"m_029f6a43\",\"run\":\"r_63f5f0b3af\",\"m\":\"ridge (alpha=1.0)\",\"bn\":\"特征等权合成\",\"bic\":-0.0015994981966441872,\"ic\":0.02593696095342638,\"beat\":0.02753645915007057,\"adm\":\"true\"},{\"n\":\"v2 gbdt\",\"id\":\"m_88361661\",\"run\":\"r_973c2ac666\",\"m\":\"gbdt (lr=0.05)\",\"bn\":\"线性模型\",\"bic\":0.02593696095342638,\"ic\":0.008138324906433682,\"beat\":-0.0177986360469927,\"adm\":\"false\"}]}\n```\n\n两个 ID 不同：**`m_029f6a43`**（ridge）、**`m_88361661`**（gbdt）；状态均为 `candidate`，`activation_eligible` 均为 `false`。\n\n## 两者基线分别是什么（【事实】取自 restore_version 返回的 `baseline` 字段）\n\n**v1 ridge：`baseline = \"特征等权合成\"`**\n把 6 个特征等权合成一路预测，不拟合、不加权。该基线样本外 RankIC **−0.0015994981966441872**，多空夏普 −3.4333。ridge 做到 0.0259，`beat_baseline = +0.0275`——【事实】按此报告，ridge 通过了“跑赢基线”这项必需检查，因此 `admitted: true`。\n\n**v2 gbdt：`baseline = \"线性模型\"`**\n这里指的是 ridge。可交叉核对：gbdt 的 `baseline_rank_ic` = **0.02593696095342638**，与 v1 候选的 `oos_rank_ic` 逐位等于同一个数；`baseline_ls_sharpe` = −3.1761829849786096，也与 v1 的 `ls_sharpe` 完全相同。gbdt 自己只有 0.0081，`beat_baseline = −0.0178`，**没通过**跑赢基线检查，所以 `admitted: false`。\n\n因此，两者比较对象不同：ridge 与“特征等权合成”比，gbdt 与 ridge 比。\n\n## 三点需要说明\n\n1. **这次恢复的是原始 6 标的报告**（BTC/ETH/SOL/BNB/XRP/ADA，6828 样本，`source: exchange`），RankIC 就是最初记录的 **0.0259 / 0.0081**。我上一轮说“6 标的池数字无法复现”不准确——用 restore_version 不需要重跑就能读到，这里更正。\n2. **v2 的完整超参已确认**：`learning_rate 0.05 / max_depth 3 / min_leaf 60 / n_estimators 200 / patience 20 / subsample 0.8`（此前版本记录里被截断，restore 的 `code` 字段给出了全部参数）。\n3. **两个候选都不可启用**，且多空夏普为负（−3.18 / −6.31，费后累计 −0.218 / −0.427）。`admitted: true` 只表示研究检查通过，不代表可交易。两者 PSI 均为 0.327（>0.25 漂移）、样本外 t 值 1.58 / 0.52 均低于门槛 2.39 / 2.50，【假设】近期特征分布已变，模型未覆盖。\n4. 早前归档的 `m_dbac4949`、`m_03e8c656`（13 标的池版本）仍在库中，现在是 4 个候选，注意别混用；本次两个是 6 标的原始版本。\n\n旧计划按你的要求停止，不再推进，也不再追默认目标或换标签。"
+  },
+  "portfolio": {
+    "project_id": "decaf15ed107",
+    "current_version": 10,
+    "version_count": 10,
+    "budget": {
+      "user_seq": 61,
+      "used": 7
+    },
+    "execution": {
+      "state": "idle",
+      "errors": []
+    },
+    "saved": [
+      {
+        "scheme_id": "pf_f789203e",
+        "name": "候选A-等权-6币4h-单币30%上限",
+        "status": "candidate",
+        "kind": "portfolio"
+      },
+      {
+        "scheme_id": "pf_d454bdb0",
+        "name": "候选B-风险平价-6币4h-单币30%上限_bdb0",
+        "status": "candidate",
+        "kind": "portfolio"
+      }
+    ],
+    "errors": [],
+    "tool_events": [
+      "list_portfolios",
+      "evaluate_portfolio",
+      "save_portfolio",
+      "evaluate_portfolio",
+      "save_portfolio",
+      "list_portfolios"
+    ],
+    "answer": "先读取当前版本与方案库状态，确认能否产生两条独立记录，再执行恢复与保存。\n关键更正：方案库其实**支持多条独立记录**（现已有 4 条：`pf_54b14721` 等权、`pf_111ec483` 风险平价、`pf_f6913b96` HRP、`pf_e65e0a5c` 候选B）。我上一轮说\"只保留一条、两候选无法各占一条\"是错的，现在可以为两个候选各建一条。\n\n开始恢复 v7（等权）。\n等权已恢复（v9，run `p_2a5292a0ba`），指标与 v7 完全一致 —— 说明是逐字段复原、非新实验。现在保存为候选 A。\n候选 A 已入库：`pf_f789203e`（max_weight 0.3 已确认，`activation_eligible=false`）。现在恢复 v8（风险平价）。\n风险平价已恢复（v10，run `p_643c8a3cab`），指标与 v8 完全一致。保存为候选 B。\n两个候选都已入库。最后核验库内记录与约束字段。\n## 已完成：两个候选各自独立入库\n\n两个版本都已按原配置逐字段恢复并保存，**拿到两个独立的资产 ID**：\n\n```ql:data_table\n{\"title\":\"候选方案归档核对（配置逐字段复原，参数无任何改动）\",\"columns\":[{\"key\":\"k\",\"label\":\"项目\"},{\"key\":\"a\",\"label\":\"候选A 等权\"},{\"key\":\"b\",\"label\":\"候选B 风险平价\"}],\"rows\":[{\"k\":\"方案库 ID\",\"a\":\"pf_f789203e\",\"b\":\"pf_d454bdb0\"},{\"k\":\"版本号\",\"a\":\"v9\",\"b\":\"v10\"},{\"k\":\"评估 run\",\"a\":\"p_2a5292a0ba\",\"b\":\"p_643c8a3cab\"},{\"k\":\"optimizer\",\"a\":\"equal\",\"b\":\"risk_parity\"},{\"k\":\"max_weight（单币上限）\",\"a\":\"0.30 ✓\",\"b\":\"0.30 ✓\"},{\"k\":\"max_gross（杠杆）\",\"a\":\"1.0 不加杠杆 ✓\",\"b\":\"1.0 不加杠杆 ✓\"},{\"k\":\"long_only\",\"a\":\"true\",\"b\":\"true\"},{\"k\":\"rebalance / lookback\",\"a\":\"6 根4h=1天 / 180\",\"b\":\"6 根4h=1天 / 180\"},{\"k\":\"risk_model\",\"a\":\"ledoit_wolf\",\"b\":\"ledoit_wolf\"},{\"k\":\"成本\",\"a\":\"10 bps\",\"b\":\"10 bps\"},{\"k\":\"夏普\",\"a\":\"0.163\",\"b\":\"0.250\"},{\"k\":\"年化收益 / 波动\",\"a\":\"-3.31% / 47.05%\",\"b\":\"+1.30% / 44.18%\"},{\"k\":\"最大回撤\",\"a\":\"32.24%\",\"b\":\"30.77%\"},{\"k\":\"CVaR 95%\",\"a\":\"2.26%\",\"b\":\"2.13%\"},{\"k\":\"夏普超出等权\",\"a\":\"0.000\",\"b\":\"+0.086\"},{\"k\":\"admitted / activation_eligible\",\"a\":\"true / false\",\"b\":\"true / false\"}]}\n```\n\n**复原是精确的**：【事实】两次重算的夏普、回撤、波动、CVaR、换手全部与 v7 / v8 逐位相同（如等权 0.163171944865982、风险平价 0.2496113704437386），说明参数未变，属重现而非新试验，没有为达标追加调参。\n\n## 三点必须说清\n\n> [!WARNING]\n> **`admitted=true` 只表示研究检查通过，不是实盘批准。** 两条记录的 `activation_eligible=false`，平台给出的阻断原因是「项目必达目标尚未通过，请保存为候选」。夏普 0.25 vs 目标 1.0、回撤 30.8% vs 25% 都未达标，两个方案都只能停在候选状态。\n\n1. **更正我上一轮的错误**：我说过\"方案库按项目 upsert、两候选无法各占一条\"——这是错的。库内实际支持多条独立记录（现有等权 `pf_54b14721`、风险平价 `pf_111ec483`、HRP `pf_f6913b96` 各占一条），本轮也顺利拿到两个不同 ID。上轮的覆盖只发生在同名记录上。\n\n2. **留下一条重复记录需要你决定**：候选B 现在有两条配置与指标完全相同的记录——`pf_e65e0a5c`（早期保存）和 `pf_d454bdb0`（本轮）。删记录要你批准，我没有动。若要清理，告诉我删哪条。\n\n3. **单币 30% 上限在两方案中都没有成为约束**：等权各币 16.7%，风险平价最大权重是 BTC 24.82%（低波动被加权重）、ADA 降到 9.11%。也就是说 30% 上限是松的，真正起作用的是优化器和协方差估计。\n\n风险贡献与压力测试的完整对比在上一轮回答里（等权 RC 偏斜：ADA 28.1% / BTC 10.0%；风险平价精确各 16.67%；6 个情景风险平价全部略优 2–5pp，但 2020-03 情景两者都亏 66–71%）。本次按你的要求只做复原与归档，未新增实验、未改币池。"
+  },
+  "strategy": {
+    "project_id": "2125308788fa",
+    "current_version": 1,
+    "version_count": 1,
+    "budget": {
+      "user_seq": 32,
+      "used": 15
+    },
+    "execution": {
+      "state": "idle",
+      "errors": []
+    },
+    "saved": [
+      {
+        "slug": "strategy-dc823d",
+        "name": "真实体验_strategy",
+        "version": "2b43e00e7e2d"
+      }
+    ],
+    "errors": [],
+    "tool_events": [
+      "list_strategies",
+      "list_backtests",
+      "list_backtests",
+      "graduation",
+      "calculator",
+      "calculator",
+      "calculator",
+      "calculator",
+      "calculator",
+      "calculator",
+      "calculator",
+      "calculator",
+      "calculator"
+    ],
+    "answer": "研究者要求保留项目名并重试保存，我直接重试 `save_work`，不重新生成代码。\n保存成功。核对一下库里的记录与两档回测成绩。\n保存成功。现在核对差异数字（用工具计算，不心算）。\n## 保存草稿：已完成\n\n- **策略名**：`真实体验_strategy`（按你的要求保留原项目名）\n- **slug**：`strategy-dc823d`，`status=draft`，`approved=false`，标的 BTC/USDT + ETH/USDT，周期 4h\n- **代码未变动**：保存的是已评估的那一版（EMA20/60、每币 45% 硬上限、只做多、下一根开盘成交），没有重新生成。\n\n> [!WARNING]\n> 一个遗留细节：库里两条回测记录的 `slug` 字段是 `null`，并没有挂到这份草稿上。因此 `graduation` 对该草稿的第一道关卡显示「有一次成功的回测 = 没有 / `passed=false`，stage=回测研究」。按你\"不新增实验\"的要求，我没有为草稿补跑一次关联回测——这需要一次新的 run 才能生成关联记录。\n\n```ql:callout\n{\"tone\": \"info\", \"title\": \"保存状态\", \"text\": \"草稿 strategy-dc823d 已在策略库中（draft / 未批准）。两条 4h 回测成绩可用于研究结论，但尚未与该草稿建立关联，所以关卡检查暂不认账。\"}\n```\n\n## 已有结果汇总（默认成本 vs 3 倍成本）\n\n两档都是同一份代码、同一段真实 4h 行情（Binance 现货，每币 1199 根，覆盖 2026-04-09 12:00 → 2026-10-26 07:59，`data_check.formal=true`，无缺口），成交模型 `next_open`，初始资金 10,000 USDT。\n\n| 指标 | 默认成本 | 3 倍成本 |\n|:--|--:|--:|\n| 总收益 | **+5.37%** | **−0.54%** |\n| 年化 | +10.98% | −1.07% |\n| 夏普 | 0.53 | 0.09 |\n| 最大回撤 | 14.28% | 16.36% |\n| 交易数 / 胜率 | 20 / 30.0% | 20 / 30.0% |\n| 手续费 | 172.64 USDT（初始资金 1.73%） | 504.10 USDT（初始资金 5.04%） |\n| 几何超额 vs 多币等权买入持有（+3.42%） | +1.89% | −3.83% |\n| 单边成本（taker 0.10% + 滑点 0.05% + 半价差 0.01%） | 0.160% | 0.460% |\n\n```ql:compare\n{\"versions\": [{\"label\": \"默认成本\", \"backtest_id\": \"bt-20261026-192759-022e\", \"changes\": [\"平台默认成本：taker 0.10% 单边 + 滑点 5bps + 半价差 1bps（策略代码未调用 set_order_cost）\"]}, {\"label\": \"3 倍成本\", \"backtest_id\": \"bt-20261026-192807-be70\", \"changes\": [\"cost_scale=3：手续费与滑点各放大 3 倍，价差不随倍数变化\"]}], \"explanation\": \"两档代码完全相同，差异只来自成本倍数。3 倍下手续费增加 331.46 USDT（占初始资金 3.31%，工具计算），总收益减少 5.91 个百分点（工具计算），手续费实际放大 2.92 倍而非整数 3 倍，是因为半价差部分不随 cost_scale 缩放——说明结果对成本高度敏感，属于典型薄边际趋势策略。这是推断，未做逐笔成本归因。\"}\n```\n\n【事实】成本使结果由正转负的幅度（5.91 pp，工具计算）远大于两档的绝对收益量级；20 笔交易里胜率仅 30%，靠少数大趋势单撑住默认档的收益，因此任何成本上升都会直接吃掉利润。\n【事实】默认成本下手续费占毛利约 24.3%（172.64 / 709.84，工具计算），换手 17.3 倍、平均持仓约 228 小时（≈38 根 4h）。\n\n> [!NOTE]\n> 修正上一轮的一处口径错误：上一轮我把 3 倍档的单边/往返成本写成 1.44% / 2.88%，那是把 0.46% 又乘了一次 3，正确值是**单边 0.46%、往返 0.92%**（工具计算：`(0.0010+0.0005)*3+0.0001 = 0.0046`）。回测指标本身不受影响。\n\n## 独立样本外验证：未完成\n\n这点必须说清楚，不能含糊：\n\n- **没有做过** `walk_forward` 分段、没有 holdout 切分、没有独立时间段重跑。两档回测都是同一段 1199 根 4h 历史、同一批参数（20/60/0.45）跑出来的。\n- 因此 +5.37% 与 −0.54% 都只是**这段样本内的结果**；3 倍成本档是同一段数据的成本重算，**不构成任何样本外证据**。\n- 样本量本身也不足以下判断有效性：20 笔完整交易、约 200 天、2 个高度相关的币。\n- 另外，项目目标未设定（`goal_set=false`），所以不存在\"是否达标\"的可对照目标；下面门槛判断用的是平台晋级关卡口径 + 常规研究口径，**是我的评估建议，不是你的验收标准**。\n\n## 是否达到实盘研究门槛\n\n**未达到。** 逐项对照：\n\n| 关卡项 | 常见门槛 | 实测 | 判定 |\n|:--|:--|:--|:--|\n| 平台关卡：至少一次成功回测（关联到草稿） | ≥ 1 次 | 草稿未关联任何回测 | 未过 |\n| 夏普 | ≥ 1.0 | 0.53 | 未过 |\n| 最大回撤 | ≤ 20% | 14.28% | 过 |\n| 3 倍成本下仍为正 | 总收益 > 0 | −0.54% | 未过 |\n| 相对基准稳定超额 | 信息比率 > 0.3 | 0.02 | 未过 |\n| 交易数足以判断 | ≥ 30～50 笔 | 20 笔 | 不足 |\n| 独立样本外验证 | walk_forward / holdout | 未做 | 缺 |\n\n**局限与适用行情**：【假设】20/60 双均线依赖中期单边趋势，震荡市中反复金叉死叉，30% 胜率 + 高盈亏比的分布非常依赖少数大行情，且对成本极其敏感；BTC 与 ETH 高度同涨，两币各 45% 实际接近\"90% 仓位的单一 beta\"，分散有限。风险分三层：仓位每币 45%；止损距离无固定值（靠死叉退出，平均持仓约 38 根 4h）；单笔账户风险 = 45% × 该笔跌幅，**未设上限**。"
+  },
+  "usage": {
+    "workspace_id": "6ccebb8289614a85",
+    "day": "2026-10-26",
+    "items": [
+      {
+        "metric": "backtest_cpu_seconds",
+        "label": "回测 CPU 秒",
+        "unit": "秒",
+        "period": "daily",
+        "used": "4.431",
+        "limit": null,
+        "remaining": null,
+        "used_percent": null,
+        "exhausted": false,
+        "quota_key": "max_cpu_seconds_per_day"
+      },
+      {
+        "metric": "backtest_runs",
+        "label": "回测次数",
+        "unit": "次",
+        "period": "daily",
+        "used": "6",
+        "limit": null,
+        "remaining": null,
+        "used_percent": null,
+        "exhausted": false,
+        "quota_key": "max_backtests_per_day"
+      },
+      {
+        "metric": "optimize_combinations",
+        "label": "优化组合数",
+        "unit": "组",
+        "period": "daily",
+        "used": "0",
+        "limit": null,
+        "remaining": null,
+        "used_percent": null,
+        "exhausted": false,
+        "quota_key": "max_optimize_combinations_per_day"
+      },
+      {
+        "metric": "llm_calls",
+        "label": "LLM 调用次数",
+        "unit": "次",
+        "period": "daily",
+        "used": "138",
+        "limit": null,
+        "remaining": null,
+        "used_percent": null,
+        "exhausted": false,
+        "quota_key": "max_llm_calls_per_day"
+      },
+      {
+        "metric": "llm_tokens",
+        "label": "LLM token 数",
+        "unit": "token",
+        "period": "daily",
+        "used": "4732869",
+        "limit": null,
+        "remaining": null,
+        "used_percent": null,
+        "exhausted": false,
+        "quota_key": "max_llm_tokens_per_day"
+      },
+      {
+        "metric": "data_download_bytes",
+        "label": "数据下载量",
+        "unit": "字节",
+        "period": "daily",
+        "used": "0",
+        "limit": null,
+        "remaining": null,
+        "used_percent": null,
+        "exhausted": false,
+        "quota_key": "max_download_bytes_per_day"
+      },
+      {
+        "metric": "storage_bytes",
+        "label": "存储占用",
+        "unit": "字节",
+        "period": "total",
+        "used": "0",
+        "limit": null,
+        "remaining": null,
+        "used_percent": null,
+        "exhausted": false,
+        "quota_key": "max_storage_bytes"
+      }
+    ],
+    "history": [
+      {
+        "day": "2026-10-26",
+        "metric": "llm_calls",
+        "value": "138"
+      },
+      {
+        "day": "2026-10-26",
+        "metric": "llm_tokens",
+        "value": "4732869"
+      },
+      {
+        "day": "2026-10-26",
+        "metric": "backtest_runs",
+        "value": "6"
+      },
+      {
+        "day": "2026-10-26",
+        "metric": "backtest_cpu_seconds",
+        "value": "4.431"
+      }
+    ],
+    "note": "用量按工作区计量，跨工作区互不可见；日界为 UTC 自然日。仅为研究结果，非投资建议。"
+  },
+  "activation_http": {
+    "factor": 409,
+    "model": 409,
+    "portfolio": 409
+  },
+  "risk_off": {
+    "ann_return": -0.10800146157616886,
+    "ann_vol": 0.29623721566310657,
+    "sharpe": -0.23774939022419425,
+    "max_drawdown": 0.22563552063269132,
+    "calmar": -0.47865451890432986,
+    "cvar_95": 0.015426279076447355,
+    "turnover": 0.024298088094058132,
+    "effective_n": 5.652793291055226,
+    "ew_sharpe": 0.16373585891964254,
+    "ew_max_drawdown": 0.3217179150200099,
+    "ew_ann_return": -0.032689216792487596,
+    "beat_ew": -0.40148524914383676,
+    "dd_vs_ew": 0.09608239438731858,
+    "sharpe_h1": -3.393964761599706,
+    "sharpe_h2": 2.160790789257389,
+    "rebalances": 170,
+    "avg_exposure": 0.638915294117647,
+    "optimizer": "risk_parity",
+    "risk_model": "ledoit_wolf",
+    "bars": 1019,
+    "triggers": {
+      "vol_target": 148,
+      "dd_stop": 79
+    },
+    "cost_bps": 10.0
+  },
+  "source_sha256": {
+    "src/quant_agent/agents/factor_lab.py": "19552dd866b6d9e9d27196ad2f9e441255d15c8ba9ab985432e8caa802d82942",
+    "src/quant_agent/agents/lab_plan.py": "fa82c56db1caac4f410ca4398edd6536e8b52cfbbf46000411e2972a03035148",
+    "src/quant_agent/agents/lab_runtime.py": "ac9e50be3dd7d9f9ee0841a47bd39ee74c4a023c82a90e0f6611b4e4ef8296b9",
+    "src/quant_agent/agents/lab_tools.py": "6b80a3637e35492e48e52554803f58efd24c9f53e0346ce06ae66ff7c5340546",
+    "src/quant_agent/agents/model_lab.py": "2d35bc62d57504ab1ae66f6114a6220b65aa0f0e448b85e06eed547183afc761",
+    "src/quant_agent/agents/portfolio_lab.py": "8842fd7ae35360e7ac2cec0303fdb2b7265a03d982ff64d2ea27bee597a2c7f4",
+    "src/quant_agent/agents/redteam.py": "a2132e95dadfe17f48a760d9c7c4e0dabc789b2906fe8364a82475bc875ca5fe",
+    "src/quant_agent/agents/research_lab.py": "386d4eb48bf8f85849b9e4aae829d770e9b6d2dfa616f6af1ac63a8df63a9b35",
+    "src/quant_agent/agents/strategy_lab.py": "8a54e57dd66e037ac8515e66a2cf8b24968aa20c8648df1c0acfaeec664cac0c",
+    "src/quant_agent/api/routes_factors.py": "187c68dbfbba1e90a5fd88163d2b961f4f9425bc4a59c8784a94f3d2da49ccc9",
+    "src/quant_agent/api/routes_lab.py": "015cc41db7c6dbe5d3da9aed43e862680b1dbd3e8d5c7bdbcc7ffc9ff0388b65",
+    "src/quant_agent/api/routes_models.py": "08db04c9bead66c4864ec4b5c2eefeb2cae64c5794fa19864f3ff8053dbd5dd3",
+    "src/quant_agent/api/routes_portfolio.py": "e01e75ee25ba48dc0fd0fee4f2de4a19d5088a6f6645d041e8ac8482c92222f3",
+    "src/quant_agent/platform/quota.py": "abe97da786b053c7b6f233b7bd3aeebda23fe470bbfc64e14b89714a08556ab6",
+    "src/quant_agent/research/default_assets.py": "e53f804e0c1016b3cf4b55615e3804c630c69ae538b98f43572329f5cc240932",
+    "src/quant_agent/research/factor_eval.py": "7ecf77c56344e2a8ff1e39a3789d9f8908d11166460d14819a9bb1c276b5e438",
+    "src/quant_agent/research/factor_lib.py": "33ba856c1d61942da0b3e4ba3181f3c16b56d66bda3ce77d03fb33271ccb1ebb",
+    "src/quant_agent/research/goals.py": "2ca131ee6613e7da957fb0b25122a410342fe00f657b26bc37e6a2f7ceee2383",
+    "src/quant_agent/research/model_lib.py": "8557f45193fcc712522b4f26e89ecd9f0960079d44ca2a35b9c802dfa7ffebae",
+    "src/quant_agent/research/models.py": "7319f41598e241a172f986a43457f45a20b7192484ad5884e5b10726c66d4c39",
+    "src/quant_agent/research/portfolio_lib.py": "91ccf696926c5483ea55e0eef804061a5b0a97e5162377451344ca1979e68d52",
+    "src/quant_agent/strategies/repo.py": "1854875bddeb3153feb62bef67ab7712cdb4a506eaf75e77dc298caddeb94de6",
+    "src/quantlab_research/engines/portfolio.py": "16f7fa6d2886994360595928c861b22cec03eb779fa28b2858c69512c04e91a8",
+    "tests/test_default_assets.py": "c63deb3457a9233d7b80e1a4e2a61b5fc8e6d38ec40eb9ad23bd9df02eeaf8d6",
+    "tests/test_factor_research.py": "554df1857e5f8c74ee51ebd035729b4addd21c0684de6be0921b55ad7534f55e",
+    "tests/test_lab_runtime_api.py": "7dbb616e771d1b46824baa631b985efda9dca265ac5d1e80d0ccc0bb23656820",
+    "tests/test_model_research.py": "1153a3622bab065b2305b02bd56447d5336a268858814743c64f851b02121599",
+    "tests/test_quota.py": "d85eed978e514f7044b762a564b3b44a059bd57338822ef69f0c683a80560b93",
+    "web/src/apiFactors.ts": "5d0ad1f8f3236e955ac1450508f7a259d0915912bee6250274c73e6c6d65db99",
+    "web/src/apiModels.ts": "ce1f57b32b10c717ba56a5a48c59550fc29ac07ed91b75aecdcdee86df35a874",
+    "web/src/apiPortfolio.ts": "28ae7e14a69cd5675544b0a6b0bdf6a267783fff6431b219e1d7411efea6fec8",
+    "web/src/components/portfolioReport.tsx": "f0e2889300f0f3f2e22f19036912cd6f3cc5c0f861bf33c27e15a60fa5585b26",
+    "web/src/i18n/en.json": "358bb7d25ac501fb6c8e8fa6dc5c684b9a29ed50463987ae714e37649533ef6a",
+    "web/src/pages/Factors.tsx": "e68798e8b42c83e3f32f3a674d4fa56a9838bb2eb6d0df51e71508c2acf92efd",
+    "web/src/pages/ModelLib.tsx": "204941b60be91da3402893ddc153955df2b113c5130157fd1429d0f965987141",
+    "web/src/pages/Portfolio.tsx": "cb4e901399134f5a631376e6b9136acfb083131ab842891649089eef4fb5dcc4",
+    "src/quant_agent/research/contracts.py": "092f524079f2b200c63f6a0caa975e06da0f5b564cc4f09f154aa872b3f8635a",
+    "tests/test_journey_regressions.py": "d20c90cb9d59941711e0fbc4082806fb1a59a1ee03e7fa0f8cb52053f6858b38"
+  }
+}

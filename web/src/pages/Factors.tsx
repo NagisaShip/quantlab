@@ -251,7 +251,7 @@ function Evaluator({ meta, notify, onSaved, onEvaluated }: { meta: FactorMeta | 
         <Panel title="评估结果" actions={<>
           <input className="fx-search" placeholder="因子名称" value={name} onChange={(e) => setName(e.target.value)} aria-label="因子名称" />
           <button className="button small" onClick={() => save('candidate')}>存为候选</button>
-          <button className="button small primary" disabled={!report.admitted} title={report.admitted ? '' : '入库检查没有全部通过'} onClick={() => save('active')}>入库</button>
+          <button className="button small primary" disabled={!report.activation_eligible} title={report.activation_block_reason || '研究通过不等于实盘批准'} onClick={() => save('active')}>启用研究资产</button>
         </>}>
           <FullReport report={report} />
         </Panel>

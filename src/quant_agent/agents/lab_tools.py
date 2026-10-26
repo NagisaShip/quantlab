@@ -134,6 +134,8 @@ def chat_tools(lab, pid: str) -> dict[str, Tool]:
 
     def set_goal(**kw: Any) -> Any:
         out = lab.set_goal(pid, kw, source="model")
+        if out.get("ok") is False:
+            return out
         return {
             "ok": True,
             "goal": out["spec"],
@@ -689,6 +691,16 @@ def slash_tools(lab, pid: str) -> dict[str, Tool]:
             return {"ok": False, "error": "至少给出标的或周期"}
         project = lab.store.get(pid) or {}
         changes: dict[str, Any] = {"market_auto": False}
+        if not project.get("market_auto"):
+            from ..research.contracts import guard_scope, latest_user_text
+
+            requested = {}
+            if syms:
+                requested["symbols"] = syms
+            if tf:
+                requested["timeframe"] = tf
+            if reason := guard_scope(project, requested, latest_user_text(lab, pid)):
+                return {"ok": False, "error": reason}
         if syms:
             changes["securities"] = syms
         if tf:
@@ -1014,9 +1026,15 @@ def slash_tools(lab, pid: str) -> dict[str, Tool]:
             },
             set_market,
         ),
+        "restore_version": Tool(
+            "restore_version",
+            "恢复已有版本及其报告，不重算、不新增试验；比较归档历史版本时先恢复再save_work",
+            {**obj, "properties": {"version": {"type": "integer", "minimum": 1}}, "required": ["version"]},
+            lambda version: lab.restore_version_evidence(pid, int(version)),
+        ),
         "save_work": Tool(
             "save_work",
-            "保存当前成果（等同 /save）：策略存为平台策略草稿，因子 / 模型 / 方案存进对应的库。研究者认可后再用",
+            "保存当前成果（等同 /save）：策略存草稿，其余存候选；不同历史版本分别归档，不会自动启用",
             {**obj, "properties": {}},
             lambda: lab.save_work(pid),
         ),

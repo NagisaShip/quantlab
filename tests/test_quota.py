@@ -305,11 +305,8 @@ def test_negative_limit_is_rejected(svc):
 
 
 def test_default_limits_present():
-    """没配置时要有兜底上限，否则配额形同虚设。"""
-    assert DEFAULT_LIMITS["max_backtests_per_day"] is not None
-    assert DEFAULT_LIMITS["max_cpu_seconds_per_day"] is not None
-    # 存储占用默认只展示不拒绝
-    assert DEFAULT_LIMITS["max_storage_bytes"] is None
+    """默认无限计量；管理员仍可显式设限。"""
+    assert DEFAULT_LIMITS and all(value is None for value in DEFAULT_LIMITS.values())
 
 
 # ---------------------------------------------------------------------------

@@ -77,6 +77,8 @@ export interface PortfolioReport {
   }
   checks: AdmissionCheck[]
   admitted: boolean
+  activation_eligible?: boolean
+  activation_block_reason?: string
   panel: { bars: number; symbols: string[]; timeframe: string; start: number | null; end: number | null; synthetic: boolean; warnings: string[] }
 }
 

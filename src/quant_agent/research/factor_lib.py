@@ -292,6 +292,10 @@ class FactorLibrary:
         return next((f for f in self.store.list(FACTORS) if f.get("name") == name or f.get("id") == name), None)
 
     def save(self, payload: dict[str, Any], *, report: dict[str, Any] | None = None) -> dict[str, Any]:
+        from .contracts import activation_error, annotate_report
+
+        if report is not None:
+            annotate_report(report)
         expr = str(payload.get("expression") or "").strip()
         parse(expr)
         fid = payload.get("id") or f"f_{uuid.uuid4().hex[:8]}"
@@ -333,16 +337,32 @@ class FactorLibrary:
                 }
             )
             rec["health"] = health[-30:]
+        proof = report if report is not None else self.report(fid)
+        if prev and normalize(expr) != prev.get("expression") and report is None:
+            proof = None
+            rec.update(summary=None, checks=None, admitted=False)
+            self.store.delete_blob(REPORTS, fid)
+        rec["activation_block_reason"] = activation_error(proof)
+        rec["activation_eligible"] = not rec["activation_block_reason"]
+        if rec["status"] == "active" and not rec["activation_eligible"]:
+            rec["status"] = "candidate"
         self.store.upsert(FACTORS, rec)
         return rec
 
     def report(self, fid: str) -> dict[str, Any] | None:
-        return self.store.get_blob(REPORTS, fid)
+        from .contracts import annotate_report
+
+        report = self.store.get_blob(REPORTS, fid)
+        return annotate_report(report) if report else None
 
     def set_status(self, fid: str, status: str) -> dict[str, Any] | None:
+        from .contracts import activation_error
+
         rec = self.get(fid)
         if rec is None or status not in STATUS_LABELS:
             return None
+        if status == "active" and (reason := activation_error(self.report(fid))):
+            raise ValueError(reason)
         rec.update(status=status, updated_at=_now())
         self.store.upsert(FACTORS, rec)
         return rec

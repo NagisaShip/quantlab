@@ -264,7 +264,7 @@ function Designer({ meta, notify, onSaved }: { meta: PortfolioMeta | null; notif
         <Panel title="评估结果" actions={<>
           <input className="fx-search" placeholder="方案名称" value={name} onChange={(e) => setName(e.target.value)} aria-label="方案名称" />
           <button className="button small" onClick={() => save('candidate')}>存为候选</button>
-          <button className="button small primary" disabled={!result.report.admitted} title={result.report.admitted ? '' : '风险调整后跑输等权'} onClick={() => save('active')}>启用</button>
+          <button className="button small primary" disabled={!result.report.activation_eligible} title={result.report.activation_block_reason || '研究通过不等于实盘批准'} onClick={() => save('active')}>启用研究资产</button>
         </>}>
           <PortfolioFullReport report={result.report} />
         </Panel>
@@ -343,7 +343,7 @@ function Runs({ optLabel, onOpen, notify }: { optLabel: (id: string) => string; 
                 <td className="right num muted">{f3(r.summary.ew_sharpe, 2)}</td>
                 <td className="right num">{fp(r.summary.max_drawdown, 1)}</td>
                 <td className="right num">{fp(r.summary.ann_vol, 0)}</td>
-                <td>{r.admitted ? <Tag tone="ok">可启用</Tag> : <Tag>跑输等权</Tag>}</td>
+                <td>{r.admitted ? <Tag tone="ok">研究检查通过</Tag> : <Tag>研究检查未全过</Tag>}</td>
                 <td className="muted">{r.source === 'lab' ? 'AI 研究室' : '方案设计'}</td>
                 <td className="muted">{when(r.created_at)}</td>
                 <td onClick={(e) => e.stopPropagation()}><RecordPinButton type="portfolio_run" id={r.id} pinned={r.pinned} notify={notify} /></td>
@@ -377,7 +377,7 @@ function RunDetail({ id, optLabel, notify, onSaved }: { id: string; optLabel: (i
       <RecordPinButton type="portfolio_run" id={id} pinned={data.run.pinned} notify={notify} />
       <button className="button small" disabled={readOnly} title={readOnly ? ro?.reason : undefined}
         aria-describedby={readOnly ? READ_ONLY_REASON_ID : undefined} onClick={() => save('candidate')}>存为候选</button>
-      <button className="button small primary" disabled={!data.report.admitted || readOnly} title={readOnly ? ro?.reason : undefined}
+      <button className="button small primary" disabled={!data.report.activation_eligible || readOnly} title={readOnly ? ro?.reason : data.report.activation_block_reason}
         aria-describedby={readOnly ? READ_ONLY_REASON_ID : undefined} onClick={() => save('active')}>启用</button>
     </>}>
       {data.run.project_id && <div className="hint">来自 <a href={`#/lab/${data.run.project_id}`}>AI 研究室的项目</a></div>}

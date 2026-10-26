@@ -179,6 +179,10 @@ class FactorLab(StrategyLab):
         return FACTOR.items_text(project_spec(project)["items"]) if self.has_goal(project) else NO_GOAL_TEXT
 
     def set_goal(self, pid: str, raw: dict[str, Any], *, source: str = "user", review: bool = False) -> dict[str, Any]:
+        from ..research.contracts import guard_scope, latest_user_text
+
+        if source == "model" and (reason := guard_scope(self.store.get(pid) or {}, raw, latest_user_text(self, pid))):
+            return {"ok": False, "error": reason}
         self.store.patch(pid, goal_set=True)
         with _lock(f"p:{pid}"):
             project = self.store.get(pid) or {}
@@ -436,6 +440,7 @@ class FactorLab(StrategyLab):
                     "ic_win",
                     "ls_sharpe",
                     "ls_return",
+                    "ls_total_return",
                     "turnover",
                     "coverage",
                     "max_corr",
@@ -449,6 +454,9 @@ class FactorLab(StrategyLab):
             "decay": report["decay"],
             "regimes": report["regimes"],
             "groups_mean_bps": report["groups"]["mean"],
+            "metric_contract": report.get("metric_contract"),
+            "activation_eligible": report.get("activation_eligible", False),
+            "activation_block_reason": report.get("activation_block_reason", ""),
             "checks": [{"label": c["label"], "ok": c["ok"], "detail": c["detail"]} for c in report["checks"]],
             "goal": (
                 {"passed": evaluation["passed"], "gaps": FACTOR.gap_report(evaluation)}
@@ -564,6 +572,8 @@ class FactorLab(StrategyLab):
 
         def set_goal(**kw: Any) -> Any:
             out = self.set_goal(pid, kw, source="model")
+            if out.get("ok") is False:
+                return out
             return {
                 "ok": True,
                 "goal": out["spec"],
@@ -676,6 +686,8 @@ class FactorLab(StrategyLab):
         }
 
     def _chat_fallback(self, pid: str, text: str, reason: str) -> None:
+        if self._preserve_on_model_failure(pid, reason):
+            return
         project = self.store.get(pid) or {}
         if not project.get("code") or any(k in text for k in ("挖", "找", "因子", "假设", "试试")):
             seeds = pick_seeds(text or project.get("idea") or "", exclude=self._tried(project), k=1)
@@ -1142,6 +1154,12 @@ class FactorLab(StrategyLab):
             return None
         cur = next((r for r in project.get("versions") or [] if r["v"] == project.get("current_v")), {})
         report = self.report(pid, project.get("current_v") or 0)
+        if report is not None:
+            report = {**report, "project_goal_passed": (cur.get("evaluation") or {}).get("passed")}
+            from ..research.contracts import activation_error
+
+            if status == "active" and activation_error(report):
+                status = "candidate"
         if status == "active" and report and not report.get("admitted"):
             failed = [c["label"] for c in report.get("checks") or [] if c["required"] and not c["ok"]]
             status = "candidate"
@@ -1159,7 +1177,7 @@ class FactorLab(StrategyLab):
             {"状态": "入库" if status == "active" else "候选"},
             lambda: lib.save(
                 {
-                    "id": project.get("factor_id"),
+                    "id": project.get("factor_id") if project.get("library_version") == cur.get("v") else None,
                     "name": cur.get("name") or project.get("title"),
                     "expression": project["code"],
                     "hypothesis": project.get("hypothesis") or {},
@@ -1174,7 +1192,7 @@ class FactorLab(StrategyLab):
                 report=report,
             ),
         )
-        self.store.patch(pid, factor_id=rec["id"])
+        self.store.patch(pid, factor_id=rec["id"], library_version=cur.get("v"))
         self._post(
             pid,
             role="event",

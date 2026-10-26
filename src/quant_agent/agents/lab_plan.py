@@ -121,34 +121,26 @@ def _plan_loop(lab, pid: str) -> None:
         steps = plan["steps"]
         left = [i for i, s in enumerate(steps) if s["status"] not in ("done", "skipped")]
         goal_ok = lab._plan_goal_ok(project)
-        if not left and goal_ok is not False:
+        if not left:
             plan["status"] = "done"
             lab._save_plan(pid, plan)
             lab._post(
                 pid,
                 role="event",
                 kind="text",
-                content=f"计划完成：{len(steps)} 步全部做完" + ("，目标已达标" if goal_ok else ""),
+                content=f"计划完成：{len(steps)} 步全部做完"
+                + ("，目标已达标" if goal_ok else "，未达标项如实保留，不自动追加调参"),
             )
             return
-        if not left:
-            gap = lab.goal_text(project)
-            prompt = (
-                f"计划里的步骤都做完了，但目标还没达标（目标：{gap}）。先 check_goals 看差距，"
-                "再用 update_plan_step 的 add_steps 补充新步骤并继续执行；"
-                "如果目标确实不现实，说明原因并用 ask_user 问我是否放宽。"
-            )
-            lab._phase(pid, "计划：步骤做完但未达标，补充步骤", gap[:120])
-        else:
-            i = left[0]
-            if steps[i]["status"] != "doing":
-                steps[i]["status"] = "doing"
-                lab._save_plan(pid, plan)
-            prompt = (
-                f"继续执行计划第 {i + 1} 步：{steps[i]['text']}。完成后用 update_plan_step 标记（写上结果要点），"
-                "然后接着做下一步。不要停下来等我确认，除非确实需要我做决定。"
-            )
-            lab._phase(pid, f"执行计划 · 第 {i + 1}/{len(steps)} 步", steps[i]["text"][:160])
+        i = left[0]
+        if steps[i]["status"] != "doing":
+            steps[i]["status"] = "doing"
+            lab._save_plan(pid, plan)
+        prompt = (
+            f"继续执行计划第 {i + 1} 步：{steps[i]['text']}。完成后用 update_plan_step 标记（写上结果要点），"
+            "然后接着做下一步。完成已声明的步骤后如实报告，不为追逐默认指标自动增加试验。"
+        )
+        lab._phase(pid, f"执行计划 · 第 {i + 1}/{len(steps)} 步", steps[i]["text"][:160])
         before = (
             [s["status"] for s in steps],
             project.get("current_v"),

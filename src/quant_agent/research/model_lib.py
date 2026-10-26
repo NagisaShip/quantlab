@@ -85,7 +85,10 @@ class ModelLibrary:
         return self.store.get(RUNS, rid)
 
     def run_report(self, rid: str) -> dict[str, Any] | None:
-        return self.store.get_blob(RUN_REPORTS, rid)
+        from .contracts import annotate_report
+
+        report = self.store.get_blob(RUN_REPORTS, rid)
+        return annotate_report(report) if report else None
 
     def run_state(self, rid: str) -> dict[str, Any] | None:
         return self.store.get_blob(RUN_STATES, rid)
@@ -121,12 +124,19 @@ class ModelLibrary:
         model_id: str | None = None,
         project_id: str = "",
         created_by: str = "user",
+        project_goal_passed: bool | None = None,
     ) -> dict[str, Any]:
         run = self.run(rid)
         report = self.run_report(rid)
         state = self.run_state(rid)
         if run is None or report is None or state is None:
             raise KeyError("实验不存在或没有模型参数")
+        from .contracts import annotate_report
+
+        report["project_goal_passed"] = project_goal_passed
+        annotate_report(report)
+        if status == "active" and not report["activation_eligible"]:
+            status = "candidate"
         prev = self.get(model_id) if model_id else None
         if prev and prev.get("frozen"):
             prev, model_id = None, None  # 冻结的模型不覆盖：另存一个新模型
@@ -145,6 +155,8 @@ class ModelLibrary:
             "summary": report.get("summary"),
             "checks": report.get("checks"),
             "admitted": report.get("admitted"),
+            "activation_eligible": report["activation_eligible"],
+            "activation_block_reason": report["activation_block_reason"],
             "card": model_card(spec, report, name=name),
             "status": status if status in STATUS_LABELS else "candidate",
             "frozen": False,
@@ -165,15 +177,22 @@ class ModelLibrary:
         return rec
 
     def report(self, mid: str) -> dict[str, Any] | None:
-        return self.store.get_blob(REPORTS, mid)
+        from .contracts import annotate_report
+
+        report = self.store.get_blob(REPORTS, mid)
+        return annotate_report(report) if report else None
 
     def state(self, mid: str) -> dict[str, Any] | None:
         return self.store.get_blob(STATES, mid)
 
     def patch(self, mid: str, **changes: Any) -> dict[str, Any] | None:
+        from .contracts import activation_error
+
         rec = self.get(mid)
         if rec is None:
             return None
+        if changes.get("status") == "active" and (reason := activation_error(self.report(mid))):
+            raise ValueError(reason)
         if "status" in changes and changes["status"] not in STATUS_LABELS:
             changes.pop("status")
         if "name" in changes:

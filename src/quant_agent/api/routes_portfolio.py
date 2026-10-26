@@ -267,7 +267,10 @@ def scheme_report(sid: str) -> dict:
 
 @router.patch("/{sid}", summary="修改名称、状态、备注")
 def patch_scheme(sid: str, payload: PatchIn) -> dict:
-    rec = _lib().patch(sid, **payload.model_dump(exclude_none=True))
+    try:
+        rec = _lib().patch(sid, **payload.model_dump(exclude_none=True))
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
     if rec is None:
         raise HTTPException(404, "方案不存在")
     return {"scheme": rec}

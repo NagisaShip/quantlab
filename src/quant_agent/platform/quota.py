@@ -91,12 +91,12 @@ METRIC_BY_NAME: dict[str, Metric] = {m.name: m for m in METRICS}
 #: 工作区设置里没写这一项时用这里的兜底值，管理员可在
 #: 「设置与审计 → 工作区」通过 PUT /api/workspace/usage/limits 覆盖。
 DEFAULT_LIMITS: dict[str, Decimal | None] = {
-    "max_cpu_seconds_per_day": Decimal(3600),
-    "max_backtests_per_day": Decimal(200),
-    "max_optimize_combinations_per_day": Decimal(2000),
-    "max_llm_calls_per_day": Decimal(500),
-    "max_llm_tokens_per_day": Decimal(2_000_000),
-    "max_download_bytes_per_day": Decimal(2 * 1024 * 1024 * 1024),
+    "max_cpu_seconds_per_day": None,
+    "max_backtests_per_day": None,
+    "max_optimize_combinations_per_day": None,
+    "max_llm_calls_per_day": None,
+    "max_llm_tokens_per_day": None,
+    "max_download_bytes_per_day": None,
     "max_storage_bytes": None,
 }
 

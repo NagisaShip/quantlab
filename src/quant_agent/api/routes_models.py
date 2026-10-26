@@ -348,7 +348,10 @@ def model_report(mid: str) -> dict:
 
 @router.patch("/{mid}", summary="修改名称、状态、备注；冻结后不能再被覆盖")
 def patch_model(mid: str, payload: PatchIn) -> dict:
-    rec = _lib().patch(mid, **payload.model_dump(exclude_none=True))
+    try:
+        rec = _lib().patch(mid, **payload.model_dump(exclude_none=True))
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
     if rec is None:
         raise HTTPException(404, "模型不存在")
     return {"model": rec}

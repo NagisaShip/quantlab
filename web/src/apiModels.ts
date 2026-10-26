@@ -61,6 +61,8 @@ export interface ModelReport {
   summary: ModelSummary
   checks: AdmissionCheck[]
   admitted: boolean
+  activation_eligible?: boolean
+  activation_block_reason?: string
   folds: FoldRow[]
   curve: CurvePoint[]
   fold_curves?: CurvePoint[][]

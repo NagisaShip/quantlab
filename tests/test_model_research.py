@@ -296,7 +296,8 @@ def test_models_api_train_runs_compare_and_library(client):
     m = client.post("/api/models", json={"run_id": rid, "name": "基线模型"}).json()["model"]
     assert m["card"]["features"] and client.get("/api/models").json()["models"][0]["id"] == m["id"]
     assert client.get(f"/api/models/{m['id']}/report").json()["report"]["summary"]
-    assert client.patch(f"/api/models/{m['id']}", json={"status": "active", "frozen": True}).json()["model"]["frozen"]
+    assert client.patch(f"/api/models/{m['id']}", json={"status": "active"}).status_code == 409
+    assert client.patch(f"/api/models/{m['id']}", json={"frozen": True}).json()["model"]["frozen"]
     r = client.post(f"/api/models/{m['id']}/refresh", json={"source": "synthetic", "bars_limit": 800})
     assert r.status_code == 200, r.text
     assert r.json()["latest"]["values"]

@@ -76,6 +76,21 @@ def _send(client, pid, text):
     return response.json()
 
 
+def test_plan_runs_share_durable_user_tool_budget(host):
+    client, model, pid = host
+    client.patch(f"/api/lab/projects/{pid}", json={"max_tool_calls": 2})
+    model.replies = [
+        _reply(calls=[ToolCall("p", "set_plan", {"steps": ["列出计划"], "execute": True})]),
+        _reply("继续执行。"),
+        _reply(calls=[ToolCall("p2", "update_plan_step", {"index": 1, "status": "doing"})]),
+        _reply("已检查。"),
+    ]
+    result = _send(client, pid, "列出计划并检查")
+    assert result["project"]["tool_budget"]["used"] == 2
+    assert result["project"]["plan"]["autorun"] is False
+    assert model.calls == 4
+
+
 def test_http_input_resume_and_cursor_reconnection(host):
     client, model, pid = host
     model.replies = [

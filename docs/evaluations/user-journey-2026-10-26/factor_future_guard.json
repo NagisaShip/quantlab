@@ -1,0 +1,1 @@
+{"name": "factor_future_guard", "method": "POST", "path": "/api/factors/validate", "request": {"expression": "delay(close, -1)"}, "http": 200, "seconds": 0.003, "body": {"ok": false, "error": "delay() 的窗口必须是正整数常量（不能为负，表达式不能看未来）"}}

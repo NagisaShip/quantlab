@@ -157,6 +157,10 @@ class DomainLab(StrategyLab):
         return self.domain.check(spec, history=history, extra=self.extra_checks(project, spec))
 
     def set_goal(self, pid: str, raw: dict[str, Any], *, source: str = "user", review: bool = False) -> dict[str, Any]:
+        from ..research.contracts import guard_scope, latest_user_text
+
+        if source == "model" and (reason := guard_scope(self.store.get(pid) or {}, raw, latest_user_text(self, pid))):
+            return {"ok": False, "error": reason}
         self.store.patch(pid, goal_set=True)
         with _lock(f"p:{pid}"):
             project = self.store.get(pid) or {}

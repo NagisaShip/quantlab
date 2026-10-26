@@ -426,7 +426,7 @@ function TrainBench({ meta, notify, onSaved }: { meta: ModelMeta | null; notify:
         <Panel title="训练结果" actions={<>
           <input className="fx-search" placeholder="模型名称" value={name} onChange={(e) => setName(e.target.value)} aria-label="模型名称" />
           <button className="button small" onClick={() => save('candidate')}>存为候选</button>
-          <button className="button small primary" disabled={!result.report.admitted} title={result.report.admitted ? '' : '泄漏检查或基线对照没有全部通过'} onClick={() => save('active')}>上线</button>
+          <button className="button small primary" disabled={!result.report.activation_eligible} title={result.report.activation_block_reason || '研究通过不等于实盘批准'} onClick={() => save('active')}>启用研究资产</button>
         </>}>
           <ModelFullReport report={result.report} />
         </Panel>
@@ -462,7 +462,7 @@ function Runs({ onOpen, notify }: { onOpen: (id: string) => void; notify: PagePr
                   <td className={`right num ${(r.summary.oos_rank_ic ?? 0) >= 0 ? 'positive' : 'negative'}`}>{f3(r.summary.oos_rank_ic)}</td>
                   <td className="right num muted">{f3(r.summary.baseline_rank_ic)}</td>
                   <td className="right num">{f3(r.summary.ls_sharpe, 2)}</td>
-                  <td>{r.summary.leak_passed === 0 ? <Tag tone="warn">泄漏检查未过</Tag> : r.admitted ? <Tag tone="ok">可上线</Tag> : <Tag>未全过</Tag>}</td>
+                  <td>{r.summary.leak_passed === 0 ? <Tag tone="warn">泄漏检查未过</Tag> : r.admitted ? <Tag tone="ok">研究检查通过</Tag> : <Tag>未全过</Tag>}</td>
                   <td className="muted">{r.source === 'lab' ? 'AI 研究室' : '训练台'}</td>
                   <td className="muted">{when(r.created_at)}</td>
                   <td onClick={(e) => e.stopPropagation()}><RecordPinButton type="model_run" id={r.id} pinned={r.pinned} notify={notify} /></td>
@@ -557,8 +557,8 @@ function RunDetail({ id, meta, notify, onSaved }: { id: string; meta: ModelMeta 
       <RecordPinButton type="model_run" id={id} pinned={data.run.pinned} notify={notify} />
       <button className="button small" disabled={readOnly} title={readOnly ? ro?.reason : undefined}
         aria-describedby={readOnly ? READ_ONLY_REASON_ID : undefined} onClick={() => save('candidate')}>存为候选</button>
-      <button className="button small primary" disabled={!data.report.admitted || readOnly} title={readOnly ? ro?.reason : undefined}
-        aria-describedby={readOnly ? READ_ONLY_REASON_ID : undefined} onClick={() => save('active')}>上线</button>
+      <button className="button small primary" disabled={!data.report.activation_eligible || readOnly} title={readOnly ? ro?.reason : data.report.activation_block_reason}
+        aria-describedby={readOnly ? READ_ONLY_REASON_ID : undefined} onClick={() => save('active')}>启用研究资产</button>
     </>}>
       {data.run.project_id && <div className="hint">来自 <a href={`#/lab/${data.run.project_id}`}>AI 研究室的项目</a></div>}
       <ModelFullReport report={data.report} />

@@ -706,8 +706,16 @@ def _view(lab: StrategyLab, p: dict[str, Any], after: int = 0, since: float = 0.
                 else m
                 for m in messages
             ]
+    turn_messages = lab.store.messages(p["id"])
+    last_user = max((m.get("seq", 0) for m in turn_messages if m.get("role") == "user"), default=0)
+    errors = [m["content"] for m in turn_messages if m.get("kind") == "error" and m.get("seq", 0) > last_user]
+    outcome = ("partial" if p.get("code") else "failed") if errors else p.get("status", "idle")
+    budget = p.get("tool_budget") or {}
+    if budget.get("user_seq") == last_user and int(budget.get("used", 0)) >= int(p.get("max_tool_calls") or 1000):
+        outcome = "budget_exhausted"
     return {
         "project": p,
+        "execution": {"state": outcome, "errors": errors},
         "messages": messages,
         "context": lab.context_view(p),
         "server_time": snapshot_time,
@@ -1084,6 +1092,8 @@ def send_message(pid: str, payload: MessageIn) -> dict:
     _project_or_404(lab, pid)
     if lab.store.get(pid).get("status") == "running":  # type: ignore[union-attr]
         raise HTTPException(409, "这个项目正在运行，请等它结束或先停止")
+    if not payload.text.strip().startswith(("/plan", "继续计划", "继续执行", "按计划执行", "批准")):
+        lab._pause_plan(pid)
     if payload.images:
         _check_image_input(lab, pid, payload.model)
     changes = {

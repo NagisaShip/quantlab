@@ -37,7 +37,7 @@ def test_builtin_assets_are_seeded_once_and_pass_admission(seeded_client):
 
     factors = [f for f in client.get("/api/factors").json()["factors"] if f.get("created_by") == "builtin"]
     assert {f["id"] for f in factors} == BUILTIN_FACTORS
-    assert all(f["status"] == "active" and f["admitted"] for f in factors)
+    assert all(f["status"] == "candidate" and f["admitted"] and not f["activation_eligible"] for f in factors)
     for f in factors:
         report = client.get(f"/api/factors/{f['id']}/report").json()["report"]
         assert report["admitted"] is True
@@ -45,13 +45,13 @@ def test_builtin_assets_are_seeded_once_and_pass_admission(seeded_client):
 
     models = [m for m in client.get("/api/models").json()["models"] if m.get("created_by") == "builtin"]
     assert {m["id"] for m in models} == BUILTIN_MODELS
-    assert all(m["status"] == "active" and m["admitted"] for m in models)
+    assert all(m["status"] == "candidate" and m["admitted"] and not m["activation_eligible"] for m in models)
     for m in models:
         assert client.get(f"/api/models/{m['id']}/report").json()["report"]["admitted"] is True
 
     portfolios = [p for p in client.get("/api/portfolio").json()["schemes"] if p.get("created_by") == "builtin"]
     assert {p["id"] for p in portfolios} == BUILTIN_PORTFOLIOS
-    assert all(p["status"] == "active" and p["admitted"] for p in portfolios)
+    assert all(p["status"] == "candidate" and p["admitted"] and not p["activation_eligible"] for p in portfolios)
     for p in portfolios:
         assert client.get(f"/api/portfolio/{p['id']}/report").json()["report"]["admitted"] is True
 

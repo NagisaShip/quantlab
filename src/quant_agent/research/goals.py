@@ -636,7 +636,12 @@ PORTFOLIO = GoalDomain(
         },
         "dd_vs_ew": {"label": "回撤比等权少", "unit": "pct", "op": ">=", "soft_max": 0.3, "hard_max": 0.5},
         "turnover": {"label": "调仓换手", "unit": "pct", "op": "<=", "soft_min": 0.02, "hard_min": 0.005},
-        "effective_n": {"label": "有效持仓数", "unit": "num", "op": ">=", "hint": "1 / Σw²，越大越分散"},
+        "effective_n": {
+            "label": "有效持仓数",
+            "unit": "num",
+            "op": ">=",
+            "hint": "风险资产按总敞口归一后计算 1 / Σw²；现金不计入",
+        },
         "calmar": {"label": "Calmar", "unit": "num", "op": ">=", "soft_max": 5.0, "hard_max": 10.0},
     },
     aliases=[

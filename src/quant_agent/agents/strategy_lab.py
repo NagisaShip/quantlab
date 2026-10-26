@@ -476,6 +476,7 @@ EDIT_TOOLS = frozenset(
         "set_portfolio_goal",
         "set_execution_goal",
         "set_market",
+        "restore_version",
     }
 )
 RUN_TOOLS = frozenset(
@@ -1480,6 +1481,9 @@ class StrategyLab:
         extra_rules.append(PT.capability_note())
         if not research:  # 策略 / 因子 / 模型 / 组合 / 执行研究室才追加回测与过拟合铁律
             extra_rules.append(RIGOR_RULES)
+            from ..research.contracts import RESEARCH_INTERPRETATION
+
+            extra_rules.append(RESEARCH_INTERPRETATION)
         if not research and (wf := WORKFLOWS.get(project.get("workflow") or "")) is not None:
             extra_rules.append(wf["rules"])
         if plan_text(project.get("plan")):
@@ -1511,7 +1515,12 @@ class StrategyLab:
         stream = _Streamer(self, pid)
         used: list[str] = []  # 本回合已调用的工具（中文说明），用来写进度
         who = (project.get("model") or "默认模型").split("/")[-1]
-        max_calls = tool_call_limit(project)
+        last_user = max((m.get("seq", 0) for m in self.store.messages(pid) if m.get("role") == "user"), default=0)
+        budget = project.get("tool_budget") or {}
+        if budget.get("user_seq") != last_user:
+            budget = {"user_seq": last_user, "used": 0}
+        max_calls = max(0, tool_call_limit(project) - int(budget.get("used", 0)))
+        self.store.patch(pid, tool_budget=budget)
         step = -1
         context_retried = False
         while len(used) < max_calls:
@@ -1599,8 +1608,20 @@ class StrategyLab:
             )
             document_images = []
             for call in result.tool_calls:
+                if len(used) >= max_calls:
+                    messages.append(
+                        Message(
+                            role="tool",
+                            tool_call_id=call.id,
+                            name=call.name,
+                            content='{"error":"本次用户任务的工具预算已耗尽，未执行"}',
+                        )
+                    )
+                    continue
                 tool = tools.get(call.name)
                 used.append(TOOL_PHASE.get(call.name, call.name))
+                budget["used"] = int(budget.get("used", 0)) + 1
+                self.store.patch(pid, tool_budget=dict(budget))
                 if tool is not None and (cat := self._approval_category(project, mode, call.name)):
                     args = dict(call.arguments or {})
                     if reason := approval_input_error(call.name, args):
@@ -1652,12 +1673,12 @@ class StrategyLab:
                 return
         plan = (self.store.get(pid) or {}).get("plan") or {}
         if plan.get("status") == "active" and plan.get("autorun"):
-            return  # 计划执行中：下一轮会接着推进，不用提示「先停在这里」
+            self._pause_plan(pid)
         self._post(
             pid,
             role="event",
             kind="text",
-            content=f"已达到单轮工具调用上限（{max_calls} 次，可在 设置 → AI 研究室 里修改），"
+            content=f"已达到本次用户任务的工具调用上限（{tool_call_limit(project)} 次，含计划后续回合），"
             f"先停在这里。你可以继续追问。",
         )
 
@@ -1927,6 +1948,10 @@ class StrategyLab:
     # ---------------- 目标 ----------------
     def set_goal(self, pid: str, raw: dict[str, Any], *, source: str = "user", review: bool = False) -> dict[str, Any]:
         """写入结构化目标并做合理性检查；source=model 时在对话里留一条事件。"""
+        from ..research.contracts import guard_scope, latest_user_text
+
+        if source == "model" and (reason := guard_scope(self.store.get(pid) or {}, raw, latest_user_text(self, pid))):
+            return {"ok": False, "error": reason}
         self.store.patch(pid, goal_set=True)
         with _lock(f"p:{pid}"):
             project = self.store.get(pid) or {}
@@ -2641,7 +2666,25 @@ class StrategyLab:
         }
 
     # ---------------- 无模型时的对话 ----------------
+    def _preserve_on_model_failure(self, pid: str, reason: str) -> bool:
+        project = self.store.get(pid) or {}
+        if not project.get("code") and not any(word in reason.lower() for word in ("quota", "配额", "额度")):
+            return False
+        self._pause_plan(pid)
+        self.store.patch(
+            pid, execution_outcome="partial" if project.get("code") else "failed", last_model_error=_short(reason)
+        )
+        self._post(
+            pid,
+            role="event",
+            kind="error",
+            content=f"模型调用失败，已保留当前规格、版本和评估，不生成默认替代方案：{_short(reason)}",
+        )
+        return True
+
     def _chat_fallback(self, pid: str, text: str, reason: str) -> None:
+        if self._preserve_on_model_failure(pid, reason):
+            return
         project = self.store.get(pid) or {}
         short = _short(reason)
         # 显式加括号说明优先级：`and` 比 `or` 紧，原意是
@@ -2877,7 +2920,7 @@ class StrategyLab:
             return {"ok": False, "error": "还没有代码或规格可保存"}
         saver = getattr(self, "save_to_library", None)
         if callable(saver):
-            rec = saver(pid, status="active")
+            rec = saver(pid, status="candidate")
             return {"ok": rec is not None, "saved": rec} if rec else {"ok": False, "error": "还没有评估，先评估再保存"}
         if self.tools.save_strategy is None:
             return {"ok": False, "error": "当前环境不能保存策略"}
@@ -2885,6 +2928,26 @@ class StrategyLab:
         self.store.patch(pid, slug=rec.get("slug"))
         self._post(pid, role="event", kind="saved", content="已保存为策略草稿", data=rec)
         return {"ok": True, "saved": {k: rec.get(k) for k in ("slug", "name")}}
+
+    def restore_version_evidence(self, pid: str, version: int) -> dict[str, Any]:
+        row = self.restore(pid, version)
+        if row is None:
+            return {"ok": False, "error": "历史版本不存在"}
+        reader = getattr(self, "report", None)
+        report = reader(pid, version) if callable(reader) else None
+        if report:
+            from ..research.contracts import annotate_report
+
+            annotate_report(report)
+        return {
+            "ok": True,
+            "version": version,
+            "code": row.get("code"),
+            "summary": (report or {}).get("summary", row.get("metrics")),
+            "baseline": (report or {}).get("baseline"),
+            "metric_contract": (report or {}).get("metric_contract"),
+            "recomputed": False,
+        }
 
     # ---------------- 调研报告 /report ----------------
     def write_report(

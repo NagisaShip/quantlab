@@ -1,0 +1,1 @@
+{"name": "factor_2_validate", "method": "POST", "path": "/api/factors/validate", "request": {"expression": "-ts_std(ret, 30)"}, "http": 200, "seconds": 0.002, "body": {"ok": true, "expression": "-ts_std(ret, 30)", "complexity": 4, "fields": ["ret"], "lookback": 30}}

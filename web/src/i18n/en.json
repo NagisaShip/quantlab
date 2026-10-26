@@ -7764,5 +7764,10 @@
  "执行已暂停，请核对后继续": "Execution paused; review before continuing",
  "执行失败，通知未发送": "Execution failed; notification was not sent",
  "汇总已存实验，生成维护建议": "Review saved experiments and suggest maintenance",
- "取消执行": "Cancel execution"
+ "取消执行": "Cancel execution",
+ "启用研究资产": "Enable research asset",
+ "研究检查未全过": "Research checks incomplete",
+ "研究检查通过": "Research checks passed",
+ "研究通过不等于实盘批准": "Passing research checks does not approve live trading",
+ "风险资产按总敞口归一后 1 / Σw²，现金不计入": "1 / Σw² after normalizing risky-asset weights by gross exposure; cash excluded"
 }

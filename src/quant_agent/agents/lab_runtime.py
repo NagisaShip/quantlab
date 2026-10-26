@@ -227,12 +227,34 @@ def run_chat(
         raise ValueError("Runtime conversation tenant mismatch")
     if current and current["spec"]["metadata"].get("project_id") != pid:
         raise ValueError("Runtime conversation project mismatch")
+    latest_user = max((item["seq"] for item in lab.store.messages(pid) if item["role"] == "user"), default=0)
+    budget = project.get("tool_budget") or {}
+    if budget.get("user_seq") != latest_user:
+        offsets = {}
+        if current and current["state"] not in {"COMPLETED", "FAILED", "CANCELED"}:
+            offsets[run_id] = sum(step["kind"] == "tool" for step in current["steps"])
+        budget = {"user_seq": latest_user, "runtime_runs": offsets}
+    offsets = budget.setdefault("runtime_runs", {})
+
+    def spent():
+        return sum(
+            max(0, sum(step["kind"] == "tool" for step in runtime.journal.steps(rid)) - offset)
+            for rid, offset in offsets.items()
+        )
+
+    budget["used"] = spent()
+    lab.store.patch(pid, tool_budget=budget)
     actor = context.current().user_id or "system"
     if approval and approval["run_id"] != run_id:
         raise ValueError("approval belongs to a different conversation turn")
     if current is None or (messages is not None and current["state"] in {"COMPLETED", "FAILED", "CANCELED"}):
         if messages is None:
             raise ValueError("a new conversation turn requires initial messages")
+        remaining = max(0, tool_call_limit(project) - budget["used"])
+        if remaining == 0:
+            lab._pause_plan(pid)
+            lab._post(pid, role="event", kind="text", content="本次用户任务的工具预算已耗尽，计划已暂停。")
+            return
         run_id = f"lab-{uuid.uuid4().hex}"
         specs = tuple(
             ToolSpec(
@@ -250,8 +272,8 @@ def run_chat(
                 "research-chat",
                 "1",
                 tools=specs,
-                max_steps=tool_call_limit(project) * 2 + 2,
-                max_tool_calls=tool_call_limit(project),
+                max_steps=remaining * 2 + 2,
+                max_tool_calls=remaining,
                 metadata={
                     "project_id": pid,
                     "mode": mode,
@@ -264,7 +286,8 @@ def run_chat(
             initial_messages=[asdict(message) for message in messages],
         )
         latest_user = max((item["seq"] for item in lab.store.messages(pid) if item["role"] == "user"), default=0)
-        lab.store.patch(pid, runtime_chat_id=run_id, runtime_input_after_seq=latest_user)
+        offsets[run_id] = 0
+        lab.store.patch(pid, runtime_chat_id=run_id, runtime_input_after_seq=latest_user, tool_budget=budget)
         current = runtime.get(run_id)
     if approval:
         runtime.signal(
@@ -390,6 +413,8 @@ def run_chat(
         cancel_chat(lab, pid)
         raise
     current = runtime.get(run_id)
+    budget["used"] = spent()
+    lab.store.patch(pid, tool_budget=budget)
     waits = [step for step in current["steps"] if step["state"] == "WAITING_ADMISSION"]
     lab.store.patch(
         pid,

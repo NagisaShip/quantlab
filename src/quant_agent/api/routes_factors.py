@@ -324,7 +324,10 @@ def factor_report(fid: str) -> dict:
 @router.post("/{fid}/status", summary="改变因子状态：候选 / 入库 / 衰减预警 / 退役")
 def set_status(fid: str, payload: StatusIn) -> dict:
     lib = _lib()
-    rec = lib.set_status(fid, payload.status)
+    try:
+        rec = lib.set_status(fid, payload.status)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
     if rec is None:
         raise HTTPException(404, "因子不存在")
     return {"factor": _brief(lib, rec)}

@@ -64,9 +64,10 @@ def rule_points(source: str, report: dict[str, Any], metrics: dict[str, Any]) ->
         pts.append(
             _p(
                 "medium",
-                "没有任何止损",
-                "策略里没有 set_stop_loss / set_trailing_stop / custom_stoploss / "
-                "custom_exit，遇到单边暴跌只能等信号反转。交易所模拟盘上也挂不了保护止损单。",
+                "未识别到平台原生保护止损",
+                "静态检查未识别 set_stop_loss / set_trailing_stop / custom_stoploss / custom_exit。"
+                "代码可能通过价格或回撤条件自行清仓，不能据此判定没有止损；"
+                "需验证自定义分支、下一根成交延迟，以及交易所是否实际挂有保护单。",
             )
         )
     if "import:random" in calls:

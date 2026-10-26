@@ -48,6 +48,9 @@ class PortfolioLibrary:
         created_by: str = "user",
     ) -> dict[str, Any]:
         rid = f"p_{uuid.uuid4().hex[:10]}"
+        from .contracts import annotate_report
+
+        annotate_report(report)
         rec = {
             "id": rid,
             "hash": config_hash(cfg),
@@ -76,7 +79,10 @@ class PortfolioLibrary:
         return self.store.get(RUNS, rid)
 
     def run_report(self, rid: str) -> dict[str, Any] | None:
-        return self.store.get_blob(RUN_REPORTS, rid)
+        from .contracts import annotate_report
+
+        report = self.store.get_blob(RUN_REPORTS, rid)
+        return annotate_report(report) if report else None
 
     def delete_run(self, rid: str) -> bool:
         self.store.delete_blob(RUN_REPORTS, rid)
@@ -113,6 +119,13 @@ class PortfolioLibrary:
         run_id: str | None = None,
         created_by: str = "user",
     ) -> dict[str, Any]:
+        from .contracts import activation_error, annotate_report
+
+        if report is not None:
+            annotate_report(report)
+        block = activation_error(report)
+        if status == "active" and block:
+            status = "candidate"
         prev = self.get(scheme_id) if scheme_id else None
         sid = scheme_id or f"pf_{uuid.uuid4().hex[:8]}"
         name = (name or (prev or {}).get("name") or f"{config.get('optimizer')}_{len(symbols)}").strip()[:40]
@@ -127,6 +140,8 @@ class PortfolioLibrary:
             "timeframe": timeframe,
             "summary": (report or {}).get("summary"),
             "admitted": (report or {}).get("admitted"),
+            "activation_eligible": not block,
+            "activation_block_reason": block,
             "latest": (report or {}).get("latest"),
             "status": status if status in STATUS_LABELS else "candidate",
             "note": note[:400] or (prev or {}).get("note", ""),
@@ -142,12 +157,19 @@ class PortfolioLibrary:
         return rec
 
     def report(self, sid: str) -> dict[str, Any] | None:
-        return self.store.get_blob(REPORTS, sid)
+        from .contracts import annotate_report
+
+        report = self.store.get_blob(REPORTS, sid)
+        return annotate_report(report) if report else None
 
     def patch(self, sid: str, **changes: Any) -> dict[str, Any] | None:
+        from .contracts import activation_error
+
         rec = self.get(sid)
         if rec is None:
             return None
+        if changes.get("status") == "active" and (reason := activation_error(self.report(sid))):
+            raise ValueError(reason)
         if "status" in changes and changes["status"] not in STATUS_LABELS:
             changes.pop("status")
         if "name" in changes:

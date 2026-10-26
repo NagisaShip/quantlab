@@ -11,6 +11,8 @@ export interface FactorReport {
   summary: FactorSummary
   checks: AdmissionCheck[]
   admitted: boolean
+  activation_eligible?: boolean
+  activation_block_reason?: string
   decay: { horizon: number; rank_ic: number | null }[]
   regimes: { regime: string; rank_ic: number | null; periods: number }[]
   correlations: { name: string; corr: number }[]

@@ -47,7 +47,7 @@ VALID_SLUG = re.compile(r"[a-z0-9][a-z0-9_\-]{0,80}")
 
 def slugify(name: str) -> str:
     """把策略名转成安全的目录名。中文名会退化成哈希后缀，避免路径乱码。"""
-    ascii_part = SLUG_RE.sub("-", name).strip("-").lower()
+    ascii_part = SLUG_RE.sub("-", name).strip("-_").lower()
     if not ascii_part:
         ascii_part = "strategy"
     digest = hashlib.sha256(name.encode("utf-8")).hexdigest()[:6]

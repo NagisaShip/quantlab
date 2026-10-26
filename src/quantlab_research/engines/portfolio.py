@@ -878,7 +878,8 @@ def evaluate_scheme(
     mb = _metrics(br, per_bar)
     _, cvar = var_cvar(pr, 0.95)
     eff_n = [
-        1 / max(float((np.array([v for k, v in row.items() if k != "t"]) ** 2).sum()), 1e-9)
+        float(np.abs([v for k, v in row.items() if k != "t"]).sum()) ** 2
+        / max(float((np.array([v for k, v in row.items() if k != "t"]) ** 2).sum()), 1e-9)
         for row in weights_log
         if len(row) > 1
     ]
@@ -1008,7 +1009,7 @@ def quality_checks(s: dict[str, Any], panel: Any) -> list[dict[str, Any]]:
             "label": "没有过度集中",
             "required": False,
             "ok": (s.get("effective_n") or 0) >= 2.5,
-            "detail": f"平均有效持仓数 {s.get('effective_n') or 0:.1f}（1 / Σw²）",
+            "detail": f"平均有效持仓数 {s.get('effective_n') or 0:.1f}（风险资产权重归一后 1 / Σw²，现金不计）",
         },
         {
             "key": "turnover",

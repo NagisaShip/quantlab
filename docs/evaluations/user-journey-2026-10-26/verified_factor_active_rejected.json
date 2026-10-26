@@ -1,0 +1,1 @@
+{"name": "verified_factor_active_rejected", "method": "POST", "path": "/api/factors/f_419ee42f/status", "request": {"status": "active"}, "http": 409, "seconds": 0.161, "body": {"code": "CONFLICT", "message": "研究检查未全部通过或缺少评估报告，请先评估并保存为候选", "trace_id": "99b35bc0e9fa4e24", "details": {}}}

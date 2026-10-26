@@ -326,6 +326,8 @@ class PortfolioLab(DomainLab):
             )
         lib = self.deps.library()
         report = self.report(pid, cur["v"])
+        if report is not None:
+            report = {**report, "project_goal_passed": (cur.get("evaluation") or {}).get("passed")}
         rec = self._tool(
             pid,
             "save_portfolio",
@@ -339,13 +341,13 @@ class PortfolioLab(DomainLab):
                 timeframe=project["timeframe"],
                 status=status,
                 note=project.get("idea") or "",
-                scheme_id=project.get("scheme_id"),
+                scheme_id=project.get("scheme_id") if project.get("library_version") == cur.get("v") else None,
                 project_id=pid,
                 run_id=cur["run_id"],
                 created_by="ai" if cur.get("source") != "user" else "user",
             ),
         )
-        self.store.patch(pid, scheme_id=rec["id"], library_id=rec["id"])
+        self.store.patch(pid, scheme_id=rec["id"], library_id=rec["id"], library_version=cur.get("v"))
         self._post(
             pid,
             role="event",
@@ -493,6 +495,8 @@ class PortfolioLab(DomainLab):
             self._chat_fallback(pid, text, str(exc))
 
     def _chat_fallback(self, pid: str, text: str, reason: str) -> None:
+        if self._preserve_on_model_failure(pid, reason):
+            return
         project = self.store.get(pid) or {}
         if not project.get("code") or any(k in text for k in ("配置", "组合", "风控", "试试", "优化")):
             prop = self._rule_proposal(pid, project, 1, self._tried(project))
@@ -600,6 +604,8 @@ class PortfolioLab(DomainLab):
 
         def set_goal(**kw: Any) -> Any:
             out = self.set_goal(pid, kw, source="model")
+            if out.get("ok") is False:
+                return out
             return {
                 "ok": True,
                 "goal": out["spec"],

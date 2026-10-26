@@ -1,0 +1,816 @@
+{
+  "factors": [
+    {
+      "expression": "returns(30)",
+      "summary": {
+        "mode": "cross",
+        "horizon": 1,
+        "periods": 1169,
+        "ic": 0.02464499032012782,
+        "rank_ic": 0.0178174263717463,
+        "ic_std": 0.4790395440837903,
+        "icir": 0.037194061725788964,
+        "ic_t": 1.2716888487899245,
+        "ic_win": 0.5132591958939264,
+        "ls_sharpe": -1.5567495090465293,
+        "ls_return": -0.23455742949399971,
+        "ls_max_drawdown": 0.14923268380501953,
+        "turnover": 0.1290667808219178,
+        "coverage": 1.0,
+        "max_corr": 0.0,
+        "is_rank_ic": 0.025749559082892417,
+        "oos_rank_ic": 0.0007980845969672825,
+        "oos_retention": 0.030994107293181448,
+        "sub_rank_ic": null,
+        "t_required": 1.96,
+        "trials": 1,
+        "direction": "正向",
+        "rank_ic_x100": 1.78174263717463,
+        "cost_bps": 10.0
+      },
+      "admitted": false,
+      "panel": {
+        "bars": 1200,
+        "symbols": [
+          "BTC/USDT",
+          "ETH/USDT",
+          "SOL/USDT",
+          "BNB/USDT",
+          "XRP/USDT",
+          "ADA/USDT"
+        ],
+        "timeframe": "4h",
+        "start": 1775707199999,
+        "end": 1792972799999,
+        "sources": {
+          "BTC/USDT": "exchange",
+          "ETH/USDT": "exchange",
+          "SOL/USDT": "exchange",
+          "BNB/USDT": "exchange",
+          "XRP/USDT": "exchange",
+          "ADA/USDT": "exchange"
+        },
+        "field_sources": {},
+        "synthetic": false,
+        "warnings": []
+      }
+    },
+    {
+      "expression": "-returns(5)",
+      "summary": {
+        "mode": "cross",
+        "horizon": 1,
+        "periods": 1194,
+        "ic": -0.003786558403234166,
+        "rank_ic": -0.007197090476231907,
+        "ic_std": 0.5043931856134026,
+        "icir": -0.014268809891789837,
+        "ic_t": -0.4930488102199205,
+        "ic_win": 0.4949748743718593,
+        "ls_sharpe": -4.949138510036651,
+        "ls_return": -0.5920948817731377,
+        "ls_max_drawdown": 0.3878333743906035,
+        "turnover": 0.3101424979044426,
+        "coverage": 1.0,
+        "max_corr": 0.0,
+        "is_rank_ic": -0.02209636992307036,
+        "oos_rank_ic": 0.027294493216280927,
+        "oos_retention": -1.235247839862751,
+        "sub_rank_ic": null,
+        "t_required": 2.241,
+        "trials": 2,
+        "direction": "反向",
+        "rank_ic_x100": -0.7197090476231907,
+        "cost_bps": 10.0
+      },
+      "admitted": false,
+      "panel": {
+        "bars": 1200,
+        "symbols": [
+          "BTC/USDT",
+          "ETH/USDT",
+          "SOL/USDT",
+          "BNB/USDT",
+          "XRP/USDT",
+          "ADA/USDT"
+        ],
+        "timeframe": "4h",
+        "start": 1775707199999,
+        "end": 1792972799999,
+        "sources": {
+          "BTC/USDT": "exchange",
+          "ETH/USDT": "exchange",
+          "SOL/USDT": "exchange",
+          "BNB/USDT": "exchange",
+          "XRP/USDT": "exchange",
+          "ADA/USDT": "exchange"
+        },
+        "field_sources": {},
+        "synthetic": false,
+        "warnings": []
+      }
+    },
+    {
+      "expression": "-ts_std(ret, 30)",
+      "summary": {
+        "mode": "cross",
+        "horizon": 1,
+        "periods": 1169,
+        "ic": 0.04821622550163373,
+        "rank_ic": 0.04196504949285103,
+        "ic_std": 0.547139810805522,
+        "icir": 0.07669895091543118,
+        "ic_t": 2.622386372107647,
+        "ic_win": 0.5260906757912746,
+        "ls_sharpe": -0.06723441494653459,
+        "ls_return": -0.029243474607050568,
+        "ls_max_drawdown": 0.17816031024352252,
+        "turnover": 0.030607876712328768,
+        "coverage": 1.0,
+        "max_corr": 0.0,
+        "is_rank_ic": 0.03696649029982363,
+        "oos_rank_ic": 0.05506783719074222,
+        "oos_retention": 1.4896690690434562,
+        "sub_rank_ic": null,
+        "t_required": 2.394,
+        "trials": 3,
+        "direction": "正向",
+        "rank_ic_x100": 4.196504949285103,
+        "cost_bps": 10.0
+      },
+      "admitted": true,
+      "panel": {
+        "bars": 1200,
+        "symbols": [
+          "BTC/USDT",
+          "ETH/USDT",
+          "SOL/USDT",
+          "BNB/USDT",
+          "XRP/USDT",
+          "ADA/USDT"
+        ],
+        "timeframe": "4h",
+        "start": 1775707199999,
+        "end": 1792972799999,
+        "sources": {
+          "BTC/USDT": "exchange",
+          "ETH/USDT": "exchange",
+          "SOL/USDT": "exchange",
+          "BNB/USDT": "exchange",
+          "XRP/USDT": "exchange",
+          "ADA/USDT": "exchange"
+        },
+        "field_sources": {},
+        "synthetic": false,
+        "warnings": []
+      }
+    }
+  ],
+  "models": [
+    {
+      "kind": "ridge",
+      "summary": {
+        "oos_rank_ic": 0.02484339190221543,
+        "oos_ic": 0.04133111355825399,
+        "oos_icir": 0.05007708832966575,
+        "oos_ic_t": 1.5312456743333618,
+        "ls_sharpe": -4.499491253919915,
+        "ls_return": -0.549624994167178,
+        "turnover": 0.14989293361884368,
+        "coverage": 0.8,
+        "t_required": 1.96,
+        "mode": "cross",
+        "baseline_rank_ic": -0.020809778456837277,
+        "baseline_ls_sharpe": -4.016997894508675,
+        "stability": 1.2582724538031802,
+        "beat_baseline": 0.04565317035905271,
+        "dir_acc": 0.5012477718360071,
+        "fold_positive": 1.0,
+        "folds": 4,
+        "leak_passed": 1.0,
+        "shuffle_rank_ic": -0.022643239113827346,
+        "psi_max": 0.30467071076420604,
+        "model": "ridge",
+        "label": "fwd_ret",
+        "task": "reg",
+        "horizon": 1,
+        "samples": 7014,
+        "features": 3,
+        "trials": 1,
+        "oos_rank_ic_x100": 2.484339190221543,
+        "seconds": 0.1,
+        "backend": null
+      },
+      "baseline": "特征等权合成",
+      "checks": [
+        {
+          "key": "lookahead",
+          "label": "特征不使用未来数据",
+          "ok": true,
+          "detail": "截断数据重算后完全一致",
+          "required": true
+        },
+        {
+          "key": "purge",
+          "label": "训练与测试之间留出持有期",
+          "ok": true,
+          "detail": "每段训练集都在测试段起点前 1 根截止（标签覆盖未来 1 根）",
+          "required": true
+        },
+        {
+          "key": "shuffle",
+          "label": "打乱标签后学不到东西",
+          "ok": true,
+          "required": true,
+          "detail": "把标签整体打乱后重训，样本外预测与打乱标签的 RankIC = -0.0226（应接近 0；明显偏离说明训练与测试样本有重叠）"
+        },
+        {
+          "key": "baseline",
+          "label": "跑赢基线",
+          "required": true,
+          "ok": true,
+          "detail": "样本外 RankIC 0.025，基线 -0.021"
+        },
+        {
+          "key": "folds",
+          "label": "各段样本外方向一致",
+          "required": false,
+          "ok": true,
+          "detail": "100% 的滚动段 RankIC 为正（共 4 段）"
+        },
+        {
+          "key": "drift",
+          "label": "特征分布稳定（PSI）",
+          "required": false,
+          "ok": false,
+          "detail": "最大 PSI 0.305（> 0.25 说明近期特征分布明显变了）"
+        },
+        {
+          "key": "significance",
+          "label": "样本外显著",
+          "required": false,
+          "ok": false,
+          "detail": "|t| = 1.53，门槛 1.96"
+        }
+      ],
+      "admitted": true
+    },
+    {
+      "kind": "gbdt",
+      "summary": {
+        "oos_rank_ic": 0.03808943247904078,
+        "oos_ic": 0.02877731792499463,
+        "oos_icir": 0.0801271395696817,
+        "oos_ic_t": 2.4501092207091504,
+        "ls_sharpe": -6.296370523226695,
+        "ls_return": -0.6856707800917328,
+        "turnover": 0.3806209850107066,
+        "coverage": 0.8,
+        "t_required": 2.241,
+        "mode": "cross",
+        "baseline_rank_ic": 0.02484339190221543,
+        "baseline_ls_sharpe": -4.499491253919915,
+        "stability": 1.7891024244037126,
+        "beat_baseline": 0.013246040576825348,
+        "dir_acc": 0.5202511138112597,
+        "fold_positive": 1.0,
+        "folds": 4,
+        "leak_passed": 1.0,
+        "shuffle_rank_ic": -0.025363112058871866,
+        "psi_max": 0.30467071076420604,
+        "model": "gbdt",
+        "label": "fwd_ret",
+        "task": "reg",
+        "horizon": 1,
+        "samples": 7014,
+        "features": 3,
+        "trials": 2,
+        "oos_rank_ic_x100": 3.808943247904078,
+        "seconds": 0.8,
+        "backend": "builtin"
+      },
+      "baseline": "线性模型",
+      "checks": [
+        {
+          "key": "lookahead",
+          "label": "特征不使用未来数据",
+          "ok": true,
+          "detail": "截断数据重算后完全一致",
+          "required": true
+        },
+        {
+          "key": "purge",
+          "label": "训练与测试之间留出持有期",
+          "ok": true,
+          "detail": "每段训练集都在测试段起点前 1 根截止（标签覆盖未来 1 根）",
+          "required": true
+        },
+        {
+          "key": "shuffle",
+          "label": "打乱标签后学不到东西",
+          "ok": true,
+          "required": true,
+          "detail": "把标签整体打乱后重训，样本外预测与打乱标签的 RankIC = -0.0254（应接近 0；明显偏离说明训练与测试样本有重叠）"
+        },
+        {
+          "key": "baseline",
+          "label": "跑赢基线",
+          "required": true,
+          "ok": true,
+          "detail": "样本外 RankIC 0.038，基线 0.025"
+        },
+        {
+          "key": "folds",
+          "label": "各段样本外方向一致",
+          "required": false,
+          "ok": true,
+          "detail": "100% 的滚动段 RankIC 为正（共 4 段）"
+        },
+        {
+          "key": "drift",
+          "label": "特征分布稳定（PSI）",
+          "required": false,
+          "ok": false,
+          "detail": "最大 PSI 0.305（> 0.25 说明近期特征分布明显变了）"
+        },
+        {
+          "key": "significance",
+          "label": "样本外显著",
+          "required": false,
+          "ok": true,
+          "detail": "|t| = 2.45，门槛 2.24"
+        }
+      ],
+      "admitted": true
+    }
+  ],
+  "strategies": [
+    {
+      "strategy": 0,
+      "cost_scale": 1,
+      "metrics": {
+        "total_return": 0.0908489440680014,
+        "annualized_return": 0.1888241742622878,
+        "sharpe": 0.8284932730848173,
+        "max_drawdown": 0.14513796718184632,
+        "trades": 22,
+        "fills": 46,
+        "total_fees": 216.122791095812,
+        "simple_benchmark_return": 0.1315272673480239,
+        "beats_simple": false
+      },
+      "review_verdict": "fail"
+    },
+    {
+      "strategy": 0,
+      "cost_scale": 3,
+      "metrics": {
+        "total_return": 0.023829259024276326,
+        "annualized_return": 0.04795733446411443,
+        "sharpe": 0.3124271827454091,
+        "max_drawdown": 0.16763463477978896,
+        "trades": 22,
+        "fills": 46,
+        "total_fees": 628.887521919979,
+        "simple_benchmark_return": 0.1315272673480239,
+        "beats_simple": false
+      },
+      "review_verdict": "fail"
+    },
+    {
+      "strategy": 1,
+      "cost_scale": 1,
+      "metrics": {
+        "total_return": 0.018467268739350402,
+        "annualized_return": 0.03706872162606589,
+        "sharpe": 0.30654516830869044,
+        "max_drawdown": 0.13787582697128736,
+        "trades": 49,
+        "fills": 99,
+        "total_fees": 385.188996934773,
+        "simple_benchmark_return": 0.1315272673480239,
+        "beats_simple": false
+      },
+      "review_verdict": "insufficient"
+    },
+    {
+      "strategy": 1,
+      "cost_scale": 3,
+      "metrics": {
+        "total_return": -0.10890927443194559,
+        "annualized_return": -0.2049587591056492,
+        "sharpe": -1.408860751247573,
+        "max_drawdown": 0.1672968175301151,
+        "trades": 49,
+        "fills": 99,
+        "total_fees": 1083.087869352759,
+        "simple_benchmark_return": 0.1315272673480239,
+        "beats_simple": false
+      },
+      "review_verdict": "insufficient"
+    }
+  ],
+  "portfolios": [
+    {
+      "optimizer": "equal",
+      "cost_bps": 10,
+      "summary": {
+        "ann_return": -0.032689216792487596,
+        "ann_vol": 0.4700816758242863,
+        "sharpe": 0.16373585891964254,
+        "max_drawdown": 0.3217179150200099,
+        "calmar": -0.1016083197929914,
+        "cvar_95": 0.02257983908744281,
+        "turnover": 0.015612147850773164,
+        "effective_n": 5.997600719808048,
+        "ew_sharpe": 0.16373585891964254,
+        "ew_max_drawdown": 0.3217179150200099,
+        "ew_ann_return": -0.032689216792487596,
+        "beat_ew": 0.0,
+        "dd_vs_ew": 0.0,
+        "sharpe_h1": -2.2188454452468855,
+        "sharpe_h2": 2.476120704009039,
+        "rebalances": 170,
+        "avg_exposure": 1.0001999999999998,
+        "optimizer": "equal",
+        "risk_model": "ledoit_wolf",
+        "bars": 1019,
+        "triggers": {},
+        "cost_bps": 10.0
+      },
+      "constraints": {
+        "long_only": true,
+        "max_weight": 0.3,
+        "min_weight": 0.0,
+        "max_gross": 1.0,
+        "max_turnover": 1.0,
+        "top_k": 0
+      },
+      "admitted": true
+    },
+    {
+      "optimizer": "equal",
+      "cost_bps": 30,
+      "summary": {
+        "ann_return": -0.04368082329998202,
+        "ann_vol": 0.4701237724623786,
+        "sharpe": 0.13945513606772628,
+        "max_drawdown": 0.3222642949854344,
+        "calmar": -0.13554347775932263,
+        "cvar_95": 0.022582959993420904,
+        "turnover": 0.01561214785077316,
+        "effective_n": 5.997600719808048,
+        "ew_sharpe": 0.13945513606772628,
+        "ew_max_drawdown": 0.3222642949854344,
+        "ew_ann_return": -0.04368082329998202,
+        "beat_ew": 0.0,
+        "dd_vs_ew": 0.0,
+        "sharpe_h1": -2.251009936495229,
+        "sharpe_h2": 2.4597798907012574,
+        "rebalances": 170,
+        "avg_exposure": 1.0001999999999998,
+        "optimizer": "equal",
+        "risk_model": "ledoit_wolf",
+        "bars": 1019,
+        "triggers": {},
+        "cost_bps": 30.0
+      },
+      "constraints": {
+        "long_only": true,
+        "max_weight": 0.3,
+        "min_weight": 0.0,
+        "max_gross": 1.0,
+        "max_turnover": 1.0,
+        "top_k": 0
+      },
+      "admitted": true
+    },
+    {
+      "optimizer": "risk_parity",
+      "cost_bps": 10,
+      "summary": {
+        "ann_return": 0.014118474702606187,
+        "ann_vol": 0.44152472654856095,
+        "sharpe": 0.2519924668640017,
+        "max_drawdown": 0.3069200626054239,
+        "calmar": 0.04600049466546891,
+        "cvar_95": 0.021256859869512,
+        "turnover": 0.021375754884174803,
+        "effective_n": 5.652716418081273,
+        "ew_sharpe": 0.16373585891964254,
+        "ew_max_drawdown": 0.3217179150200099,
+        "ew_ann_return": -0.032689216792487596,
+        "beat_ew": 0.08825660794435913,
+        "dd_vs_ew": 0.014797852414585977,
+        "sharpe_h1": -2.226689284127421,
+        "sharpe_h2": 2.7772654893486073,
+        "rebalances": 170,
+        "avg_exposure": 1.0000023529411766,
+        "optimizer": "risk_parity",
+        "risk_model": "ledoit_wolf",
+        "bars": 1019,
+        "triggers": {},
+        "cost_bps": 10.0
+      },
+      "constraints": {
+        "long_only": true,
+        "max_weight": 0.3,
+        "min_weight": 0.0,
+        "max_gross": 1.0,
+        "max_turnover": 1.0,
+        "top_k": 0
+      },
+      "admitted": true
+    },
+    {
+      "optimizer": "risk_parity",
+      "cost_bps": 30,
+      "summary": {
+        "ann_return": -0.0016246807676644215,
+        "ann_vol": 0.4415834666112377,
+        "sharpe": 0.21658711850214205,
+        "max_drawdown": 0.3078317659703106,
+        "calmar": -0.005277820378749075,
+        "cvar_95": 0.02126319224950683,
+        "turnover": 0.0213757548841748,
+        "effective_n": 5.652716418081273,
+        "ew_sharpe": 0.13945513606772628,
+        "ew_max_drawdown": 0.3222642949854344,
+        "ew_ann_return": -0.04368082329998202,
+        "beat_ew": 0.07713198243441577,
+        "dd_vs_ew": 0.014432529015123818,
+        "sharpe_h1": -2.268026246278708,
+        "sharpe_h2": 2.7482189920988427,
+        "rebalances": 170,
+        "avg_exposure": 1.0000023529411766,
+        "optimizer": "risk_parity",
+        "risk_model": "ledoit_wolf",
+        "bars": 1019,
+        "triggers": {},
+        "cost_bps": 30.0
+      },
+      "constraints": {
+        "long_only": true,
+        "max_weight": 0.3,
+        "min_weight": 0.0,
+        "max_gross": 1.0,
+        "max_turnover": 1.0,
+        "top_k": 0
+      },
+      "admitted": true
+    },
+    {
+      "optimizer": "hrp",
+      "cost_bps": 10,
+      "summary": {
+        "ann_return": 0.01626381793391274,
+        "ann_vol": 0.4225071880130199,
+        "sharpe": 0.24897813788488352,
+        "max_drawdown": 0.29726901580263687,
+        "calmar": 0.05471077397689717,
+        "cvar_95": 0.020320271405750413,
+        "turnover": 0.05953958185666,
+        "effective_n": 4.922752617432892,
+        "ew_sharpe": 0.16373585891964254,
+        "ew_max_drawdown": 0.3217179150200099,
+        "ew_ann_return": -0.032689216792487596,
+        "beat_ew": 0.08524227896524098,
+        "dd_vs_ew": 0.024448899217373032,
+        "sharpe_h1": -2.354634168443351,
+        "sharpe_h2": 2.9072077516986203,
+        "rebalances": 170,
+        "avg_exposure": 1.0000064705882354,
+        "optimizer": "hrp",
+        "risk_model": "ledoit_wolf",
+        "bars": 1019,
+        "triggers": {},
+        "cost_bps": 10.0
+      },
+      "constraints": {
+        "long_only": true,
+        "max_weight": 0.3,
+        "min_weight": 0.0,
+        "max_gross": 1.0,
+        "max_turnover": 1.0,
+        "top_k": 0
+      },
+      "admitted": true
+    },
+    {
+      "optimizer": "hrp",
+      "cost_bps": 30,
+      "summary": {
+        "ann_return": -0.027068056965356968,
+        "ann_vol": 0.4226645330543741,
+        "sharpe": 0.14595145761260545,
+        "max_drawdown": 0.3014525589129601,
+        "calmar": -0.08979209552230892,
+        "cvar_95": 0.020350559927180524,
+        "turnover": 0.05953958185666,
+        "effective_n": 4.922752617432892,
+        "ew_sharpe": 0.13945513606772628,
+        "ew_max_drawdown": 0.3222642949854344,
+        "ew_ann_return": -0.04368082329998202,
+        "beat_ew": 0.006496321544879169,
+        "dd_vs_ew": 0.02081173607247433,
+        "sharpe_h1": -2.4854882596444803,
+        "sharpe_h2": 2.8334788410997818,
+        "rebalances": 170,
+        "avg_exposure": 1.0000064705882354,
+        "optimizer": "hrp",
+        "risk_model": "ledoit_wolf",
+        "bars": 1019,
+        "triggers": {},
+        "cost_bps": 30.0
+      },
+      "constraints": {
+        "long_only": true,
+        "max_weight": 0.3,
+        "min_weight": 0.0,
+        "max_gross": 1.0,
+        "max_turnover": 1.0,
+        "top_k": 0
+      },
+      "admitted": true
+    }
+  ],
+  "lab": [
+    {
+      "kind": "factor",
+      "id": "43cdb87093df",
+      "status": "awaiting_user",
+      "versions": 6,
+      "tool_events": 36,
+      "seconds": 193.015,
+      "saves": [
+        {
+          "factor_id": "f_490325b0",
+          "name": "低波动60平滑",
+          "status": "active",
+          "kind": "factor"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "kind": "model",
+      "id": "d9d4f5f1f38f",
+      "status": "awaiting_user",
+      "versions": 9,
+      "tool_events": 40,
+      "seconds": 269.842,
+      "saves": [
+        {
+          "model_id": "m_9ca3e576",
+          "name": "真实体验_model",
+          "status": "active",
+          "kind": "model"
+        },
+        {
+          "model_id": "m_9ca3e576",
+          "name": "真实体验_model",
+          "status": "candidate",
+          "kind": "model"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "kind": "portfolio",
+      "id": "decaf15ed107",
+      "status": "idle",
+      "versions": 4,
+      "tool_events": 15,
+      "seconds": 40.09,
+      "saves": [],
+      "errors": [
+        "计划执行中模型调用失败：所有模型均失败:\nLLM token 数配额已耗尽：已用 1992011token，在途预留 22490token，本次还需要 12801token。请等待次日重置（UTC），或由工作区管理员在「设置与审计 → 工作区」调整上限。"
+      ]
+    },
+    {
+      "kind": "strategy",
+      "id": "2125308788fa",
+      "status": "idle",
+      "versions": 0,
+      "tool_events": 0,
+      "seconds": 0.057,
+      "saves": [],
+      "errors": [
+        "模型额度已用完，本轮没有调用模型。LLM token 数配额已耗尽：已用 1992011token，在途预留 22490token，本次还需要 13271token。请等待次日重置（UTC），或由工作区管理员在「设置与审计 → 工作区」调整上限。"
+      ]
+    }
+  ],
+  "usage": {
+    "workspace_id": "6ccebb8289614a85",
+    "day": "2026-10-26",
+    "items": [
+      {
+        "metric": "backtest_cpu_seconds",
+        "label": "回测 CPU 秒",
+        "unit": "秒",
+        "period": "daily",
+        "used": "3.262",
+        "limit": "3600",
+        "remaining": "3596.738",
+        "used_percent": "0.09",
+        "exhausted": false,
+        "quota_key": "max_cpu_seconds_per_day"
+      },
+      {
+        "metric": "backtest_runs",
+        "label": "回测次数",
+        "unit": "次",
+        "period": "daily",
+        "used": "4",
+        "limit": "200",
+        "remaining": "196",
+        "used_percent": "2",
+        "exhausted": false,
+        "quota_key": "max_backtests_per_day"
+      },
+      {
+        "metric": "optimize_combinations",
+        "label": "优化组合数",
+        "unit": "组",
+        "period": "daily",
+        "used": "0",
+        "limit": "2000",
+        "remaining": "2000",
+        "used_percent": "0",
+        "exhausted": false,
+        "quota_key": "max_optimize_combinations_per_day"
+      },
+      {
+        "metric": "llm_calls",
+        "label": "LLM 调用次数",
+        "unit": "次",
+        "period": "daily",
+        "used": "60",
+        "limit": "500",
+        "remaining": "440",
+        "used_percent": "12",
+        "exhausted": false,
+        "quota_key": "max_llm_calls_per_day"
+      },
+      {
+        "metric": "llm_tokens",
+        "label": "LLM token 数",
+        "unit": "token",
+        "period": "daily",
+        "used": "1992011",
+        "limit": "2000000",
+        "remaining": "7989",
+        "used_percent": "99.6",
+        "exhausted": false,
+        "quota_key": "max_llm_tokens_per_day"
+      },
+      {
+        "metric": "data_download_bytes",
+        "label": "数据下载量",
+        "unit": "字节",
+        "period": "daily",
+        "used": "0",
+        "limit": "2147483648",
+        "remaining": "2147483648",
+        "used_percent": "0",
+        "exhausted": false,
+        "quota_key": "max_download_bytes_per_day"
+      },
+      {
+        "metric": "storage_bytes",
+        "label": "存储占用",
+        "unit": "字节",
+        "period": "total",
+        "used": "0",
+        "limit": null,
+        "remaining": null,
+        "used_percent": null,
+        "exhausted": false,
+        "quota_key": "max_storage_bytes"
+      }
+    ],
+    "history": [
+      {
+        "day": "2026-10-26",
+        "metric": "llm_calls",
+        "value": "60"
+      },
+      {
+        "day": "2026-10-26",
+        "metric": "llm_tokens",
+        "value": "1992011"
+      },
+      {
+        "day": "2026-10-26",
+        "metric": "backtest_runs",
+        "value": "4"
+      },
+      {
+        "day": "2026-10-26",
+        "metric": "backtest_cpu_seconds",
+        "value": "3.262"
+      }
+    ],
+    "note": "用量按工作区计量，跨工作区互不可见；日界为 UTC 自然日。仅为研究结果，非投资建议。"
+  }
+}

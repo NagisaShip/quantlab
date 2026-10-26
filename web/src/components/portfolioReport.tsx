@@ -19,7 +19,7 @@ export function PortfolioStats({ s, compact }: { s: Partial<PortfolioSummary> | 
     ['年化', fp(s.ann_return, 1), (s.ann_return ?? 0) >= 0 ? 'up' : 'down'],
     ['波动', fp(s.ann_vol, 1), undefined, '年化波动'],
     ['最大回撤', fp(s.max_drawdown, 1), undefined, `等权 ${fp(s.ew_max_drawdown, 1)}`],
-    [compact ? '有效持仓' : '有效持仓数', f3(s.effective_n, 1), undefined, '1 / Σw²，越大越分散'],
+    [compact ? '有效持仓' : '有效持仓数', f3(s.effective_n, 1), undefined, '风险资产按总敞口归一后 1 / Σw²，现金不计入'],
   ]
   if (!compact) {
     cells.push(['CVaR 95%', fp(s.cvar_95, 2), undefined, '最差 5% 的 K 线平均亏损'])

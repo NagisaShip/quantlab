@@ -36,7 +36,8 @@ MODEL_SYSTEM = """你是 QuantLab Bot —— QuantLab 平台内置的 AI 研究�
 ## 平台怎么评估
 扩张窗口滚动训练（默认 4 段，每段训练集在测试段前 purge 持有期），所有指标都在拼接起来的样本外预测上算：
 样本外 RankIC、ICIR、方向准确率、Brier（分类）、多空夏普、换手、各段为正比例、PSI 漂移；
-同时训练基线（线性模型），“超出基线”≤ 0 就说明复杂模型没有增量。
+基线按报告 baseline 字段确定：ridge 对照特征等权合成，其他收益预测学习器对照 ridge，
+volatility 对照过去24根已实现波动率。不同规格的基线可能不同，不可笼统称为线性基线。
 泄漏检查：截断数据重算特征必须一致；打乱标签重训后必须学不到东西。
 
 ## 工作方式
@@ -161,6 +162,10 @@ class ModelLab(DomainLab):
         try:
             raw = loads_spec(artifact) if isinstance(artifact, str) else dict(artifact or {})
             art = self.normalize(project, raw)
+            if source == "ai" and project.get("code"):
+                previous = loads_spec(project["code"])
+                if any(art.get(k) != previous.get(k) for k in ("label", "horizon")):
+                    raise ValueError("标签与持有期属于研究协议；请由研究者明确修改规格或另建实验")
             L.make_learner(art["model"], art["params"], M.LABELS[art["label"]]["task"])
         except (ValueError, M.ModelError, L.LearnerError, json.JSONDecodeError) as exc:
             self._post(
@@ -299,6 +304,9 @@ class ModelLab(DomainLab):
                     "dir_acc",
                     "brier",
                     "ls_sharpe",
+                    "ls_return",
+                    "ls_total_return",
+                    "baseline_name",
                     "turnover",
                     "fold_positive",
                     "psi_max",
@@ -316,6 +324,10 @@ class ModelLab(DomainLab):
                 else "未设定验收目标：只汇报实测结果，不要说达标或未达标"
             ),
             "curve_tail": report["curve"][-3:],
+            "baseline": report["baseline"],
+            "metric_contract": report.get("metric_contract"),
+            "activation_eligible": report.get("activation_eligible", False),
+            "activation_block_reason": report.get("activation_block_reason", ""),
             "warnings": report["panel"].get("warnings", [])[:3],
         }
 
@@ -356,12 +368,13 @@ class ModelLab(DomainLab):
                 name=cur.get("name") or project.get("title") or "",
                 status=status,
                 note=project.get("idea") or "",
-                model_id=project.get("model_id"),
+                model_id=project.get("model_id") if project.get("library_version") == cur.get("v") else None,
                 project_id=pid,
                 created_by="ai" if cur.get("source") != "user" else "user",
+                project_goal_passed=(cur.get("evaluation") or {}).get("passed"),
             ),
         )
-        self.store.patch(pid, model_id=rec["id"], library_id=rec["id"])
+        self.store.patch(pid, model_id=rec["id"], library_id=rec["id"], library_version=cur.get("v"))
         self._post(
             pid,
             role="event",
@@ -496,6 +509,8 @@ class ModelLab(DomainLab):
             self._chat_fallback(pid, text, str(exc))
 
     def _chat_fallback(self, pid: str, text: str, reason: str) -> None:
+        if self._preserve_on_model_failure(pid, reason):
+            return
         project = self.store.get(pid) or {}
         if not project.get("code") or any(k in text for k in ("训练", "模型", "预测", "试试")):
             prop = self._rule_proposal(pid, project, 1, self._tried(project))
@@ -590,6 +605,8 @@ class ModelLab(DomainLab):
 
         def set_goal(**kw: Any) -> Any:
             out = self.set_goal(pid, kw, source="model")
+            if out.get("ok") is False:
+                return out
             return {
                 "ok": True,
                 "goal": out["spec"],

@@ -363,6 +363,7 @@ def evaluate_matrix(
         "ic_win": s_ric["win"],
         "ls_sharpe": ls_sharpe,
         "ls_return": ls_return,
+        "ls_total_return": float(nav[-1] - 1) if len(nav) else None,
         "ls_max_drawdown": dd,
         "turnover": turnover,
         "coverage": coverage,
@@ -406,7 +407,9 @@ def evaluate_matrix(
         ],
         "panel": panel.describe(),
     }
-    return report
+    from .contracts import annotate_report
+
+    return annotate_report(report)
 
 
 def admission_checks(s: dict[str, Any]) -> list[dict[str, Any]]:

@@ -1,0 +1,1 @@
+{"name": "verified_portfolio_active_rejected", "method": "PATCH", "path": "/api/portfolio/pf_54b14721", "request": {"status": "active"}, "http": 409, "seconds": 0.018, "body": {"code": "CONFLICT", "message": "费后收益未为正或缺少收益证据，请保存为候选", "trace_id": "088a75dce3644e5f", "details": {}}}

@@ -582,6 +582,7 @@ def train_and_evaluate(
             "oos_ic_t": s["ic_t"],
             "ls_sharpe": s["ls_sharpe"],
             "ls_return": s["ls_return"],
+            "ls_total_return": s.get("ls_total_return"),
             "turnover": s["turnover"],
             "coverage": s["coverage"],
             "t_required": s["t_required"],
@@ -749,6 +750,10 @@ def train_and_evaluate(
             "spec": spec,
         }
     )
+    from .contracts import annotate_report
+
+    report["summary"]["baseline_name"] = baseline_name
+    annotate_report(report)
     return {"report": report, "state": final.state()}
 
 

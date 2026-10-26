@@ -132,6 +132,9 @@ def test_factor_library_and_trials(tmp_path):
     lib = FactorLibrary(store)
     panel = _panel(signal=0.15)
     rep = evaluate_factor("-returns(5)", panel)
+    # Isolate library activation with an eligible report; synthetic rejection has its own regression.
+    assert not rep["activation_eligible"]
+    rep["panel"]["synthetic"] = False
     rec = lib.save({"name": "短期反转", "expression": "-returns( 5 )", "status": "active"}, report=rep)
     assert rec["expression"] == FX.normalize("-returns(5)") and lib.report(rec["id"])["summary"]
     dup = lib.save({"name": "短期反转", "expression": "-returns(10)"})
@@ -271,7 +274,7 @@ def test_factor_api_validate_evaluate_and_library(client):
     )
     fid = r.json()["factor"]["id"]
     assert client.get("/api/factors").json()["factors"][0]["id"] == fid
-    assert client.post(f"/api/factors/{fid}/status", json={"status": "active"}).json()["factor"]["status"] == "active"
+    assert client.post(f"/api/factors/{fid}/status", json={"status": "active"}).status_code == 409
     r = client.post(f"/api/factors/{fid}/refresh", json={"source": "synthetic", "bars_limit": 600})
     assert r.status_code == 200, r.text
     assert client.get(f"/api/factors/{fid}/report").json()["report"]["summary"]

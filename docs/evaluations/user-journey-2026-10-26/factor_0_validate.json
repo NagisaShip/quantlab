@@ -1,0 +1,1 @@
+{"name": "factor_0_validate", "method": "POST", "path": "/api/factors/validate", "request": {"expression": "returns(30)"}, "http": 200, "seconds": 0.005, "body": {"ok": true, "expression": "returns(30)", "complexity": 2, "fields": ["close"], "lookback": 30}}

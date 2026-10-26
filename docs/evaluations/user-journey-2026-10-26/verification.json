@@ -1,0 +1,21 @@
+{
+  "date": "2026-10-26",
+  "backend": {
+    "command": ".tmp/runtime-evaluation/venv/Scripts/python.exe -m pytest tests/test_journey_regressions.py tests/test_factor_research.py tests/test_model_research.py tests/test_portfolio.py tests/test_repo.py tests/test_quota.py tests/test_lab_goal.py tests/test_research_rigor.py tests/test_strategy_lab.py tests/test_lab_runtime_api.py tests/test_model_admission.py tests/test_research_modules.py tests/test_stress.py tests/test_audit.py -q --disable-warnings --maxfail=3",
+    "passed": 260,
+    "skipped": 5,
+    "warnings": 1,
+    "seconds": 161.50,
+    "exit_code": 0
+  },
+  "frontend": {
+    "command": "npm --prefix web run build",
+    "temporary_directory": ".tmp/build-temp",
+    "result": "TypeScript and Vite build passed",
+    "exit_code": 0,
+    "warnings": ["Existing circular chunks", "Some chunks larger than 500 kB"]
+  },
+  "diff_check": {"command": "git diff --check", "exit_code": 0},
+  "lint": {"scope": "Changed Python modules plus contracts.py and test_journey_regressions.py", "exit_code": 0},
+  "real_provider_evidence": "remediation-summary.json"
+}
