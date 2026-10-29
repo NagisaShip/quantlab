@@ -1,0 +1,7 @@
+# dsh-quantlab bundle patch：宿主插件（本地后端生命周期 + DSH 模型桥 + 量化工具）
+# 与浏览器半端（侧栏 QuantLab 面板 + 设置分区）。
+# name 必须是实际包名（dsh-quantlab），cordis 按 name import 包。
+- insert:
+    - id: quantlab
+      name: dsh-quantlab
+      config: {}

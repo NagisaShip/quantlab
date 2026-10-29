@@ -1,0 +1,10 @@
+{
+  "projectDir": "",
+  "python": "python",
+  "srcDir": "",
+  "autoStart": true,
+  "llmBridge": true,
+  "providerName": "DSH · Harness",
+  "model": "",
+  "pollMs": 5000
+}
