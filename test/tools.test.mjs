@@ -318,13 +318,26 @@ test('pickMetrics：从嵌套结果里收指标，拿不到就不编', () => {
   assert.deepEqual(REPORT_FORMATS, ['png', 'pdf', 'html'])
 })
 
+test('pickMetrics：平台比例口径（0.0325）要换算成百分数（3.25），不能显示成 0.03%', () => {
+  const metrics = pickMetrics({
+    metrics: { total_return: 0.03255101866568184, max_drawdown: 0.38330827142035345, sharpe: -0.7039, trades: 8 },
+  })
+  assert.equal(metrics.totalReturnPct, 3.255102)
+  assert.equal(metrics.maxDrawdownPct, 38.330827)
+  assert.equal(metrics.sharpe, -0.7039)
+  assert.equal(metrics.trades, 8)
+  // 百分数字段优先：同时存在时不再乘 100
+  assert.equal(pickMetrics({ total_return_pct: 8.5, total_return: 0.085 }).totalReturnPct, 8.5)
+})
+
 test('quantlab_export_report：返回摘要 + markdown 图片 + 卡片标记 + 下载链接', async () => {
   const calls = []
   const fetch = fakeFetch(
     {
       '/api/backtests/bt-1/report': { path: 'C:/proj/.quantlab/exports/backtest-bt-1.png' },
       '/api/backtests/bt-1/report.png': { __body: 'PNG', __bytes: 4096 },
-      '/api/backtests/bt-1': { result: { metrics: { total_return_pct: 8.5, sharpe: 1.4, trades: 12 } } },
+      // 回测详情接口是 /api/research/backtests/{id}（/api/backtests/{id} 不存在，见 openapi）
+      '/api/research/backtests/bt-1': { result: { metrics: { total_return_pct: 8.5, sharpe: 1.4, trades: 12 } } },
     },
     calls,
   )
@@ -336,9 +349,14 @@ test('quantlab_export_report：返回摘要 + markdown 图片 + 卡片标记 + �
   assert.equal(result.downloadUrl, 'http://127.0.0.1:9000/dsh-quantlab/report/bt-1.png')
   assert.equal(result.localPath, 'C:/proj/.quantlab/exports/backtest-bt-1.png')
   assert.deepEqual(result.metrics, { totalReturnPct: 8.5, sharpe: 1.4, trades: 12 })
+  // 详情页路由是单数 backtest/<id>；backtests/<id> 会被平台当成列表页的 slug 过滤
+  assert.equal(result.panelRoute, '#/backtest/bt-1')
+  assert.equal(result.panelUrl, 'http://127.0.0.1:8123/#/backtest/bt-1')
   assert.match(result.markdown, /!\[回测 #bt-1 净值曲线\]\(http:\/\/127\.0\.0\.1:9000\/dsh-quantlab\/chart\/bt-1\.png\)/)
   assert.match(result.markdown, /<!-- quantlab-card \{"ok":true/)
-  assert.match(result.markdown, /打开回测/)
+  assert.match(result.markdown, /打开回测详情/)
+  assert.match(result.markdown, /#\/backtest\/bt-1/)
+  assert.doesNotMatch(result.markdown, /#\/backtests\/bt-1/)
   // 调了导出接口 + 兜底下载接口 + 详情接口
   assert.ok(calls.some((entry) => entry.method === 'POST' && entry.url.includes('/api/backtests/bt-1/report')))
   assert.ok(calls.some((entry) => entry.method === 'GET' && entry.url.includes('/report.png')))
@@ -407,7 +425,8 @@ test('quantlab_backtest：完成时给指标与面板链接，未完成时给 ru
   })
   assert.equal(done.ok, true, JSON.stringify(done))
   assert.equal(done.metrics.totalReturnPct, 3.2)
-  assert.match(done.markdown, /打开回测/)
+  assert.equal(done.panelRoute, '#/backtests')
+  assert.match(done.markdown, /打开回测详情/)
   assert.match(done.markdown, /<!-- quantlab-card/)
 
   const pending = fakeFetch({ '/api/studio/backtest': { pending: true, run_id: 'run-9', state: 'QUEUED' } })

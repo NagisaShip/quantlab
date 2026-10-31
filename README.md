@@ -66,6 +66,85 @@ dsh plugin --profile desktop add link:<QuantLab>\dsh-quantlab
 | QuantLab 仓库 | 插件默认把 `<仓库>/.dsh-project` 当项目目录、`<仓库>/src` 当 `PYTHONPATH` |
 | 端口 | 后端只监听 `127.0.0.1`，端口由 OS 随机分配（写进 `<项目>/.quantlab/instance.json`） |
 
+### 1.4 在 DSH 里一键添加（GitHub / 压缩包 / 本地路径）
+
+DSH 侧栏「插件」页自带 **「添加插件」**：输入 npm 包名、**Git 地址**、**.tgz 压缩包** 或
+**本地绝对路径**即可安装（内部就是 `dsh plugin add <spec>`，转发 pnpm 到 profile 目录）。
+本插件是**纯源码、无构建步骤**（`lib/*.js` + `client.js` + `icon.png` + `cordis.patch.yml` +
+`config.defaults.json` 都已提交），装完重启/重载 DSH 就能用。
+
+> **前提：Git 地址必须指向「仓库根目录就是插件包」的仓库/分支**（根目录直接有 `package.json`）。
+> QuantLab 主仓库根不是插件包，所以用 `scripts/publish-dsh-plugin.mjs` 把 `dsh-quantlab/`
+> 抽成只含插件的分发分支 `dsh-quantlab-dist`（或独立仓库）。
+
+**三步：**
+
+1. **生成地址**（在 QuantLab 仓库根）：
+
+   ```powershell
+   node scripts/publish-dsh-plugin.mjs            # 生成 dsh-quantlab-dist 分支 + 本地模拟仓库
+   node scripts/publish-dsh-plugin.mjs --tar      # 再生成 dist/dsh-quantlab-<version>.tgz
+   node scripts/publish-dsh-plugin.mjs --tar --push   # 再把 dsh-quantlab-dist 推到 origin
+   ```
+
+   脚本会打印三行可直接粘贴的地址（见下），并校验分支/压缩包里都有
+   `package.json / lib/index.js / client.js / icon.png / cordis.patch.yml / config.defaults.json`。
+
+2. **DSH 里添加**：侧栏「插件」→ 右上「添加插件」→「安装第三方插件」→ 粘贴地址 →
+   「安装」（对话框见 `docs/images/dsh-quantlab/plugin-manager-add.png`）。
+   安装成功会出现在「已安装插件」列表，并自动写进 profile 的
+   `dependencies` 与 `dsh.profile.bundles`。
+
+3. **重启/重载 DSH**：侧栏出现 QuantLab 图标，点开就是平台界面
+   （见 `docs/images/dsh-quantlab/plugin-install-git.png`）。
+
+**地址格式（三选一）：**
+
+| 方式 | 填什么 | 说明 |
+|---|---|---|
+| 本仓库分发分支（推荐） | `git+https://github.com/<owner>/<repo>.git#dsh-quantlab-dist` | 先 `--push`；`<owner>/<repo>` 由脚本从 `git remote origin` 解析 |
+| 独立仓库 | `https://github.com/<owner>/dsh-quantlab` | 把分发分支内容建成一个新仓库（仓库根就是插件包） |
+| 压缩包 / 本地目录 | `C:\...\dist\dsh-quantlab-0.1.0.tgz` 或 `C:\...\QuantLab\dsh-quantlab` | 绝对路径；本地目录会以 `link:` 安装（改源码即时生效，适合开发） |
+
+CLI 等价写法（不想开界面时）：
+
+```powershell
+dsh plugin add "git+https://github.com/<owner>/<repo>.git#dsh-quantlab-dist"
+dsh plugin add "C:\path\to\QuantLab\dsh-quantlab"          # link: 安装
+dsh plugin add "C:\path\to\dist\dsh-quantlab-0.1.0.tgz"    # file: 安装
+# 卸载（同时清掉 profile bundles 条目与 node_modules）
+dsh plugin remove dsh-quantlab
+```
+
+**安装源 / 镜像**：对话框里「安装源」可选 默认 / npm 官方源 / 中国大陆镜像源 / 自定义地址。
+注意：**Git 地址与 `.tgz` 直链不走 npm 源**，需要本机能访问 github.com（连不上就配代理，
+或改用压缩包/本地目录）。本插件 `private: true`、没有发 npm 包，所以**不要填包名安装**。
+
+**常见失败：**
+
+| 现象 | 原因 / 处理 |
+|---|---|
+| `dsh plugin add` 失败、报找不到 `package.json`；或装完插件不加载 | 地址指向了子目录/仓库根没有 `package.json`。用 `#dsh-quantlab-dist` 分支地址或独立仓库；**不要**贴 `.../tree/main/dsh-quantlab` 这种子目录链接 |
+| 安装时被 pnpm 拦、提示 `prepare` / `allowBuilds` | pnpm 从 Git 安装时会拦截构建脚本。本插件已刻意不带 `prepare/prepack`；如果你改出了构建步骤，要么去掉，要么在 profile 的 `pnpm-workspace.yaml` 的 `allowBuilds` 里显式放行（不推荐） |
+| 插件页没有图标 / 加载报错 | 包缺 `icon.png`（`package.json` 的 `"icon": "icon.png"`）。本仓库已提交 256×256 PNG（`node scripts/import-dsh-icon.mjs` 生成） |
+| GitHub 连不上 / 超时 | 「安装源」镜像只对 npm 包生效；Git 地址请配代理，或改用 `.tgz` / 本地目录 |
+| Windows 路径带空格/中文时安装失败 | 用**绝对路径**并加引号；手工验证本地 git 仓库用 `git+file:///C:/...`（三斜杠，仅本地验收） |
+| 装完侧栏没有 QuantLab | 确认该插件在插件页「已安装插件」里是**启用**状态，profile 的 `dsh.profile.bundles` 末尾有 `dsh-quantlab`，然后完整重启 DSH |
+
+**隔离验收（仓库自带，不碰真实 `~/.dsh`）：**
+
+```powershell
+node scripts/publish-dsh-plugin.mjs --tar
+node scripts/verify-dsh-plugin.mjs --ds-home .tmp/dsh-home-oneclick `
+  --install-spec "git+file:///C:/.../.tmp/dsh-quantlab-dist-repo#dsh-quantlab-dist" `
+  --uninstall --add-dialog
+```
+
+实测（2026-11-01）：`dsh plugin add git+file:///...#dsh-quantlab-dist` 约 1s 装完
+（pnpm 11.28.5）、bundles 自动追加、安装包含全部 6 个必需文件、版本 0.1.0 一致；
+隔离 DSH 起来后侧栏/面板/iframe 正常；`dsh plugin remove dsh-quantlab` 后
+dependency / bundles / node_modules 全部清干净。
+
 ---
 
 ## 2. 配置
@@ -300,12 +379,20 @@ POST … → HTTP 502 {"error":{"message":"llm-deepseek: no API key for provider
   「怎么分享」一句话；末尾再附一行 `<!-- quantlab-card {...} -->` 给客户端卡片解析。
 - `client.js` 向 `tool.call.toolview` 注册了 `quantlab_export_report` / `quantlab_backtest`
   两个 key（DSH 按 wire tool 名精确分发）：有回测 id 时画「净值缩略图 + 总收益/夏普/最大回撤/交易数
-  + 在 QuantLab 打开 / 查看大图 / 下载报告」，失败时画红色错误卡。DSH 没有这个 slot 时
+  + 平台原生视图 / 打开回测详情 / 在侧栏打开 / 查看大图 / 下载报告」，失败时画红色错误卡。DSH 没有这个 slot 时
   自动退回通用 JSON 行，不影响其它功能。
+- **指标口径**：平台 `metrics.total_return` / `max_drawdown` 是比例（0.0325 = 3.25%），
+  工具统一换算成百分数（`*Pct`）后再进卡片/markdown，避免把 +3.26% 显示成「+0.03%」。
 - 图片走 `/dsh-quantlab/chart/{id}.png` 同源代理（平台 `report-export` 的
   `GET /api/backtests/{id}/report.png` 必须已就绪，否则工具返回「报告接口没就绪」）。
-- 卡片里「在 QuantLab 打开」= 切到侧栏面板并让 iframe 跳到 `#/backtests/{id}`
-  （`window.dispatchEvent(new CustomEvent('dsh:quantlab-open', {detail:{backtestId}}))`）。
+- 卡片里「平台原生视图」= 卡片内嵌 iframe 加载平台自己的回测详情页（`?embed=1&theme=…`），
+  和原平台看到的组件一模一样；「打开回测详情」= 新标签直达该详情页。
+- **回测详情路由是 `#/backtest/{id}`（单数）**：`#/backtests/{id}` 会被平台解析成列表页的
+  slug 过滤，点过去只看到列表。卡片/工具/markdown 链接统一用单数路由。
+- 卡片里「在侧栏打开」= 切到侧栏面板并让 iframe 跳到 `#/backtest/{id}`
+  （`window.dispatchEvent(new CustomEvent('dsh:quantlab-open', {detail:{backtestId}}))`）；
+  面板还没挂载时路由会先存进 `sessionStorage`，挂载后自动消费，不会只打开面板首页。
+- 指标来自 `GET /api/research/backtests/{id}`（`/api/backtests/{id}` 不存在）。
 
 ### 6.2 面板里导入 GitHub（后端 + UI）
 
@@ -392,9 +479,12 @@ node --test test/*.test.mjs
   未启动文案、行情摘要、8KB 截断；
 - `test/index.test.mjs`：配置读写默认值 + 环境变量覆盖、控制路由、模型桥路由、
   平台模型登记（含 `X-Requested-With` 头与 routing 逻辑）、工具注册、
-  `llm/adapters-updated` 清缓存、dispose 清理。
+  `llm/adapters-updated` 清缓存、dispose 清理；
+- `test/package.test.mjs`：**「添加插件」安装契约** —— 运行文件齐全、`main`/`exports`/
+  `dsh.bundle.patch`/`dsh.client` 元数据完整、没有 `prepare/prepack` 构建钩子、
+  `files` 覆盖全部运行文件、`icon.png` 是真 PNG、`peerDependencies` 只做可选 peer。
 
-当前：**75 passed / 0 failed**（新增：回测报告 markdown/卡片、GitHub 导入、safeId/pickMetrics、`resolvedTargetLabel`）。
+当前：**84 passed / 0 failed**（新增 `package.test.mjs` 的安装契约断言）。
 
 另外用 **真实** `@deepseek-ai/dsh-tools`（从 DSH 安装包 `app.asar` 解包 + 依赖链接）跑过一遍
 `defineTool` 校验：4 个工具的参数 DSL 都能编译成合法 JSON Schema，缺必填参数会抛
@@ -439,6 +529,15 @@ node --test test/*.test.mjs
   才能进模拟盘。
 - **`quantlab_backtest` 依赖后台 worker**：本地进程如果是 `QAGENT_WORKER=inline` 会同步
   返回结果；否则返回 `{ok:true,pending:true,run_id}`，需要再查 `/api/runs/{id}`。
+- **「添加插件」装的是快照**：Git 分支 / `.tgz` 安装拿到的是安装那一刻的内容，
+  改插件后要重新跑 `scripts/publish-dsh-plugin.mjs --push` 并在插件页更新/重装；
+  只有「本地绝对路径」安装是 `link:`（改源码立即生效，适合开发）。
+- **Git 地址依赖网络与公开仓库**：pnpm 直接 clone github.com，不走 npm 镜像；
+  私有仓库需要本机 git 凭据（DSH 插件页不代管 token）。连不上时改用 `.tgz` / 本地目录。
+- **需要 DSH 自带 pnpm（11.x）**：`dsh plugin add` 用的是 `resources/runtime` 里的 pnpm；
+  宿主若换用很老的 pnpm，`git+file://`、`file:` 记录格式可能有差异（GitHub 地址不受影响）。
+- **Windows 中文/空格路径**：`git+file:///C:/...` 要三斜杠；插件页/CLI 填本地路径用绝对路径
+  （带空格建议加引号）。分发脚本与隔离验收脚本都已按 UTF-8 路径实测。
 
 ---
 
@@ -449,12 +548,27 @@ Playwright 无头 Chromium，1440×900：
 
 | 截图 | 说明 |
 |---|---|
+| `docs/images/dsh-quantlab/plugin-install-git.png` | **一键安装（Git）验收**：`dsh plugin add git+file:///...#dsh-quantlab-dist` 装进隔离 profile 后启动，侧栏有「插件 + QuantLab」，面板状态条/iframe 正常（2026-11-01） |
+| `docs/images/dsh-quantlab/plugin-manager-add.png` | **插件页 →「添加插件」对话框**：填入 `git+https://github.com/<owner>/<repo>.git#dsh-quantlab-dist`，可见「安装源（中国大陆镜像源）」与已安装插件列表 |
 | `docs/images/dsh-quantlab/bot-sidebar.png` | 侧栏 bot 图标（QuantLab 行，2× 清晰版） |
 | `docs/images/dsh-quantlab/panel-embed-dark.png` | 面板嵌入（深色）：平台侧栏 56px 窄轨、无重复品牌条、模型 chip 显示真实模型名 |
 | `docs/images/dsh-quantlab/panel-embed-light.png` | 切浅色后同一面板（matchMedia → postMessage 热切换，iframe 不重载） |
 | `docs/images/dsh-quantlab/github-import.png` | 面板「导入 GitHub」抽屉：真实克隆 octocat/Hello-World 成功 + 列表行（打开文件夹/删除） |
 | `docs/images/dsh-quantlab/conversation.png` | 原生 DSH 对话：模型调用 `quantlab_backtest` 的回合 |
 | `docs/images/dsh-quantlab/conversation-card.png` | 同一回合里 `tool.call.toolview` 渲染的卡片（标题/摘要/指标行/在 QuantLab 打开） |
+
+一键安装实测（`scripts/verify-dsh-plugin.mjs --install-spec … --uninstall --add-dialog`，
+隔离 `DSH_HOME=QuantLab/.tmp/dsh-home-oneclick`，profile `verify`）：
+
+- `dsh plugin add "git+file:///C:/.../.tmp/dsh-quantlab-dist-repo#dsh-quantlab-dist"`
+  → pnpm 11.28.5 约 1s 装完；profile `dependencies` 记录该 git spec、
+  `dsh.profile.bundles` 自动追加 `dsh-quantlab`；
+- 安装包内容断言全过：`package.json / lib/index.js / client.js / icon.png /
+  cordis.patch.yml / config.defaults.json` 都在，版本 0.1.0 与仓库一致，
+  `dsh.bundle.patch` + `dsh.client` 元数据完整；
+- 隔离 DSH 583xx 端口启动，Playwright：侧栏 QuantLab 图标 → 面板 → iframe 内
+  「首页 / AI 研究室」、日志抽屉、停止/启动、设置分区全部通过；
+- `dsh plugin remove dsh-quantlab` → dependency / bundles / node_modules 全清。
 
 实测数据点：
 

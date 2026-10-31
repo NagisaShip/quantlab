@@ -93,8 +93,11 @@ a[data-ql-btn]{text-decoration:none;box-sizing:border-box;}
 [data-ql-importmeta]{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:11px;color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.85));}
 [data-ql-link]{color:var(--dsw-alias-link,var(--dsw-alias-state-business-primary,#3b6cf6));text-decoration:none;word-break:break-all;}
 [data-ql-link]:hover{text-decoration:underline;}
-[data-ql-reportcard]{display:flex;flex-direction:column;gap:8px;padding:10px 12px;border-radius:var(--dsw-radius-md,10px);border:1px solid var(--dsw-alias-border-l3,rgba(127,127,127,.24));background:var(--dsw-alias-settings-card-fill,rgba(127,127,127,.05));max-width:560px;}
+[data-ql-reportcard]{display:flex;flex-direction:column;gap:8px;padding:10px 12px;border-radius:var(--dsw-radius-md,10px);border:1px solid var(--dsw-alias-border-l3,rgba(127,127,127,.24));background:var(--dsw-alias-settings-card-fill,rgba(127,127,127,.05));max-width:680px;}
+[data-ql-reportcard][data-ql-report-native]{max-width:960px;}
 [data-ql-reportthumb]{width:100%;max-height:180px;object-fit:contain;border-radius:6px;background:rgba(127,127,127,.08);}
+[data-ql-reportthumb][data-ql-clickable]{cursor:zoom-in;}
+[data-ql-reportframe]{display:block;width:100%;height:min(72vh,620px);min-height:360px;border:1px solid var(--dsw-alias-border-l3,rgba(127,127,127,.24));border-radius:8px;background:#fff;}
 [data-ql-reportrow]{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;}
 [data-ql-reporttitle]{font-weight:600;font-size:13px;}
 [data-ql-reportmetrics]{display:flex;gap:10px;flex-wrap:wrap;font-size:11px;color:var(--dsw-alias-label-secondary,inherit);}
@@ -253,6 +256,30 @@ a[data-ql-btn]{text-decoration:none;box-sizing:border-box;}
       }
     }
 
+    /**
+     * 卡片要求面板跳到某条结果：事件只在面板已挂载时听得到，所以先把路由存进
+     * sessionStorage，面板首次挂载时消费——否则「在侧栏打开」只会打开首页。
+     */
+    const PENDING_ROUTE_KEY = 'dsh-quantlab:pending-route'
+    const stashPendingRoute = (route) => {
+      try {
+        const text = String(route || '').trim()
+        if (text) sessionStorage.setItem(PENDING_ROUTE_KEY, text)
+      } catch (_) { /* 隐私模式等：忽略，事件仍然可用 */ }
+    }
+    const takePendingRoute = () => {
+      try {
+        const value = String(sessionStorage.getItem(PENDING_ROUTE_KEY) || '').trim()
+        if (value) sessionStorage.removeItem(PENDING_ROUTE_KEY)
+        return value
+      } catch (_) {
+        return ''
+      }
+    }
+
+    /** 平台回测详情页的路由（单数 backtest；`backtests/<id>` 是列表页的 slug 过滤）。 */
+    const backtestRoute = (id) => (id ? '#/backtest/' + encodeURIComponent(String(id)) : '#/backtests')
+
     /** 从工具结果文本里找卡片 JSON：宿主在 markdown 后面留一行 <!-- quantlab-card {...} -->。 */
     const parseCardJson = (text) => {
       const raw = String(text || '')
@@ -290,7 +317,7 @@ a[data-ql-btn]{text-decoration:none;box-sizing:border-box;}
       const [logsError, setLogsError] = React.useState('')
       // 嵌入参数：主题（跟随 DSH/系统，变化时 postMessage 热切换）
       const [theme, setTheme] = React.useState(() => detectTheme())
-      const [frameRoute, setFrameRoute] = React.useState('')  // 卡片「打开面板」要落的平台路由
+      const [frameRoute, setFrameRoute] = React.useState(() => takePendingRoute())  // 卡片「打开面板」要落的平台路由
       // 「导入 GitHub」（入口在状态条，不占内容区；结果卡在抽屉里）
       const [importsOpen, setImportsOpen] = React.useState(false)
       const [imports, setImports] = React.useState([])
@@ -438,12 +465,15 @@ a[data-ql-btn]{text-decoration:none;box-sizing:border-box;}
         }
       }, [])
 
-      // 卡片/Bot 里的「在面板打开」：`window.dispatchEvent(new CustomEvent('dsh:quantlab-open', {detail:{route:'#/backtests/123'}}))`
+      // 卡片里的「在侧栏打开」：`window.dispatchEvent(new CustomEvent('dsh:quantlab-open', {detail:{route:'#/backtest/123'}}))`
       React.useEffect(() => {
         const onOpen = (event) => {
           const detail = (event && event.detail) || {}
-          const route = detail.route
-            || (detail.backtestId ? '#/backtests/' + encodeURIComponent(String(detail.backtestId)) : '')
+          const requested = detail.route
+            || (detail.backtestId ? backtestRoute(detail.backtestId) : '')
+          // 事件能到说明面板已挂载：顺手清掉待消费路由，避免下次挂载又跳一次。
+          const route = requested || takePendingRoute()
+          if (requested) takePendingRoute()
           if (route) setFrameRoute(String(route))
           if (detail.focus !== false && typeof openPanel === 'function') {
             try { openPanel() } catch (_) { /* 宿主没暴露 layout：面板已开就无所谓 */ }
@@ -1004,14 +1034,29 @@ a[data-ql-btn]{text-decoration:none;box-sizing:border-box;}
      */
     function makeReportCard({ openPanel } = {}) {
       const openInPanel = (route) => {
+        const target = String(route || '')
+        // 面板可能还没挂载：先存路由（面板首次挂载时消费），再发事件给已挂载的面板。
+        stashPendingRoute(target)
         try {
           if (typeof window !== 'undefined') {
-            window.dispatchEvent(new CustomEvent('dsh:quantlab-open', { detail: { route: route || '' } }))
+            window.dispatchEvent(new CustomEvent('dsh:quantlab-open', { detail: { route: target } }))
           }
         } catch (_) { /* ignore */ }
         try {
           if (typeof openPanel === 'function') openPanel()
         } catch (_) { /* ignore */ }
+      }
+
+      const openInTab = (url) => {
+        const target = String(url || '').trim()
+        if (!target) return
+        try {
+          if (typeof window !== 'undefined' && typeof window.open === 'function') {
+            const win = window.open(target, '_blank', 'noopener,noreferrer')
+            if (win) return
+          }
+        } catch (_) { /* ignore */ }
+        try { if (typeof window !== 'undefined') window.location.assign(target) } catch (_) { /* ignore */ }
       }
 
       const numberish = (value, suffix, digits) => {
@@ -1021,7 +1066,20 @@ a[data-ql-btn]{text-decoration:none;box-sizing:border-box;}
         return suffix ? text + suffix : text
       }
 
+      /** 百分比：`*Pct` 已是百分数；只有比例字段（total_return=0.0325）时 ×100 免得显示成 0.03%。 */
+      const percentish = (pctValue, ratioValue) => {
+        if (pctValue !== undefined && pctValue !== null && pctValue !== '') return numberish(pctValue, '%', 2)
+        if (ratioValue !== undefined && ratioValue !== null && ratioValue !== '') {
+          const num = Number(ratioValue)
+          return Number.isFinite(num) ? numberish(num * 100, '%', 2) : String(ratioValue)
+        }
+        return null
+      }
+
       return function QuantLabReportCard(props) {
+        // Hooks 必须在所有 return 之前调用（同实例每次渲染顺序一致）。
+        const [view, setView] = React.useState('summary')
+
         const toolName = String((props && props.toolName) || 'quantlab_export_report')
         const block = props && props.block
         const phase = (props && props.phase) || ''
@@ -1066,35 +1124,88 @@ a[data-ql-btn]{text-decoration:none;box-sizing:border-box;}
 
         const chartUrl = (card && (card.chartUrl || card.chart)) || ''
         const downloadUrl = (card && (card.downloadUrl || card.pdfUrl || card.reportUrl)) || ''
-        const panelRoute = (card && card.panelRoute)
+        // 平台原生页面（回测详情）：工具会带 panelUrl；没有时退回面板路由。
+        const panelUrl = (card && (card.panelUrl || card.url)) || ''
+        // 旧卡片里可能存的是错的复数字路由 `#/backtests/<id>`（会落到列表页），这里纠正成单数。
+        const rawPanelRoute = (card && card.panelRoute) || ''
+        const panelRoute = (rawPanelRoute
+          ? rawPanelRoute.replace(/^#?\/?backtests\/([A-Za-z0-9_-]+)$/, '#/backtest/$1')
+          : '')
           || (backtestId !== undefined && backtestId !== null && backtestId !== ''
-            ? '#/backtests/' + encodeURIComponent(String(backtestId))
+            ? backtestRoute(backtestId)
             : '')
+        const nativeSrc = panelUrl ? buildFrameUrl(panelUrl, detectTheme(), '') : ''
         const metrics = (card && card.metrics) || {}
         const items = [
-          ['总收益', numberish(metrics.totalReturnPct ?? metrics.totalReturn, '%', 2)],
+          ['总收益', percentish(metrics.totalReturnPct, metrics.totalReturn)],
           ['夏普', numberish(metrics.sharpe, '', 2)],
-          ['最大回撤', numberish(metrics.maxDrawdownPct ?? metrics.maxDrawdown, '%', 2)],
+          ['最大回撤', percentish(metrics.maxDrawdownPct, metrics.maxDrawdown)],
           ['交易', numberish(metrics.trades)],
         ].filter((pair) => pair[1] !== null && pair[1] !== undefined)
 
+        // ① 平台原生视图：直接 iframe 平台自己的回测详情页（embed 模式），和平台里看到的一样。
+        if (view === 'native' && nativeSrc) {
+          return h('div', {
+            'data-ql-reportcard': '', 'data-ql-report-native': '', 'data-ql-toolview': toolName,
+          },
+          h('div', { 'data-ql-reportrow': '' },
+            h('span', { 'data-ql-reporttitle': '' }, heading),
+            h('span', { 'data-ql-spacer': '' }),
+            h('button', {
+              type: 'button', 'data-ql-btn': '', onClick: () => setView('summary'),
+            }, '收起平台视图'),
+            panelUrl
+              ? h('button', {
+                type: 'button', 'data-ql-btn': '', 'data-ql-variant': 'primary',
+                onClick: () => openInTab(panelUrl),
+              }, '在新标签打开')
+              : null),
+          h('iframe', {
+            'data-ql-reportframe': '',
+            src: nativeSrc,
+            title: heading,
+            loading: 'lazy',
+            referrerPolicy: 'no-referrer',
+          }))
+        }
+
+        // ② 摘要视图（默认）
         return h('div', { 'data-ql-reportcard': '', 'data-ql-toolview': toolName },
+          h('div', { 'data-ql-reportrow': '' }, h('span', { 'data-ql-reporttitle': '' }, heading)),
           chartUrl
             ? h('img', {
-              'data-ql-reportthumb': '', src: chartUrl, alt: '回测净值曲线', loading: 'lazy',
+              'data-ql-reportthumb': '',
+              ...(nativeSrc ? { 'data-ql-clickable': '' } : {}),
+              src: chartUrl,
+              alt: '回测净值曲线',
+              loading: 'lazy',
+              onClick: nativeSrc ? () => setView('native') : undefined,
             })
             : null,
-          h('div', { 'data-ql-reportrow': '' }, h('span', { 'data-ql-reporttitle': '' }, heading)),
           card && card.summary ? h('div', { 'data-ql-note': '' }, String(card.summary).slice(0, 300)) : null,
           items.length
             ? h('div', { 'data-ql-reportmetrics': '' },
               items.map(([label, value]) => h('span', { key: label }, label + ' ', h('b', null, String(value)))))
             : null,
           h('div', { 'data-ql-actions': '' },
-            h('button', {
-              type: 'button', 'data-ql-btn': '', 'data-ql-variant': 'primary',
-              'data-ql-open-panel': '', onClick: () => openInPanel(panelRoute),
-            }, '在 QuantLab 打开'),
+            nativeSrc
+              ? h('button', {
+                type: 'button', 'data-ql-btn': '', 'data-ql-variant': 'primary', 'data-ql-open-native': '',
+                onClick: () => setView('native'),
+              }, '平台原生视图')
+              : null,
+            panelUrl
+              ? h('button', {
+                type: 'button', 'data-ql-btn': '', 'data-ql-open-tab': '',
+                onClick: () => openInTab(panelUrl),
+              }, '打开回测详情')
+              : null,
+            panelRoute
+              ? h('button', {
+                type: 'button', 'data-ql-btn': '',
+                'data-ql-open-panel': '', onClick: () => openInPanel(panelRoute),
+              }, '在侧栏打开')
+              : null,
             chartUrl
               ? h('a', {
                 'data-ql-btn': '', href: chartUrl, target: '_blank', rel: 'noreferrer',
