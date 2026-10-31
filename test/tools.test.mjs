@@ -12,9 +12,12 @@ import {
   SERVICE_NOT_RUNNING,
   buildToolDefinitions,
   checkApiRequest,
+  pickMetrics,
   requestPlatform,
+  safeId,
   summarizeBars,
   truncateText,
+  REPORT_FORMATS,
 } from '../lib/tools.js'
 
 /** 最小 defineTool shim：保留 name/parameters/output/execute。 */
@@ -36,11 +39,12 @@ function fakeFetch(routes, calls = []) {
   }
 }
 
-function buildTools({ baseUrl = 'http://127.0.0.1:8123', fetch, status } = {}) {
+function buildTools({ baseUrl = 'http://127.0.0.1:8123', fetch, status, dshOrigin = 'http://127.0.0.1:9000' } = {}) {
   const definitions = buildToolDefinitions({
     defineTool,
     getBaseUrl: () => baseUrl,
     getStatus: () => status || { state: 'running', url: baseUrl, port: 8123, pid: 1, projectDir: 'X', llmBridge: 'ready' },
+    getDshOrigin: () => dshOrigin,
     fetch,
     log: () => {},
   })
@@ -92,10 +96,13 @@ test('truncateText：超过 8KB 截断并标注', () => {
   assert.match(cut, /已截断到 8KB/)
 })
 
-test('buildToolDefinitions：四个工具、参数 DSL 形状正确', () => {
+test('buildToolDefinitions：七个工具、参数 DSL 形状正确', () => {
   const { definitions, byName } = buildTools({ fetch: fakeFetch({}) })
   assert.deepEqual(definitions.map((definition) => definition.name).sort(), [
     'quantlab_api',
+    'quantlab_backtest',
+    'quantlab_export_report',
+    'quantlab_import_github',
     'quantlab_market_bars',
     'quantlab_search_stock',
     'quantlab_status',
@@ -292,3 +299,125 @@ test('summarizeBars：空数据也安全', () => {
   assert.deepEqual(summary.last3, [])
   assert.equal(summary.stats.firstClose, null)
 })
+
+// ─── F（DSH 体验）：回测报告 / 原生对话卡片 / GitHub 导入 ──────────────────
+
+test('safeId：只接受安全短 id（拼进 URL 的不能带引号/斜杠）', () => {
+  assert.equal(safeId('bt-123_ab'), 'bt-123_ab')
+  assert.equal(safeId('  abc  '), 'abc')
+  for (const bad of ['', '../etc', 'a/b', 'a"b', '<script>', '中文', 'x'.repeat(80), 'a b']) {
+    assert.equal(safeId(bad), '', `应拒绝：${bad}`)
+  }
+})
+
+test('pickMetrics：从嵌套结果里收指标，拿不到就不编', () => {
+  const metrics = pickMetrics({ result: { metrics: { total_return_pct: 12.5, sharpe: 1.8, max_drawdown_pct: -6.2, trades: 42 } } })
+  assert.deepEqual(metrics, { totalReturnPct: 12.5, sharpe: 1.8, maxDrawdownPct: -6.2, trades: 42 })
+  assert.deepEqual(pickMetrics({}), {})
+  assert.deepEqual(pickMetrics(null), {})
+  assert.deepEqual(REPORT_FORMATS, ['png', 'pdf', 'html'])
+})
+
+test('quantlab_export_report：返回摘要 + markdown 图片 + 卡片标记 + 下载链接', async () => {
+  const calls = []
+  const fetch = fakeFetch(
+    {
+      '/api/backtests/bt-1/report': { path: 'C:/proj/.quantlab/exports/backtest-bt-1.png' },
+      '/api/backtests/bt-1/report.png': { __body: 'PNG', __bytes: 4096 },
+      '/api/backtests/bt-1': { result: { metrics: { total_return_pct: 8.5, sharpe: 1.4, trades: 12 } } },
+    },
+    calls,
+  )
+  const { byName } = buildTools({ fetch })
+  const result = await byName.quantlab_export_report.execute({ backtest_id: 'bt-1', format: 'png' })
+  assert.equal(result.ok, true, JSON.stringify(result))
+  assert.equal(result.backtestId, 'bt-1')
+  assert.equal(result.chartUrl, 'http://127.0.0.1:9000/dsh-quantlab/chart/bt-1.png')
+  assert.equal(result.downloadUrl, 'http://127.0.0.1:9000/dsh-quantlab/report/bt-1.png')
+  assert.equal(result.localPath, 'C:/proj/.quantlab/exports/backtest-bt-1.png')
+  assert.deepEqual(result.metrics, { totalReturnPct: 8.5, sharpe: 1.4, trades: 12 })
+  assert.match(result.markdown, /!\[回测 #bt-1 净值曲线\]\(http:\/\/127\.0\.0\.1:9000\/dsh-quantlab\/chart\/bt-1\.png\)/)
+  assert.match(result.markdown, /<!-- quantlab-card \{"ok":true/)
+  assert.match(result.markdown, /打开回测/)
+  // 调了导出接口 + 兜底下载接口 + 详情接口
+  assert.ok(calls.some((entry) => entry.method === 'POST' && entry.url.includes('/api/backtests/bt-1/report')))
+  assert.ok(calls.some((entry) => entry.method === 'GET' && entry.url.includes('/report.png')))
+})
+
+test('quantlab_export_report：报告接口没就绪时给可读错误，并校验 id/format', async () => {
+  const { byName } = buildTools({ fetch: fakeFetch({}) })
+  const missing = await byName.quantlab_export_report.execute({ backtest_id: 'bt-404' })
+  assert.equal(missing.ok, false)
+  assert.match(missing.error, /导出失败/)
+  assert.match(missing.error, /report-export|报告/)
+
+  const badId = await byName.quantlab_export_report.execute({ backtest_id: '../x' })
+  assert.equal(badId.ok, false)
+  assert.match(badId.error, /不合法/)
+
+  const badFormat = await byName.quantlab_export_report.execute({ backtest_id: 'bt-1', format: 'exe' })
+  assert.equal(badFormat.ok, false)
+  assert.match(badFormat.error, /png/)
+})
+
+test('quantlab_import_github：成功时给仓库摘要，失败时透出平台原因', async () => {
+  const okFetch = fakeFetch({
+    '/api/imports/github': {
+      ok: true,
+      import: {
+        id: 'octocat-Hello-World-1',
+        name: 'octocat/Hello-World',
+        url: 'https://github.com/octocat/Hello-World',
+        files: 3,
+        bytes: 2048,
+        dir: 'octocat-Hello-World-1',
+        strategies_imported: [{ slug: 'demo', name: 'Demo' }],
+        warnings: [],
+      },
+    },
+  })
+  const ok = await buildTools({ fetch: okFetch }).byName.quantlab_import_github.execute({
+    url: 'https://github.com/octocat/Hello-World',
+  })
+  assert.equal(ok.ok, true, JSON.stringify(ok))
+  assert.equal(ok.name, 'octocat/Hello-World')
+  assert.equal(ok.strategies[0].slug, 'demo')
+  assert.match(ok.markdown, /已导入 octocat\/Hello-World/)
+  assert.match(ok.markdown, /<!-- quantlab-card/)
+
+  const failFetch = fakeFetch({
+    '/api/imports/github': { __status: 400, message: '仓库不存在或不是公开仓库' },
+  })
+  const failed = await buildTools({ fetch: failFetch }).byName.quantlab_import_github.execute({
+    url: 'https://github.com/octocat/Nope',
+  })
+  assert.equal(failed.ok, false)
+  assert.match(failed.error, /仓库不存在/)
+})
+
+test('quantlab_backtest：完成时给指标与面板链接，未完成时给 run_id', async () => {
+  const completed = fakeFetch({
+    '/api/studio/backtest': {
+      run_id: 'run-1',
+      result: { metrics: { total_return_pct: 3.2, sharpe: 0.9, trades: 5 } },
+    },
+  })
+  const done = await buildTools({ fetch: completed }).byName.quantlab_backtest.execute({
+    slug: 'demo', symbol: '600519.SH', exchange: 'stock',
+  })
+  assert.equal(done.ok, true, JSON.stringify(done))
+  assert.equal(done.metrics.totalReturnPct, 3.2)
+  assert.match(done.markdown, /打开回测/)
+  assert.match(done.markdown, /<!-- quantlab-card/)
+
+  const pending = fakeFetch({ '/api/studio/backtest': { pending: true, run_id: 'run-9', state: 'QUEUED' } })
+  const queued = await buildTools({ fetch: pending }).byName.quantlab_backtest.execute({ code: 'pass' })
+  assert.equal(queued.ok, true)
+  assert.equal(queued.pending, true)
+  assert.equal(queued.run_id, 'run-9')
+
+  const empty = await buildTools({ fetch: fakeFetch({}) }).byName.quantlab_backtest.execute({})
+  assert.equal(empty.ok, false)
+  assert.match(empty.error, /slug|code/)
+})
+

@@ -6,6 +6,7 @@
   "type": "module",
   "license": "MIT",
   "main": "lib/index.js",
+  "icon": "icon.png",
   "exports": {
     ".": "./lib/index.js",
     "./client": "./client.js",
@@ -20,6 +21,7 @@
     "cordis.patch.yml",
     "config.defaults.json",
     "locale/*.json",
+    "icon.png",
     "icon.svg",
     "README.md"
   ],

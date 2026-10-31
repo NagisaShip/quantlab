@@ -226,13 +226,17 @@ test('GET /dsh-quantlab/status：返回 docs 4.3 的字段 + llmBridge/provider'
     assert.equal(typeof payload.logTail, 'string')
     assert.equal(typeof payload.configPath, 'string')
     assert.equal(payload.providerRegistration.ok, false, '还没登记前是 false')
-    assert.equal(host.toolNames().length, 4)
+    assert.equal(host.toolNames().length, 7)
     assert.deepEqual(ctx.tools.map((tool) => tool.name).sort(), [
       'quantlab_api',
+      'quantlab_backtest',
+      'quantlab_export_report',
+      'quantlab_import_github',
       'quantlab_market_bars',
       'quantlab_search_stock',
       'quantlab_status',
     ])
+    assert.equal(typeof payload.resolvedTargetLabel, 'string', '模型名说人话：状态里带 resolvedTargetLabel')
   } finally {
     tmp.cleanup()
   }
@@ -335,7 +339,7 @@ test('模型桥路由：/llm/v1/chat/completions 与 /models 转给 bridge，其
     const models = await callRoute(ctx.route('exact', '/dsh-quantlab/llm/v1/models').handler, { method: 'GET' })
     assert.equal(models.json().bridge, 'models')
 
-    const missing = await callRoute(ctx.route('prefix', '/dsh-quantlab/llm/').handler, {
+    const missing = await callRoute(ctx.route('prefix', '/dsh-quantlab/llm').handler, {
       method: 'GET',
       url: '/dsh-quantlab/llm/v1/unknown',
     })
@@ -550,7 +554,7 @@ test('dispose：注销路由/工具并停掉后端', async () => {
   const backend = fakeBackend({ state: 'running' })
   const { tmp, ctx, host } = await makeHost({ backend })
   try {
-    assert.equal(ctx.tools.length, 4)
+    assert.equal(ctx.tools.length, 7, '7 个工具：status/market_bars/search_stock/api/backtest/export_report/import_github')
     assert.ok(ctx.routes.size >= 8)
     host.dispose()
     assert.ok(backend.calls.includes('dispose'))

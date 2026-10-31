@@ -9,10 +9,17 @@ DeepSeek Harness（DSH）插件：把 **QuantLab 量化研究台** 接进桌面�
 2. **OpenAI 兼容模型桥**：把 QuantLab 的 AI 研究室 / Agent 调用翻译成 DSH 的
    `ctx.llm.stream`，平台不用再配外部模型 key（`lib/llm-bridge.js`）；
 3. **给 DSH 注册量化工具**：`quantlab_status` / `quantlab_market_bars` /
-   `quantlab_search_stock` / `quantlab_api`（`lib/tools.js`）。
+   `quantlab_search_stock` / `quantlab_api` / `quantlab_backtest` /
+   `quantlab_export_report` / `quantlab_import_github`（`lib/tools.js`）；
+   **原生 DSH 对话里能直接看到回测结果的净值图和卡片**（`tool.call.toolview` keyed slot）。
 
-浏览器半端 `client.js`（另一个包/另一侧实现）通过 `/dsh-quantlab/*` HTTP 和本插件通信：
-侧栏 `QuantLab` 面板用 iframe 内嵌本地后端页面（`status.url`），顶部状态条提供启动/停止/刷新/日志。
+浏览器半端 `client.js` 通过 `/dsh-quantlab/*` HTTP 和本插件通信：
+侧栏 `QuantLab` 面板用 iframe 内嵌本地后端页面（`status.url`，带 `?embed=1&theme=dark|light`），
+顶部状态条提供启动/停止/重启/刷新/日志/导入 GitHub，设置里有「QuantLab」配置卡。
+
+**图标**：`dsh-quantlab/icon.png`（256×256，QuantLab Bot）由
+`node scripts/import-dsh-icon.mjs` 从 `Assets/quantlab-bot-logo.*` 生成，`package.json`
+的 `"icon": "icon.png"` 指向它；侧栏图标是同一只 bot 的内联 SVG（`currentColor`，深浅色都可辨）。
 
 > 接口契约见仓库文档 `docs/DSH插件迁移与股票市场.md` §4.1–4.5；本文只写「怎么用 + 实测结果」。
 
@@ -90,13 +97,17 @@ dsh plugin --profile desktop add link:<QuantLab>\dsh-quantlab
 
 | 方法 | 路径 | 返回 |
 |---|---|---|
-| GET | `/dsh-quantlab/status` | `{ok,state,url,port,projectDir,pid,startedAt,error,reused,logTail,llmBridge,providerName,provider,model,savedModel,resolvedTarget?,configPath,providerRegistration}` |
+| GET | `/dsh-quantlab/status` | `{ok,state,url,port,projectDir,pid,startedAt,error,reused,logTail,llmBridge,providerName,provider,model,savedModel,resolvedTarget?,resolvedTargetLabel,configPath,providerRegistration}` |
 | POST | `/dsh-quantlab/start` | 启动/复用后端，返回最新 status；running 后会尝试登记平台模型服务 |
 | POST | `/dsh-quantlab/stop` | 停后端（先 `POST /api/local/shutdown`，超时 `taskkill /T /F` 兜底） |
 | POST | `/dsh-quantlab/restart` | 重启 |
 | GET | `/dsh-quantlab/config` | `{ok,config,status}` |
 | POST | `/dsh-quantlab/config` | 合并保存配置；改了 `projectDir/python/srcDir/autoStart` 会重启后端；返回 `{ok,config,...status}` |
 | GET | `/dsh-quantlab/logs?lines=80` | `{ok,lines,logTail:[...],text:"…"}`（`text` 是拼好的多行字符串，客户端可直接显示） |
+| GET/POST/DELETE | `/dsh-quantlab/imports[/…]` | GitHub 导入代理：GET 列表、POST `{url,note?}` 导入、DELETE `/{id}` 删除（转发平台 `/api/imports/github*`） |
+| POST | `/dsh-quantlab/open` | `{path}` 在系统文件管理器打开项目内目录（只允许项目目录下） |
+| GET | `/dsh-quantlab/chart/{id}.png` | 转发平台 `GET /api/backtests/{id}/report.png`（卡片/ markdown 图片用，带 `cache-control: max-age=30`） |
+| GET | `/dsh-quantlab/report/{id}.{png\|pdf\|html}` | 转发平台报告下载（`content-disposition` 附件），卡片「下载报告」用 |
 
 `state` 取值：`starting` / `running` / `stopped` / `error`（异常退出时 `error` 带原因 + 日志尾）。
 
@@ -200,9 +211,19 @@ model    = deepseek-v4.1-flash
      "base_url": "http://127.0.0.1:<DSH端口>/dsh-quantlab/llm/v1",
      "api_key": "dsh-harness",
      "models": ["dsh-default"],
+     "model_settings": {
+       "dsh-default": { "label": "DSH · deepseek-v4.1-flash", "context_window": 128000, "inputs": ["text"] }
+     },
      "scope": "workspace"
    }
    ```
+
+   **模型名说人话**：`model_settings["dsh-default"].label` 用 `ctx.llm` 解析出的真实目标
+   （`bridge.resolveTarget()` → `{provider, model}`，如 `opencode-go/deepseek-v4.1-flash`；
+   优先 `ctx.llm.resolveModelInfo()` 的 `displayName`），拼成「DSH · deepseek-v4.1-flash」。
+   平台 AI 研究室底栏因此显示真实模型名，而不是 `dsh-default`。标签变了会重新 upsert；
+   `/dsh-quantlab/status` 同时暴露 `resolvedTarget` 与 `resolvedTargetLabel`，
+   面板状态条的模型 chip 直接显示这个 label（hover 有 provider/model/effort/上下文）。
 
 3. 路由：`PUT /api/config/routing?scope=workspace`，body `{"default":"dsh-harness/dsh-default"}`——
    **只在 `routing.default` 为空或指向不存在的 provider 时才覆盖**，不动用户已有选择；
@@ -269,6 +290,44 @@ POST … → HTTP 502 {"error":{"message":"llm-deepseek: no API key for provider
 | `quantlab_market_bars` | `symbol`(必填), `timeframe`, `exchange`, `limit` | 行情 K 线摘要：末 3 根 + 首末收盘、涨跌幅、最高最低、均量；`exchange="stock"` 即股票（A 股 `600519.SH`、美股 `AAPL.US`） |
 | `quantlab_search_stock` | `q`(必填) | 股票搜索（名称/代码） |
 | `quantlab_api` | `method`(GET/POST), `path`, `body?` | 通用平台 API，白名单 + 8KB 截断（见下） |
+| `quantlab_backtest` | `slug` / `code`（二选一）, `symbol`, `timeframe`, `bars_limit`, `exchange?` | 同步跑一次回测（走 `/api/studio/backtest`），返回指标 + 打开链接；有回测 id 时带净值图 |
+| `quantlab_export_report` | `backtest_id`(必填), `format?`(png/pdf/html，默认 png) | 导出回测报告：摘要 + markdown 净值图 + 本地文件路径 + 下载/打开链接；接口没就绪时返回中文原因 |
+| `quantlab_import_github` | `url`(必填), `note?` | 导入公开 GitHub 仓库（浅克隆、200MB/120s 上限），有 `.qstrat` 自动走策略包导入；返回文件数/大小/本地目录/策略 slug |
+
+### 6.1 原生对话里展示回测结果
+
+- 工具结果文本本身就是给人看的 markdown：摘要、`![净值曲线](…)`、`打开回测` 链接、
+  「怎么分享」一句话；末尾再附一行 `<!-- quantlab-card {...} -->` 给客户端卡片解析。
+- `client.js` 向 `tool.call.toolview` 注册了 `quantlab_export_report` / `quantlab_backtest`
+  两个 key（DSH 按 wire tool 名精确分发）：有回测 id 时画「净值缩略图 + 总收益/夏普/最大回撤/交易数
+  + 在 QuantLab 打开 / 查看大图 / 下载报告」，失败时画红色错误卡。DSH 没有这个 slot 时
+  自动退回通用 JSON 行，不影响其它功能。
+- 图片走 `/dsh-quantlab/chart/{id}.png` 同源代理（平台 `report-export` 的
+  `GET /api/backtests/{id}/report.png` 必须已就绪，否则工具返回「报告接口没就绪」）。
+- 卡片里「在 QuantLab 打开」= 切到侧栏面板并让 iframe 跳到 `#/backtests/{id}`
+  （`window.dispatchEvent(new CustomEvent('dsh:quantlab-open', {detail:{backtestId}}))`）。
+
+### 6.2 面板里导入 GitHub（后端 + UI）
+
+- 面板状态条有「导入 GitHub」按钮（不占内容区）：抽屉里粘贴
+  `https://github.com/<owner>/<repo>` → 浅克隆 + 扫描 → 结果卡；
+  列表里每条可「打开文件夹 / 删除」，失败直接显示中文原因。
+- 后端（Python，平台侧同一个仓库）：
+  - `src/quant_agent/local/github_import.py`：URL 校验（只认 github.com https，拒绝
+    SSH/其它站点/查询串/用户名密码）、`git clone --depth 1 --single-branch`、
+    `GIT_TERMINAL_PROMPT=0`、超时 120s、克隆后大小上限 200MB、扫描文件/扩展名/README/
+    策略相关文件、找 `*.qstrat`（文件或 `.qstrat/` 目录，按白名单 zip 回内存）；
+  - `src/quant_agent/api/routes_imports.py`（`router`，前缀 **`/api/imports/github`**）：
+    `POST` 导入、`GET` 列表、`GET/{id}` 详情+文件清单、`DELETE/{id}` 删目录+记录；
+    记录写进工作区 store 集合 `imports`；仓库里有 `.qstrat` 时调用平台现有策略包导入
+    （`P.inspect` + `StrategyRepository.save`，导入后**仍未批准**），slug 回填到记录里。
+    **删除的 Windows 细节**：git 克隆出来的 `.git/objects/**` 是只读文件，
+    `delete_repo()` 用 `shutil.rmtree` 的 `onexc` 回调先 `chmod(S_IWRITE)` 再删；
+    删完再检查目录是否存在，**没删干净就报错**（不再返回「已删除但 removed_dir=false」）。
+  - ⚠ 路径修正：契约写的 `GET /api/imports` / `DELETE /api/imports/{id}` 与平台已有的
+    「实盘成交导入」（`routes_live.py`）**撞路由**，所以 GitHub 导入收在 `/api/imports/github`
+    子路径下，`POST` 路径与契约一致。
+- 本机要求：`git` 在 PATH 里、能访问 github.com；私有仓库不支持（本机不代管 GitHub 密钥）。
 
 `quantlab_api` 白名单：
 
@@ -291,15 +350,23 @@ POST … → HTTP 502 {"error":{"message":"llm-deepseek: no API key for provider
 
 ```
 dsh-quantlab/
-  package.json          # dsh.bundle.patch / dsh.client（客户端 bundle 声明）
+  package.json          # dsh.bundle.patch / dsh.client / icon
   cordis.patch.yml      # - insert: [{id: quantlab, name: dsh-quantlab, config: {}}]
   config.defaults.json  # 默认配置的同款副本（给人看；lib/index.js 里有兜底默认值）
-  lib/index.js          # cordis 插件：配置、路由、工具、平台模型登记、diag、dispose
+  icon.png / icon.svg   # QuantLab Bot（256×256 PNG + 矢量）；scripts/import-dsh-icon.mjs 生成
+  client.js             # 浏览器半端：侧栏面板 / iframe(embed,theme) / 设置卡 / 工具卡片 / 导入 UI
+  lib/index.js          # cordis 插件：配置、路由、代理、工具、平台模型登记、diag、dispose
   lib/backend.js        # 后端进程管理（纯 Node，可单测）
   lib/llm-bridge.js     # OpenAI ↔ ctx.llm（可单测）
-  lib/tools.js          # quantlab_* 工具 + quantlab_api 白名单
+  lib/tools.js          # quantlab_* 工具（含 backtest/export_report/import_github）+ 白名单
   test/*.test.mjs       # node --test，零第三方依赖
 ```
+
+`client.js` 的嵌入参数与工作流 E（`web/src/components/uiShell.ts`）对齐：
+`?embed=1` → `html[data-embed="1"]`（平台侧栏收成 56px 窄轨、隐藏重复品牌条）；
+`?theme=dark|light` → `html[data-theme]` + `data-theme-locked="1"`（不传 theme 则跟随系统）；
+主题变化时父窗口 `postMessage({type:'quantlab:theme',theme})` 热切换（不重载 iframe），
+平台不支持也只是下一次刷新才变。
 
 宿主可注入点（单测用）：`spawn` / `fetch` / `sleep` / `getFreePort` / `isPidAlive` / `killPid`
 （`lib/backend.js`），`getLlm` / `getDefaultModel` / `now`（`lib/llm-bridge.js`），
@@ -327,7 +394,7 @@ node --test test/*.test.mjs
   平台模型登记（含 `X-Requested-With` 头与 routing 逻辑）、工具注册、
   `llm/adapters-updated` 清缓存、dispose 清理。
 
-当前：**69 passed / 0 failed**。
+当前：**75 passed / 0 failed**（新增：回测报告 markdown/卡片、GitHub 导入、safeId/pickMetrics、`resolvedTargetLabel`）。
 
 另外用 **真实** `@deepseek-ai/dsh-tools`（从 DSH 安装包 `app.asar` 解包 + 依赖链接）跑过一遍
 `defineTool` 校验：4 个工具的参数 DSL 都能编译成合法 JSON Schema，缺必填参数会抛
@@ -358,3 +425,46 @@ node --test test/*.test.mjs
   发 `SIGTERM`。
 - **股票行情依赖后端实现**：插件只是转发 `/api/market/*`；股票适配器由平台侧（Python）
   提供，插件不合成行情数据。
+- **嵌入/深色依赖 E 的实现**：iframe 传 `?embed=1&theme=…`，平台侧要按
+  `html[data-embed]` / `html[data-theme]` 生效（`web/src/components/uiShell.ts`）。
+  平台没重建时 iframe 仍是完整界面（功能不受影响，只是多一层侧栏）。
+- **原生对话卡片依赖 `tool.call.toolview` slot**：DSH 没有这个 slot（旧版本）时
+  卡片不注册，工具结果退回通用 JSON 行；markdown 图片仍会正常工作。
+- **报告图/下载依赖 report-export**：`GET /api/backtests/{id}/report.{png,pdf,html}`
+  没就绪时 `quantlab_export_report` 返回「导出失败：…report-export…」而不是空图；
+  `/dsh-quantlab/chart/{id}.png` 只是转发，不合成图像。
+- **GitHub 导入**：只支持公开仓库；需要 `git` 在 PATH 且网络能到 github.com；
+  `--depth 1` 浅克隆 + 120s 超时 + 200MB 上限；私有仓库/SSH 不支持（本机不代管密钥）。
+  有 `.qstrat` 时调用平台策略包导入，**导入的策略仍未批准**，需要人工看过代码再批准
+  才能进模拟盘。
+- **`quantlab_backtest` 依赖后台 worker**：本地进程如果是 `QAGENT_WORKER=inline` 会同步
+  返回结果；否则返回 `{ok:true,pending:true,run_id}`，需要再查 `/api/runs/{id}`。
+
+---
+
+## 10. 截图与实测（2026-11-01，隔离 profile）
+
+隔离 `DSH_HOME=QuantLab/.tmp/dsh-home-f`（`--profile verify --port 18093/18094`），
+Playwright 无头 Chromium，1440×900：
+
+| 截图 | 说明 |
+|---|---|
+| `docs/images/dsh-quantlab/bot-sidebar.png` | 侧栏 bot 图标（QuantLab 行，2× 清晰版） |
+| `docs/images/dsh-quantlab/panel-embed-dark.png` | 面板嵌入（深色）：平台侧栏 56px 窄轨、无重复品牌条、模型 chip 显示真实模型名 |
+| `docs/images/dsh-quantlab/panel-embed-light.png` | 切浅色后同一面板（matchMedia → postMessage 热切换，iframe 不重载） |
+| `docs/images/dsh-quantlab/github-import.png` | 面板「导入 GitHub」抽屉：真实克隆 octocat/Hello-World 成功 + 列表行（打开文件夹/删除） |
+| `docs/images/dsh-quantlab/conversation.png` | 原生 DSH 对话：模型调用 `quantlab_backtest` 的回合 |
+| `docs/images/dsh-quantlab/conversation-card.png` | 同一回合里 `tool.call.toolview` 渲染的卡片（标题/摘要/指标行/在 QuantLab 打开） |
+
+实测数据点：
+
+- `iframe src` = `http://127.0.0.1:<pyPort>/?embed=1&theme=dark`；
+  iframe 内 `html[data-embed="1"]`、`html[data-theme="dark"]`、`data-theme-locked="1"`，
+  平台 `.shell` 左边距 56px（窄轨生效）；切浅色后 `html[data-theme]="light"`（无需 reload）。
+- 模型 chip：`resolvedTargetLabel="DSH · Harness · DeepSeek V4.1 Flash"`（providerName + resolveModelInfo displayName）。
+- GitHub 导入：真克隆 1.5s、1 个文件；面板删除后目录彻底消失（含只读 `.git/objects`），
+  `DELETE` 返回 `{ok:true,removed_dir:true}`；删不干净会 500 + 中文原因。
+- 原生对话：模型按工具描述自动调 `quantlab_backtest(slug, symbol, timeframe, bars_limit)`，
+  卡片显示「总收益 -0.01% / 夏普 -4.78 / 最大回撤 0.02% / 交易 1」+「在 QuantLab 打开」。
+- 报告代理：`GET /dsh-quantlab/chart/{id}.png`、`/report/{id}.{png|pdf}` 已按契约转发到
+  平台 `report-export`；工具侧错误会原样带 trace_id 返回（见 §9 的限制）。

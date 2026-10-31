@@ -52,6 +52,7 @@ window.__ModuleLoader__.load({
 [data-ql-btn][data-ql-variant="danger"]{border-color:var(--dsw-alias-state-error-primary,#e5484d);color:var(--dsw-alias-state-error-primary,#e5484d);}
 [data-ql-btn][data-ql-variant="danger"]:hover:not([disabled]){background:var(--dsw-alias-interactive-bg-hover-danger,rgba(229,72,77,.12));}
 [data-ql-btn][data-ql-on]{background:var(--dsw-alias-interactive-bg-active,rgba(127,127,127,.18));}
+a[data-ql-btn]{text-decoration:none;box-sizing:border-box;}
 [data-ql-body]{position:relative;flex:1 1 auto;min-height:0;display:flex;flex-direction:column;}
 [data-ql-frame]{flex:1 1 auto;width:100%;min-height:0;border:0;display:block;background:transparent;}
 [data-ql-cardwrap]{flex:1 1 auto;min-height:0;overflow:auto;display:flex;align-items:flex-start;justify-content:center;padding:32px 20px;}
@@ -83,6 +84,21 @@ window.__ModuleLoader__.load({
 [data-ql-check]{display:flex;align-items:flex-start;gap:8px;font-size:13px;line-height:20px;cursor:pointer;}
 [data-ql-check] input{margin:2px 0 0;}
 [data-ql-kv]{font-size:11px;line-height:1.7;color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.85));word-break:break-all;}
+[data-ql-importform]{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:6px;}
+[data-ql-importform] input[type="url"]{flex:1 1 320px;min-width:0;}
+[data-ql-importform] input[type="text"]{flex:0 1 200px;}
+[data-ql-importlist]{display:flex;flex-direction:column;gap:8px;margin-top:8px;}
+[data-ql-importrow]{display:flex;flex-direction:column;gap:6px;padding:10px 12px;border-radius:var(--dsw-radius-md,10px);border:1px solid var(--dsw-alias-border-l3,rgba(127,127,127,.22));background:var(--dsw-alias-bg-layer-2,rgba(127,127,127,.05));}
+[data-ql-importhead]{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;font-size:13px;}
+[data-ql-importmeta]{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:11px;color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.85));}
+[data-ql-link]{color:var(--dsw-alias-link,var(--dsw-alias-state-business-primary,#3b6cf6));text-decoration:none;word-break:break-all;}
+[data-ql-link]:hover{text-decoration:underline;}
+[data-ql-reportcard]{display:flex;flex-direction:column;gap:8px;padding:10px 12px;border-radius:var(--dsw-radius-md,10px);border:1px solid var(--dsw-alias-border-l3,rgba(127,127,127,.24));background:var(--dsw-alias-settings-card-fill,rgba(127,127,127,.05));max-width:560px;}
+[data-ql-reportthumb]{width:100%;max-height:180px;object-fit:contain;border-radius:6px;background:rgba(127,127,127,.08);}
+[data-ql-reportrow]{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;}
+[data-ql-reporttitle]{font-weight:600;font-size:13px;}
+[data-ql-reportmetrics]{display:flex;gap:10px;flex-wrap:wrap;font-size:11px;color:var(--dsw-alias-label-secondary,inherit);}
+[data-ql-reportmetrics] b{font-weight:600;font-variant-numeric:tabular-nums;}
 `
 
     // ─── HTTP 小工具 ─────────────────────────────────────────────────────
@@ -100,12 +116,14 @@ window.__ModuleLoader__.load({
       return data
     }
 
-    const postJson = async (url, body) => {
+    const postJson = async (url, body, method) => {
+      const verb = String(method || 'POST').toUpperCase()
+      const hasBody = verb === 'POST' || verb === 'PUT' || verb === 'PATCH'
       const res = await fetch(url, {
-        method: 'POST',
-        headers: { accept: 'application/json', 'content-type': 'application/json' },
+        method: verb,
+        headers: { accept: 'application/json', ...(hasBody ? { 'content-type': 'application/json' } : {}) },
         credentials: 'same-origin',
-        body: JSON.stringify(body || {}),
+        ...(hasBody ? { body: JSON.stringify(body || {}) } : {}),
       })
       const text = await res.text()
       let data = null
@@ -140,6 +158,7 @@ window.__ModuleLoader__.load({
       if (!data || typeof data !== 'object') return null
       const st = data.status && typeof data.status === 'object' ? data.status : data
       const state = String(st.state || (st.url ? 'running' : 'stopped'))
+      const target = st.resolvedTarget && typeof st.resolvedTarget === 'object' ? st.resolvedTarget : null
       return {
         ok: st.ok !== false,
         state: ['starting', 'running', 'stopped', 'error'].indexOf(state) >= 0 ? state : 'stopped',
@@ -151,6 +170,11 @@ window.__ModuleLoader__.load({
         startedAt: st.startedAt,
         error: typeof st.error === 'string' ? st.error : (st.error ? String(st.error) : ''),
         logTail: typeof st.logTail === 'string' ? st.logTail : '',
+        model: typeof st.model === 'string' ? st.model : '',
+        providerName: typeof st.providerName === 'string' ? st.providerName : '',
+        resolvedTarget: target,
+        // 模型名说人话：宿主解析出的真实目标（如 opencode-go/deepseek-v4.1-flash）
+        resolvedTargetLabel: typeof st.resolvedTargetLabel === 'string' ? st.resolvedTargetLabel : '',
       }
     }
 
@@ -168,11 +192,94 @@ window.__ModuleLoader__.load({
       return m.length > 600 ? m.slice(0, 600) + '…' : m
     }
 
+    // ─── 嵌入参数（与工作流 E 约定） ─────────────────────────────────────
+    // html[data-embed="1"] 收起平台侧栏为窄轨、隐藏重复品牌条；
+    // html[data-theme="dark"|"light"] 深/浅色；系统主题不传 theme（平台自己跟 prefers-color-scheme）。
+    // 也支持 postMessage({type:'quantlab:theme', theme}) 热切换，避免重载 iframe。
+    const THEME_QUERY = 'embed=1'
+
+    /** 读 DSH 当前主题：优先显式 data-theme / data-color-scheme，其次系统偏好。 */
+    const detectTheme = () => {
+      try {
+        const root = document.documentElement
+        for (const attr of ['data-theme', 'data-dsh-theme', 'data-color-scheme', 'data-colorscheme']) {
+          const value = String(root.getAttribute(attr) || '').toLowerCase()
+          if (value === 'dark' || value === 'light') return value
+        }
+        const scheme = String(root.style.colorScheme || '').toLowerCase()
+        if (scheme === 'dark' || scheme === 'light') return scheme
+      } catch (_) { /* ignore */ }
+      try {
+        if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) return 'dark'
+        if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) return 'light'
+      } catch (_) { /* ignore */ }
+      return 'auto'
+    }
+
+    /** 把后端 URL 变成 iframe 用的嵌入地址：保留 hash，query 加 embed/theme。 */
+    const buildFrameUrl = (backendUrl, theme, route) => {
+      const url = String(backendUrl || '').trim()
+      if (!url) return ''
+      try {
+        const parsed = new URL(url)
+        const params = parsed.searchParams
+        params.set('embed', '1')
+        if (theme === 'dark' || theme === 'light') params.set('theme', theme)
+        else params.delete('theme')
+        let hash = parsed.hash
+        if (route) {
+          const clean = String(route).startsWith('#') ? String(route) : '#' + String(route)
+          hash = clean
+        }
+        return parsed.origin + parsed.pathname + '?' + params.toString() + hash
+      } catch (_) {
+        const joiner = url.indexOf('?') >= 0 ? '&' : '?'
+        const themePart = theme === 'dark' || theme === 'light' ? `&theme=${theme}` : ''
+        return `${url}${joiner}${THEME_QUERY}${themePart}${route ? '#' + String(route).replace(/^#/, '') : ''}`
+      }
+    }
+
+    /** 从 iframe 里拿平台 URL（去掉嵌入参数）用于外部打开。 */
+    const plainPlatformUrl = (backendUrl, route) => {
+      const url = String(backendUrl || '').trim()
+      if (!url) return ''
+      if (!route) return url
+      try {
+        const parsed = new URL(url)
+        parsed.hash = String(route).startsWith('#') ? String(route) : '#' + String(route)
+        return parsed.origin + parsed.pathname + (parsed.search || '') + parsed.hash
+      } catch (_) {
+        return url + '#' + String(route).replace(/^#/, '')
+      }
+    }
+
+    /** 从工具结果文本里找卡片 JSON：宿主在 markdown 后面留一行 <!-- quantlab-card {...} -->。 */
+    const parseCardJson = (text) => {
+      const raw = String(text || '')
+      const m = raw.match(/<!--\s*quantlab-card\s+([\s\S]*?)\s*-->/)
+      if (!m) return null
+      try {
+        return JSON.parse(m[1])
+      } catch (_) {
+        return null
+      }
+    }
+
+    /** 工具结果 content（数组）里所有 text 块拼起来。 */
+    const contentText = (block) => {
+      const content = block && Array.isArray(block.content) ? block.content : []
+      return content
+        .map((item) => (item && item.type === 'text' && typeof item.text === 'string' ? item.text : ''))
+        .filter(Boolean)
+        .join('\n')
+    }
+
     // ─── main 面板 ───────────────────────────────────────────────────────
     const actFailed = (name) => name === 'start' ? '启动失败' : name === 'stop' ? '停止失败' : '重启失败'
 
     function QuantLabPanel(props) {
       const openSettings = props && props.openSettings
+      const openPanel = props && props.openPanel
       const [status, setStatus] = React.useState(null)
       const [apiError, setApiError] = React.useState('')
       const [busy, setBusy] = React.useState('')
@@ -181,9 +288,22 @@ window.__ModuleLoader__.load({
       const [logsOpen, setLogsOpen] = React.useState(false)
       const [logs, setLogs] = React.useState('')
       const [logsError, setLogsError] = React.useState('')
+      // 嵌入参数：主题（跟随 DSH/系统，变化时 postMessage 热切换）
+      const [theme, setTheme] = React.useState(() => detectTheme())
+      const [frameRoute, setFrameRoute] = React.useState('')  // 卡片「打开面板」要落的平台路由
+      // 「导入 GitHub」（入口在状态条，不占内容区；结果卡在抽屉里）
+      const [importsOpen, setImportsOpen] = React.useState(false)
+      const [imports, setImports] = React.useState([])
+      const [importsError, setImportsError] = React.useState('')
+      const [importUrl, setImportUrl] = React.useState('')
+      const [importNote, setImportNote] = React.useState('')
+      const [importBusy, setImportBusy] = React.useState('')
+      const [importMsg, setImportMsg] = React.useState(null)
 
       const statusRef = React.useRef(null)
       const logsOpenRef = React.useRef(false)
+      const importsOpenRef = React.useRef(false)
+      const frameRef = React.useRef(null)
       const msgTimer = React.useRef(null)
 
       const flash = React.useCallback((text, tone) => {
@@ -286,6 +406,142 @@ window.__ModuleLoader__.load({
         if (logsOpen) loadLogs()
       }, [logsOpen, loadLogs])
 
+      // 主题：DSH 切换深/浅色（或系统偏好变化）时，先 postMessage 给 iframe 热切换；
+      // 平台（工作流 E）支持 {type:'quantlab:theme', theme}，不支持也能靠下次刷新拿到新参数。
+      React.useEffect(() => {
+        const apply = () => {
+          const next = detectTheme()
+          setTheme(next)
+          try {
+            const win = frameRef.current && frameRef.current.contentWindow
+            if (win) win.postMessage({ type: 'quantlab:theme', theme: next === 'auto' ? 'auto' : next }, '*')
+          } catch (_) { /* 跨端口/未加载：忽略 */ }
+        }
+        let mq = null
+        try { mq = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null } catch (_) { mq = null }
+        if (mq && typeof mq.addEventListener === 'function') mq.addEventListener('change', apply)
+        else if (mq && typeof mq.addListener === 'function') mq.addListener(apply)
+        let observer = null
+        try {
+          if (typeof MutationObserver === 'function') {
+            observer = new MutationObserver(apply)
+            observer.observe(document.documentElement, {
+              attributes: true,
+              attributeFilter: ['data-theme', 'data-dsh-theme', 'data-color-scheme', 'data-colorscheme', 'style', 'class'],
+            })
+          }
+        } catch (_) { observer = null }
+        return () => {
+          try { if (mq && typeof mq.removeEventListener === 'function') mq.removeEventListener('change', apply) } catch (_) { /* ignore */ }
+          try { if (mq && typeof mq.removeListener === 'function') mq.removeListener(apply) } catch (_) { /* ignore */ }
+          try { if (observer) observer.disconnect() } catch (_) { /* ignore */ }
+        }
+      }, [])
+
+      // 卡片/Bot 里的「在面板打开」：`window.dispatchEvent(new CustomEvent('dsh:quantlab-open', {detail:{route:'#/backtests/123'}}))`
+      React.useEffect(() => {
+        const onOpen = (event) => {
+          const detail = (event && event.detail) || {}
+          const route = detail.route
+            || (detail.backtestId ? '#/backtests/' + encodeURIComponent(String(detail.backtestId)) : '')
+          if (route) setFrameRoute(String(route))
+          if (detail.focus !== false && typeof openPanel === 'function') {
+            try { openPanel() } catch (_) { /* 宿主没暴露 layout：面板已开就无所谓 */ }
+          }
+        }
+        window.addEventListener('dsh:quantlab-open', onOpen)
+        return () => window.removeEventListener('dsh:quantlab-open', onOpen)
+      }, [openPanel])
+
+      // ─── GitHub 导入（入口在状态条，列表/结果在抽屉里） ──────────────────
+      const loadImports = React.useCallback(async () => {
+        try {
+          const data = await getJson(API + '/imports')
+          setImports(Array.isArray(data && data.imports) ? data.imports : [])
+          setImportsError('')
+          return data
+        } catch (e) {
+          setImportsError(errorText(e))
+          return null
+        }
+      }, [])
+
+      React.useEffect(() => {
+        importsOpenRef.current = importsOpen
+        if (importsOpen) loadImports()
+      }, [importsOpen, loadImports])
+
+      const toggleImports = () => {
+        const next = !importsOpen
+        setImportsOpen(next)
+        if (next) loadImports()
+      }
+
+      const submitImport = async () => {
+        const url = String(importUrl || '').trim()
+        if (!url) {
+          setImportMsg({ text: '先填 GitHub 地址，例如 https://github.com/octocat/Hello-World', tone: 'error' })
+          return
+        }
+        setImportBusy('import')
+        setImportMsg({ text: '正在浅克隆仓库（--depth 1，最多 120 秒）…', tone: '' })
+        try {
+          const data = await postJson(API + '/imports/github', { url, note: String(importNote || '').trim() })
+          const rec = data && data.import ? data.import : null
+          const strategies = rec && Array.isArray(rec.strategies_imported) ? rec.strategies_imported : []
+          const sizeKb = rec && Number(rec.bytes) ? (Number(rec.bytes) / 1024).toFixed(1) : '0'
+          setImportMsg({
+            text: rec
+              ? `已导入 ${rec.name}：${rec.files} 个文件，${sizeKb} KB`
+                + (strategies.length ? `，识别并导入 ${strategies.length} 个策略包（${strategies.map((s) => s.slug).join('、')}）` : '')
+                + (Array.isArray(rec.warnings) && rec.warnings.length ? `；${rec.warnings.length} 条提示` : '')
+              : '已导入',
+            tone: 'ok',
+          })
+          setImportUrl('')
+          setImportNote('')
+          await loadImports()
+        } catch (e) {
+          setImportMsg({ text: '导入失败：' + errorText(e), tone: 'error' })
+        } finally {
+          setImportBusy('')
+        }
+      }
+
+      const removeImport = async (rec) => {
+        if (!rec || !rec.id) return
+        if (typeof window !== 'undefined' && typeof window.confirm === 'function') {
+          const okDelete = window.confirm(`删除导入「${rec.name || rec.id}」？会移除项目里的仓库目录。`)
+          if (!okDelete) return
+        }
+        setImportBusy('delete:' + rec.id)
+        try {
+          await postJson(API + '/imports/' + encodeURIComponent(rec.id), undefined, 'DELETE')
+          setImportMsg({ text: `已删除 ${rec.name || rec.id}`, tone: 'ok' })
+          await loadImports()
+        } catch (e) {
+          setImportMsg({ text: '删除失败：' + errorText(e), tone: 'error' })
+        } finally {
+          setImportBusy('')
+        }
+      }
+
+      const openImportFolder = async (rec) => {
+        if (!rec || !rec.id) return
+        setImportBusy('open:' + rec.id)
+        try {
+          const detail = await getJson(API + '/imports/' + encodeURIComponent(rec.id))
+          const target = detail && detail.import ? detail.import.path : ''
+          if (!target) throw new Error('记录里没有目录路径（可能已被删除）')
+          await postJson(API + '/open', { path: target })
+          setImportMsg({ text: '已在文件管理器打开：' + target, tone: 'ok' })
+        } catch (e) {
+          setImportMsg({ text: '打开目录失败：' + errorText(e), tone: 'error' })
+        } finally {
+          setImportBusy('')
+        }
+      }
+
       const state = status ? status.state : (apiError ? 'error' : 'stopped')
       const running = state === 'running' && !!status && !!status.url
       const starting = state === 'starting'
@@ -311,6 +567,25 @@ window.__ModuleLoader__.load({
         status && status.projectDir
           ? h('span', { 'data-ql-chip': '', title: '项目目录：' + status.projectDir }, projectName(status.projectDir))
           : null,
+        // 模型名说人话：优先宿主解析出的真实模型（DSH · deepseek-v4.1-flash），
+        // 退回到 provider 登记名，再退回平台模型 id（dsh-default）。hover 显示 effort/上下文。
+        (() => {
+          const label = (status && status.resolvedTargetLabel)
+            || (status && status.resolvedTarget && status.resolvedTarget.model
+              ? [status.providerName || 'DSH', status.resolvedTarget.model].filter(Boolean).join(' · ')
+              : '')
+            || (status && status.model) || ''
+          if (!label) return null
+          const target = (status && status.resolvedTarget) || {}
+          const tip = [
+            '模型：' + label,
+            target.provider ? 'provider：' + target.provider : '',
+            target.model ? 'model：' + target.model : '',
+            target.reasoningEffort ? 'effort：' + target.reasoningEffort : '',
+            status && status.llmBridge === 'ready' ? '模型桥：可用' : '模型桥：不可用',
+          ].filter(Boolean).join('\n')
+          return h('span', { 'data-ql-chip': '', 'data-ql-model-chip': '', title: tip }, label)
+        })(),
         status && status.llmBridge === 'unavailable'
           ? h('span', { 'data-ql-chip': '', 'data-ql-warn': '' }, '模型桥不可用')
           : null,
@@ -339,6 +614,13 @@ window.__ModuleLoader__.load({
           title: '重新检查状态并刷新内嵌页面',
         }, '刷新'),
         h('button', {
+          type: 'button', 'data-ql-btn': '', 'data-ql-on': importsOpen ? '' : undefined,
+          'data-ql-imports-btn': '',
+          onClick: toggleImports,
+          'aria-pressed': importsOpen ? 'true' : 'false',
+          title: '粘贴 GitHub 地址导入仓库（克隆到项目里）',
+        }, '导入 GitHub'),
+        h('button', {
           type: 'button', 'data-ql-btn': '', 'data-ql-on': logsOpen ? '' : undefined,
           onClick: () => setLogsOpen((v) => !v),
           'aria-pressed': logsOpen ? 'true' : 'false',
@@ -350,12 +632,16 @@ window.__ModuleLoader__.load({
         }, '设置'),
       )
 
-      // 内嵌原平台界面
+      // 内嵌原平台界面：?embed=1&theme=<dark|light>（工作流 E 的 html[data-embed]/html[data-theme] 约定）
+      const frameSrc = running ? buildFrameUrl(status.url, theme, frameRoute) : ''
       const frame = running
         ? h('iframe', {
           key: (status.url || '') + '#' + frameNonce,
+          ref: frameRef,
           'data-ql-frame': '',
-          src: status.url,
+          'data-ql-embed': '1',
+          'data-ql-theme': theme,
+          src: frameSrc,
           title: 'QuantLab 平台',
           allow: 'clipboard-read; clipboard-write',
         })
@@ -426,15 +712,99 @@ window.__ModuleLoader__.load({
           ))
         : null
 
+      // GitHub 导入抽屉（入口在状态条；复制地址即可导入，不占内容区）
+      const importsDrawer = importsOpen
+        ? h('div', {
+          'data-ql-drawer': '', 'data-ql-imports-drawer': '', role: 'dialog', 'aria-label': '导入 GitHub 仓库',
+        },
+        h('div', { 'data-ql-drawerhead': '' },
+          h('span', null, '导入 GitHub 仓库'),
+          h('span', { 'data-ql-spacer': '' }),
+          h('button', {
+            type: 'button', 'data-ql-btn': '',
+            onClick: () => setImportsOpen(false), title: '关闭导入面板',
+          }, '关闭'),
+        ),
+        h('div', { 'data-ql-drawerbody': '' },
+          h('div', { 'data-ql-importform': '' },
+            h('input', {
+              'data-ql-input': '', 'data-ql-import-url': '', type: 'url',
+              placeholder: 'https://github.com/<owner>/<repo>',
+              value: importUrl,
+              onChange: (e) => setImportUrl(e.target.value),
+              onKeyDown: (e) => { if (e.key === 'Enter') submitImport() },
+              'aria-label': 'GitHub 仓库地址',
+            }),
+            h('input', {
+              'data-ql-input': '', type: 'text', placeholder: '备注（可选）',
+              value: importNote,
+              onChange: (e) => setImportNote(e.target.value),
+              'aria-label': '导入备注',
+            }),
+            h('button', {
+              type: 'button', 'data-ql-btn': '', 'data-ql-variant': 'primary', 'data-ql-import-submit': '',
+              disabled: !!importBusy, onClick: submitImport,
+            }, importBusy === 'import' ? '导入中…' : '导入'),
+          ),
+          h('div', { 'data-ql-note': '' },
+            '浅克隆（--depth 1）到 <项目>/.quantlab/imports/github/<owner>-<repo>-<时间>；'
+              + '仓库上限 200MB、超时 120s；有 .qstrat 会自动走策略包导入（导入后需你批准才能用于模拟盘）。'),
+          importMsg
+            ? h('div', {
+              'data-ql-msg': '', 'data-ql-import-msg': '', 'data-ql-tone': importMsg.tone || undefined,
+            }, importMsg.text)
+            : null,
+          importsError
+            ? h('div', { 'data-ql-msg': '', 'data-ql-tone': 'error' }, '读取导入列表失败：' + importsError)
+            : null,
+          h('div', { 'data-ql-importlist': '' },
+            imports.length === 0
+              ? h('div', { 'data-ql-note': '' }, importsError ? '（列表暂不可用）' : '还没有导入过仓库。粘贴一个公开仓库地址试试。')
+              : imports.map((rec) => h('div', {
+                key: rec.id, 'data-ql-importrow': '', 'data-ql-import-id': rec.id,
+              },
+              h('div', { 'data-ql-importhead': '' },
+                h('b', null, rec.name || rec.id),
+                h('span', { 'data-ql-muted': '' },
+                  `${rec.files || 0} 个文件 · ${(Number(rec.bytes || 0) / 1024).toFixed(1)} KB`
+                    + ` · ${new Date(Number(rec.created_at || 0) * 1000).toLocaleString('zh-CN')}`),
+              ),
+              h('div', { 'data-ql-importmeta': '' },
+                rec.url
+                  ? h('a', { href: rec.url, target: '_blank', rel: 'noreferrer', 'data-ql-link': '' }, rec.url)
+                  : null,
+                rec.exists === false ? h('span', { 'data-ql-note': '' }, '（目录已不在）') : null,
+                Array.isArray(rec.strategies_imported) && rec.strategies_imported.length
+                  ? h('span', { 'data-ql-chip': '' }, `策略包 ${rec.strategies_imported.length}`)
+                  : null,
+                Array.isArray(rec.warnings) && rec.warnings.length
+                  ? h('span', { 'data-ql-chip': '', 'data-ql-warn': '', title: rec.warnings.join('\n') }, `${rec.warnings.length} 条提示`)
+                  : null,
+              ),
+              h('div', { 'data-ql-actions': '' },
+                h('button', {
+                  type: 'button', 'data-ql-btn': '', disabled: !!importBusy,
+                  onClick: () => openImportFolder(rec), title: '在文件管理器打开导入目录',
+                }, importBusy === 'open:' + rec.id ? '打开中…' : '打开文件夹'),
+                h('button', {
+                  type: 'button', 'data-ql-btn': '', 'data-ql-variant': 'danger', disabled: !!importBusy,
+                  onClick: () => removeImport(rec), title: '删除导入目录与记录',
+                }, importBusy === 'delete:' + rec.id ? '删除中…' : '删除'),
+              ),
+            )),
+          ),
+        ))
+        : null
+
       return h('div', { 'data-ql-root': '', 'data-dsh-plugin': 'dsh-quantlab', 'data-dsh-part': 'quantlab-main-panel' },
         bar,
         msg && frame ? h('div', { style: { padding: '4px 12px', flex: '0 0 auto' } },
           h('div', { 'data-ql-msg': '', 'data-ql-tone': msg.tone || undefined }, msg.text)) : null,
-        h('div', { 'data-ql-body': '' }, frame, card, drawer),
+        h('div', { 'data-ql-body': '' }, frame, card, drawer, importsDrawer),
       )
     }
 
-    // ─── 侧栏图标 ────────────────────────────────────────────────────────
+    // ─── 侧栏图标（QuantLab Bot：机器人头 + 蜡烛图眼睛） ──────────────────
     function QuantLabIcon(props) {
       const size = props && typeof props.size === 'number' && props.size > 0 ? props.size : 16
       return h('svg', {
@@ -443,12 +813,21 @@ window.__ModuleLoader__.load({
         'data-dsh-plugin': 'dsh-quantlab', 'data-dsh-part': 'quantlab-sidebar-icon',
         style: { display: 'block' },
       },
-        h('rect', { x: 1.75, y: 1.75, width: 20.5, height: 20.5, rx: 5.25, fill: 'currentColor', opacity: 0.14 }),
-        h('path', {
-          d: 'M5.2 16.4 9.6 10.6 13.1 13.6 18.4 6.9',
-          stroke: 'currentColor', strokeWidth: 1.9, strokeLinecap: 'round', strokeLinejoin: 'round',
+        // 头（用 currentColor 的淡填充 + 描边，深浅色主题都清楚）
+        h('rect', {
+          x: 2.5, y: 3.25, width: 19, height: 17.5, rx: 5.2,
+          fill: 'currentColor', opacity: 0.16, stroke: 'currentColor', strokeWidth: 1.1,
         }),
-        h('circle', { cx: 18.4, cy: 6.9, r: 1.55, fill: 'currentColor' }),
+        // 面罩
+        h('rect', {
+          x: 4.6, y: 5.85, width: 14.8, height: 10.6, rx: 3.4,
+          fill: 'none', stroke: 'currentColor', strokeWidth: 0.9, opacity: 0.55,
+        }),
+        // 眼睛：两根蜡烛（影线 + 实体），和 Assets 里的 bot logo 一致
+        h('path', { d: 'M8.6 6.9v8.6', stroke: 'currentColor', strokeWidth: 0.7, opacity: 0.8 }),
+        h('path', { d: 'M15.4 6.9v8.6', stroke: 'currentColor', strokeWidth: 0.7, opacity: 0.8 }),
+        h('rect', { x: 6.7, y: 8.8, width: 3.8, height: 4.8, rx: 0.8, fill: 'currentColor' }),
+        h('rect', { x: 13.5, y: 9.5, width: 3.8, height: 3.6, rx: 0.8, fill: 'currentColor' }),
       )
     }
 
@@ -612,6 +991,124 @@ window.__ModuleLoader__.load({
       )
     }
 
+    // ─── 原生对话里的回测结果卡片（tool.call.toolview keyed slot） ────────
+    /**
+     * DSH 的工具视图按 wire tool 名 keyed 注册：宿主（lib/tools.js）在结果
+     * markdown 末尾留一行 `<!-- quantlab-card {...} -->`，这里解析后画
+     * 「净值缩略图 + 关键指标 + 在 QuantLab 打开 / 看图 / 下载」。
+     *
+     * props 契约（来自 dsh-client-ui-tool 的 slots.ts）：
+     *   ToolCallCommonProps & ({phase:'preparing'|'start'|'result', block})
+     *   block.args 是懒读视图：block.args.value(key)
+     *   result 阶段 block.content 是内容块数组、block.isError / block.error
+     */
+    function makeReportCard({ openPanel } = {}) {
+      const openInPanel = (route) => {
+        try {
+          if (typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('dsh:quantlab-open', { detail: { route: route || '' } }))
+          }
+        } catch (_) { /* ignore */ }
+        try {
+          if (typeof openPanel === 'function') openPanel()
+        } catch (_) { /* ignore */ }
+      }
+
+      const numberish = (value, suffix, digits) => {
+        const num = Number(value)
+        if (!Number.isFinite(num)) return value === undefined || value === null || value === '' ? null : String(value)
+        const text = digits === undefined ? String(num) : num.toFixed(digits)
+        return suffix ? text + suffix : text
+      }
+
+      return function QuantLabReportCard(props) {
+        const toolName = String((props && props.toolName) || 'quantlab_export_report')
+        const block = props && props.block
+        const phase = (props && props.phase) || ''
+        const readArg = (key) => {
+          try {
+            const args = block && block.args
+            if (!args || typeof args.value !== 'function') return undefined
+            return args.value(key)
+          } catch (_) {
+            return undefined
+          }
+        }
+        const backtestId = readArg('backtest_id') ?? readArg('backtestId')
+        const heading = 'QuantLab 回测报告' + (backtestId !== undefined && backtestId !== null && backtestId !== ''
+          ? ' · #' + String(backtestId)
+          : '')
+
+        if (phase === 'preparing' || phase === 'start') {
+          return h('div', { 'data-ql-reportrow': '', 'data-ql-toolview': toolName },
+            h('span', { 'data-ql-spin': '', 'aria-hidden': 'true' }),
+            h('span', null, heading + (phase === 'preparing' ? ' · 准备中…' : ' · 导出中…')))
+        }
+
+        const text = contentText(block)
+        let card = parseCardJson(text)
+        if (!card) {
+          try {
+            const parsed = JSON.parse(text)
+            card = parsed && parsed.quantlabCard ? parsed.quantlabCard : parsed
+          } catch (_) { card = null }
+        }
+        const failed = (block && block.isError === true) || Boolean(block && block.error) || (card && card.ok === false)
+        if (failed) {
+          const detail = (block && block.error && (block.error.message || block.error))
+            || (card && (card.error || card.message)) || text || '导出失败'
+          return h('div', {
+            'data-ql-reportcard': '', 'data-ql-report-error': '', 'data-ql-toolview': toolName,
+          },
+          h('div', { 'data-ql-reporttitle': '' }, heading),
+          h('div', { 'data-ql-note': '' }, String(detail).replace(/\s+/g, ' ').slice(0, 400)))
+        }
+
+        const chartUrl = (card && (card.chartUrl || card.chart)) || ''
+        const downloadUrl = (card && (card.downloadUrl || card.pdfUrl || card.reportUrl)) || ''
+        const panelRoute = (card && card.panelRoute)
+          || (backtestId !== undefined && backtestId !== null && backtestId !== ''
+            ? '#/backtests/' + encodeURIComponent(String(backtestId))
+            : '')
+        const metrics = (card && card.metrics) || {}
+        const items = [
+          ['总收益', numberish(metrics.totalReturnPct ?? metrics.totalReturn, '%', 2)],
+          ['夏普', numberish(metrics.sharpe, '', 2)],
+          ['最大回撤', numberish(metrics.maxDrawdownPct ?? metrics.maxDrawdown, '%', 2)],
+          ['交易', numberish(metrics.trades)],
+        ].filter((pair) => pair[1] !== null && pair[1] !== undefined)
+
+        return h('div', { 'data-ql-reportcard': '', 'data-ql-toolview': toolName },
+          chartUrl
+            ? h('img', {
+              'data-ql-reportthumb': '', src: chartUrl, alt: '回测净值曲线', loading: 'lazy',
+            })
+            : null,
+          h('div', { 'data-ql-reportrow': '' }, h('span', { 'data-ql-reporttitle': '' }, heading)),
+          card && card.summary ? h('div', { 'data-ql-note': '' }, String(card.summary).slice(0, 300)) : null,
+          items.length
+            ? h('div', { 'data-ql-reportmetrics': '' },
+              items.map(([label, value]) => h('span', { key: label }, label + ' ', h('b', null, String(value)))))
+            : null,
+          h('div', { 'data-ql-actions': '' },
+            h('button', {
+              type: 'button', 'data-ql-btn': '', 'data-ql-variant': 'primary',
+              'data-ql-open-panel': '', onClick: () => openInPanel(panelRoute),
+            }, '在 QuantLab 打开'),
+            chartUrl
+              ? h('a', {
+                'data-ql-btn': '', href: chartUrl, target: '_blank', rel: 'noreferrer',
+              }, '查看大图')
+              : null,
+            downloadUrl
+              ? h('a', {
+                'data-ql-btn': '', href: downloadUrl, target: '_blank', rel: 'noreferrer',
+              }, card && card.format === 'pdf' ? '下载 PDF' : '下载报告')
+              : null,
+          ))
+      }
+    }
+
     // ─── 插件入口 ────────────────────────────────────────────────────────
     return {
       inject: ['slots'],
@@ -689,6 +1186,18 @@ window.__ModuleLoader__.load({
           return false
         }
 
+        /** 切到侧栏 QuantLab 面板（宿主有 layout 服务才行；没有就只靠事件）。返回是否切了。 */
+        const openPanel = () => {
+          const layout = readOptionalService('layout')
+          try {
+            if (layout && typeof layout.selectPanel === 'function') {
+              layout.selectPanel('quantlab')
+              return true
+            }
+          } catch (_) { /* ignore */ }
+          return false
+        }
+
         const inject = (name, cb) => (typeof slots.inject === 'function' ? slots.inject(name, cb) : cb())
 
         // 照 dsh-mnemon 的 native panel 写法：先声明 main，再在它里面挂侧栏图标，
@@ -697,7 +1206,7 @@ window.__ModuleLoader__.load({
           const stopMain = slots.register({
             name: 'main',
             key: 'quantlab',
-            inject: () => ({ openSettings }),
+            inject: () => ({ openSettings, openPanel }),
           }, QuantLabPanel)
 
           let stopIcon
@@ -727,6 +1236,21 @@ window.__ModuleLoader__.load({
           order: 43,
           label: 'QuantLab',
         }, QuantLabSettings))
+
+        // 原生对话里的工具卡片：quantlab_export_report / quantlab_backtest 的结果
+        // 用「净值缩略图 + 指标 + 在面板打开」代替默认 JSON 行。
+        // keyed slot 按 wire tool 名精确匹配；DSH 没这个 slot 时 inject 会跳过（不影响其它功能）。
+        const ReportCard = makeReportCard({ openPanel })
+        for (const toolName of ['quantlab_export_report', 'quantlab_backtest']) {
+          try {
+            inject('tool.call.toolview', () => slots.register({
+              name: 'tool.call.toolview',
+              key: toolName,
+            }, ReportCard))
+          } catch (error) {
+            console.warn('dsh-quantlab: 注册工具卡片失败（' + toolName + '）', error)
+          }
+        }
       },
     }
   },
